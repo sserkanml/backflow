@@ -1,7 +1,7 @@
 # This rule is not used by the project backflow itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants full permissions ('*') over backflow.backflow.io.
+# Grants full permissions ('*') over backflow.io.
 # This role is intended for users authorized to modify roles and bindings within the cluster,
 # enabling them to delegate specific permissions to other users or groups as needed.
 
@@ -11,17 +11,17 @@ metadata:
   labels:
     app.kubernetes.io/name: backflow
     app.kubernetes.io/managed-by: kustomize
-  name: gittarget-admin-role
+  name: driftproposal-admin-role
 rules:
 - apiGroups:
-  - backflow.backflow.io
+  - backflow.io
   resources:
-  - gittargets
+  - driftproposals
   verbs:
   - '*'
 - apiGroups:
-  - backflow.backflow.io
+  - backflow.io
   resources:
-  - gittargets/status
+  - driftproposals/status
   verbs:
   - get

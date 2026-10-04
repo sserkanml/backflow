@@ -24,27 +24,27 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// WatchRuleSpec defines the desired state of WatchRule
-type WatchRuleSpec struct {
+// BackflowPolicySpec defines the desired state of BackflowPolicy
+type BackflowPolicySpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
-	// foo is an example field of WatchRule. Edit watchrule_types.go to remove/update
+	// foo is an example field of BackflowPolicy. Edit backflowpolicy_types.go to remove/update
 	// +optional
 	Foo *string `json:"foo,omitempty"`
 }
 
-// WatchRuleStatus defines the observed state of WatchRule.
-type WatchRuleStatus struct {
+// BackflowPolicyStatus defines the observed state of BackflowPolicy.
+type BackflowPolicyStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// For Kubernetes API conventions, see:
 	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// conditions represent the current state of the WatchRule resource.
+	// conditions represent the current state of the BackflowPolicy resource.
 	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
 	//
 	// Standard condition types include:
@@ -62,35 +62,35 @@ type WatchRuleStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// WatchRule is the Schema for the watchrules API
-type WatchRule struct {
+// BackflowPolicy is the Schema for the backflowpolicies API
+type BackflowPolicy struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of WatchRule
+	// spec defines the desired state of BackflowPolicy
 	// +required
-	Spec WatchRuleSpec `json:"spec"`
+	Spec BackflowPolicySpec `json:"spec"`
 
-	// status defines the observed state of WatchRule
+	// status defines the observed state of BackflowPolicy
 	// +optional
-	Status WatchRuleStatus `json:"status,omitzero"`
+	Status BackflowPolicyStatus `json:"status,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// WatchRuleList contains a list of WatchRule
-type WatchRuleList struct {
+// BackflowPolicyList contains a list of BackflowPolicy
+type BackflowPolicyList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
-	Items           []WatchRule `json:"items"`
+	Items           []BackflowPolicy `json:"items"`
 }
 
 func init() {
 	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &WatchRule{}, &WatchRuleList{})
+		s.AddKnownTypes(SchemeGroupVersion, &BackflowPolicy{}, &BackflowPolicyList{})
 		return nil
 	})
 }

@@ -22,10 +22,13 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the backflow itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- watchrule_admin_role.yaml
-- watchrule_editor_role.yaml
-- watchrule_viewer_role.yaml
-- gittarget_admin_role.yaml
-- gittarget_editor_role.yaml
-- gittarget_viewer_role.yaml
+- driftproposal_admin_role.yaml
+- driftproposal_editor_role.yaml
+- driftproposal_viewer_role.yaml
+- backflowpolicy_admin_role.yaml
+- backflowpolicy_editor_role.yaml
+- backflowpolicy_viewer_role.yaml
+- scmconnection_admin_role.yaml
+- scmconnection_editor_role.yaml
+- scmconnection_viewer_role.yaml
 

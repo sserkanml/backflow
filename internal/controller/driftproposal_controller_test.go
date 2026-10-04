@@ -30,7 +30,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
 
-var _ = Describe("WatchRule Controller", func() {
+var _ = Describe("DriftProposal Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
 			resourceName      = "test-resource"
@@ -43,13 +43,13 @@ var _ = Describe("WatchRule Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		watchrule := &backflowv1alpha1.WatchRule{}
+		driftproposal := &backflowv1alpha1.DriftProposal{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind WatchRule")
-			err := k8sClient.Get(ctx, typeNamespacedName, watchrule)
+			By("creating the custom resource for the Kind DriftProposal")
+			err := k8sClient.Get(ctx, typeNamespacedName, driftproposal)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &backflowv1alpha1.WatchRule{
+				resource := &backflowv1alpha1.DriftProposal{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
@@ -62,16 +62,16 @@ var _ = Describe("WatchRule Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &backflowv1alpha1.WatchRule{}
+			resource := &backflowv1alpha1.DriftProposal{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance WatchRule")
+			By("Cleanup the specific resource instance DriftProposal")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &WatchRuleReconciler{
+			controllerReconciler := &DriftProposalReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

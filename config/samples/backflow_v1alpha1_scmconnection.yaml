@@ -1,0 +1,9 @@
+apiVersion: backflow.io/v1alpha1
+kind: ScmConnection
+metadata:
+  labels:
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/managed-by: kustomize
+  name: scmconnection-sample
+spec:
+  # TODO(user): Add fields here

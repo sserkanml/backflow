@@ -1,9 +1,9 @@
-apiVersion: backflow.backflow.io/v1alpha1
-kind: GitTarget
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
 metadata:
   labels:
     app.kubernetes.io/name: backflow
     app.kubernetes.io/managed-by: kustomize
-  name: gittarget-sample
+  name: backflowpolicy-sample
 spec:
   # TODO(user): Add fields here

@@ -164,7 +164,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "7e904218.backflow.io",
+		LeaderElectionID:       "7e904218.io",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -182,18 +182,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.GitTargetReconciler{
+	if err := (&controller.ScmConnectionReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "gittarget")
+		setupLog.Error(err, "Failed to create controller", "controller", "scmconnection")
 		os.Exit(1)
 	}
-	if err := (&controller.WatchRuleReconciler{
+	if err := (&controller.BackflowPolicyReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "watchrule")
+		setupLog.Error(err, "Failed to create controller", "controller", "backflowpolicy")
+		os.Exit(1)
+	}
+	if err := (&controller.DriftProposalReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

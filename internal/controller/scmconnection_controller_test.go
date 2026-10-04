@@ -30,7 +30,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
 
-var _ = Describe("GitTarget Controller", func() {
+var _ = Describe("ScmConnection Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
 			resourceName      = "test-resource"
@@ -43,13 +43,13 @@ var _ = Describe("GitTarget Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		gittarget := &backflowv1alpha1.GitTarget{}
+		scmconnection := &backflowv1alpha1.ScmConnection{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind GitTarget")
-			err := k8sClient.Get(ctx, typeNamespacedName, gittarget)
+			By("creating the custom resource for the Kind ScmConnection")
+			err := k8sClient.Get(ctx, typeNamespacedName, scmconnection)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &backflowv1alpha1.GitTarget{
+				resource := &backflowv1alpha1.ScmConnection{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
@@ -62,16 +62,16 @@ var _ = Describe("GitTarget Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &backflowv1alpha1.GitTarget{}
+			resource := &backflowv1alpha1.ScmConnection{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance GitTarget")
+			By("Cleanup the specific resource instance ScmConnection")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &GitTargetReconciler{
+			controllerReconciler := &ScmConnectionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
