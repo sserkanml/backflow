@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------
+# Go / Operator
+# ---------------------------------------------------------------
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+cover.out
+go.work
+go.work.sum
+vendor/
+
+# kubebuilder / controller-runtime test assets
+/testbin/
+/bin/k8s/
+
+# ---------------------------------------------------------------
+# Helm / Kubernetes
+# ---------------------------------------------------------------
+charts/*/charts/
+charts/*.tgz
+*.tgz
+kubeconfig
+*.kubeconfig
+.kube/
+
+# ---------------------------------------------------------------
+# Secrets & credentials (never commit)
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+*.agekey
+age.key
+keys.txt
+*-secret.yaml
+!config/samples/*-secret.yaml
+
+# ---------------------------------------------------------------
+# Local dev & testing
+# ---------------------------------------------------------------
+/tmp/
+/.local/
+*.log
+/test/e2e/results/
+/test/e2e/repos/
+.tilt-cache/
+
+# ---------------------------------------------------------------
+# IDE / OS
+# ---------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
