@@ -8,4 +8,23 @@ layout:
 - go.kubebuilder.io/v4
 projectName: backflow
 repo: github.com/sserkanml/backflow
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: backflow.io
+  group: backflow
+  kind: GitTarget
+  path: github.com/sserkanml/backflow/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: backflow.io
+  group: backflow
+  kind: WatchRule
+  path: github.com/sserkanml/backflow/api/v1alpha1
+  version: v1alpha1
 version: "3"

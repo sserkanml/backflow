@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- backflow_v1alpha1_gittarget.yaml
+- backflow_v1alpha1_watchrule.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
