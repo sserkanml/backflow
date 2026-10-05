@@ -93,7 +93,6 @@ type SourceRef struct {
 	Type SourceType `json:"type"`
 }
 
-
 // ChangeOperation is the kind of change on a field.
 // +kubebuilder:validation:Enum=Add;Replace;Remove
 type ChangeOperation string
@@ -116,7 +115,6 @@ type FieldChange struct {
 	// +optional
 	Live string `json:"live,omitempty"`
 }
-
 
 // Actor is the Kubernetes identity that changed the resource.
 type Actor struct {
@@ -178,7 +176,6 @@ type SourceEdit struct {
 	ChangeIndex int32 `json:"changeIndex"`
 }
 
-
 // MergeRequestRef points to the merge request opened for this proposal.
 type MergeRequestRef struct {
 	URL string `json:"url"`
@@ -188,7 +185,6 @@ type MergeRequestRef struct {
 	// Provider-reported state, e.g. opened, merged, closed.
 	State string `json:"state"`
 }
-
 
 // DriftProposalStatus tracks the proposal through mapping and review.
 type DriftProposalStatus struct {
@@ -232,7 +228,6 @@ type DriftProposal struct {
 	Spec   DriftProposalSpec   `json:"spec,omitempty"`
 	Status DriftProposalStatus `json:"status,omitempty"`
 }
-
 
 // +kubebuilder:object:root=true
 

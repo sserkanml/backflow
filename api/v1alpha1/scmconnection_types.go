@@ -22,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-
 // ScmProvider is the type of Git hosting service.
 // +kubebuilder:validation:Enum=gitlab;github
 type ScmProvider string

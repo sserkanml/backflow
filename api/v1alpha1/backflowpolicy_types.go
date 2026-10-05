@@ -28,7 +28,6 @@ import (
 // +kubebuilder:validation:Enum=MergeRequest;DirectCommit;ReportOnly
 type BackflowMode string
 
-
 const (
 	// ModeMergeRequest opens a merge request against the source file.
 	ModeMergeRequest BackflowMode = "MergeRequest"
@@ -37,7 +36,6 @@ const (
 	// ModeReportOnly only records a DriftProposal; nothing is written to Git.
 	ModeReportOnly BackflowMode = "ReportOnly"
 )
-
 
 // BackflowPolicySpec selects Argo CD Applications whose drift is captured
 // and decides how that drift flows back to Git.
@@ -175,7 +173,6 @@ type MergeRequestOptions struct {
 	// +kubebuilder:default=true
 	AssignActor bool `json:"assignActor,omitempty"`
 }
-
 
 // BackflowPolicyStatus summarises what the policy currently covers.
 type BackflowPolicyStatus struct {
