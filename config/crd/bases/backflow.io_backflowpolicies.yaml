@@ -284,6 +284,44 @@ spec:
             description: BackflowPolicyStatus summarises what the policy currently
               covers.
             properties:
+              applications:
+                description: Details of each matched Application.
+                items:
+                  description: ApplicationSummary is what Backflow knows about a matched
+                    Argo CD Application.
+                  properties:
+                    managedResources:
+                      description: Number of resources the Application manages.
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                    path:
+                      description: Path inside the repository; for Helm repositories,
+                        the chart name.
+                      type: string
+                    repoURL:
+                      description: Git repository the Application deploys from.
+                      type: string
+                    scmConnection:
+                      description: ScmConnection used for this repository. Empty when
+                        none matches.
+                      type: string
+                    sourceType:
+                      description: 'How Argo CD renders the source: Directory, Kustomize,
+                        Helm or Plugin.'
+                      type: string
+                    syncedRevision:
+                      description: Commit Argo CD last synced.
+                      type: string
+                    targetRevision:
+                      description: Branch or tag the Application tracks.
+                      type: string
+                  required:
+                  - managedResources
+                  - name
+                  type: object
+                type: array
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

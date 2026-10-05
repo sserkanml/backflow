@@ -183,9 +183,37 @@ type BackflowPolicyStatus struct {
 	// Applications currently matched.
 	// +optional
 	MatchedApplications []string `json:"matchedApplications,omitempty"`
+	// Details of each matched Application.
+	// +optional
+	Applications []ApplicationSummary `json:"applications,omitempty"`
 	// DriftProposals not yet merged, rejected or reverted.
 	// +optional
 	OpenProposals int32 `json:"openProposals,omitempty"`
+}
+
+// ApplicationSummary is what Backflow knows about a matched Argo CD Application.
+type ApplicationSummary struct {
+	Name string `json:"name"`
+	// Git repository the Application deploys from.
+	// +optional
+	RepoURL string `json:"repoURL,omitempty"`
+	// Path inside the repository; for Helm repositories, the chart name.
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Branch or tag the Application tracks.
+	// +optional
+	TargetRevision string `json:"targetRevision,omitempty"`
+	// Commit Argo CD last synced.
+	// +optional
+	SyncedRevision string `json:"syncedRevision,omitempty"`
+	// How Argo CD renders the source: Directory, Kustomize, Helm or Plugin.
+	// +optional
+	SourceType string `json:"sourceType,omitempty"`
+	// Number of resources the Application manages.
+	ManagedResources int32 `json:"managedResources"`
+	// ScmConnection used for this repository. Empty when none matches.
+	// +optional
+	ScmConnection string `json:"scmConnection,omitempty"`
 }
 
 // +kubebuilder:object:root=true
