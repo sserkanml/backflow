@@ -24,64 +24,194 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
-// BackflowPolicySpec defines the desired state of BackflowPolicy
-type BackflowPolicySpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+// BackflowMode decides what Backflow does with a detected drift.
+// +kubebuilder:validation:Enum=MergeRequest;DirectCommit;ReportOnly
+type BackflowMode string
 
-	// foo is an example field of BackflowPolicy. Edit backflowpolicy_types.go to remove/update
+
+const (
+	// ModeMergeRequest opens a merge request against the source file.
+	ModeMergeRequest BackflowMode = "MergeRequest"
+	// ModeDirectCommit commits straight to the tracked branch.
+	ModeDirectCommit BackflowMode = "DirectCommit"
+	// ModeReportOnly only records a DriftProposal; nothing is written to Git.
+	ModeReportOnly BackflowMode = "ReportOnly"
+)
+
+
+// BackflowPolicySpec selects Argo CD Applications whose drift is captured
+// and decides how that drift flows back to Git.
+type BackflowPolicySpec struct {
+	// Namespace where Argo CD Applications live.
+	// "argocd" for upstream Argo CD, "openshift-gitops" for OpenShift GitOps.
+	// +kubebuilder:default=argocd
+	ArgoCDNamespace string `json:"argoCDNamespace,omitempty"`
+
+	// Applications this policy applies to.
+	Applications ApplicationSelector `json:"applications"`
+
+	// What to do with detected drift.
+	// +kubebuilder:default=MergeRequest
+	Mode BackflowMode `json:"mode,omitempty"`
+
+	// Resource kinds to capture. Empty means every kind the Application manages.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Include []KindSelector `json:"include,omitempty"`
+
+	// Resource kinds never captured. Evaluated after Include.
+	// Secrets are excluded unless explicitly included.
+	// +optional
+	Exclude []KindSelector `json:"exclude,omitempty"`
+
+	// Fields to ignore when computing drift, in addition to built-in noise
+	// (status, managedFields, resourceVersion, platform-injected fields).
+	// +optional
+	IgnoreFields []IgnoreRule `json:"ignoreFields,omitempty"`
+
+	// Helm-specific behaviour.
+	// +optional
+	Helm *HelmOptions `json:"helm,omitempty"`
+
+	// Merge request settings. Used when Mode is MergeRequest.
+	// +optional
+	MergeRequest *MergeRequestOptions `json:"mergeRequest,omitempty"`
+
+	// Changes to the same Application within this window are grouped
+	// into a single proposal.
+	// +kubebuilder:default="30s"
+	BatchWindow metav1.Duration `json:"batchWindow,omitempty"`
 }
 
-// BackflowPolicyStatus defines the observed state of BackflowPolicy.
+// ApplicationSelector picks Argo CD Applications by name or label.
+// At least one of Names or Selector must be set.
+type ApplicationSelector struct {
+	// +optional
+	Names []string `json:"names,omitempty"`
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+}
+
+// KindSelector matches resources by API group and kind.
+type KindSelector struct {
+	// API group; empty for the core group, "*" for any group.
+	// +optional
+	Group string `json:"group,omitempty"`
+	// Kind, or "*" for any kind.
+	Kind string `json:"kind"`
+}
+
+// IgnoreRule removes fields from drift comparison.
+type IgnoreRule struct {
+	KindSelector `json:",inline"`
+	// Restrict to a resource name. Empty matches every name.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// JSON pointers to ignore, e.g. /spec/replicas.
+	// +kubebuilder:validation:MinItems=1
+	JSONPointers []string `json:"jsonPointers"`
+}
+
+// HelmMappingMode controls how rendered fields are traced back to values.
+// +kubebuilder:validation:Enum=Auto;ExplicitOnly
+type HelmMappingMode string
+
+const (
+	// HelmMappingAuto uses marker rendering plus explicit mappings.
+	HelmMappingAuto HelmMappingMode = "Auto"
+	// HelmMappingExplicitOnly only uses mappings declared in this policy.
+	HelmMappingExplicitOnly HelmMappingMode = "ExplicitOnly"
+)
+
+// HelmOptions configures how drift in Helm-rendered resources is mapped
+// back to values.
+type HelmOptions struct {
+	// +kubebuilder:default=Auto
+	MappingMode HelmMappingMode `json:"mappingMode,omitempty"`
+
+	// Which values file receives the change when the Application uses several.
+	// Defaults to the last file in spec.source.helm.valueFiles.
+	// +optional
+	TargetValuesFile string `json:"targetValuesFile,omitempty"`
+
+	// Explicit field-to-value mappings. Take precedence over automatic mapping.
+	// +optional
+	Mappings []HelmFieldMapping `json:"mappings,omitempty"`
+
+	// When no mapping is found, propose the change as an override in the
+	// Application's spec.source.helm.valuesObject instead of leaving it unmapped.
+	// +kubebuilder:default=false
+	FallbackToApplicationOverride bool `json:"fallbackToApplicationOverride,omitempty"`
+}
+
+// HelmFieldMapping ties a field of a rendered resource to a values key.
+type HelmFieldMapping struct {
+	KindSelector `json:",inline"`
+	// +optional
+	Name string `json:"name,omitempty"`
+	// JSON pointer in the rendered resource, e.g. /spec/replicas.
+	FieldPointer string `json:"fieldPointer"`
+	// Dotted path in values, e.g. api.replicaCount.
+	ValuesPath string `json:"valuesPath"`
+}
+
+// MergeRequestOptions customises the merge requests Backflow opens.
+type MergeRequestOptions struct {
+	// Prefix for branches Backflow creates.
+	// +kubebuilder:default="backflow/"
+	BranchPrefix string `json:"branchPrefix,omitempty"`
+
+	// Target branch. Defaults to the Application's targetRevision when it is a branch.
+	// +optional
+	TargetBranch string `json:"targetBranch,omitempty"`
+
+	// +optional
+	Labels []string `json:"labels,omitempty"`
+
+	// Usernames to assign as reviewers.
+	// +optional
+	Reviewers []string `json:"reviewers,omitempty"`
+
+	// Assign the Kubernetes user who made the change, when they map to an SCM account.
+	// +kubebuilder:default=true
+	AssignActor bool `json:"assignActor,omitempty"`
+}
+
+
+// BackflowPolicyStatus summarises what the policy currently covers.
 type BackflowPolicyStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the BackflowPolicy resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
-	// +listType=map
-	// +listMapKey=type
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// Applications currently matched.
+	// +optional
+	MatchedApplications []string `json:"matchedApplications,omitempty"`
+	// DriftProposals not yet merged, rejected or reverted.
+	// +optional
+	OpenProposals int32 `json:"openProposals,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=bfp
+// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
+// +kubebuilder:printcolumn:name="Open",type=integer,JSONPath=`.status.openProposals`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// BackflowPolicy is the Schema for the backflowpolicies API
+// BackflowPolicy decides which Argo CD Applications are watched for drift
+// and how that drift is proposed back to Git.
 type BackflowPolicy struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// metadata is a standard object metadata
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
-
-	// spec defines the desired state of BackflowPolicy
-	// +required
-	Spec BackflowPolicySpec `json:"spec"`
-
-	// status defines the observed state of BackflowPolicy
-	// +optional
-	Status BackflowPolicyStatus `json:"status,omitzero"`
+	Spec   BackflowPolicySpec   `json:"spec,omitempty"`
+	Status BackflowPolicyStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// BackflowPolicyList contains a list of BackflowPolicy
+// BackflowPolicyList contains a list of BackflowPolicy.
 type BackflowPolicyList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`

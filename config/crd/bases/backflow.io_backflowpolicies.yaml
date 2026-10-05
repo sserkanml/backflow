@@ -11,13 +11,30 @@ spec:
     kind: BackflowPolicy
     listKind: BackflowPolicyList
     plural: backflowpolicies
+    shortNames:
+    - bfp
     singular: backflowpolicy
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.openProposals
+      name: Open
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: BackflowPolicy is the Schema for the backflowpolicies API
+        description: |-
+          BackflowPolicy decides which Argo CD Applications are watched for drift
+          and how that drift is proposed back to Git.
         properties:
           apiVersion:
             description: |-
@@ -37,27 +54,237 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of BackflowPolicy
+            description: |-
+              BackflowPolicySpec selects Argo CD Applications whose drift is captured
+              and decides how that drift flows back to Git.
             properties:
-              foo:
-                description: foo is an example field of BackflowPolicy. Edit backflowpolicy_types.go
-                  to remove/update
+              applications:
+                description: Applications this policy applies to.
+                properties:
+                  names:
+                    items:
+                      type: string
+                    type: array
+                  selector:
+                    description: |-
+                      A label selector is a label query over a set of resources. The result of matchLabels and
+                      matchExpressions are ANDed. An empty label selector matches all objects. A null
+                      label selector matches no objects.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+              argoCDNamespace:
+                default: argocd
+                description: |-
+                  Namespace where Argo CD Applications live.
+                  "argocd" for upstream Argo CD, "openshift-gitops" for OpenShift GitOps.
                 type: string
+              batchWindow:
+                default: 30s
+                description: |-
+                  Changes to the same Application within this window are grouped
+                  into a single proposal.
+                type: string
+              exclude:
+                description: |-
+                  Resource kinds never captured. Evaluated after Include.
+                  Secrets are excluded unless explicitly included.
+                items:
+                  description: KindSelector matches resources by API group and kind.
+                  properties:
+                    group:
+                      description: API group; empty for the core group, "*" for any
+                        group.
+                      type: string
+                    kind:
+                      description: Kind, or "*" for any kind.
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                type: array
+              helm:
+                description: Helm-specific behaviour.
+                properties:
+                  fallbackToApplicationOverride:
+                    default: false
+                    description: |-
+                      When no mapping is found, propose the change as an override in the
+                      Application's spec.source.helm.valuesObject instead of leaving it unmapped.
+                    type: boolean
+                  mappingMode:
+                    default: Auto
+                    description: HelmMappingMode controls how rendered fields are
+                      traced back to values.
+                    enum:
+                    - Auto
+                    - ExplicitOnly
+                    type: string
+                  mappings:
+                    description: Explicit field-to-value mappings. Take precedence
+                      over automatic mapping.
+                    items:
+                      description: HelmFieldMapping ties a field of a rendered resource
+                        to a values key.
+                      properties:
+                        fieldPointer:
+                          description: JSON pointer in the rendered resource, e.g.
+                            /spec/replicas.
+                          type: string
+                        group:
+                          description: API group; empty for the core group, "*" for
+                            any group.
+                          type: string
+                        kind:
+                          description: Kind, or "*" for any kind.
+                          type: string
+                        name:
+                          type: string
+                        valuesPath:
+                          description: Dotted path in values, e.g. api.replicaCount.
+                          type: string
+                      required:
+                      - fieldPointer
+                      - kind
+                      - valuesPath
+                      type: object
+                    type: array
+                  targetValuesFile:
+                    description: |-
+                      Which values file receives the change when the Application uses several.
+                      Defaults to the last file in spec.source.helm.valueFiles.
+                    type: string
+                type: object
+              ignoreFields:
+                description: |-
+                  Fields to ignore when computing drift, in addition to built-in noise
+                  (status, managedFields, resourceVersion, platform-injected fields).
+                items:
+                  description: IgnoreRule removes fields from drift comparison.
+                  properties:
+                    group:
+                      description: API group; empty for the core group, "*" for any
+                        group.
+                      type: string
+                    jsonPointers:
+                      description: JSON pointers to ignore, e.g. /spec/replicas.
+                      items:
+                        type: string
+                      minItems: 1
+                      type: array
+                    kind:
+                      description: Kind, or "*" for any kind.
+                      type: string
+                    name:
+                      description: Restrict to a resource name. Empty matches every
+                        name.
+                      type: string
+                  required:
+                  - jsonPointers
+                  - kind
+                  type: object
+                type: array
+              include:
+                description: Resource kinds to capture. Empty means every kind the
+                  Application manages.
+                items:
+                  description: KindSelector matches resources by API group and kind.
+                  properties:
+                    group:
+                      description: API group; empty for the core group, "*" for any
+                        group.
+                      type: string
+                    kind:
+                      description: Kind, or "*" for any kind.
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                type: array
+              mergeRequest:
+                description: Merge request settings. Used when Mode is MergeRequest.
+                properties:
+                  assignActor:
+                    default: true
+                    description: Assign the Kubernetes user who made the change, when
+                      they map to an SCM account.
+                    type: boolean
+                  branchPrefix:
+                    default: backflow/
+                    description: Prefix for branches Backflow creates.
+                    type: string
+                  labels:
+                    items:
+                      type: string
+                    type: array
+                  reviewers:
+                    description: Usernames to assign as reviewers.
+                    items:
+                      type: string
+                    type: array
+                  targetBranch:
+                    description: Target branch. Defaults to the Application's targetRevision
+                      when it is a branch.
+                    type: string
+                type: object
+              mode:
+                default: MergeRequest
+                description: What to do with detected drift.
+                enum:
+                - MergeRequest
+                - DirectCommit
+                - ReportOnly
+                type: string
+            required:
+            - applications
             type: object
           status:
-            description: status defines the observed state of BackflowPolicy
+            description: BackflowPolicyStatus summarises what the policy currently
+              covers.
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the BackflowPolicy resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -113,12 +340,19 @@ spec:
                   - type
                   type: object
                 type: array
-                x-kubernetes-list-map-keys:
-                - type
-                x-kubernetes-list-type: map
+              matchedApplications:
+                description: Applications currently matched.
+                items:
+                  type: string
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+              openProposals:
+                description: DriftProposals not yet merged, rejected or reverted.
+                format: int32
+                type: integer
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true
