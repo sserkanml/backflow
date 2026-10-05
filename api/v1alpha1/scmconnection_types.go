@@ -17,8 +17,19 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+)
+
+
+// ScmProvider is the type of Git hosting service.
+// +kubebuilder:validation:Enum=gitlab;github
+type ScmProvider string
+
+const (
+	ScmProviderGitLab ScmProvider = "gitlab"
+	ScmProviderGitHub ScmProvider = "github"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -26,57 +37,69 @@ import (
 
 // ScmConnectionSpec defines the desired state of ScmConnection
 type ScmConnectionSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// Provider type.
+	Provider ScmProvider `json:"provider"`
 
-	// foo is an example field of ScmConnection. Edit scmconnection_types.go to remove/update
+	// Base URL of the provider, e.g. https://gitlab.example.com or https://github.com.
+	// +kubebuilder:validation:Pattern=`^https?://.+`
+	URL string `json:"url"`
+
+	// Repository hosts this connection is used for. A repository URL from an
+	// Argo CD Application is matched against these hosts. Defaults to the host of URL.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Hosts []string `json:"hosts,omitempty"`
+
+	// Secret key holding an API token with permission to push branches and
+	// open merge requests (GitLab: api + write_repository; GitHub: contents + pull_requests).
+	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef"`
+
+	// Optional Secret key holding a PEM CA bundle for self-hosted providers.
+	// +optional
+	CASecretRef *corev1.SecretKeySelector `json:"caSecretRef,omitempty"`
+
+	// Identity used as Git committer. The Kubernetes user who made the change
+	// is recorded as the author when known.
+	// +optional
+	Committer *GitIdentity `json:"committer,omitempty"`
 }
 
-// ScmConnectionStatus defines the observed state of ScmConnection.
+// GitIdentity is a Git name/email pair.
+type GitIdentity struct {
+	Name string `json:"name"`
+	// +kubebuilder:validation:Format=email
+	Email string `json:"email"`
+}
+
+// ScmConnectionStatus reports whether the connection works.
 type ScmConnectionStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the ScmConnection resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
-	// +listType=map
-	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Account the token authenticated as.
+	// +optional
+	AuthenticatedAs string `json:"authenticatedAs,omitempty"`
+
+	// Last time the token was verified.
+	// +optional
+	LastCheckTime *metav1.Time `json:"lastCheckTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=scm
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
+// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
+// +kubebuilder:printcolumn:name="User",type=string,JSONPath=`.status.authenticatedAs`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// ScmConnection is the Schema for the scmconnections API
+// ScmConnection is a connection to a Git hosting service.
 type ScmConnection struct {
-	metav1.TypeMeta `json:",inline"`
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	// metadata is a standard object metadata
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitzero"`
-
-	// spec defines the desired state of ScmConnection
-	// +required
-	Spec ScmConnectionSpec `json:"spec"`
-
-	// status defines the observed state of ScmConnection
-	// +optional
-	Status ScmConnectionStatus `json:"status,omitzero"`
+	Spec   ScmConnectionSpec   `json:"spec,omitempty"`
+	Status ScmConnectionStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
