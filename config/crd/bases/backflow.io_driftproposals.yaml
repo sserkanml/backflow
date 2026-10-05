@@ -11,13 +11,44 @@ spec:
     kind: DriftProposal
     listKind: DriftProposalList
     plural: driftproposals
+    shortNames:
+    - dp
     singular: driftproposal
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.application.name
+      name: Application
+      type: string
+    - jsonPath: .spec.resource.kind
+      name: Kind
+      type: string
+    - jsonPath: .spec.resource.name
+      name: Resource
+      type: string
+    - jsonPath: .spec.actor.username
+      name: Actor
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.mapping.strategy
+      name: Strategy
+      priority: 1
+      type: string
+    - jsonPath: .status.mergeRequest.url
+      name: MR
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: DriftProposal is the Schema for the driftproposals API
+        description: |-
+          DriftProposal is a captured difference between Git and the cluster,
+          and its journey back to Git.
         properties:
           apiVersion:
             description: |-
@@ -37,27 +68,136 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of DriftProposal
+            description: |-
+              DriftProposalSpec is written by the operator when drift is detected.
+              It is immutable after creation; a newer drift on the same resource
+              creates a new proposal and supersedes this one.
             properties:
-              foo:
-                description: foo is an example field of DriftProposal. Edit driftproposal_types.go
-                  to remove/update
+              actor:
+                description: Who made the change in the cluster, when known.
+                properties:
+                  groups:
+                    items:
+                      type: string
+                    type: array
+                  userAgent:
+                    description: How the change was made, e.g. kubectl, console, or
+                      a controller name.
+                    type: string
+                  username:
+                    type: string
+                required:
+                - username
+                type: object
+              application:
+                description: Argo CD Application that owns the resource.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              changes:
+                description: Field-level changes between Git (desired) and the cluster
+                  (live).
+                items:
+                  description: FieldChange is a single field difference.
+                  properties:
+                    desired:
+                      description: JSON-encoded value in Git. Empty for Add.
+                      type: string
+                    live:
+                      description: JSON-encoded value in the cluster. Empty for Remove.
+                      type: string
+                    op:
+                      description: ChangeOperation is the kind of change on a field.
+                      enum:
+                      - Add
+                      - Replace
+                      - Remove
+                      type: string
+                    path:
+                      description: JSON pointer in the resource, e.g. /spec/replicas.
+                      type: string
+                  required:
+                  - op
+                  - path
+                  type: object
+                minItems: 1
+                type: array
+              detectedAt:
+                description: When the drift was first observed.
+                format: date-time
                 type: string
+              policyName:
+                description: Policy that captured this drift.
+                type: string
+              resource:
+                description: The drifted resource.
+                properties:
+                  group:
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  version:
+                    type: string
+                required:
+                - kind
+                - name
+                - version
+                type: object
+              source:
+                description: Where the resource comes from in Git.
+                properties:
+                  path:
+                    description: Path inside the repository; for Helm repos, the chart
+                      name.
+                    type: string
+                  repoURL:
+                    type: string
+                  revision:
+                    description: Revision Argo CD last synced (commit SHA).
+                    type: string
+                  targetRevision:
+                    description: Branch or tag the Application tracks.
+                    type: string
+                  type:
+                    description: SourceType is how the drifted resource is produced
+                      from Git.
+                    enum:
+                    - Directory
+                    - Kustomize
+                    - Helm
+                    type: string
+                required:
+                - repoURL
+                - revision
+                - type
+                type: object
+            required:
+            - application
+            - changes
+            - detectedAt
+            - policyName
+            - resource
+            - source
             type: object
           status:
-            description: status defines the observed state of DriftProposal
+            description: DriftProposalStatus tracks the proposal through mapping and
+              review.
             properties:
+              commitSHA:
+                description: Commit that contains the change, once merged or committed
+                  directly.
+                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the DriftProposal resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -113,12 +253,92 @@ spec:
                   - type
                   type: object
                 type: array
-                x-kubernetes-list-map-keys:
-                - type
-                x-kubernetes-list-type: map
+              mapping:
+                description: Mapping records where each change lands in the source.
+                properties:
+                  edits:
+                    items:
+                      description: SourceEdit is one edit in a Git file.
+                      properties:
+                        changeIndex:
+                          description: Index into spec.changes this edit satisfies.
+                          format: int32
+                          type: integer
+                        file:
+                          description: File path relative to the repository root.
+                          type: string
+                        location:
+                          description: For Helm values, the dotted values path; otherwise
+                            a JSON pointer in the file.
+                          type: string
+                        value:
+                          description: JSON-encoded new value.
+                          type: string
+                      required:
+                      - changeIndex
+                      - file
+                      - location
+                      - value
+                      type: object
+                    type: array
+                  strategy:
+                    description: MappingStrategy is how the change was traced back
+                      to source.
+                    enum:
+                    - Direct
+                    - KustomizePatch
+                    - HelmValues
+                    - ApplicationOverride
+                    - Unmapped
+                    type: string
+                  verified:
+                    description: True when a re-render with the edits reproduced the
+                      live state exactly.
+                    type: boolean
+                required:
+                - strategy
+                type: object
+              mergeRequest:
+                description: MergeRequestRef points to the merge request opened for
+                  this proposal.
+                properties:
+                  branch:
+                    type: string
+                  number:
+                    description: Provider-side number (GitLab iid, GitHub PR number).
+                    format: int64
+                    type: integer
+                  state:
+                    description: Provider-reported state, e.g. opened, merged, closed.
+                    type: string
+                  url:
+                    type: string
+                required:
+                - branch
+                - number
+                - state
+                - url
+                type: object
+              message:
+                description: Human-readable explanation of the current phase.
+                type: string
+              phase:
+                description: ProposalPhase is the lifecycle stage of a proposal.
+                enum:
+                - Detected
+                - Mapping
+                - Unmapped
+                - Proposed
+                - Merged
+                - Rejected
+                - Reverted
+                - Superseded
+                - Failed
+                type: string
+              supersededBy:
+                description: Proposal that replaced this one.
+                type: string
             type: object
-        required:
-        - spec
         type: object
     served: true
     storage: true
