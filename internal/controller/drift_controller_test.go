@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -58,6 +59,37 @@ func TestSafeLabel(t *testing.T) {
 	long := strings.Repeat("a", 100)
 	if got := safeLabel(long); len(got) > 63 || got != safeLabel(long) {
 		t.Errorf("safeLabel = %q", got)
+	}
+}
+
+func TestApplicationSyncChanged(t *testing.T) {
+	newApp := func(status, reconciledAt string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"status": map[string]interface{}{
+				"reconciledAt": reconciledAt,
+				"resources": []interface{}{map[string]interface{}{
+					"version": "v1", "kind": "ConfigMap", "namespace": "demo", "name": "c", "status": status,
+				}},
+			},
+		}}
+	}
+	tests := []struct {
+		name     string
+		old, new *unstructured.Unstructured
+		want     bool
+	}{
+		{"sync status changed", newApp("Synced", "t1"), newApp("OutOfSync", "t1"), true},
+		{"still OutOfSync, new comparison", newApp("OutOfSync", "t1"), newApp("OutOfSync", "t2"), true},
+		{"Synced, new comparison", newApp("Synced", "t1"), newApp("Synced", "t2"), false},
+		{"nothing changed", newApp("OutOfSync", "t1"), newApp("OutOfSync", "t1"), false},
+	}
+	p := applicationSyncChanged()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := p.Update(event.UpdateEvent{ObjectOld: tt.old, ObjectNew: tt.new}); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

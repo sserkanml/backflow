@@ -508,11 +508,36 @@ func resourceSyncStatuses(obj client.Object) map[string]string {
 	return out
 }
 
+// hasOutOfSync reports whether any resource of the Application is OutOfSync.
+func hasOutOfSync(obj client.Object) bool {
+	for _, status := range resourceSyncStatuses(obj) {
+		if status == syncOutOfSync {
+			return true
+		}
+	}
+	return false
+}
+
 // applicationSyncChanged fires when the sync status of any resource changes.
+// A resource that stays OutOfSync can still drift further (a value changing
+// from "debug" to "trace"), which does not show in the sync status. While
+// something is OutOfSync, a new Argo CD comparison (status.reconciledAt)
+// therefore fires too.
 func applicationSyncChanged() predicate.Predicate {
+	reconciledAt := func(o client.Object) string {
+		app, ok := o.(*unstructured.Unstructured)
+		if !ok {
+			return ""
+		}
+		s, _, _ := unstructured.NestedString(app.Object, "status", "reconciledAt")
+		return s
+	}
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			return !reflect.DeepEqual(resourceSyncStatuses(e.ObjectOld), resourceSyncStatuses(e.ObjectNew))
+			if !reflect.DeepEqual(resourceSyncStatuses(e.ObjectOld), resourceSyncStatuses(e.ObjectNew)) {
+				return true
+			}
+			return hasOutOfSync(e.ObjectNew) && reconciledAt(e.ObjectOld) != reconciledAt(e.ObjectNew)
 		},
 	}
 }
