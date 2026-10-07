@@ -262,6 +262,20 @@ var _ = Describe("Drift detection", func() {
 		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
 	})
 
+	It("does not call Argo CD when nothing is OutOfSync and nothing is open", func() {
+		setResources(configMapRes("Synced"))
+		reconcileOnce()
+		Expect(argo.calls).To(BeZero())
+		Expect(proposals()).To(BeEmpty())
+	})
+
+	It("calls Argo CD once per reconcile for an OutOfSync application", func() {
+		reconcileOnce()
+		Expect(argo.calls).To(Equal(1))
+		reconcileOnce()
+		Expect(argo.calls).To(Equal(2))
+	})
+
 	It("counts open proposals in the policy status", func() {
 		reconcileOnce()
 		pr := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}

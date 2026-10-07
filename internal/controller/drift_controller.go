@@ -167,6 +167,23 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		}
 	}
 
+	// The Argo CD API is only worth calling for an application that has
+	// something to compare (an OutOfSync resource) or something to follow up
+	// on (an open proposal). Everything else is settled by the Application
+	// status alone, which keeps the periodic and reconciledAt-triggered
+	// reconciles of healthy applications free of API traffic.
+	hasOpenProposal := false
+	for i := range all {
+		p := &all[i]
+		if p.Labels[labelApplication] == safeLabel(summary.Name) && isOpenPhase(p.Status.Phase) {
+			hasOpenProposal = true
+			break
+		}
+	}
+	if len(outOfSync) == 0 && !hasOpenProposal {
+		return nil
+	}
+
 	drifting := map[string][]backflowv1alpha1.FieldChange{}
 	apiOK := true
 	if len(candidates) > 0 {
@@ -518,11 +535,21 @@ func hasOutOfSync(obj client.Object) bool {
 	return false
 }
 
-// applicationSyncChanged fires when the sync status of any resource changes.
-// A resource that stays OutOfSync can still drift further (a value changing
-// from "debug" to "trace"), which does not show in the sync status. While
-// something is OutOfSync, a new Argo CD comparison (status.reconciledAt)
-// therefore fires too.
+// applicationSyncChanged decides when an Application change is worth a
+// reconcile of the policies that watch it.
+//
+// Sync status changes (Synced <-> OutOfSync) always fire. That is not enough:
+// a resource that is already OutOfSync can drift further, for example a
+// ConfigMap value going from "debug" to "trace", and then no resource's sync
+// status changes. Argo CD does record every new comparison in
+// status.reconciledAt, so while something is OutOfSync a new comparison fires
+// too; without it a second edit would only be noticed at the next periodic
+// resync (up to driftResyncInterval later).
+//
+// The extra trigger is limited to OutOfSync Applications on purpose. Argo CD
+// compares every Application regularly, and for Synced ones the reconcile
+// would have nothing to do. reconcileApplication additionally calls the Argo
+// CD API only for Applications with an OutOfSync resource or an open proposal.
 func applicationSyncChanged() predicate.Predicate {
 	reconciledAt := func(o client.Object) string {
 		app, ok := o.(*unstructured.Unstructured)
