@@ -51,6 +51,7 @@ type BackflowPolicyReconciler struct {
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=backflow.io,resources=scmconnections,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backflow.io,resources=driftproposals,verbs=get;list;watch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 
 func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -87,6 +88,18 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		summaries = append(summaries, s)
 	}
 
+	var proposals backflowv1alpha1.DriftProposalList
+	if err := r.List(ctx, &proposals, client.InNamespace(policy.Namespace),
+		client.MatchingLabels{labelPolicy: safeLabel(policy.Name)}); err != nil {
+		return ctrl.Result{}, err
+	}
+	var open int32
+	for i := range proposals.Items {
+		if isOpenPhase(proposals.Items[i].Status.Phase) {
+			open++
+		}
+	}
+
 	cond := metav1.Condition{Type: "Ready", ObservedGeneration: policy.Generation}
 	switch {
 	case matchErr != nil:
@@ -111,6 +124,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	policy.Status.ObservedGeneration = policy.Generation
 	policy.Status.MatchedApplications = names
 	policy.Status.Applications = summaries
+	policy.Status.OpenProposals = open
 	meta.SetStatusCondition(&policy.Status.Conditions, cond)
 
 	if err := r.Status().Update(ctx, &policy); err != nil {
@@ -257,19 +271,7 @@ func connectionFor(repoURL string, conns []backflowv1alpha1.ScmConnection) strin
 // policiesForApplication enqueues every policy that reads Applications from
 // the namespace of the changed Application.
 func (r *BackflowPolicyReconciler) policiesForApplication(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list backflowv1alpha1.BackflowPolicyList
-	if err := r.List(ctx, &list); err != nil {
-		return nil
-	}
-	var requests []reconcile.Request
-	for _, p := range list.Items {
-		if p.Spec.ArgoCDNamespace == obj.GetNamespace() {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name},
-			})
-		}
-	}
-	return requests
+	return policiesForApplication(ctx, r.Client, obj)
 }
 
 // policiesInNamespace enqueues every policy in the namespace of the changed
@@ -321,6 +323,9 @@ func (r *BackflowPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&backflowv1alpha1.ScmConnection{},
 			handler.EnqueueRequestsFromMapFunc(r.policiesInNamespace),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&backflowv1alpha1.DriftProposal{},
+			handler.EnqueueRequestsFromMapFunc(policyOfProposal),
+			builder.WithPredicates(proposalPhaseChanged())).
 		Named("backflowpolicy")
 
 	// Only watch Applications when Argo CD is installed; otherwise the
@@ -337,4 +342,26 @@ func (r *BackflowPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return b.Complete(r)
+}
+
+// policyOfProposal enqueues the policy that owns a DriftProposal.
+func policyOfProposal(_ context.Context, obj client.Object) []reconcile.Request {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Kind == "BackflowPolicy" && strings.HasPrefix(ref.APIVersion, backflowv1alpha1.GroupVersion.Group+"/") {
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: ref.Name}}}
+		}
+	}
+	return nil
+}
+
+// proposalPhaseChanged fires on create, delete and phase changes, which is
+// what status.openProposals depends on. Spec-only updates are ignored.
+func proposalPhaseChanged() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldP, ok1 := e.ObjectOld.(*backflowv1alpha1.DriftProposal)
+			newP, ok2 := e.ObjectNew.(*backflowv1alpha1.DriftProposal)
+			return !ok1 || !ok2 || isOpenPhase(oldP.Status.Phase) != isOpenPhase(newP.Status.Phase)
+		},
+	}
 }

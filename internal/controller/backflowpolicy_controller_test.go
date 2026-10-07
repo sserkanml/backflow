@@ -54,7 +54,11 @@ var _ = Describe("BackflowPolicy Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: backflowv1alpha1.BackflowPolicySpec{
+						ArgoCDNamespace: "argocd",
+						Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"demo-app"}},
+						Mode:            backflowv1alpha1.ModeReportOnly,
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

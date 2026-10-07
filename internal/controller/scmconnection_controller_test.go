@@ -21,6 +21,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -54,7 +55,14 @@ var _ = Describe("ScmConnection Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: backflowv1alpha1.ScmConnectionSpec{
+						Provider: backflowv1alpha1.ScmProviderGitLab,
+						URL:      "https://gitlab.example.com",
+						TokenSecretRef: corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "scm-token"},
+							Key:                  "token",
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

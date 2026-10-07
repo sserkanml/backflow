@@ -54,7 +54,21 @@ var _ = Describe("DriftProposal Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: backflowv1alpha1.DriftProposalSpec{
+						PolicyName:  "demo",
+						Application: backflowv1alpha1.ObjectRef{Name: "demo-app", Namespace: "argocd"},
+						Resource: backflowv1alpha1.ResourceRef{
+							Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config",
+						},
+						Source: backflowv1alpha1.SourceRef{
+							RepoURL: "https://example.com/repo.git", Revision: "abc123",
+							Path: "apps/demo", Type: backflowv1alpha1.SourceDirectory,
+						},
+						Changes: []backflowv1alpha1.FieldChange{{
+							Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`,
+						}},
+						DetectedAt: metav1.Now(),
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
