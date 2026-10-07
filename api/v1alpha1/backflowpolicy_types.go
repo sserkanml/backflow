@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -52,6 +53,11 @@ type BackflowPolicySpec struct {
 	// +kubebuilder:default=MergeRequest
 	Mode BackflowMode `json:"mode,omitempty"`
 
+	// Argo CD API connection used to read managed resources for drift detection.
+	// Drift detection is skipped while this is unset.
+	// +optional
+	ArgoCD *ArgoCDServer `json:"argoCD,omitempty"`
+
 	// Resource kinds to capture. Empty means every kind the Application manages.
 	// +optional
 	Include []KindSelector `json:"include,omitempty"`
@@ -78,6 +84,25 @@ type BackflowPolicySpec struct {
 	// into a single proposal.
 	// +kubebuilder:default="30s"
 	BatchWindow metav1.Duration `json:"batchWindow,omitempty"`
+}
+
+// ArgoCDServer describes how to reach the Argo CD API.
+type ArgoCDServer struct {
+	// Base URL of the Argo CD API server. Override it when the operator runs
+	// outside the cluster, e.g. https://localhost:8080 behind a port-forward.
+	// +kubebuilder:default="https://argocd-server.argocd.svc"
+	URL string `json:"url,omitempty"`
+
+	// Secret key holding an Argo CD API token with read access to applications.
+	TokenSecretRef corev1.SecretKeySelector `json:"tokenSecretRef"`
+
+	// Skip verification of the Argo CD server certificate.
+	// +kubebuilder:default=false
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+
+	// Secret key holding a PEM CA bundle used to verify the Argo CD server.
+	// +optional
+	CASecretRef *corev1.SecretKeySelector `json:"caSecretRef,omitempty"`
 }
 
 // ApplicationSelector picks Argo CD Applications by name or label.

@@ -115,6 +115,74 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
+              argoCD:
+                description: |-
+                  Argo CD API connection used to read managed resources for drift detection.
+                  Drift detection is skipped while this is unset.
+                properties:
+                  caSecretRef:
+                    description: Secret key holding a PEM CA bundle used to verify
+                      the Argo CD server.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  insecureSkipTLSVerify:
+                    default: false
+                    description: Skip verification of the Argo CD server certificate.
+                    type: boolean
+                  tokenSecretRef:
+                    description: Secret key holding an Argo CD API token with read
+                      access to applications.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  url:
+                    default: https://argocd-server.argocd.svc
+                    description: |-
+                      Base URL of the Argo CD API server. Override it when the operator runs
+                      outside the cluster, e.g. https://localhost:8080 behind a port-forward.
+                    type: string
+                required:
+                - tokenSecretRef
+                type: object
               argoCDNamespace:
                 default: argocd
                 description: |-

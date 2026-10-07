@@ -9,6 +9,7 @@
 #   2. Argo CD
 #   3. Backflow CRDs
 #   4. Demo Argo CD Application pointing at the demo repository
+#   5. Read-only Argo CD account "backflow" and its API token Secret
 #
 # Usage (from the repository root):
 #   ./hack/dev-up.sh
@@ -141,8 +142,71 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+step "Argo CD account for Backflow"
+BF_NS="${BF_NS:-backflow-system}"
+BF_TOKEN_SECRET="${BF_TOKEN_SECRET:-argocd-token}"
+
+k -n "$ARGOCD_NS" patch configmap argocd-cm --type merge \
+  -p '{"data":{"accounts.backflow":"apiKey"}}' >/dev/null
+ok "account backflow (apiKey) enabled in argocd-cm"
+
+# Merge into the existing policy.csv; only append lines that are missing.
+policy="$(k -n "$ARGOCD_NS" get configmap argocd-rbac-cm -o jsonpath='{.data.policy\.csv}' 2>/dev/null || true)"
+for line in "p, role:backflow, applications, get, */*, allow" "g, backflow, role:backflow"; do
+  if ! printf '%s\n' "$policy" | grep -qxF "$line"; then
+    if [[ -n "$policy" ]]; then policy="$policy"$'\n'"$line"; else policy="$line"; fi
+  fi
+done
+patch="$(POLICY="$policy" python3 -c 'import json,os; print(json.dumps({"data":{"policy.csv":os.environ["POLICY"]+"\n"}}))')"
+k -n "$ARGOCD_NS" patch configmap argocd-rbac-cm --type merge -p "$patch" >/dev/null
+ok "read-only RBAC policy for backflow merged into argocd-rbac-cm"
+
+k create namespace "$BF_NS" --dry-run=client -o yaml | k apply -f - >/dev/null
+if k -n "$BF_NS" get secret "$BF_TOKEN_SECRET" >/dev/null 2>&1; then
+  ok "token Secret $BF_NS/$BF_TOKEN_SECRET already exists, skipping generation"
+else
+  # argocd-cm / rbac changes are picked up by argocd-server without a restart,
+  # but give it a moment.
+  sleep 3
+  admin_pw="$(k -n "$ARGOCD_NS" get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+  [[ -n "$admin_pw" ]] || die "argocd-initial-admin-secret not found; cannot generate a token"
+
+  free_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  k -n "$ARGOCD_NS" port-forward svc/argocd-server "$free_port":443 >/dev/null 2>&1 &
+  pf_pid=$!
+  trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
+  for _ in $(seq 1 30); do
+    curl -ksf -o /dev/null "https://localhost:$free_port/api/version" && break
+    sleep 1
+  done
+
+  session="$(curl -ks "https://localhost:$free_port/api/v1/session" \
+    -d "$(ADMIN_PW="$admin_pw" python3 -c 'import json,os; print(json.dumps({"username":"admin","password":os.environ["ADMIN_PW"]}))')" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))')"
+  [[ -n "$session" ]] || die "could not log in to Argo CD as admin"
+
+  token=""
+  for _ in $(seq 1 10); do
+    token="$(curl -ks -X POST "https://localhost:$free_port/api/v1/account/backflow/token" \
+      -H "Authorization: Bearer $session" -d '{}' \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)"
+    [[ -n "$token" ]] && break
+    sleep 3
+  done
+  kill "$pf_pid" 2>/dev/null || true
+  trap - EXIT
+  [[ -n "$token" ]] || die "could not generate a token for account backflow"
+
+  k -n "$BF_NS" create secret generic "$BF_TOKEN_SECRET" --from-literal=token="$token" >/dev/null
+  ok "token stored in Secret $BF_NS/$BF_TOKEN_SECRET (key: token)"
+fi
+
+# ---------------------------------------------------------------------------
 echo
 echo "${BOLD}Environment ready.${NC}"
 echo "  Run the operator:   make run"
 echo "  Argo CD password:   kubectl -n $ARGOCD_NS get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
 echo "  Argo CD UI:         kubectl -n $ARGOCD_NS port-forward svc/argocd-server 8080:443   (https://localhost:8080)"
+echo "  Long-running port-forward for 'make run' (set spec.argoCD.url: https://localhost:8080, insecureSkipTLSVerify: true):"
+echo "                      kubectl -n $ARGOCD_NS port-forward svc/argocd-server 8080:443"
+echo "  Token Secret:       $BF_NS/$BF_TOKEN_SECRET (key: token)"
