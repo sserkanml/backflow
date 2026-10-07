@@ -172,7 +172,8 @@ else
   [[ -n "$admin_pw" ]] || die "argocd-initial-admin-secret not found; cannot generate a token"
 
   free_port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
-  k -n "$ARGOCD_NS" port-forward svc/argocd-server "$free_port":443 >/dev/null 2>&1 &
+  # Call kubectl directly (not through k) so $! is the kubectl process itself.
+  kubectl --context "$CONTEXT" -n "$ARGOCD_NS" port-forward svc/argocd-server "$free_port":443 >/dev/null 2>&1 &
   pf_pid=$!
   trap 'kill "$pf_pid" 2>/dev/null || true' EXIT
   for _ in $(seq 1 30); do
@@ -181,19 +182,21 @@ else
   done
 
   session="$(curl -ks "https://localhost:$free_port/api/v1/session" \
+    -H 'Content-Type: application/json' \
     -d "$(ADMIN_PW="$admin_pw" python3 -c 'import json,os; print(json.dumps({"username":"admin","password":os.environ["ADMIN_PW"]}))')" \
-    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))')"
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)"
   [[ -n "$session" ]] || die "could not log in to Argo CD as admin"
 
   token=""
   for _ in $(seq 1 10); do
     token="$(curl -ks -X POST "https://localhost:$free_port/api/v1/account/backflow/token" \
-      -H "Authorization: Bearer $session" -d '{}' \
+      -H "Authorization: Bearer $session" -H 'Content-Type: application/json' -d '{}' \
       | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token",""))' 2>/dev/null || true)"
     [[ -n "$token" ]] && break
     sleep 3
   done
   kill "$pf_pid" 2>/dev/null || true
+  wait "$pf_pid" 2>/dev/null || true
   trap - EXIT
   [[ -n "$token" ]] || die "could not generate a token for account backflow"
 
