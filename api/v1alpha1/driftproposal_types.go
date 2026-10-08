@@ -162,6 +162,13 @@ type Mapping struct {
 	// True when a re-render with the edits reproduced the live state exactly.
 	// +optional
 	Verified bool `json:"verified,omitempty"`
+	// Unified diff of the edited files, truncated to 32 KiB.
+	// +kubebuilder:validation:MaxLength=32768
+	// +optional
+	Diff string `json:"diff,omitempty"`
+	// Why the change could not be mapped. Set only when strategy is Unmapped.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // SourceEdit is one edit in a Git file.

@@ -259,6 +259,11 @@ spec:
               mapping:
                 description: Mapping records where each change lands in the source.
                 properties:
+                  diff:
+                    description: Unified diff of the edited files, truncated to 32
+                      KiB.
+                    maxLength: 32768
+                    type: string
                   edits:
                     items:
                       description: SourceEdit is one edit in a Git file.
@@ -284,6 +289,10 @@ spec:
                       - value
                       type: object
                     type: array
+                  reason:
+                    description: Why the change could not be mapped. Set only when
+                      strategy is Unmapped.
+                    type: string
                   strategy:
                     description: MappingStrategy is how the change was traced back
                       to source.
