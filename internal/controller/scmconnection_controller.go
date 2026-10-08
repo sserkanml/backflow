@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1" // <- kendi satırını koru
+	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
 
 const (

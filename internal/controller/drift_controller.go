@@ -185,6 +185,9 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	}
 
 	drifting := map[string][]backflowv1alpha1.FieldChange{}
+	// deleted marks OutOfSync resources that exist only in Git: they were
+	// removed from the cluster, which is not a revert.
+	deleted := map[string]appResource{}
 	apiOK := true
 	if len(candidates) > 0 {
 		managed, err := argo.GetManagedResources(ctx, summary.Name, policy.Spec.ArgoCDNamespace)
@@ -201,6 +204,9 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 			var firstErr error
 			for _, res := range candidates {
 				m, ok := byKey[res.hash()]
+				if ok && m.PredictedLiveState != nil && m.NormalizedLiveState == nil {
+					deleted[res.hash()] = res
+				}
 				if !ok || m.PredictedLiveState == nil || m.NormalizedLiveState == nil {
 					log.Info("Skipping resource that exists only in Git or only in the cluster",
 						"kind", res.Kind, "name", res.Name)
@@ -231,6 +237,15 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		}
 		rh := p.Labels[labelResource]
 		if _, still := drifting[rh]; still {
+			continue
+		}
+		if res, gone := deleted[rh]; gone {
+			// Leave the proposal as it is; what to do about a deleted
+			// resource is a human decision.
+			log.Info("Resource of an open proposal was deleted from the cluster", "proposal", p.Name)
+			r.event(policy, corev1.EventTypeWarning, "ResourceDeleted",
+				fmt.Sprintf("%s %s in application %s was deleted from the cluster; proposal %s is left untouched",
+					res.Kind, res.Name, summary.Name, p.Name))
 			continue
 		}
 		var msg string

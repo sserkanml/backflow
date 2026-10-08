@@ -69,6 +69,14 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, matchErr
 	}
 
+	var conflict *applicationConflict
+	if matchErr == nil && len(apps) > 0 {
+		var err error
+		if conflict, err = r.findConflict(ctx, &policy, apps); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	var conns backflowv1alpha1.ScmConnectionList
 	if err := r.List(ctx, &conns, client.InNamespace(policy.Namespace)); err != nil {
 		return ctrl.Result{}, err
@@ -110,6 +118,11 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "NoApplicationsMatched"
 		cond.Message = fmt.Sprintf("No Argo CD Application in namespace %q matches this policy", policy.Spec.ArgoCDNamespace)
+	case conflict != nil:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "ApplicationConflict"
+		cond.Message = fmt.Sprintf("Application %q is already managed by BackflowPolicy %q, which is older; "+
+			"an Application can be managed by one policy only", conflict.application, conflict.policy)
 	case len(missingScm) > 0 && policy.Spec.Mode != backflowv1alpha1.ModeReportOnly:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "MissingScmConnection"
@@ -176,6 +189,103 @@ func (r *BackflowPolicyReconciler) matchApplications(ctx context.Context, policy
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].GetName() < apps[j].GetName() })
 	return apps, nil
+}
+
+// applicationConflict names an Application that an older policy already manages.
+type applicationConflict struct {
+	application string
+	policy      string // namespace/name
+}
+
+// policyOlder orders policies by creationTimestamp, then name, then namespace.
+func policyOlder(a, b *backflowv1alpha1.BackflowPolicy) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return a.CreationTimestamp.Before(&b.CreationTimestamp)
+	}
+	if a.Name != b.Name {
+		return a.Name < b.Name
+	}
+	return a.Namespace < b.Namespace
+}
+
+// findConflict reports whether an older policy, in any namespace, that reads
+// the same Argo CD namespace already manages one of apps. Older policies claim
+// their Applications in age order, and a policy that is itself blocked claims
+// nothing, so the oldest policy always wins and a blocked one cannot block a
+// younger one. Policies whose own selection is invalid are ignored.
+func (r *BackflowPolicyReconciler) findConflict(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
+	apps []unstructured.Unstructured) (*applicationConflict, error) {
+	var all backflowv1alpha1.BackflowPolicyList
+	if err := r.List(ctx, &all); err != nil {
+		return nil, err
+	}
+	var older []*backflowv1alpha1.BackflowPolicy
+	for i := range all.Items {
+		p := &all.Items[i]
+		if p.Spec.ArgoCDNamespace != policy.Spec.ArgoCDNamespace || p.DeletionTimestamp != nil ||
+			(p.Namespace == policy.Namespace && p.Name == policy.Name) || !policyOlder(p, policy) {
+			continue
+		}
+		older = append(older, p)
+	}
+	sort.Slice(older, func(i, j int) bool { return policyOlder(older[i], older[j]) })
+
+	owner := map[string]string{} // Application name -> namespace/name of the policy that manages it
+	for _, p := range older {
+		theirs, err := r.matchApplications(ctx, p)
+		if err != nil {
+			var ce *checkError
+			if errors.As(err, &ce) {
+				continue
+			}
+			return nil, err
+		}
+		blocked := false
+		for i := range theirs {
+			if _, taken := owner[theirs[i].GetName()]; taken {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		for i := range theirs {
+			owner[theirs[i].GetName()] = p.Namespace + "/" + p.Name
+		}
+	}
+	for i := range apps {
+		if by, taken := owner[apps[i].GetName()]; taken {
+			return &applicationConflict{application: apps[i].GetName(), policy: by}, nil
+		}
+	}
+	return nil, nil
+}
+
+// policiesSharingArgoCDNamespace enqueues the other policies, in any
+// namespace, that read Applications from the same Argo CD namespace, because
+// which of them wins an Application depends on each other. A policy whose
+// argoCDNamespace changed leaves its old peers to the periodic resync.
+func (r *BackflowPolicyReconciler) policiesSharingArgoCDNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	changed, ok := obj.(*backflowv1alpha1.BackflowPolicy)
+	if !ok {
+		return nil
+	}
+	var list backflowv1alpha1.BackflowPolicyList
+	if err := r.List(ctx, &list); err != nil {
+		return nil
+	}
+	var requests []reconcile.Request
+	for _, p := range list.Items {
+		if p.Spec.ArgoCDNamespace != changed.Spec.ArgoCDNamespace ||
+			(p.Namespace == changed.Namespace && p.Name == changed.Name) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: p.Namespace, Name: p.Name},
+		})
+	}
+	return requests
 }
 
 // summarizeApplication extracts what Backflow needs from an Application.
@@ -319,6 +429,9 @@ func applicationChanged() predicate.Predicate {
 func (r *BackflowPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&backflowv1alpha1.BackflowPolicy{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&backflowv1alpha1.BackflowPolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.policiesSharingArgoCDNamespace),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&backflowv1alpha1.ScmConnection{},
 			handler.EnqueueRequestsFromMapFunc(r.policiesInNamespace),

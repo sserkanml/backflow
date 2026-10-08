@@ -83,6 +83,21 @@ var _ = Describe("DriftProposal Controller", func() {
 			By("Cleanup the specific resource instance DriftProposal")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
+		It("rejects spec updates but accepts status updates", func() {
+			resource := &backflowv1alpha1.DriftProposal{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+
+			resource.Spec.Changes[0].Live = `"trace"`
+			err := k8sClient.Update(ctx, resource)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsInvalid(err)).To(BeTrue(), "got %v", err)
+			Expect(err.Error()).To(ContainSubstring("spec is immutable"))
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Status.Phase = backflowv1alpha1.PhaseDetected
+			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
+		})
+
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &DriftProposalReconciler{

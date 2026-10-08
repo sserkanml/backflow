@@ -324,6 +324,26 @@ var _ = Describe("Drift detection", func() {
 		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(BeEmpty())
 	})
 
+	It("leaves a proposal untouched and warns when its resource was deleted from the cluster", func() {
+		reconcileOnce()
+		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+
+		By("deleting the resource: OutOfSync, but only Git has a state")
+		argo.items[0].NormalizedLiveState = nil
+		reconcileOnce()
+		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(BeEmpty())
+		Expect(proposals()).To(HaveLen(1))
+
+		var warned bool
+		for len(recorder.Events) > 0 {
+			if e := <-recorder.Events; strings.Contains(e, "Warning") && strings.Contains(e, "ResourceDeleted") {
+				warned = true
+			}
+		}
+		Expect(warned).To(BeTrue(), "expected a ResourceDeleted warning Event")
+	})
+
 	It("skips policies without argoCD or that are not Ready", func() {
 		policy.Spec.ArgoCD = nil
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
