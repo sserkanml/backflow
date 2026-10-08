@@ -40,6 +40,11 @@ const (
 	labelApplication = "backflow.io/application"
 	labelResource    = "backflow.io/resource"
 
+	// Lifecycle events the drift controller signals to the DriftProposal
+	// controller, which is the only writer of DriftProposal status.
+	annotationSupersededBy = "backflow.io/superseded-by"
+	annotationReverted     = "backflow.io/reverted"
+
 	// Periodic resync, in case an Application event was missed.
 	driftResyncInterval = 2 * time.Minute
 
@@ -66,7 +71,6 @@ type DriftReconciler struct {
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals,verbs=get;list;watch;create;patch
-// +kubebuilder:rbac:groups=backflow.io,resources=driftproposals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
@@ -175,7 +179,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	hasOpenProposal := false
 	for i := range all {
 		p := &all[i]
-		if p.Labels[labelApplication] == safeLabel(summary.Name) && isOpenPhase(p.Status.Phase) {
+		if p.Labels[labelApplication] == safeLabel(summary.Name) && isOpen(p) {
 			hasOpenProposal = true
 			break
 		}
@@ -232,7 +236,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// only resources that are in sync (or gone) can be judged.
 	for i := range all {
 		p := &all[i]
-		if p.Labels[labelApplication] != safeLabel(summary.Name) || !isOpenPhase(p.Status.Phase) {
+		if p.Labels[labelApplication] != safeLabel(summary.Name) || !isOpen(p) {
 			continue
 		}
 		rh := p.Labels[labelResource]
@@ -257,7 +261,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		default:
 			continue
 		}
-		if err := r.setPhase(ctx, p, backflowv1alpha1.PhaseReverted, msg, ""); err != nil {
+		if err := r.annotate(ctx, p, annotationReverted, msg); err != nil {
 			return err
 		}
 		log.Info("Proposal reverted", "proposal", p.Name)
@@ -286,7 +290,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	for i := range all {
 		p := &all[i]
 		names[p.Name] = true
-		if p.Labels[labelResource] == rh && isOpenPhase(p.Status.Phase) {
+		if p.Labels[labelResource] == rh && isOpen(p) {
 			open = append(open, p)
 		}
 	}
@@ -338,26 +342,17 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		if err := r.Create(ctx, dp); err != nil {
 			return err // AlreadyExists means a stale cache; the retry sees the object.
 		}
-		if err := r.setPhase(ctx, dp, backflowv1alpha1.PhaseDetected, "Drift detected between Git and the cluster.", ""); err != nil {
-			return err
-		}
 		log.Info("Drift detected", "proposal", dp.Name, "kind", res.Kind, "resource", res.Name, "changes", len(changes))
 		r.event(policy, corev1.EventTypeNormal, "DriftDetected",
 			fmt.Sprintf("%s %s in application %s drifted (proposal %s)", res.Kind, res.Name, summary.Name, dp.Name))
 		current = dp
-	case current.Status.Phase == "":
-		// Created earlier but the status write did not go through.
-		if err := r.setPhase(ctx, current, backflowv1alpha1.PhaseDetected, "Drift detected between Git and the cluster.", ""); err != nil {
-			return err
-		}
 	}
 
 	for _, p := range open {
 		if p.Name == current.Name {
 			continue
 		}
-		if err := r.setPhase(ctx, p, backflowv1alpha1.PhaseSuperseded,
-			"A newer drift on the same resource replaced this proposal.", current.Name); err != nil {
+		if err := r.annotate(ctx, p, annotationSupersededBy, current.Name); err != nil {
 			return err
 		}
 		log.Info("Proposal superseded", "proposal", p.Name, "supersededBy", current.Name)
@@ -365,16 +360,15 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	return nil
 }
 
-// setPhase patches only the status of a proposal.
-func (r *DriftReconciler) setPhase(ctx context.Context, p *backflowv1alpha1.DriftProposal,
-	phase backflowv1alpha1.ProposalPhase, message, supersededBy string) error {
+// annotate records a lifecycle event on a proposal. The DriftProposal
+// controller owns the status and turns the annotation into a phase.
+func (r *DriftReconciler) annotate(ctx context.Context, p *backflowv1alpha1.DriftProposal, key, value string) error {
 	orig := p.DeepCopy()
-	p.Status.Phase = phase
-	p.Status.Message = message
-	if supersededBy != "" {
-		p.Status.SupersededBy = supersededBy
+	if p.Annotations == nil {
+		p.Annotations = map[string]string{}
 	}
-	return r.Status().Patch(ctx, p, client.MergeFrom(orig))
+	p.Annotations[key] = value
+	return r.Patch(ctx, p, client.MergeFrom(orig))
 }
 
 func (r *DriftReconciler) event(policy *backflowv1alpha1.BackflowPolicy, eventType, reason, msg string) {
@@ -443,6 +437,18 @@ func proposalSourceType(s string) (backflowv1alpha1.SourceType, bool) {
 		return backflowv1alpha1.SourceType(s), true
 	}
 	return "", false
+}
+
+// isOpen reports whether a proposal is in flight and has no pending
+// superseded/reverted annotation that its controller has yet to act on.
+func isOpen(p *backflowv1alpha1.DriftProposal) bool {
+	if _, ok := p.Annotations[annotationSupersededBy]; ok {
+		return false
+	}
+	if _, ok := p.Annotations[annotationReverted]; ok {
+		return false
+	}
+	return isOpenPhase(p.Status.Phase)
 }
 
 // isOpenPhase reports whether a proposal is still in flight. A proposal

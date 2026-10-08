@@ -98,19 +98,59 @@ var _ = Describe("DriftProposal Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
 		})
 
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &DriftProposalReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+		Context("phase handling", func() {
+			reconcileProposal := func() *backflowv1alpha1.DriftProposal {
+				r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				got := &backflowv1alpha1.DriftProposal{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
+				return got
+			}
+			annotate := func(key, value string) {
+				got := &backflowv1alpha1.DriftProposal{}
+				ExpectWithOffset(1, k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
+				if got.Annotations == nil {
+					got.Annotations = map[string]string{}
+				}
+				got.Annotations[key] = value
+				ExpectWithOffset(1, k8sClient.Update(ctx, got)).To(Succeed())
 			}
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
+			It("moves an empty phase to Detected and leaves it there", func() {
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1alpha1.PhaseDetected))
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1alpha1.PhaseDetected))
 			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			It("sets Superseded with supersededBy from the annotation", func() {
+				annotate(annotationSupersededBy, "newer")
+				got := reconcileProposal()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(got.Status.SupersededBy).To(Equal("newer"))
+			})
+
+			It("sets Reverted with the reason from the annotation", func() {
+				annotate(annotationReverted, "back in sync")
+				got := reconcileProposal()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+				Expect(got.Status.Message).To(Equal("back in sync"))
+			})
+
+			It("never changes a terminal phase", func() {
+				for _, phase := range []backflowv1alpha1.ProposalPhase{
+					backflowv1alpha1.PhaseMerged, backflowv1alpha1.PhaseRejected, backflowv1alpha1.PhaseReverted,
+					backflowv1alpha1.PhaseSuperseded, backflowv1alpha1.PhaseFailed,
+				} {
+					got := &backflowv1alpha1.DriftProposal{}
+					Expect(k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
+					got.Status.Phase = phase
+					Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
+
+					annotate(annotationSupersededBy, "newer")
+					annotate(annotationReverted, "back in sync")
+					Expect(reconcileProposal().Status.Phase).To(Equal(phase))
+				}
+			})
 		})
 	})
 })

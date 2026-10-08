@@ -132,9 +132,23 @@ var _ = Describe("Drift detection", func() {
 			"version": "v1", "kind": "ConfigMap", "namespace": "demo", "name": "demo-config", "status": status,
 		}
 	}
-	reconcileOnce := func() {
+	// reconcileDrift runs only the drift controller, which never writes status.
+	reconcileDrift := func() {
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	}
+	// reconcileOnce runs the drift controller, then the DriftProposal
+	// controller for every proposal, like the manager would.
+	reconcileOnce := func() {
+		reconcileDrift()
+		var list backflowv1alpha1.DriftProposalList
+		ExpectWithOffset(1, k8sClient.List(ctx, &list, client.InNamespace(ns),
+			client.MatchingLabels{labelPolicy: policy.Name})).To(Succeed())
+		pr := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		for _, p := range list.Items {
+			_, err := pr.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&p)})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+		}
 	}
 	proposals := func() []backflowv1alpha1.DriftProposal {
 		var list backflowv1alpha1.DriftProposalList
@@ -210,6 +224,11 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	It("creates one proposal per drift and follows it until it is reverted", func() {
+		By("creating the proposal without touching its status")
+		reconcileDrift()
+		Expect(proposals()).To(HaveLen(1))
+		Expect(proposals()[0].Status.Phase).To(BeEmpty())
+
 		By("detecting the drift")
 		reconcileOnce()
 		Expect(proposals()).To(HaveLen(1))
@@ -246,12 +265,14 @@ var _ = Describe("Drift detection", func() {
 		Expect(superseded).To(HaveLen(1))
 		Expect(superseded[0].Name).To(Equal(first.Name))
 		Expect(superseded[0].Status.SupersededBy).To(Equal(detected[0].Name))
+		Expect(superseded[0].Annotations).To(HaveKeyWithValue(annotationSupersededBy, detected[0].Name))
 		Expect(superseded[0].Spec).To(Equal(first.Spec), "spec of an existing proposal must not change")
 
 		By("reverting once the resource is Synced again")
 		setResources(configMapRes("Synced"))
 		reconcileOnce()
 		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(HaveLen(1))
+		Expect(byPhase(backflowv1alpha1.PhaseReverted)[0].Annotations).To(HaveKey(annotationReverted))
 		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(BeEmpty())
 
 		By("creating a fresh proposal when the same drift comes back")
