@@ -38,6 +38,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/controller"
+	"github.com/sserkanml/backflow/internal/gitrepo"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -56,6 +57,7 @@ func init() {
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
+	var repoCacheDir string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
@@ -66,6 +68,8 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+	flag.StringVar(&repoCacheDir, "repo-cache-dir", "",
+		"Directory where Git repositories are cached for mapping. Defaults to <os.TempDir()>/backflow-repos.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -209,6 +213,7 @@ func main() {
 	if err := (&controller.DriftProposalReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Repos:  controller.CacheReader{Cache: gitrepo.NewCache(repoCacheDir)},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)

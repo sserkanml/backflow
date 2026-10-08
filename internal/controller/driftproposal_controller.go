@@ -18,12 +18,15 @@ package controller
 
 import (
 	"context"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -32,15 +35,26 @@ import (
 
 // DriftProposalReconciler is the only writer of DriftProposal status. The
 // drift controller creates proposals and signals lifecycle events through
-// annotations; this controller turns them into phases.
+// annotations; this controller turns them into phases and maps each proposal
+// to the Git file that defines the drifted resource.
 type DriftProposalReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Repos reads the source repository at the synced commit. When nil,
+	// mapping is disabled and proposals stay in Detected.
+	Repos RepositoryReader
+	// Now returns the current time. Defaults to time.Now.
+	Now func() time.Time
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals/finalizers,verbs=update
+// +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backflow.io,resources=scmconnections,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 
 // isTerminalPhase reports whether a proposal has reached an end state that
 // must never change again.
@@ -70,21 +84,42 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
 		dp.Status.SupersededBy = dp.Annotations[annotationSupersededBy]
 		dp.Status.Message = "A newer drift on the same resource replaced this proposal."
+		return ctrl.Result{}, r.patchStatus(ctx, &dp, orig)
 	case dp.Annotations[annotationReverted] != "":
 		dp.Status.Phase = backflowv1alpha1.PhaseReverted
 		dp.Status.Message = dp.Annotations[annotationReverted]
-	case dp.Status.Phase == "":
-		dp.Status.Phase = backflowv1alpha1.PhaseDetected
-		dp.Status.Message = "Drift detected between Git and the cluster."
-	default:
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.patchStatus(ctx, &dp, orig)
 	}
 
-	if err := r.Status().Patch(ctx, &dp, client.MergeFrom(orig)); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+	if dp.Status.Phase == "" {
+		dp.Status.Phase = backflowv1alpha1.PhaseDetected
+		dp.Status.Message = "Drift detected between Git and the cluster."
 	}
-	log.Info("Proposal phase set", "proposal", dp.Name, "phase", dp.Status.Phase)
-	return ctrl.Result{}, nil
+	if dp.Status.Phase == backflowv1alpha1.PhaseDetected && r.Repos != nil {
+		dp.Status.Phase = backflowv1alpha1.PhaseMapping
+		dp.Status.Message = "Mapping the drift to the file in Git that defines the resource."
+	}
+	if err := r.patchStatus(ctx, &dp, orig); err != nil {
+		return ctrl.Result{}, err
+	}
+	if dp.Status.Phase != backflowv1alpha1.PhaseDetected && orig.Status.Phase != dp.Status.Phase {
+		log.Info("Proposal phase set", "proposal", dp.Name, "phase", dp.Status.Phase)
+	}
+
+	if r.Repos == nil || dp.Status.Phase != backflowv1alpha1.PhaseMapping || mappingSettled(&dp) {
+		return ctrl.Result{}, nil
+	}
+	return r.mapProposal(ctx, &dp)
+}
+
+// patchStatus writes the status changes made to dp since orig. It is a no-op
+// when nothing changed.
+func (r *DriftProposalReconciler) patchStatus(ctx context.Context, dp, orig *backflowv1alpha1.DriftProposal) error {
+	patch := client.MergeFrom(orig)
+	if data, err := patch.Data(dp); err == nil && string(data) == "{}" {
+		return nil
+	}
+	return client.IgnoreNotFound(r.Status().Patch(ctx, dp, patch))
 }
 
 // lifecycleAnnotationsChanged lets updates through when the generation did
@@ -108,6 +143,11 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&backflowv1alpha1.DriftProposal{},
 			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, lifecycleAnnotationsChanged()))).
+		// A proposal that failed authentication recovers by itself once the
+		// token Secret or the ScmConnection is fixed.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals)).
+		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("driftproposal").
 		Complete(r)
 }
