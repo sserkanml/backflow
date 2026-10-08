@@ -225,6 +225,7 @@ type DriftProposal struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable"
 	Spec   DriftProposalSpec   `json:"spec,omitempty"`
 	Status DriftProposalStatus `json:"status,omitempty"`
 }

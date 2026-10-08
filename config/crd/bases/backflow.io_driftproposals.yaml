@@ -189,6 +189,9 @@ spec:
             - resource
             - source
             type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
           status:
             description: DriftProposalStatus tracks the proposal through mapping and
               review.
