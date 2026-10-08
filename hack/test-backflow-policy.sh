@@ -10,6 +10,12 @@
 #   - records repo, path, revisions, source type and resource count
 #   - reports NoApplicationsMatched and InvalidSpec
 #   - follows label changes on the Argo CD Application
+#   - lets only the oldest policy manage an Application: a second policy that
+#     selects it reports ApplicationConflict, and recovers when the first goes
+#
+# An Application can be managed by one policy only, so the scenarios below
+# never keep two policies on demo-app at the same time, except where the
+# conflict itself is tested.
 #
 # No GitLab token is needed: matching only looks at hosts.
 #
@@ -189,8 +195,13 @@ apply_policy by-label '{selector: {matchLabels: {env: test}}}'
 expect_reason by-label MissingScmConnection "$WAIT_TIMEOUT" "MergeRequest mode needs a connection"
 expect_field by-label '.status.matchedApplications[0]' "$APP" "matchedApplications[0]"
 
+# One policy per Application: swap by-label for report-only, then back.
+k -n "$NS" delete bfp by-label >/dev/null
 apply_policy report-only "{names: [\"$APP\"]}" ReportOnly
 expect_reason report-only Resolved "$WAIT_TIMEOUT" "ReportOnly mode works without a connection"
+k -n "$NS" delete bfp report-only >/dev/null
+apply_policy by-label '{selector: {matchLabels: {env: test}}}'
+expect_reason by-label MissingScmConnection "$WAIT_TIMEOUT" "by-label is back without a connection"
 
 # ---------------------------------------------------------------------------
 step "ScmConnection appears (watch on ScmConnection)"
@@ -220,6 +231,23 @@ expect_field by-label '.status.applications[0].sourceType' "Directory" "sourceTy
 expect_nonempty by-label '.status.applications[0].syncedRevision' "syncedRevision"
 expect_nonempty by-label '.status.applications[0].managedResources' "managedResources"
 expect_field by-label '.status.observedGeneration' "1" "observedGeneration"
+
+# ---------------------------------------------------------------------------
+step "One policy per Application"
+# by-label is the oldest policy on $APP; a second one must not manage it too.
+apply_policy second "{names: [\"$APP\"]}"
+expect_reason second ApplicationConflict "$WAIT_TIMEOUT" "A second policy on $APP is blocked"
+got="$(k -n "$NS" get bfp second -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].message}')"
+case "$got" in
+  False/*"$NS/by-label"*) pass "the conflict names the policy that manages $APP ($NS/by-label)" ;;
+  *) fail "conflict message: expected Ready=False naming $NS/by-label, got: $got" ;;
+esac
+expect_reason by-label Resolved "$WAIT_TIMEOUT" "The oldest policy keeps managing $APP"
+k -n "$NS" delete bfp by-label >/dev/null
+expect_reason second Resolved "$WATCH_TIMEOUT" "The blocked policy takes over when the first one is gone"
+k -n "$NS" delete bfp second >/dev/null
+apply_policy by-label '{selector: {matchLabels: {env: test}}}'
+expect_reason by-label Resolved "$WAIT_TIMEOUT" "by-label manages $APP again"
 
 # ---------------------------------------------------------------------------
 step "Policies that cannot resolve"
