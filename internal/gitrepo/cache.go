@@ -36,10 +36,14 @@ var (
 
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// Auth is HTTPS basic authentication with an access token.
+// Auth holds how to reach a repository over HTTPS: basic authentication with
+// an access token and, for servers with a private certificate authority, the
+// PEM bundle that verifies them. Either part may be empty.
 type Auth struct {
 	Username string
 	Token    string
+	// CABundle is a PEM bundle of extra certificate authorities to trust.
+	CABundle []byte
 }
 
 // BasicAuth returns the credentials a provider expects for a token:
@@ -159,17 +163,10 @@ func openOrInit(dir, repoURL string) (*git.Repository, error) {
 // fetch brings branches and tags up to date, then asks for the commit
 // itself in case it is not reachable from any of them.
 func fetch(ctx context.Context, repo *git.Repository, sha string, auth *Auth) error {
-	opts := &git.FetchOptions{
-		RemoteName: "origin",
-		RefSpecs: []config.RefSpec{
-			"+refs/heads/*:refs/heads/*",
-			"+refs/tags/*:refs/tags/*",
-		},
-		Tags: git.NoTags,
-	}
-	if auth != nil {
-		opts.Auth = &http.BasicAuth{Username: auth.Username, Password: auth.Token}
-	}
+	opts := fetchOptions(auth, []config.RefSpec{
+		"+refs/heads/*:refs/heads/*",
+		"+refs/tags/*:refs/tags/*",
+	})
 	err := repo.FetchContext(ctx, opts)
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		return classify(err)
@@ -179,7 +176,7 @@ func fetch(ctx context.Context, repo *git.Repository, sha string, auth *Auth) er
 	}
 	// Not reachable from a branch or tag, for example a force-pushed-away
 	// commit. Servers that allow fetching by SHA still serve it.
-	opts.RefSpecs = []config.RefSpec{config.RefSpec(fmt.Sprintf("%s:refs/backflow/%s", sha, sha))}
+	opts = fetchOptions(auth, []config.RefSpec{config.RefSpec(fmt.Sprintf("%s:refs/backflow/%s", sha, sha))})
 	if err := repo.FetchContext(ctx, opts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
 		if errors.Is(classify(err), ErrUnavailable) && ctx.Err() == nil {
 			return fmt.Errorf("%w: %s", ErrRevisionNotFound, sha)
@@ -187,6 +184,18 @@ func fetch(ctx context.Context, repo *git.Repository, sha string, auth *Auth) er
 		return classify(err)
 	}
 	return nil
+}
+
+// fetchOptions builds the go-git fetch options for the given access.
+func fetchOptions(auth *Auth, refSpecs []config.RefSpec) *git.FetchOptions {
+	opts := &git.FetchOptions{RemoteName: "origin", RefSpecs: refSpecs, Tags: git.NoTags}
+	if auth != nil {
+		if auth.Token != "" {
+			opts.Auth = &http.BasicAuth{Username: auth.Username, Password: auth.Token}
+		}
+		opts.CABundle = auth.CABundle
+	}
+	return opts
 }
 
 // classify maps go-git and transport errors to this package's sentinels.

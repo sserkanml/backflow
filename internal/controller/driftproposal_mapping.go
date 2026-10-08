@@ -290,9 +290,10 @@ func (r *DriftProposalReconciler) directorySource(ctx context.Context, dp *backf
 	return info, nil
 }
 
-// repositoryAuth returns the credentials of the ScmConnection the policy
-// matched to the Application's repository, or nil (anonymous) when there is
-// none. A connection whose token cannot be read is an ErrAuth failure.
+// repositoryAuth returns the credentials and CA bundle of the ScmConnection
+// the policy matched to the Application's repository, or nil (anonymous) when
+// there is none. A connection whose token or CA bundle cannot be read is an
+// ErrAuth failure.
 func (r *DriftProposalReconciler) repositoryAuth(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (*gitrepo.Auth, error) {
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, &policy); err != nil {
@@ -328,7 +329,26 @@ func (r *DriftProposalReconciler) repositoryAuth(ctx context.Context, dp *backfl
 	if token == "" {
 		return nil, fmt.Errorf("%w: Secret %q has no key %q", gitrepo.ErrAuth, ref.Name, ref.Key)
 	}
-	return gitrepo.BasicAuth(string(conn.Spec.Provider), token), nil
+	auth := gitrepo.BasicAuth(string(conn.Spec.Provider), token)
+
+	if ca := conn.Spec.CASecretRef; ca != nil {
+		var caSecret corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ca.Name}, &caSecret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("%w: CA Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ca.Name, connName)
+			}
+			return nil, err
+		}
+		bundle := caSecret.Data[ca.Key]
+		if len(bundle) == 0 {
+			return nil, fmt.Errorf("%w: Secret %q has no key %q", gitrepo.ErrAuth, ca.Name, ca.Key)
+		}
+		if auth == nil {
+			auth = &gitrepo.Auth{}
+		}
+		auth.CABundle = bundle
+	}
+	return auth, nil
 }
 
 // truncateDiff keeps a diff within maxDiffBytes, cutting at a line boundary.

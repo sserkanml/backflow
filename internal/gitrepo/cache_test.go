@@ -2,11 +2,24 @@ package gitrepo
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -14,9 +27,11 @@ import (
 
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/plumbing/transport/server"
 )
 
@@ -342,10 +357,101 @@ func TestBasicAuth(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := BasicAuth(tt.provider, tt.token)
-		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+		if !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("BasicAuth(%q, %q) = %v, want %v", tt.provider, tt.token, got, tt.want)
 		}
 	}
+}
+
+func TestFetchOptions(t *testing.T) {
+	refs := []config.RefSpec{"+refs/heads/*:refs/heads/*"}
+
+	anonymous := fetchOptions(nil, refs)
+	if anonymous.Auth != nil || anonymous.CABundle != nil || anonymous.RemoteName != "origin" || len(anonymous.RefSpecs) != 1 {
+		t.Errorf("anonymous options = %+v", anonymous)
+	}
+
+	withToken := fetchOptions(&Auth{Username: "oauth2", Token: "tok"}, refs)
+	basic, ok := withToken.Auth.(*githttp.BasicAuth)
+	if !ok || basic.Username != "oauth2" || basic.Password != "tok" || withToken.CABundle != nil {
+		t.Errorf("token options = %+v", withToken)
+	}
+
+	// A private CA without a token must not turn into empty credentials.
+	caOnly := fetchOptions(&Auth{CABundle: []byte("pem")}, refs)
+	if caOnly.Auth != nil || string(caOnly.CABundle) != "pem" {
+		t.Errorf("CA-only options = %+v", caOnly)
+	}
+
+	both := fetchOptions(&Auth{Username: "u", Token: "t", CABundle: []byte("pem")}, refs)
+	if both.Auth == nil || string(both.CABundle) != "pem" {
+		t.Errorf("combined options = %+v", both)
+	}
+}
+
+// A server whose certificate comes from a private CA is reachable only with
+// that CA bundle. The test server answers 404 to everything, which go-git
+// reports as "repository not found" once TLS works.
+func TestOpenTrustsTheCABundle(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.NotFoundHandler())
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0) // rejected handshakes are expected
+	srv.StartTLS()
+	defer srv.Close()
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	repoURL := srv.URL + "/group/project.git"
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	ctx := context.Background()
+
+	t.Run("without the CA the certificate is rejected", func(t *testing.T) {
+		_, err := NewCache(t.TempDir()).Open(ctx, repoURL, sha, nil)
+		if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "certificate") {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("a token alone does not help", func(t *testing.T) {
+		_, err := NewCache(t.TempDir()).Open(ctx, repoURL, sha, &Auth{Username: "oauth2", Token: "tok"})
+		if !errors.Is(err, ErrUnavailable) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("with the CA the connection works", func(t *testing.T) {
+		_, err := NewCache(t.TempDir()).Open(ctx, repoURL, sha, &Auth{CABundle: ca})
+		if !errors.Is(err, ErrRepositoryNotFound) {
+			t.Errorf("err = %v, want the server's 404 to come through as %v", err, ErrRepositoryNotFound)
+		}
+	})
+	t.Run("with the CA and a token", func(t *testing.T) {
+		_, err := NewCache(t.TempDir()).Open(ctx, repoURL, sha, &Auth{Username: "oauth2", Token: "tok", CABundle: ca})
+		if !errors.Is(err, ErrRepositoryNotFound) {
+			t.Errorf("err = %v", err)
+		}
+	})
+	t.Run("a CA bundle that does not match is rejected", func(t *testing.T) {
+		wrong := selfSignedCA(t)
+		_, err := NewCache(t.TempDir()).Open(ctx, repoURL, sha, &Auth{CABundle: wrong})
+		if !errors.Is(err, ErrUnavailable) {
+			t.Errorf("err = %v", err)
+		}
+	})
+}
+
+// selfSignedCA returns a PEM certificate that is not the test server's.
+func selfSignedCA(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "other CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 func TestClassify(t *testing.T) {

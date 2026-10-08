@@ -439,6 +439,46 @@ var _ = Describe("DriftProposal mapping", func() {
 			Expect(repos.gotAuth).To(Equal(&gitrepo.Auth{Username: "oauth2", Token: "s3cr3t"}))
 		})
 
+		It("passes the CA bundle of the ScmConnection along with the token", func() {
+			Expect(k8sClient.Create(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "map-ca", Namespace: ns},
+				StringData: map[string]string{"ca.crt": "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"},
+			})).To(Succeed())
+			DeferCleanup(func() {
+				Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "map-ca", Namespace: ns}}))).To(Succeed())
+			})
+			conn := &backflowv1alpha1.ScmConnection{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "map-scm"}, conn)).To(Succeed())
+			conn.Spec.CASecretRef = &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "map-ca"}, Key: "ca.crt",
+			}
+			Expect(k8sClient.Update(ctx, conn)).To(Succeed())
+			setScmConnection("map-scm")
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repos.gotAuth).NotTo(BeNil())
+			Expect(repos.gotAuth.Token).To(Equal("s3cr3t"))
+			Expect(string(repos.gotAuth.CABundle)).To(ContainSubstring("BEGIN CERTIFICATE"))
+		})
+
+		It("retries, as an authentication failure, while the CA Secret is missing", func() {
+			conn := &backflowv1alpha1.ScmConnection{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "map-scm"}, conn)).To(Succeed())
+			conn.Spec.CASecretRef = &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "no-such-ca"}, Key: "ca.crt",
+			}
+			Expect(k8sClient.Update(ctx, conn)).To(Succeed())
+			setScmConnection("map-scm")
+
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(repos.calls).To(BeZero())
+			Expect(mapped().Reason).To(Equal(reasonRepositoryAuthFailed))
+			Expect(mapped().Message).To(ContainSubstring("no-such-ca"))
+		})
+
 		It("uses the GitHub username for a GitHub connection", func() {
 			conn := &backflowv1alpha1.ScmConnection{}
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "map-scm"}, conn)).To(Succeed())
