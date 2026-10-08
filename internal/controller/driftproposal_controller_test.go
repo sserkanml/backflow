@@ -136,6 +136,27 @@ var _ = Describe("DriftProposal Controller", func() {
 				Expect(got.Status.Message).To(Equal("back in sync"))
 			})
 
+			It("keeps Reverted when superseded-by is added afterwards, and the other way round", func() {
+				annotate(annotationReverted, "back in sync")
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+
+				annotate(annotationSupersededBy, "newer")
+				got := reconcileProposal()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+				Expect(got.Status.SupersededBy).To(BeEmpty())
+				Expect(got.Status.Message).To(Equal("back in sync"))
+			})
+
+			It("keeps Superseded when reverted is added afterwards", func() {
+				annotate(annotationSupersededBy, "newer")
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+
+				annotate(annotationReverted, "back in sync")
+				got := reconcileProposal()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(got.Status.SupersededBy).To(Equal("newer"))
+			})
+
 			It("never changes a terminal phase", func() {
 				for _, phase := range []backflowv1alpha1.ProposalPhase{
 					backflowv1alpha1.PhaseMerged, backflowv1alpha1.PhaseRejected, backflowv1alpha1.PhaseReverted,
