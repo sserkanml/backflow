@@ -12,7 +12,8 @@
 #     touches only the changed line (comments around it stay out of the change)
 #   - a replica change in the Deployment
 #   - proposals that cannot be mapped become Unmapped with a reason
-#   - a repository that cannot be reached is retried, never given up on
+#   - a repository that cannot be reached or seen (private, no access) is
+#     retried, never given up on; only a commit that does not exist is final
 #
 # The Unmapped and unreachable-repository cases use DriftProposals created by
 # hand: the demo repository defines every resource exactly once, so a real
@@ -429,12 +430,21 @@ expect_unmapped not-directory UnsupportedSourceType "a Helm source"
 expect_unmapped unknown-commit RevisionNotFound "a commit that does not exist"
 
 # ---------------------------------------------------------------------------
-step "4. A repository that cannot be reached is retried, not given up on"
+step "4. A repository that cannot be reached or seen is retried, not given up on"
 create_proposal unreachable ConfigMap "$DEMO_NS" demo-config Directory "https://localhost:1/none.git" "$SYNCED_REV"
+# GitLab and GitHub answer 404 or 401 for a repository the caller cannot see;
+# either way it is a matter of access, which the user can fix.
+create_proposal no-access ConfigMap "$DEMO_NS" demo-config Directory "https://gitlab.com/sserkanml/backflow-no-such-repository.git" "$SYNCED_REV"
 wait_for "the unreachable proposal reports RepositoryUnavailable" reason_is unreachable RepositoryUnavailable
 sleep $((QUIET + 5))
 expect_eq "phase after waiting" "Mapping" "$(dp_field unreachable .status.phase)"
 expect_eq "Mapped reason after waiting" "RepositoryUnavailable" "$(mapped_reason unreachable)"
+expect_eq "no-access: phase after waiting" "Mapping" "$(dp_field no-access .status.phase)"
+case "$(mapped_reason no-access)" in
+  RepositoryNotFound | RepositoryAuthFailed) pass "no-access: Mapped reason is $(mapped_reason no-access)" ;;
+  *) fail "no-access: expected RepositoryNotFound or RepositoryAuthFailed, got '$(mapped_reason no-access)'" ;;
+esac
+expect_eq "no-access: Mapped status" "False" "$(mapped_status no-access)"
 RETRIES="$(grep -c 'Cannot map the proposal yet' "$LOG_FILE" || true)"
 if (( RETRIES >= 2 )); then
   pass "the operator keeps retrying ($RETRIES attempts logged)"

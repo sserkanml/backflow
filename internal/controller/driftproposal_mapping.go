@@ -139,7 +139,11 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		case errors.Is(err, gitrepo.ErrRevisionNotFound):
 			return ctrl.Result{}, r.unmapped(ctx, dp, reasonRevisionNotFound, err.Error())
 		case errors.Is(err, gitrepo.ErrRepositoryNotFound):
-			return ctrl.Result{}, r.unmapped(ctx, dp, reasonRepositoryNotFound, err.Error())
+			// GitLab and GitHub answer 404 for a private repository the
+			// caller cannot see, so this usually means "no access": a missing
+			// ScmConnection or a token without permission, which the user can
+			// fix. Only a missing commit is permanent.
+			return r.retry(ctx, dp, reasonRepositoryNotFound, err)
 		case errors.Is(err, gitrepo.ErrAuth):
 			return r.retry(ctx, dp, reasonRepositoryAuthFailed, err)
 		}
@@ -239,7 +243,8 @@ func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha
 }
 
 // authFailedProposals enqueues the proposals in the namespace of a changed
-// Secret or ScmConnection that are waiting for credentials to be fixed.
+// Secret or ScmConnection that are waiting for access to be fixed: the
+// credentials were rejected, or the repository is not visible to them.
 func (r *DriftProposalReconciler) authFailedProposals(ctx context.Context, obj client.Object) []reconcile.Request {
 	var list backflowv1alpha1.DriftProposalList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
@@ -249,7 +254,8 @@ func (r *DriftProposalReconciler) authFailedProposals(ctx context.Context, obj c
 	for i := range list.Items {
 		p := &list.Items[i]
 		if c := meta.FindStatusCondition(p.Status.Conditions, conditionMapped); c != nil &&
-			p.Status.Phase == backflowv1alpha1.PhaseMapping && c.Status == metav1.ConditionFalse && c.Reason == reasonRepositoryAuthFailed {
+			p.Status.Phase == backflowv1alpha1.PhaseMapping && c.Status == metav1.ConditionFalse &&
+			(c.Reason == reasonRepositoryAuthFailed || c.Reason == reasonRepositoryNotFound) {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
 		}
 	}

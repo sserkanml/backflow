@@ -143,8 +143,8 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&backflowv1alpha1.DriftProposal{},
 			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, lifecycleAnnotationsChanged()))).
-		// A proposal that failed authentication recovers by itself once the
-		// token Secret or the ScmConnection is fixed.
+		// A proposal that has no access to its repository recovers by itself
+		// once the token Secret or the ScmConnection is fixed.
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals)).
 		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).

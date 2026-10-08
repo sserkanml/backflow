@@ -391,28 +391,49 @@ var _ = Describe("DriftProposal mapping", func() {
 			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
 		})
 
-		DescribeTable("gives up only when the repository or the commit is known not to exist",
-			func(cause error, wantReason string) {
-				repos.err = cause
-				res, err := reconcileDP()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res.RequeueAfter).To(BeZero())
+		It("gives up only when the commit is known not to exist", func() {
+			repos.err = gitrepo.ErrRevisionNotFound
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeZero())
 
-				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-				Expect(mapped().Status).To(Equal(metav1.ConditionFalse))
-				Expect(mapped().Reason).To(Equal(wantReason))
-				Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyUnmapped))
-				Expect(got.Status.Mapping.Reason).NotTo(BeEmpty())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(mapped().Status).To(Equal(metav1.ConditionFalse))
+			Expect(mapped().Reason).To(Equal(reasonRevisionNotFound))
+			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyUnmapped))
+			Expect(got.Status.Mapping.Reason).NotTo(BeEmpty())
 
-				calls := repos.calls
-				_, err = reconcileDP()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(repos.calls).To(Equal(calls), "an Unmapped proposal is not retried")
-			},
-			Entry("the commit does not exist", gitrepo.ErrRevisionNotFound, reasonRevisionNotFound),
-			Entry("the repository does not exist", gitrepo.ErrRepositoryNotFound, reasonRepositoryNotFound),
-		)
+			calls := repos.calls
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repos.calls).To(Equal(calls), "an Unmapped proposal is not retried")
+		})
+
+		It("treats a repository that is not found like missing access, not as a verdict", func() {
+			// GitLab and GitHub answer 404 for a private repository the caller cannot see.
+			repos.err = gitrepo.ErrRepositoryNotFound
+			offset = 24 * time.Hour
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Mapping).To(BeNil())
+			Expect(mapped().Status).To(Equal(metav1.ConditionFalse))
+			Expect(mapped().Reason).To(Equal(reasonRepositoryNotFound))
+
+			By("being picked up when a Secret or ScmConnection in the namespace changes")
+			Expect(r.authFailedProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "any", Namespace: ns}})).
+				To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
+			Expect(r.authFailedProposals(ctx, &backflowv1alpha1.ScmConnection{ObjectMeta: metav1.ObjectMeta{Name: "any", Namespace: ns}})).
+				To(HaveLen(1))
+
+			By("mapping once the repository becomes visible")
+			repos.err = nil
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
+		})
 	})
 
 	Context("authentication", func() {
