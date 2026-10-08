@@ -3,6 +3,7 @@ package gitrepo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -230,6 +231,68 @@ func TestOpenConcurrently(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// A View is read after Open returned and released the repository lock. Each
+// Open uses its own go-git repository handle and Git objects are immutable
+// (a fetch only adds files), so a fetch into the same cache must not disturb
+// readers. Run with -race.
+func TestViewIsReadableWhileAnotherOpenFetches(t *testing.T) {
+	src := newSourceRepo(t)
+	first := src.commit(map[string]string{
+		"apps/a.yaml": "a: 1\n",
+		"apps/b.yaml": "b: 1\n",
+	})
+	cache := NewCache(t.TempDir())
+	ctx := context.Background()
+
+	view, err := cache.Open(ctx, src.url(), first, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = view.Close() }()
+
+	stop := make(chan struct{})
+	readerErr := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if got, err := fs.ReadFile(view, "apps/a.yaml"); err != nil || string(got) != "a: 1\n" {
+				readerErr <- fmt.Errorf("read a.yaml = %q, %v", got, err)
+				return
+			}
+			if entries, err := fs.ReadDir(view, "apps"); err != nil || len(entries) != 2 {
+				readerErr <- fmt.Errorf("readdir = %v, %v", entries, err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 15; i++ {
+		sha := src.commit(map[string]string{"apps/c.yaml": fmt.Sprintf("c: %d\n", i)})
+		v, err := cache.Open(ctx, src.url(), sha, nil)
+		if err != nil {
+			t.Fatalf("fetch %d: %v", i, err)
+		}
+		if got, err := fs.ReadFile(v, "apps/c.yaml"); err != nil || string(got) != fmt.Sprintf("c: %d\n", i) {
+			t.Fatalf("new view %d = %q, %v", i, got, err)
+		}
+		_ = v.Close()
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case err := <-readerErr:
+		t.Fatal(err)
+	default:
 	}
 }
 
