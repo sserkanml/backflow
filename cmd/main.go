@@ -29,6 +29,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -165,6 +166,15 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "7e904218.io",
+		// Argo CD Applications are read as unstructured objects (the Argo CD Go
+		// module is not imported). The client bypasses the cache for
+		// unstructured objects unless told otherwise, so without this every
+		// Get/List of an Application, once per application in the drift
+		// controller and once per older policy in the policy controller, would
+		// hit the API server although the controllers already watch them.
+		Client: client.Options{
+			Cache: &client.CacheOptions{Unstructured: true},
+		},
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
