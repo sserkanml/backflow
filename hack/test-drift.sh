@@ -6,7 +6,7 @@
 # the backflow-system/argocd-token Secret).
 # Starts its own port-forward to Argo CD on a free local port and the operator
 # in the background, then drifts the demo resources and checks that:
-#   - a changed ConfigMap value becomes a Detected DriftProposal with the
+#   - a changed ConfigMap value becomes a DriftProposal (Detected, then Mapping) with the
 #     right changes, labels and source fields
 #   - detecting again does not create a duplicate
 #   - a different drift supersedes the open proposal
@@ -134,8 +134,9 @@ proposals() {
 }
 
 # proposal_with <resource name> <phase> <changes substring>: print matching names.
+# <phase> may be several phases separated by "|".
 proposal_with() {
-  proposals "$1" | awk -F'|' -v p="$2" -v c="$3" '$2 == p && index($5, c) > 0 { print $1 }'
+  proposals "$1" | awk -F'|' -v p="$2" -v c="$3" '$2 ~ "^(" p ")$" && index($5, c) > 0 { print $1 }'
 }
 
 has_proposal()   { [[ -n "$(proposal_with "$1" "$2" "$3")" ]]; }
@@ -201,6 +202,8 @@ fi
 
 # Everything below assumes the demo resources match Git.
 ORIG_LOG_LEVEL="$(k -n "$DEMO_NS" get configmap demo-config -o jsonpath='{.data.LOG_LEVEL}')"
+# The mapping milestone moves a detected proposal on to Mapping within seconds.
+DETECTED="Detected|Mapping"
 ORIG_REPLICAS="$(k -n "$DEMO_NS" get deployment demo -o jsonpath='{.spec.replicas}')"
 RESTORE=true
 if [[ "$(app_sync_status)" != "Synced" ]]; then
@@ -285,10 +288,13 @@ wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready -
 step "1. ConfigMap value drift becomes a DriftProposal"
 set_log_level debug
 wait_for "proposal Detected for demo-config LOG_LEVEL info -> debug" \
-  has_proposal demo-config Detected '/data/LOG_LEVEL:Replace:"info">"debug";'
-P1="$(proposal_with demo-config Detected '"debug"' | head -n 1)"
+  has_proposal demo-config "$DETECTED" '/data/LOG_LEVEL:Replace:"info">"debug";'
+P1="$(proposal_with demo-config "$DETECTED" '"debug"' | head -n 1)"
 if [[ -n "$P1" ]]; then
-  expect_eq "phase" "Detected" "$(dp_field "$P1" .status.phase)"
+  case "$(dp_field "$P1" .status.phase)" in
+    Detected | Mapping) pass "phase is Detected or Mapping" ;;
+    *) fail "phase: expected Detected or Mapping, got '$(dp_field "$P1" .status.phase)'" ;;
+  esac
   expect_eq "label policy" "$POLICY" "$(dp_field "$P1" '.metadata.labels.backflow\.io/policy')"
   expect_eq "label application" "$APP" "$(dp_field "$P1" '.metadata.labels.backflow\.io/application')"
   expect_eq "label resource" "$(resource_hash "" ConfigMap "$DEMO_NS" demo-config)" \
@@ -324,8 +330,8 @@ expect_eq "proposals for demo-config" "1" "$(proposals demo-config | wc -l | tr 
 step "3. A different drift supersedes the open proposal"
 set_log_level trace
 wait_for "new proposal Detected with info -> trace" \
-  has_proposal demo-config Detected '/data/LOG_LEVEL:Replace:"info">"trace";'
-P3="$(proposal_with demo-config Detected '"trace"' | head -n 1)"
+  has_proposal demo-config "$DETECTED" '/data/LOG_LEVEL:Replace:"info">"trace";'
+P3="$(proposal_with demo-config "$DETECTED" '"trace"' | head -n 1)"
 wait_for "old proposal is Superseded" has_proposal demo-config Superseded '"debug"'
 if [[ -n "$P1" && -n "$P3" ]]; then
   expect_eq "old proposal supersededBy" "$P3" "$(dp_field "$P1" .status.supersededBy)"
@@ -344,8 +350,8 @@ expect_eq "superseded proposal stays Superseded" "Superseded" "$(dp_field "$P1" 
 step "5. Replica drift"
 set_replicas 3
 wait_for "proposal Detected for demo replicas 1 -> 3" \
-  has_proposal demo Detected "/spec/replicas:Replace:$ORIG_REPLICAS>3;"
-P5="$(proposal_with demo Detected '/spec/replicas' | head -n 1)"
+  has_proposal demo "$DETECTED" "/spec/replicas:Replace:$ORIG_REPLICAS>3;"
+P5="$(proposal_with demo "$DETECTED" '/spec/replicas' | head -n 1)"
 if [[ -n "$P5" ]]; then
   expect_eq "spec.resource.kind" "Deployment" "$(dp_field "$P5" .spec.resource.kind)"
   expect_eq "spec.resource.group" "apps" "$(dp_field "$P5" .spec.resource.group)"
