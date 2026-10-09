@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 )
@@ -118,25 +119,35 @@ func (c *Cache) Open(ctx context.Context, repoURL, sha string, auth *Auth) (*Vie
 	}
 	defer unlock()
 
-	repo, err := openOrInit(dir, repoURL)
+	repo, commit, err := c.openCommit(ctx, repoURL, sha, auth)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
-	}
-	hash := plumbing.NewHash(sha)
-	if _, err := repo.CommitObject(hash); err != nil {
-		if err := fetch(ctx, repo, sha, auth); err != nil {
-			return nil, err
-		}
-	}
-	commit, err := repo.CommitObject(hash)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrRevisionNotFound, sha)
+		return nil, err
 	}
 	tree, err := commit.Tree()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return &View{sha: sha, tree: tree, repo: repo}, nil
+}
+
+// openCommit returns the cache repository of repoURL with commit sha present,
+// fetching it only when missing. The caller must hold the repository lock.
+func (c *Cache) openCommit(ctx context.Context, repoURL, sha string, auth *Auth) (*git.Repository, *object.Commit, error) {
+	repo, err := openOrInit(c.Dir(repoURL), repoURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	hash := plumbing.NewHash(sha)
+	if _, err := repo.CommitObject(hash); err != nil {
+		if err := fetch(ctx, repo, sha, auth); err != nil {
+			return nil, nil, err
+		}
+	}
+	commit, err := repo.CommitObject(hash)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %s", ErrRevisionNotFound, sha)
+	}
+	return repo, commit, nil
 }
 
 func openOrInit(dir, repoURL string) (*git.Repository, error) {

@@ -1,0 +1,452 @@
+package gitrepo
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/object"
+)
+
+var (
+	committer = Signature{Name: "Backflow", Email: "backflow@noreply.invalid"}
+	meta      = CommitMeta{Committer: committer, Message: "backflow: sync ConfigMap demo/demo-config from cluster\n"}
+)
+
+const (
+	cmBefore = "# managed by Argo CD\ndata:\n  LOG_LEVEL: info\n"
+	cmAfter  = "# managed by Argo CD\ndata:\n  LOG_LEVEL: debug\n"
+)
+
+func seed(t *testing.T) (*sourceRepo, string) {
+	t.Helper()
+	src := newSourceRepo(t)
+	base := src.commit(map[string]string{
+		"apps/demo/configmap.yaml": cmBefore,
+		"apps/demo/deploy.yaml":    "spec:\n  replicas: 1\n",
+		"README.md":                "hello\n",
+	})
+	return src, base
+}
+
+// branchSHA returns where a branch of the source repository points, or "".
+func (s *sourceRepo) branchSHA(name string) string {
+	ref, err := s.repo.Reference(plumbing.NewBranchReferenceName(name), true)
+	if err != nil {
+		return ""
+	}
+	return ref.Hash().String()
+}
+
+func (s *sourceRepo) fileAt(sha, name string) string {
+	s.t.Helper()
+	// Reopen: objects pushed by the cache arrive in packs this handle has not seen.
+	repo, err := git.PlainOpen(s.dir)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	c, err := repo.CommitObject(plumbing.NewHash(sha))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	f, err := c.File(name)
+	if err != nil {
+		s.t.Fatalf("%s at %s: %v", name, sha, err)
+	}
+	out, err := f.Contents()
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return out
+}
+
+func TestCommitFileReplacesOneFileOnTopOfBase(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	when := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	author := Signature{Name: "alice", Email: "alice@example.com"}
+
+	sha, err := cache.CommitFile(t.Context(), src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter),
+		CommitMeta{Author: &author, Committer: committer, Message: "msg\n\nChanged-by: alice\n", When: when})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := cache.Open(t.Context(), src.url(), sha, nil)
+	if err != nil {
+		t.Fatalf("new commit must be readable through the cache: %v", err)
+	}
+	defer func() { _ = view.Close() }()
+	if got, _ := view.ReadFile("apps/demo/configmap.yaml"); string(got) != cmAfter {
+		t.Errorf("configmap = %q", got)
+	}
+	if got, _ := view.ReadFile("apps/demo/deploy.yaml"); string(got) != "spec:\n  replicas: 1\n" {
+		t.Errorf("sibling changed: %q", got)
+	}
+	if got, _ := view.ReadFile("README.md"); string(got) != "hello\n" {
+		t.Errorf("README changed: %q", got)
+	}
+
+	commit, err := cache.mustCommit(t, src.url(), sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commit.ParentHashes) != 1 || commit.ParentHashes[0].String() != base {
+		t.Errorf("parents = %v, want [%s]", commit.ParentHashes, base)
+	}
+	if commit.Author.Name != "alice" || commit.Author.Email != "alice@example.com" {
+		t.Errorf("author = %+v", commit.Author)
+	}
+	if commit.Committer.Name != "Backflow" || commit.Committer.Email != "backflow@noreply.invalid" {
+		t.Errorf("committer = %+v", commit.Committer)
+	}
+	if !commit.Author.When.Equal(when) || !strings.Contains(commit.Message, "Changed-by: alice") {
+		t.Errorf("when/message = %v %q", commit.Author.When, commit.Message)
+	}
+
+	// Writing the commit moves nothing and pushes nothing.
+	if got := src.branchSHA("master"); got != base {
+		t.Errorf("master = %s, want %s", got, base)
+	}
+	if got := src.fileAt(base, "apps/demo/configmap.yaml"); got != cmBefore {
+		t.Errorf("base commit changed: %q", got)
+	}
+}
+
+// mustCommit reads a commit object out of the cache repository.
+func (c *Cache) mustCommit(t *testing.T, repoURL, sha string) (*object.Commit, error) {
+	t.Helper()
+	repo, err := git.PlainOpen(c.Dir(repoURL))
+	if err != nil {
+		return nil, err
+	}
+	return repo.CommitObject(plumbing.NewHash(sha))
+}
+
+func TestCommitFileAuthorDefaultsToCommitter(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	sha, err := cache.CommitFile(t.Context(), src.url(), base, nil, "README.md", []byte("bye\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := cache.mustCommit(t, src.url(), sha)
+	if c.Author.Name != "Backflow" || c.Author.Email != committer.Email || c.Author.When.IsZero() {
+		t.Errorf("author = %+v", c.Author)
+	}
+}
+
+func TestCommitFileKeepsFileMode(t *testing.T) {
+	src := newSourceRepo(t)
+	full := filepath.Join(src.dir, "run.sh")
+	if err := os.WriteFile(full, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := src.commit(nil)
+	cache := NewCache(t.TempDir())
+	sha, err := cache.CommitFile(t.Context(), src.url(), base, nil, "run.sh", []byte("#!/bin/sh\necho hi\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := cache.mustCommit(t, src.url(), sha)
+	tree, _ := c.Tree()
+	e, err := tree.FindEntry("run.sh")
+	if err != nil || e.Mode != filemode.Executable {
+		t.Errorf("entry = %+v, err %v; want executable", e, err)
+	}
+}
+
+func TestCommitFileErrors(t *testing.T) {
+	src := newSourceRepo(t)
+	if err := os.Symlink("README.md", filepath.Join(src.dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	base := src.commit(map[string]string{"README.md": "hello\n", "apps/a.yaml": "a: 1\n"})
+	cache := NewCache(t.TempDir())
+
+	cases := []struct {
+		name, sha, file string
+		content         string
+		want            error
+	}{
+		{"missing file", base, "nope.yaml", "x", ErrFileNotFound},
+		{"missing directory", base, "nodir/a.yaml", "x", ErrFileNotFound},
+		{"directory", base, "apps", "x", ErrNotRegularFile},
+		{"file used as directory", base, "README.md/x", "x", ErrFileNotFound},
+		{"symlink", base, "link", "x", ErrNotRegularFile},
+		{"unchanged", base, "README.md", "hello\n", ErrNoChange},
+		{"parent escape", base, "../README.md", "x", ErrFileNotFound},
+		{"absolute path", base, "/README.md", "x", ErrFileNotFound},
+		{"short sha", "abc", "README.md", "x", ErrRevisionNotFound},
+		{"unknown sha", strings.Repeat("0", 40), "README.md", "x", ErrRevisionNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := cache.CommitFile(t.Context(), src.url(), tc.sha, nil, tc.file, []byte(tc.content), meta)
+			if !errors.Is(err, tc.want) {
+				t.Errorf("err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBranchTip(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+
+	tip, err := cache.BranchTip(ctx, src.url(), "master", nil)
+	if err != nil || tip != base {
+		t.Fatalf("tip = %q, %v; want %s", tip, err, base)
+	}
+	next := src.commit(map[string]string{"README.md": "v2\n"})
+	if tip, err = cache.BranchTip(ctx, src.url(), "master", nil); err != nil || tip != next {
+		t.Fatalf("tip after new commit = %q, %v; want %s", tip, err, next)
+	}
+	// The tip commit is readable without another fetch.
+	view, err := cache.Open(ctx, src.url(), tip, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = view.Close()
+
+	if _, err := cache.BranchTip(ctx, src.url(), "nope", nil); !errors.Is(err, ErrBranchNotFound) {
+		t.Errorf("missing branch: err = %v", err)
+	}
+	if _, err := cache.BranchTip(ctx, "file:///does/not/exist", "master", nil); err == nil || errors.Is(err, ErrBranchNotFound) {
+		t.Errorf("unreachable repository: err = %v", err)
+	}
+}
+
+func TestBranchTipSeesDeletedBranch(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	sha, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte("x\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.CreateBranch(ctx, src.url(), "backflow/dp-1", sha, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.BranchTip(ctx, src.url(), "backflow/dp-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	// Somebody deletes the branch (closing the merge request, for example).
+	if err := src.repo.Storer.RemoveReference(plumbing.NewBranchReferenceName("backflow/dp-1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.BranchTip(ctx, src.url(), "backflow/dp-1", nil); !errors.Is(err, ErrBranchNotFound) {
+		t.Fatalf("deleted branch: err = %v, want ErrBranchNotFound", err)
+	}
+	// ... and it can be created again.
+	if err := cache.CreateBranch(ctx, src.url(), "backflow/dp-1", sha, nil); err != nil {
+		t.Fatalf("re-create: %v", err)
+	}
+	if got := src.branchSHA("backflow/dp-1"); got != sha {
+		t.Errorf("branch = %s, want %s", got, sha)
+	}
+}
+
+func TestCreateBranch(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	sha, err := cache.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cache.CreateBranch(ctx, src.url(), "backflow/dp-1", sha, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := src.branchSHA("backflow/dp-1"); got != sha {
+		t.Fatalf("branch = %s, want %s", got, sha)
+	}
+	if got := src.fileAt(sha, "apps/demo/configmap.yaml"); got != cmAfter {
+		t.Errorf("pushed content = %q", got)
+	}
+	if got := src.branchSHA("master"); got != base {
+		t.Errorf("target branch moved to %s", got)
+	}
+
+	// Idempotent when the branch already has our commit.
+	if err := cache.CreateBranch(ctx, src.url(), "backflow/dp-1", sha, nil); err != nil {
+		t.Errorf("second create: %v", err)
+	}
+
+	// A different commit on an existing branch is reported, not overwritten.
+	other, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte("other\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = cache.CreateBranch(ctx, src.url(), "backflow/dp-1", other, nil)
+	var exists *BranchExistsError
+	if !errors.Is(err, ErrBranchExists) || !errors.As(err, &exists) || exists.SHA != sha || exists.Branch != "backflow/dp-1" {
+		t.Fatalf("err = %v, want BranchExistsError at %s", err, sha)
+	}
+	if got := src.branchSHA("backflow/dp-1"); got != sha {
+		t.Errorf("existing branch was moved to %s", got)
+	}
+}
+
+func TestCreateBranchRequiresKnownCommit(t *testing.T) {
+	src, _ := seed(t)
+	cache := NewCache(t.TempDir())
+	if err := cache.CreateBranch(t.Context(), src.url(), "b", strings.Repeat("a", 40), nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("unknown commit: err = %v", err)
+	}
+	if err := cache.CreateBranch(t.Context(), src.url(), "b", "short", nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
+	}
+}
+
+func TestUpdateBranchFastForward(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	sha, err := cache.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.UpdateBranch(ctx, src.url(), "master", sha, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := src.branchSHA("master"); got != sha {
+		t.Fatalf("master = %s, want %s", got, sha)
+	}
+	if err := cache.UpdateBranch(ctx, src.url(), "master", sha, nil); err != nil {
+		t.Errorf("repeat: %v", err)
+	}
+	if err := cache.UpdateBranch(ctx, src.url(), "nope", sha, nil); !errors.Is(err, ErrBranchNotFound) {
+		t.Errorf("missing branch: err = %v", err)
+	}
+}
+
+func TestUpdateBranchNonFastForward(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	sha, err := cache.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The branch moves on after our commit was built.
+	head := src.commit(map[string]string{"README.md": "moved on\n"})
+
+	err = cache.UpdateBranch(ctx, src.url(), "master", sha, nil)
+	if !errors.Is(err, ErrNonFastForward) {
+		t.Fatalf("err = %v, want ErrNonFastForward", err)
+	}
+	if got := src.branchSHA("master"); got != head {
+		t.Errorf("master was overwritten: %s", got)
+	}
+
+	// Retry from the new head, as the controller does once.
+	tip, err := cache.BranchTip(ctx, src.url(), "master", nil)
+	if err != nil || tip != head {
+		t.Fatalf("tip = %q, %v", tip, err)
+	}
+	retry, err := cache.CommitFile(ctx, src.url(), tip, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.UpdateBranch(ctx, src.url(), "master", retry, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := src.fileAt(src.branchSHA("master"), "README.md"); got != "moved on\n" {
+		t.Errorf("the concurrent change was lost: %q", got)
+	}
+}
+
+func TestClassifyPush(t *testing.T) {
+	cases := []struct {
+		err  error
+		want error
+	}{
+		{git.ErrNonFastForwardUpdate, ErrNonFastForward},
+		{errors.New("remote: rejected (fetch first)"), ErrNonFastForward},
+		{errors.New("command error on refs/heads/main: pre-receive hook declined"), ErrPushRejected},
+		{errors.New("remote: GitLab: You are not allowed to push code to protected branches on this project."), ErrPushRejected},
+		{errors.New("unpack error: bad object"), ErrPushRejected},
+		{errors.New("authentication required"), ErrUnavailable},
+		{fmt.Errorf("dial tcp: %w", context.DeadlineExceeded), ErrUnavailable},
+	}
+	for _, tc := range cases {
+		if got := classifyPush(tc.err); !errors.Is(got, tc.want) {
+			t.Errorf("classifyPush(%q) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
+}
+
+func TestWritesAreSerialisedPerRepository(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 24)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sha, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte(fmt.Sprintf("v%d\n", i)), meta)
+			if err != nil {
+				errs <- err
+				return
+			}
+			errs <- cache.CreateBranch(ctx, src.url(), fmt.Sprintf("backflow/dp-%d", i), sha, nil)
+			if view, err := cache.Open(ctx, src.url(), base, nil); err != nil {
+				errs <- err
+			} else {
+				_ = view.Close()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Error(err)
+		}
+	}
+	for i := 0; i < 8; i++ {
+		sha := src.branchSHA(fmt.Sprintf("backflow/dp-%d", i))
+		if sha == "" || src.fileAt(sha, "README.md") != fmt.Sprintf("v%d\n", i) {
+			t.Errorf("branch %d missing or wrong", i)
+		}
+	}
+}
+
+func TestWriteGivesUpWhileWaitingForTheLock(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	unlock, err := cache.lock(t.Context(), cache.Dir(src.url()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte("x\n"), meta); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("CommitFile: err = %v", err)
+	}
+	if _, err := cache.BranchTip(ctx, src.url(), "master", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("BranchTip: err = %v", err)
+	}
+	if err := cache.CreateBranch(ctx, src.url(), "b", base, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("CreateBranch: err = %v", err)
+	}
+	if err := cache.UpdateBranch(ctx, src.url(), "master", base, nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("UpdateBranch: err = %v", err)
+	}
+}
