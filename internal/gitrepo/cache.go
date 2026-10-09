@@ -75,6 +75,26 @@ type Cache struct {
 	locks map[string]chan struct{}
 }
 
+// EnsureWritable creates root (or DefaultRoot when empty) if needed and
+// checks that files can be created in it. The manager calls it at startup so
+// an unusable cache, e.g. a read-only file system, fails loudly instead of
+// leaving every proposal waiting for a repository forever.
+func EnsureWritable(root string) error {
+	if root == "" {
+		root = DefaultRoot()
+	}
+	if err := os.MkdirAll(root, 0o750); err != nil {
+		return fmt.Errorf("repository cache directory %q: %w", root, err)
+	}
+	f, err := os.CreateTemp(root, ".writable-*")
+	if err != nil {
+		return fmt.Errorf("repository cache directory %q is not writable: %w", root, err)
+	}
+	name := f.Name()
+	_ = f.Close()
+	return os.Remove(name)
+}
+
 // NewCache returns a Cache rooted at root, or at DefaultRoot when root is empty.
 func NewCache(root string) *Cache {
 	if root == "" {

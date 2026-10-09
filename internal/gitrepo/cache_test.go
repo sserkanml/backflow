@@ -529,3 +529,33 @@ func TestOpenNetworkErrorIsUnavailableNotRevisionNotFound(t *testing.T) {
 		t.Errorf("sessions = %d; the SHA fetch was never attempted", flaky.sessions)
 	}
 }
+
+func TestEnsureWritable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "a", "b")
+	if err := EnsureWritable(root); err != nil {
+		t.Fatalf("creatable directory: %v", err)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Errorf("probe file left behind: %v", entries)
+	}
+
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureWritable(filepath.Join(file, "sub")); err == nil {
+		t.Error("a path below a regular file must fail")
+	}
+
+	if os.Geteuid() != 0 {
+		ro := t.TempDir()
+		if err := os.Chmod(ro, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(ro, 0o700) })
+		err := EnsureWritable(ro)
+		if err == nil || !strings.Contains(err.Error(), "not writable") {
+			t.Errorf("read-only directory: err = %v", err)
+		}
+	}
+}
