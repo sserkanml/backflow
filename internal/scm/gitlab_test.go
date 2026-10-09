@@ -148,7 +148,8 @@ func TestGitLabGetMergeRequestStates(t *testing.T) {
 		{"merged squash", `{"iid":7,"state":"merged","merge_commit_sha":null,"squash_commit_sha":"sq","sha":"h"}`, StateMerged, "sq"},
 		{"merged fast-forward", `{"iid":7,"state":"merged","sha":"h"}`, StateMerged, "h"},
 		{"closed", `{"iid":7,"state":"closed","sha":"h"}`, StateClosed, ""},
-		{"locked", `{"iid":7,"state":"locked"}`, StateClosed, ""},
+		// A merge in progress: neither closed nor merged yet.
+		{"locked while merging", `{"iid":7,"state":"locked","sha":"h"}`, StateOpen, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

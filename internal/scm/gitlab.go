@@ -37,7 +37,9 @@ func (m gitlabMR) convert() *MergeRequest {
 		SourceBranch: m.SourceBranch, TargetBranch: m.TargetBranch,
 	}
 	switch m.State {
-	case "opened":
+	case "opened", "locked":
+		// GitLab reports "locked" while a merge is in progress. It is not
+		// closed: the next read says merged, or opened again if the merge failed.
 		out.State = StateOpen
 	case "merged":
 		out.State = StateMerged
@@ -49,7 +51,7 @@ func (m gitlabMR) convert() *MergeRequest {
 				break
 			}
 		}
-	default: // closed, locked
+	default: // closed
 		out.State = StateClosed
 	}
 	return out
