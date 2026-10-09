@@ -681,3 +681,62 @@ func TestChangedPaths(t *testing.T) {
 		t.Errorf("short sha: err = %v", err)
 	}
 }
+
+func TestHasSymlink(t *testing.T) {
+	src := newSourceRepo(t)
+	if err := os.MkdirAll(filepath.Join(src.dir, "apps", "linked"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src.dir, "apps", "deep", "er"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../README.md", filepath.Join(src.dir, "apps", "linked", "readme")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../../README.md", filepath.Join(src.dir, "apps", "deep", "er", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("apps", filepath.Join(src.dir, "dirlink")); err != nil {
+		t.Fatal(err)
+	}
+	sha := src.commit(map[string]string{
+		"README.md":                 "hello\n",
+		"apps/plain/configmap.yaml": "a: 1\n",
+		"apps/plain2/x.yaml":        "a: 1\n",
+		"apps/linked2/x.yaml":       "a: 1\n",
+		"apps/deep/top.yaml":        "a: 1\n",
+	})
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+
+	tests := []struct {
+		name, dir string
+		want      bool
+	}{
+		{"directory without links", "apps/plain", false},
+		{"link directly in the directory", "apps/linked", true},
+		{"link deeper below the directory", "apps/deep", true},
+		{"a sibling whose name is a prefix is not affected", "apps/linked2", false},
+		{"directory above the links", "apps", true},
+		{"the repository root", "", true},
+		{"the root as a dot", ".", true},
+		{"slashes around the path", "/apps/plain/", false},
+		{"the path itself is a link", "dirlink", true},
+		{"a path that does not exist", "apps/missing", false},
+		{"a path that is a file", "README.md", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cache.HasSymlink(ctx, src.url(), sha, tt.dir, nil)
+			if err != nil || got != tt.want {
+				t.Errorf("HasSymlink(%q) = %v, %v; want %v", tt.dir, got, err, tt.want)
+			}
+		})
+	}
+	if _, err := cache.HasSymlink(ctx, src.url(), "short", "apps", nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
+	}
+	if _, err := cache.HasSymlink(ctx, src.url(), strings.Repeat("0", 40), "apps", nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("unknown sha: err = %v", err)
+	}
+}
