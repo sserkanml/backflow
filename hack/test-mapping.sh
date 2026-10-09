@@ -41,6 +41,8 @@ POLICY="mapping-policy"
 TOKEN_SECRET_NS="${TOKEN_SECRET_NS:-backflow-system}"
 TOKEN_SECRET="${TOKEN_SECRET:-argocd-token}"
 KEEP="${KEEP:-false}"
+# A drift becomes a proposal after it was stable for this long (the policy's batchWindow).
+WINDOW="${WINDOW:-5s}"
 # Test the operator deployed in the cluster instead of a local bin/manager.
 IN_CLUSTER="${IN_CLUSTER:-false}"
 MANAGER_NS="${MANAGER_NS:-backflow-system}"
@@ -281,6 +283,7 @@ metadata:
 spec:
   argoCDNamespace: $ARGOCD_NS
   mode: ReportOnly
+  batchWindow: ${WINDOW:-5s}
   applications:
     names: ["$APP"]
   argoCD:

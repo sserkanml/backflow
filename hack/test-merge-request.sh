@@ -66,8 +66,11 @@ MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
 # How often the local operator polls merge requests.
 POLL="${POLL:-10s}"
+# A drift becomes a proposal after it has been stable for the policy's
+# batchWindow (default 30s, which this test uses), across two observations.
+WINDOW="${WINDOW:-30s}"
 # Seconds to wait for Argo CD, the operator and GitLab to react.
-if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-300}"; else WAIT="${WAIT:-120}"; fi
+if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-360}"; else WAIT="${WAIT:-150}"; fi
 # Seconds to wait before asserting that nothing happened.
 QUIET="${QUIET:-20}"
 
@@ -579,6 +582,7 @@ metadata:
 spec:
   argoCDNamespace: $ARGOCD_NS
   mode: MergeRequest
+  batchWindow: $WINDOW
   applications:
     names: ["$APP"]
   argoCD:
