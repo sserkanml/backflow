@@ -1,9 +1,42 @@
+# Watches Argo CD Applications labelled env=test and proposes live changes
+# back to Git as merge requests. Needs an ScmConnection for the repository host
+# and a Secret with an Argo CD API token (read access to applications):
+#   kubectl -n backflow-system create secret generic argocd-token --from-literal=token="$ARGOCD_TOKEN"
 apiVersion: backflow.io/v1alpha1
 kind: BackflowPolicy
 metadata:
   labels:
     app.kubernetes.io/name: backflow
     app.kubernetes.io/managed-by: kustomize
-  name: backflowpolicy-sample
+  name: test-apps
+  namespace: backflow-system
 spec:
-  # TODO(user): Add fields here
+  argoCDNamespace: argocd
+  applications:
+    selector:
+      matchLabels:
+        env: test
+  # MergeRequest, DirectCommit or ReportOnly. Start with ReportOnly to see what would be proposed.
+  mode: MergeRequest
+  argoCD:
+    url: https://argocd-server.argocd.svc
+    tokenSecretRef:
+      name: argocd-token
+      key: token
+    # For an Argo CD with a private CA, point to a Secret holding the PEM bundle:
+    # caSecretRef:
+    #   name: argocd-ca
+    #   key: ca.crt
+  exclude:
+  - kind: Secret
+  ignoreFields:
+  - kind: Deployment
+    group: apps
+    jsonPointers:
+    - /spec/replicas   # owned by an autoscaler
+  mergeRequest:
+    branchPrefix: backflow/
+    labels:
+    - backflow
+    assignActor: true
+  batchWindow: 30s

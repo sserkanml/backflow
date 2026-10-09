@@ -1,9 +1,25 @@
+# Create the token Secret first (do not commit tokens):
+#   kubectl -n backflow-system create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
+# GitLab needs the api + write_repository scopes, GitHub contents + pull_requests.
 apiVersion: backflow.io/v1alpha1
 kind: ScmConnection
 metadata:
   labels:
     app.kubernetes.io/name: backflow
     app.kubernetes.io/managed-by: kustomize
-  name: scmconnection-sample
+  name: gitlab
+  namespace: backflow-system
 spec:
-  # TODO(user): Add fields here
+  provider: gitlab
+  url: https://gitlab.com
+  tokenSecretRef:
+    name: gitlab-token
+    key: token
+  # For a self-hosted server with a private CA, point to a Secret holding the PEM bundle:
+  # caSecretRef:
+  #   name: gitlab-ca
+  #   key: ca.crt
+  # Identity recorded as Git committer; the Kubernetes user is recorded as the author.
+  committer:
+    name: Backflow
+    email: backflow@noreply.invalid
