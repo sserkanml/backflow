@@ -83,19 +83,17 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if isTerminalPhase(dp.Status.Phase) {
+		if r.Writer != nil && needsCleanup(&dp) {
+			return r.cleanup(ctx, &dp)
+		}
 		return ctrl.Result{}, nil
+	}
+	if r.Writer != nil && dp.Status.Phase == backflowv1alpha1.PhaseProposed && dp.Status.MergeRequest != nil {
+		return r.trackProposed(ctx, &dp)
 	}
 
 	orig := dp.DeepCopy()
-	switch {
-	case dp.Annotations[annotationSupersededBy] != "":
-		dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
-		dp.Status.SupersededBy = dp.Annotations[annotationSupersededBy]
-		dp.Status.Message = "A newer drift on the same resource replaced this proposal."
-		return ctrl.Result{}, r.patchStatus(ctx, &dp, orig)
-	case dp.Annotations[annotationReverted] != "":
-		dp.Status.Phase = backflowv1alpha1.PhaseReverted
-		dp.Status.Message = dp.Annotations[annotationReverted]
+	if applyLifecycle(&dp) {
 		return ctrl.Result{}, r.patchStatus(ctx, &dp, orig)
 	}
 

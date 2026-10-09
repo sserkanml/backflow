@@ -459,7 +459,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		return ctrl.Result{}, err
 	}
 	logf.FromContext(ctx).Info("Merge request proposed", "proposal", dp.Name, "url", mr.URL, "branch", branch, "target", target)
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: trackInterval}, nil
 }
 
 func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflowv1alpha1.DriftProposal,

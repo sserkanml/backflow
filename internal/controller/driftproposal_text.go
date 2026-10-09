@@ -148,3 +148,10 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 		"Closing it without merging lets Argo CD revert the cluster to what Git says.\n")
 	return b.String()
 }
+
+// closingComment tells the reviewers why Backflow closes a merge request.
+func closingComment(dp *backflowv1alpha1.DriftProposal) string {
+	return fmt.Sprintf("Backflow is closing this merge request.\n\n%s\n\n"+
+		"Nothing needs to be done: Git stays the source of truth. DriftProposal: `%s/%s`.\n",
+		singleLine(dp.Status.Message), dp.Namespace, dp.Name)
+}
