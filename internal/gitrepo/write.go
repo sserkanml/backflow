@@ -20,6 +20,9 @@ var (
 	ErrFileNotFound = errors.New("gitrepo: file not found")
 	// ErrNotRegularFile means the path is a directory, symbolic link or submodule.
 	ErrNotRegularFile = errors.New("gitrepo: path is not a regular file")
+	// ErrNoTimestamp means CommitMeta.When was not set. The commit time is part
+	// of the commit SHA, so the caller must fix it for retries to be idempotent.
+	ErrNoTimestamp = errors.New("gitrepo: commit time is required")
 	// ErrNoChange means the new content equals the current content.
 	ErrNoChange = errors.New("gitrepo: content is unchanged")
 	// ErrBranchNotFound means the branch does not exist on the remote.
@@ -58,7 +61,10 @@ type CommitMeta struct {
 	Author    *Signature
 	Committer Signature
 	Message   string
-	// When is the commit time. Defaults to now.
+	// When is the author and committer time. It is required and should be
+	// derived from the change (e.g. the time the drift was detected), never
+	// from the clock: the same inputs then always produce the same commit
+	// SHA, which makes retries after a restart find their own branch again.
 	When time.Time
 }
 
@@ -119,12 +125,17 @@ func remoteBranch(ctx context.Context, repo *git.Repository, branch string, auth
 // CommitFile creates a commit on top of baseSHA whose tree equals the base
 // tree except that the regular file filePath holds content. File mode is
 // kept. It writes the commit object into the cache only: no branch is moved
-// and nothing is pushed. It returns the new commit SHA.
+// and nothing is pushed. It returns the new commit SHA, which depends only on
+// the arguments: the same inputs always give the same SHA.
 //
-// Errors: ErrFileNotFound, ErrNotRegularFile, ErrNoChange, ErrRevisionNotFound.
+// Errors: ErrFileNotFound, ErrNotRegularFile, ErrNoChange, ErrNoTimestamp,
+// ErrRevisionNotFound.
 func (c *Cache) CommitFile(ctx context.Context, repoURL, baseSHA string, auth *Auth, filePath string, content []byte, meta CommitMeta) (string, error) {
 	if !fullSHA.MatchString(baseSHA) {
 		return "", fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, baseSHA)
+	}
+	if meta.When.IsZero() {
+		return "", ErrNoTimestamp
 	}
 	filePath = path.Clean(filePath)
 	if filePath == "." || strings.HasPrefix(filePath, "/") || filePath == ".." || strings.HasPrefix(filePath, "../") {
@@ -153,9 +164,6 @@ func (c *Cache) CommitFile(ctx context.Context, repoURL, baseSHA string, auth *A
 		return "", err
 	}
 	when := meta.When
-	if when.IsZero() {
-		when = time.Now()
-	}
 	committer := object.Signature{Name: meta.Committer.Name, Email: meta.Committer.Email, When: when}
 	author := committer
 	if meta.Author != nil {
@@ -249,9 +257,11 @@ func replaceFile(repo *git.Repository, tree *object.Tree, parts []string, blob p
 
 // CreateBranch creates refs/heads/<branch> on the remote at sha, which
 // CommitFile must have produced in this cache. It is idempotent: when the
-// branch already points to sha it does nothing. When the branch exists at
-// another commit it returns *BranchExistsError (wrapping ErrBranchExists) and
-// changes nothing. It never moves an existing branch.
+// branch already holds this change it does nothing. A branch holds this change
+// when it points to sha, or to a commit with the same single parent and the
+// same tree (the same change committed with a different time or message).
+// Any other existing branch is left untouched and reported as *BranchExistsError
+// (wrapping ErrBranchExists). It never moves an existing branch.
 func (c *Cache) CreateBranch(ctx context.Context, repoURL, branch, sha string, auth *Auth) error {
 	unlock, err := c.lock(ctx, c.Dir(repoURL))
 	if err != nil {
@@ -268,6 +278,13 @@ func (c *Cache) CreateBranch(ctx context.Context, repoURL, branch, sha string, a
 	case err == nil && tip == sha:
 		return nil
 	case err == nil:
+		same, err := c.sameChange(ctx, repo, tip, sha, auth)
+		if err != nil {
+			return err
+		}
+		if same {
+			return nil
+		}
 		return &BranchExistsError{Branch: branch, SHA: tip}
 	case !errors.Is(err, ErrBranchNotFound):
 		return err
@@ -275,6 +292,29 @@ func (c *Cache) CreateBranch(ctx context.Context, repoURL, branch, sha string, a
 	// Absent a force flag the server refuses to move a ref that appeared in
 	// the meantime, so a race cannot overwrite someone else's branch.
 	return push(ctx, repo, sha, branch, auth)
+}
+
+// sameChange reports whether commit tip carries the same change as commit
+// want: one parent, equal to want's parent, and an equal tree. The caller
+// holds the repository lock.
+func (c *Cache) sameChange(ctx context.Context, repo *git.Repository, tip, want string, auth *Auth) (bool, error) {
+	wantCommit, err := repo.CommitObject(plumbing.NewHash(want))
+	if err != nil {
+		return false, fmt.Errorf("%w: %s", ErrRevisionNotFound, want)
+	}
+	tipCommit, err := repo.CommitObject(plumbing.NewHash(tip))
+	if err != nil {
+		// The foreign tip is not in the cache yet.
+		if err := fetch(ctx, repo, tip, auth); err != nil {
+			return false, err
+		}
+		if tipCommit, err = repo.CommitObject(plumbing.NewHash(tip)); err != nil {
+			return false, fmt.Errorf("%w: %s", ErrRevisionNotFound, tip)
+		}
+	}
+	return len(tipCommit.ParentHashes) == 1 && len(wantCommit.ParentHashes) == 1 &&
+		tipCommit.ParentHashes[0] == wantCommit.ParentHashes[0] &&
+		tipCommit.TreeHash == wantCommit.TreeHash, nil
 }
 
 // UpdateBranch fast-forwards refs/heads/<branch> on the remote to sha, which

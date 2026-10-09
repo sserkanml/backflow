@@ -19,7 +19,8 @@ import (
 
 var (
 	committer = Signature{Name: "Backflow", Email: "backflow@noreply.invalid"}
-	meta      = CommitMeta{Committer: committer, Message: "backflow: sync ConfigMap demo/demo-config from cluster\n"}
+	detected  = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	meta      = CommitMeta{Committer: committer, Message: "backflow: sync ConfigMap demo/demo-config from cluster\n", When: detected}
 )
 
 const (
@@ -448,5 +449,119 @@ func TestWriteGivesUpWhileWaitingForTheLock(t *testing.T) {
 	}
 	if err := cache.UpdateBranch(ctx, src.url(), "master", base, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("UpdateBranch: err = %v", err)
+	}
+}
+
+func TestCommitFileIsDeterministic(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	commit := func(m CommitMeta, content string) string {
+		t.Helper()
+		sha, err := cache.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(content), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sha
+	}
+	first := commit(meta, cmAfter)
+	time.Sleep(1100 * time.Millisecond) // a clock-based time would differ by now
+	if again := commit(meta, cmAfter); again != first {
+		t.Errorf("same inputs gave %s and %s", first, again)
+	}
+	// A different cache (a restarted operator) agrees too.
+	other, err := NewCache(t.TempDir()).CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil || other != first {
+		t.Errorf("fresh cache: %s, %v; want %s", other, err, first)
+	}
+	later := meta
+	later.When = detected.Add(time.Hour)
+	if commit(later, cmAfter) == first {
+		t.Error("a different time must give a different SHA")
+	}
+	if commit(meta, cmAfter+"# x\n") == first {
+		t.Error("different content must give a different SHA")
+	}
+}
+
+func TestCommitFileRequiresATimestamp(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	m := meta
+	m.When = time.Time{}
+	if _, err := cache.CommitFile(t.Context(), src.url(), base, nil, "README.md", []byte("x\n"), m); !errors.Is(err, ErrNoTimestamp) {
+		t.Errorf("err = %v, want ErrNoTimestamp", err)
+	}
+}
+
+// The operator restarts after pushing the branch but before recording it. The
+// retry rebuilds the commit, possibly with another time, and must adopt the branch.
+func TestCreateBranchAdoptsTheSameChangeCommittedAtAnotherTime(t *testing.T) {
+	src, base := seed(t)
+	ctx := t.Context()
+	first := NewCache(t.TempDir())
+	pushed, err := first.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.CreateBranch(ctx, src.url(), "backflow/dp-1", pushed, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	retry := meta
+	retry.When = detected.Add(5 * time.Minute)
+	retry.Message = "a different message\n"
+	restarted := NewCache(t.TempDir()) // empty cache, as after a pod restart
+	sha, err := restarted.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha == pushed {
+		t.Fatal("test needs two different commits")
+	}
+	if err := restarted.CreateBranch(ctx, src.url(), "backflow/dp-1", sha, nil); err != nil {
+		t.Fatalf("same parent and tree must be adopted, got %v", err)
+	}
+	if got := src.branchSHA("backflow/dp-1"); got != pushed {
+		t.Errorf("branch = %s; the existing branch must stay at %s", got, pushed)
+	}
+}
+
+func TestCreateBranchDoesNotAdoptADifferentChange(t *testing.T) {
+	src, base := seed(t)
+	ctx := t.Context()
+	cache := NewCache(t.TempDir())
+	commit := func(parent, file, content string) string {
+		t.Helper()
+		sha, err := cache.CommitFile(ctx, src.url(), parent, nil, file, []byte(content), meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sha
+	}
+	want := commit(base, "apps/demo/configmap.yaml", cmAfter)
+
+	cases := map[string]string{
+		"other tree": commit(base, "apps/demo/configmap.yaml", cmAfter+"# more\n"),
+		"other file": commit(base, "README.md", "changed\n"),
+	}
+	// Same tree on a different parent: the branch was built on a newer head.
+	newHead := src.commit(map[string]string{"README.md": "moved on\n"})
+	cases["other parent"] = commit(newHead, "apps/demo/configmap.yaml", cmAfter)
+	for name, foreign := range cases {
+		t.Run(name, func(t *testing.T) {
+			branch := "backflow/" + strings.ReplaceAll(name, " ", "-")
+			if err := cache.CreateBranch(ctx, src.url(), branch, foreign, nil); err != nil {
+				t.Fatal(err)
+			}
+			err := cache.CreateBranch(ctx, src.url(), branch, want, nil)
+			var exists *BranchExistsError
+			if !errors.As(err, &exists) || exists.SHA != foreign {
+				t.Fatalf("err = %v, want BranchExistsError at %s", err, foreign)
+			}
+			if got := src.branchSHA(branch); got != foreign {
+				t.Errorf("branch moved to %s", got)
+			}
+		})
 	}
 }
