@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -19,6 +20,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
+	"github.com/sserkanml/backflow/internal/gitrepo"
 )
 
 func TestProposalName(t *testing.T) {
@@ -48,6 +50,170 @@ func TestProposalName(t *testing.T) {
 		}
 		if n != strings.ToLower(n) || strings.ContainsAny(n, "_. ") || strings.HasPrefix(n, "-") || strings.Contains(n, "--") {
 			t.Errorf("not DNS-1123 safe: %q", n)
+		}
+	}
+}
+
+func TestGitAheadSettling(t *testing.T) {
+	at := func(h, m, sec int) string { return time.Date(2026, 3, 4, h, m, sec, 0, time.UTC).Format(time.RFC3339) }
+	app := func(mutate func(o map[string]interface{})) *unstructured.Unstructured {
+		o := map[string]interface{}{}
+		_ = unstructured.SetNestedField(o, "bbb", "status", "sync", "revision")
+		_ = unstructured.SetNestedField(o, "bbb", "status", "operationState", "syncResult", "revision")
+		if mutate != nil {
+			mutate(o)
+		}
+		return &unstructured.Unstructured{Object: o}
+	}
+	tests := []struct {
+		name     string
+		mutate   func(o map[string]interface{})
+		settling bool
+	}{
+		{"idle", nil, false},
+		{"a sync is running", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, "Running", "status", "operationState", "phase")
+		}, true},
+		{"a sync is being cancelled", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, "Terminating", "status", "operationState", "phase")
+		}, true},
+		{"a sync is requested", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, map[string]interface{}{"sync": map[string]interface{}{}}, "operation")
+		}, true},
+		{"finished sync, not compared again yet", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, "Succeeded", "status", "operationState", "phase")
+			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
+			_ = unstructured.SetNestedField(o, at(10, 0, 3), "status", "reconciledAt")
+		}, true},
+		{"compared after the sync", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, "Succeeded", "status", "operationState", "phase")
+			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
+			_ = unstructured.SetNestedField(o, at(10, 0, 6), "status", "reconciledAt")
+		}, false},
+		{"compared in the same second", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
+			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "reconciledAt")
+		}, false},
+		{"finished a moment ago: Argo CD's cache may lag", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, at(11, 59, 50), "status", "operationState", "finishedAt")
+			_ = unstructured.SetNestedField(o, at(11, 59, 55), "status", "reconciledAt")
+		}, true},
+		{"finished long enough ago", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, at(11, 59, 40), "status", "operationState", "finishedAt")
+			_ = unstructured.SetNestedField(o, at(11, 59, 55), "status", "reconciledAt")
+		}, false},
+		{"times missing or unreadable: nothing to judge", func(o map[string]interface{}) {
+			_ = unstructured.SetNestedField(o, "yesterday", "status", "operationState", "finishedAt")
+			_ = unstructured.SetNestedField(o, at(10, 0, 3), "status", "reconciledAt")
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := gitAhead(app(tt.mutate), time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)).settling; got != tt.settling {
+				t.Errorf("settling = %v, want %v", got, tt.settling)
+			}
+		})
+	}
+}
+
+func TestCountUnderPath(t *testing.T) {
+	tests := []struct {
+		name    string
+		changed []string
+		path    string
+		recurse bool
+		want    int
+	}{
+		{"file directly in the directory", []string{"apps/demo/configmap.yaml"}, "apps/demo", false, 1},
+		{"unrelated file", []string{"README.md"}, "apps/demo", false, 0},
+		{"sibling with the same prefix", []string{"apps/demo2/x.yaml", "apps/demo-extra/y.yaml", "apps/demos"}, "apps/demo", true, 0},
+		{"parent directory file", []string{"apps/x.yaml"}, "apps/demo", true, 0},
+		{"nested file without recurse is not part of the source", []string{"apps/demo/sub/x.yaml"}, "apps/demo", false, 0},
+		{"nested file with recurse is", []string{"apps/demo/sub/x.yaml"}, "apps/demo", true, 1},
+		{"counts each file", []string{"apps/demo/a.yaml", "apps/demo/b.yaml", "README.md"}, "apps/demo", false, 2},
+		{"path with ./ and trailing slash", []string{"apps/demo/a.yaml"}, "./apps/demo/", false, 1},
+		{"path with a leading slash", []string{"apps/demo/a.yaml"}, "/apps/demo", false, 1},
+		{"the directory itself replaced by a file", []string{"apps/demo"}, "apps/demo", false, 1},
+		{"repository root, top-level file", []string{"a.yaml"}, ".", false, 1},
+		{"repository root, nested file without recurse", []string{"sub/a.yaml"}, "", false, 0},
+		{"repository root, nested file with recurse", []string{"sub/a.yaml"}, "", true, 1},
+		{"nothing changed", nil, "apps/demo", true, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countUnderPath(tt.changed, tt.path, tt.recurse); got != tt.want {
+				t.Errorf("countUnderPath(%v, %q, %v) = %d, want %d", tt.changed, tt.path, tt.recurse, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsFullSHA(t *testing.T) {
+	for in, want := range map[string]bool{
+		strings.Repeat("a", 40): true, strings.Repeat("0", 40): true,
+		strings.Repeat("A", 40): false, strings.Repeat("a", 39): false, "main": false, "": false,
+		strings.Repeat("g", 40): false,
+	} {
+		if got := isFullSHA(in); got != want {
+			t.Errorf("isFullSHA(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestGitAhead(t *testing.T) {
+	app := func(compared, synced string, multi bool) *unstructured.Unstructured {
+		o := &unstructured.Unstructured{Object: map[string]interface{}{}}
+		set := func(v string, path ...string) {
+			if v == "" {
+				return
+			}
+			if multi {
+				path[len(path)-1] += "s"
+				_ = unstructured.SetNestedStringSlice(o.Object, strings.Split(v, ","), path...)
+				return
+			}
+			_ = unstructured.SetNestedField(o.Object, v, path...)
+		}
+		set(compared, "status", "sync", "revision")
+		set(synced, "status", "operationState", "syncResult", "revision")
+		return o
+	}
+	tests := []struct {
+		name             string
+		compared, synced string
+		multi            bool
+		paused           bool
+	}{
+		{"caught up", "aaa", "aaa", false, false},
+		{"git ahead", "bbb", "aaa", false, true},
+		{"never synced", "bbb", "", false, true},
+		{"nothing compared yet", "", "aaa", false, false},
+		{"nothing at all", "", "", false, false},
+		{"multi source caught up", "a,b", "a,b", true, false},
+		{"multi source, one source ahead", "a,c", "a,b", true, true},
+		{"multi source never synced", "a,b", "", true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := gitAhead(app(tt.compared, tt.synced, tt.multi), time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC))
+			if got.paused != tt.paused {
+				t.Errorf("paused = %v, want %v (%+v)", got.paused, tt.paused, got)
+			}
+		})
+	}
+}
+
+func TestShortRevision(t *testing.T) {
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	for in, want := range map[string]string{
+		sha:             "0123456",
+		sha + "," + sha: "0123456,0123456",
+		"main":          "main",
+		"v1.2.3":        "v1.2.3",
+		"":              "",
+	} {
+		if got := shortRevision(in); got != want {
+			t.Errorf("shortRevision(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -93,6 +259,28 @@ func TestApplicationSyncChanged(t *testing.T) {
 	}
 }
 
+type fakeDiffer struct {
+	paths []string
+	err   error
+	calls int
+	last  [2]string
+	// linked lists the revisions that have a symbolic link below the directory.
+	linked      map[string]bool
+	symlinkErr  error
+	symlinkCall int
+}
+
+func (f *fakeDiffer) HasSymlink(_ context.Context, _, sha, _ string, _ *gitrepo.Auth) (bool, error) {
+	f.symlinkCall++
+	return f.linked[sha], f.symlinkErr
+}
+
+func (f *fakeDiffer) ChangedPaths(_ context.Context, _, from, to string, _ *gitrepo.Auth) ([]string, error) {
+	f.calls++
+	f.last = [2]string{from, to}
+	return f.paths, f.err
+}
+
 type fakeArgo struct {
 	items []argocd.ManagedResource
 	err   error
@@ -126,6 +314,19 @@ var _ = Describe("Drift detection", func() {
 	setResources := func(resources ...interface{}) {
 		Expect(unstructured.SetNestedSlice(app.Object, resources, "status", "resources")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
+	}
+	// setRevisions sets the revision Argo CD compares against and the revision
+	// of its last sync, like Argo CD does. An empty synced means never synced.
+	setRevisions := func(compared, synced string) {
+		if compared != "" {
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, compared, "status", "sync", "revision")).To(Succeed())
+		}
+		if synced != "" {
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, synced, "status", "operationState", "syncResult", "revision")).To(Succeed())
+		} else {
+			unstructured.RemoveNestedField(app.Object, "status", "operationState")
+		}
+		ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 	}
 	configMapRes := func(status string) map[string]interface{} {
 		return map[string]interface{}{
@@ -201,6 +402,8 @@ var _ = Describe("Drift detection", func() {
 		app.SetName("drift-app")
 		app.SetNamespace(ns)
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		// The last sync is at the revision Argo CD compares against.
+		setRevisions("abc123", "abc123")
 		setResources(configMapRes("OutOfSync"))
 
 		argo = &fakeArgo{items: []argocd.ManagedResource{{
@@ -444,12 +647,349 @@ var _ = Describe("Drift detection", func() {
 		})
 	})
 
-	Context("a resource that is in sync again while its merge request is open", func() {
-		const syncedAt = "abc123" // the revision the proposals of these specs were made at
-		setSyncedRevision := func(rev string) {
-			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, rev, "status", "sync", "revision")).To(Succeed())
+	Context("Git is ahead of the last sync of the Application", func() {
+		eventsOf := func(reason string) []string {
+			var out []string
+			for {
+				select {
+				case e := <-recorder.Events:
+					if strings.Contains(e, reason) {
+						out = append(out, e)
+					}
+				default:
+					return out
+				}
+			}
+		}
+		const sha1 = "1111111111111111111111111111111111111111"
+		const sha2 = "2222222222222222222222222222222222222222"
+
+		It("creates no proposal and says so once", func() {
+			setRevisions(sha2, sha1) // a commit that the Application has not synced yet
+			for i := 0; i < 3; i++ {
+				reconcileOnce()
+			}
+			Expect(proposals()).To(BeEmpty(), "an OutOfSync resource may only differ because of the pending commit")
+			got := eventsOf("GitAhead")
+			Expect(got).To(HaveLen(1), "one Event for this combination of revisions")
+			Expect(got[0]).To(And(ContainSubstring("Normal"),
+				ContainSubstring("Git is ahead of the last sync of drift-app (2222222 vs 1111111); drift detection for it is paused until Argo CD syncs.")))
+		})
+
+		It("reports a new combination of revisions again", func() {
+			setRevisions(sha2, sha1)
+			reconcileOnce()
+			Expect(eventsOf("GitAhead")).To(HaveLen(1))
+
+			setRevisions("3333333333333333333333333333333333333333", sha1)
+			reconcileOnce()
+			Expect(eventsOf("GitAhead")).To(HaveLen(1))
+		})
+
+		It("says nothing when nothing is OutOfSync", func() {
+			setResources(configMapRes("Synced"))
+			setRevisions(sha2, sha1)
+			reconcileOnce()
+			Expect(eventsOf("GitAhead")).To(BeEmpty(), "an unrelated commit must not make noise")
+		})
+
+		It("proposes again once the sync has caught up and a real drift is there", func() {
+			setRevisions(sha2, sha1)
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			eventsOf("GitAhead")
+
+			setRevisions(sha2, sha2)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(eventsOf("GitAhead")).To(BeEmpty())
+		})
+
+		It("creates no proposal for an Application that was never synced", func() {
+			setRevisions(sha2, "")
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			got := eventsOf("GitAhead")
+			Expect(got).To(HaveLen(1))
+			Expect(got[0]).To(ContainSubstring("(2222222 vs never synced)"))
+		})
+
+		It("judges nothing when Argo CD reports no compared revision", func() {
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, "", "status", "sync", "revision")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("leaves an open proposal as it is, and neither supersedes nor duplicates it", func() {
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			first := proposals()[0]
+
+			By("the same drift while Git is ahead")
+			setRevisions(sha2, sha1)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+
+			By("a different drift while Git is ahead")
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1), "a different drift is not proposed, so nothing is superseded")
+			Expect(proposals()[0].Name).To(Equal(first.Name))
+			Expect(proposals()[0].Annotations).NotTo(HaveKey(annotationSupersededBy))
+			Expect(proposals()[0].Annotations).NotTo(HaveKey(annotationReverted))
+
+			By("it is retired as usual when the resource is in sync again")
+			setResources(configMapRes("Synced"))
+			reconcileOnce()
+			Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(HaveLen(1))
+		})
+
+		It("follows multi-source Applications by their lists of revisions", func() {
+			setRevisions("", "")
+			unstructured.RemoveNestedField(app.Object, "status", "sync", "revision")
+			Expect(unstructured.SetNestedStringSlice(app.Object, []string{sha1, "feedface"}, "status", "sync", "revisions")).To(Succeed())
+			Expect(unstructured.SetNestedStringSlice(app.Object, []string{sha1, "feedface"}, "status", "operationState", "syncResult", "revisions")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1), "same revisions: not ahead")
+
+			Expect(unstructured.SetNestedStringSlice(app.Object, []string{sha2, "feedface"}, "status", "sync", "revisions")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &proposals()[0])).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty(), "the first source moved ahead")
+		})
+	})
+
+	Context("Git is ahead and the Application's directory is checked", func() {
+		const sha1 = "1111111111111111111111111111111111111111"
+		const sha2 = "2222222222222222222222222222222222222222"
+		var differ *fakeDiffer
+		gitAheadEvents := func() []string {
+			var out []string
+			for {
+				select {
+				case e := <-recorder.Events:
+					if strings.Contains(e, "GitAhead") {
+						out = append(out, e)
+					}
+				default:
+					return out
+				}
+			}
+		}
+		setSourceType := func(t string) {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Applications[0].SourceType = t
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		}
+
+		BeforeEach(func() {
+			differ = &fakeDiffer{}
+			r.Git = differ
+			setRevisions(sha2, sha1) // a commit the Application has not synced
+		})
+
+		It("proposes for a real drift when the commit is outside the directory", func() {
+			differ.paths = []string{"README.md", "apps/other/deployment.yaml"}
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1), "an unrelated commit must not pause detection")
+			Expect(gitAheadEvents()).To(BeEmpty())
+			Expect(differ.calls).To(Equal(1))
+			Expect(differ.last).To(Equal([2]string{sha1, sha2}), "from the last sync to the compared revision")
+		})
+
+		It("pauses, and says how many files changed, when the commit is under the directory", func() {
+			differ.paths = []string{"README.md", "apps/demo/configmap.yaml", "apps/demo/deployment.yaml"}
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			got := gitAheadEvents()
+			Expect(got).To(HaveLen(1))
+			Expect(got[0]).To(ContainSubstring(
+				"Git is ahead of the last sync of drift-app and 2 file(s) under apps/demo changed (2222222 vs 1111111); drift detection for it is paused until Argo CD syncs."))
+		})
+
+		It("does not count a sibling folder that shares the prefix", func() {
+			differ.paths = []string{"apps/demo2/configmap.yaml", "apps/demo-extra/x.yaml"}
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(gitAheadEvents()).To(BeEmpty())
+		})
+
+		It("counts nested files only with directory.recurse", func() {
+			differ.paths = []string{"apps/demo/sub/x.yaml"}
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1), "without recurse the nested file is not part of the source")
+
+			Expect(k8sClient.Delete(ctx, &proposals()[0])).To(Succeed())
+			Expect(unstructured.SetNestedField(app.Object, true, "spec", "source", "directory", "recurse")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			Expect(gitAheadEvents()).To(HaveLen(1))
+		})
+
+		DescribeTable("pauses whenever the directory cannot be trusted to hold everything",
+			func(prepare func(), wantCalls int, wantMessage string) {
+				differ.paths = []string{"README.md"} // outside the directory, so a check would let it through
+				prepare()
+				reconcileOnce()
+				Expect(proposals()).To(BeEmpty())
+				Expect(differ.calls).To(Equal(wantCalls))
+				got := gitAheadEvents()
+				Expect(got).To(HaveLen(1))
+				Expect(got[0]).To(ContainSubstring(wantMessage))
+				Expect(got[0]).NotTo(ContainSubstring("file(s) under"))
+			},
+			Entry("Kustomize", func() { setSourceType("Kustomize") }, 0, "Git is ahead of the last sync of drift-app ("),
+			Entry("Helm", func() { setSourceType("Helm") }, 0, "Git is ahead of the last sync of drift-app ("),
+			Entry("several sources", func() {
+				Expect(unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{"path": "apps/demo"}}, "spec", "sources")).To(Succeed())
+				Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			}, 0, "Git is ahead of the last sync of drift-app ("),
+			Entry("never synced", func() { setRevisions(sha2, "") }, 0, "(2222222 vs never synced)"),
+			Entry("a compared revision that is not a commit", func() { setRevisions("main", sha1) }, 0, "(main vs 1111111)"),
+			Entry("an unreadable repository", func() { differ.err = errors.New("repository unavailable") }, 1, "(2222222 vs 1111111)"),
+			Entry("no way to read the repository at all", func() { r.Git = nil }, 0, "(2222222 vs 1111111)"),
+		)
+
+		It("pauses when a symbolic link is below the directory at either revision, as for an unreadable repository", func() {
+			differ.paths = []string{"README.md"} // would let the commit through
+			differ.linked = map[string]bool{sha2: true}
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			got := gitAheadEvents()
+			Expect(got).To(HaveLen(1))
+			Expect(got[0]).To(ContainSubstring("Git is ahead of the last sync of drift-app (2222222 vs 1111111); drift detection for it is paused until Argo CD syncs."))
+			Expect(got[0]).NotTo(ContainSubstring("file(s) under"))
+			Expect(differ.calls).To(BeZero(), "no diff is trusted once a link is found")
+
+			By("at the last synced revision too, and the answer is remembered")
+			differ.linked = map[string]bool{sha1: true}
+			setRevisions("3333333333333333333333333333333333333333", sha1)
+			reconcileOnce()
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			Expect(differ.calls).To(BeZero())
+			Expect(gitAheadEvents()).To(HaveLen(1))
+			calls := differ.symlinkCall
+			reconcileOnce()
+			Expect(differ.symlinkCall).To(Equal(calls), "a link does not go away by looking again")
+		})
+
+		It("pauses when the symlink check itself fails", func() {
+			differ.paths = []string{"README.md"}
+			differ.symlinkErr = errors.New("repository unavailable")
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			Expect(gitAheadEvents()).To(HaveLen(1))
+			Expect(differ.calls).To(BeZero())
+		})
+
+		It("looks for links before it looks at paths", func() {
+			differ.paths = []string{"README.md"}
+			reconcileOnce()
+			Expect(differ.symlinkCall).To(Equal(2), "the synced and the compared revision")
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("looks at the repository once per combination of revisions", func() {
+			differ.paths = []string{"README.md"}
+			for i := 0; i < 4; i++ {
+				reconcileOnce()
+			}
+			Expect(differ.calls).To(Equal(1))
+
+			setRevisions("3333333333333333333333333333333333333333", sha1)
+			reconcileOnce()
+			Expect(differ.calls).To(Equal(2), "another compared revision is another look")
+		})
+
+		It("tries an unreadable repository again, but not at once", func() {
+			base := time.Now()
+			offset := time.Duration(0)
+			r.Now = func() time.Time { return base.Add(offset) }
+			differ.err = errors.New("repository unavailable")
+
+			reconcileOnce()
+			reconcileOnce()
+			Expect(differ.calls).To(Equal(1), "a failure is remembered for a moment")
+			Expect(proposals()).To(BeEmpty())
+
+			offset = aheadErrorTTL + time.Second
+			differ.err = nil
+			differ.paths = []string{"README.md"}
+			reconcileOnce()
+			Expect(differ.calls).To(Equal(2))
+			Expect(proposals()).To(HaveLen(1), "once readable, an unrelated commit does not pause")
+		})
+	})
+
+	Context("an Application whose sync has just finished", func() {
+		const sha = "1111111111111111111111111111111111111111"
+		setOperation := func(phase, finishedAt, reconciledAt string) {
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sha, "status", "sync", "revision")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sha, "status", "operationState", "syncResult", "revision")).To(Succeed())
+			if phase != "" {
+				ExpectWithOffset(1, unstructured.SetNestedField(app.Object, phase, "status", "operationState", "phase")).To(Succeed())
+			}
+			if finishedAt != "" {
+				ExpectWithOffset(1, unstructured.SetNestedField(app.Object, finishedAt, "status", "operationState", "finishedAt")).To(Succeed())
+			}
+			if reconciledAt != "" {
+				ExpectWithOffset(1, unstructured.SetNestedField(app.Object, reconciledAt, "status", "reconciledAt")).To(Succeed())
+			}
 			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 		}
+
+		It("waits a moment after the sync finished, and asks to be looked at again when it is over", func() {
+			base := time.Now()
+			offset := time.Duration(0)
+			r.Now = func() time.Time { return base.Add(offset) }
+			finished := base.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+			reconciled := base.Add(-1 * time.Second).UTC().Format(time.RFC3339)
+			setOperation("Succeeded", finished, reconciled)
+
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proposals()).To(BeEmpty(), "a sync finished seconds ago; the OutOfSync status may be stale")
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(res.RequeueAfter).To(BeNumerically("<=", syncSettleGrace), "not the two minutes of the periodic resync")
+
+			offset = syncSettleGrace + 2*time.Second
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1), "still OutOfSync after the grace period: a real drift")
+		})
+
+		It("makes no proposal while the sync runs or its result is not compared yet, and no noise either", func() {
+			setOperation("Running", "", "")
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+
+			setOperation("Succeeded", "2026-03-04T10:00:05Z", "2026-03-04T10:00:03Z")
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty(), "the resource statuses still describe the state before the sync")
+
+			for {
+				select {
+				case e := <-recorder.Events:
+					Expect(e).NotTo(ContainSubstring("GitAhead"), "this is not Git being ahead")
+				default:
+					goto drained
+				}
+			}
+		drained:
+			setOperation("Succeeded", "2026-03-04T10:00:05Z", "2026-03-04T10:00:06Z")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1), "compared after the sync: a real drift is proposed")
+		})
+	})
+
+	Context("a resource that is in sync again while its merge request is open", func() {
+		const syncedAt = "abc123" // the revision the proposals of these specs were made at
+		// A sync of rev: Argo CD compares against it and has synced it.
+		setSyncedRevision := func(rev string) { setRevisions(rev, rev) }
 		// proposed puts the only proposal into Proposed with an open merge request.
 		proposed := func() backflowv1alpha1.DriftProposal {
 			p := proposals()[0]
