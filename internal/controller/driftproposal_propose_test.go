@@ -1011,6 +1011,122 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
 		})
 
+		Context("when Argo CD reset the cluster to Git while the merge request is open", func() {
+			const rev = "0123456789abcdef0123456789abcdef01234567"
+			liveReverted := func() *metav1.Condition { return condition(conditionLiveReverted) }
+
+			It("keeps the proposal Proposed, comments once and keeps tracking", func() {
+				annotate(annotationLiveReverted, rev)
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(Equal(trackInterval), "tracking goes on")
+
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(got.Status.MergeRequest.State).To(Equal("open"))
+				Expect(liveReverted().Status).To(Equal(metav1.ConditionTrue))
+				Expect(liveReverted().Reason).To(Equal(reasonSyncedNewRevision))
+				Expect(liveReverted().ObservedGeneration).To(Equal(got.Generation))
+				Expect(got.Status.Message).To(ContainSubstring(rev))
+				Expect(provider.comments).To(HaveLen(1))
+				Expect(provider.comments[0]).To(Equal(
+					"The cluster was reset to Git by an Argo CD sync of " + rev + ". " +
+						"Merging this merge request makes the change permanent again.\n"))
+				Expect(provider.closed).To(BeEmpty(), "the merge request stays open")
+				Expect(provider.deleted).To(BeEmpty(), "and so does its branch")
+				Expect(repo.branch(branch)).NotTo(BeEmpty())
+				Expect(condition(conditionCleanedUp)).To(BeNil())
+
+				By("one comment, however often it is polled")
+				for i := 0; i < 3; i++ {
+					_, err = reconcileDP()
+					Expect(err).NotTo(HaveOccurred())
+				}
+				Expect(provider.comments).To(HaveLen(1))
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			})
+
+			It("is merged later as usual", func() {
+				annotate(annotationLiveReverted, rev)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+
+				provider.setState(7, scm.StateMerged, "abc123")
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+				Expect(got.Status.CommitSHA).To(Equal("abc123"))
+				Expect(provider.closed).To(BeEmpty())
+			})
+
+			It("is rejected later as usual when the merge request is closed", func() {
+				annotate(annotationLiveReverted, rev)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+
+				provider.setState(7, scm.StateClosed, "")
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+				Expect(provider.deleted).To(BeEmpty())
+			})
+
+			It("can still be superseded: the merge request is then closed", func() {
+				annotate(annotationLiveReverted, rev)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+
+				annotate(annotationSupersededBy, "newer-dp")
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+			})
+
+			It("goes False when the change is live again, and comments again for a second reset", func() {
+				annotate(annotationLiveReverted, rev)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+
+				By("the drift controller removes the annotation when the change returns")
+				got := latest()
+				delete(got.Annotations, annotationLiveReverted)
+				Expect(k8sClient.Update(ctx, got)).To(Succeed())
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(liveReverted().Status).To(Equal(metav1.ConditionFalse))
+				Expect(liveReverted().Reason).To(Equal(reasonLiveChangeReturned))
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(provider.comments).To(HaveLen(1), "nothing is said when the change returns")
+
+				By("a later reset is a new event")
+				annotate(annotationLiveReverted, "fedcba9876543210fedcba9876543210fedcba98")
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(liveReverted().Status).To(Equal(metav1.ConditionTrue))
+				Expect(provider.comments).To(HaveLen(2))
+				Expect(provider.comments[1]).To(ContainSubstring("fedcba9876543210"))
+			})
+
+			It("retries the comment when it could not be posted, without recording the reset", func() {
+				annotate(annotationLiveReverted, rev)
+				provider.commentErr, provider.commentErrOnce = fmt.Errorf("%w: boom", scm.ErrUnavailable), true
+
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(BeNumerically(">=", trackInterval))
+				Expect(liveReverted()).To(BeNil())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(liveReverted().Status).To(Equal(metav1.ConditionTrue))
+				Expect(provider.comments).To(HaveLen(1))
+			})
+		})
+
 		It("does nothing for a proposal that is already cleaned up", func() {
 			annotate(annotationSupersededBy, "newer-dp")
 			_, err := reconcileDP()
@@ -1065,6 +1181,23 @@ var _ = Describe("DriftProposal proposing", func() {
 	})
 
 	Context("retiring a proposal that has no merge request yet", func() {
+		It("treats a reset by a sync as a plain revert", func() {
+			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
+				[]byte(`{"metadata":{"annotations":{"`+annotationLiveReverted+`":"0123456789abcdef"}}}`)))).To(Succeed())
+
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+			Expect(got.Status.Message).To(ContainSubstring("0123456789abcdef"))
+			Expect(provider.calls).To(BeEmpty())
+			Expect(condition(conditionLiveReverted)).To(BeNil())
+		})
+
 		It("does not touch the provider", func() {
 			setMode(backflowv1alpha1.ModeReportOnly, nil)
 			_, err := reconcileDP()

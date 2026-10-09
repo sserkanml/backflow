@@ -444,6 +444,107 @@ var _ = Describe("Drift detection", func() {
 		})
 	})
 
+	Context("a resource that is in sync again while its merge request is open", func() {
+		const syncedAt = "abc123" // the revision the proposals of these specs were made at
+		setSyncedRevision := func(rev string) {
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, rev, "status", "sync", "revision")).To(Succeed())
+			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
+		}
+		// proposed puts the only proposal into Proposed with an open merge request.
+		proposed := func() backflowv1alpha1.DriftProposal {
+			p := proposals()[0]
+			p.Status.Phase = backflowv1alpha1.PhaseProposed
+			p.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{
+				URL: "https://git.test/-/merge_requests/7", Number: 7, Branch: "backflow/x", State: "open",
+			}
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, &p)).To(Succeed())
+			return p
+		}
+		annotations := func() map[string]string { return proposals()[0].Annotations }
+
+		BeforeEach(func() {
+			setSyncedRevision(syncedAt)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			proposed()
+			// Argo CD reset the resource: it is Synced and holds Git's value.
+			setResources(configMapRes("Synced"))
+			argo.items[0].NormalizedLiveState = configMapState("info")
+			argo.calls = 0
+		})
+
+		It("keeps the change in its merge request when a sync of a new revision reset the cluster", func() {
+			setSyncedRevision("def456")
+			for i := 0; i < 3; i++ {
+				reconcileDrift()
+			}
+			Expect(annotations()).To(HaveKeyWithValue(annotationLiveReverted, "def456"))
+			Expect(annotations()).NotTo(HaveKey(annotationReverted), "not retired: its merge request still holds the change")
+			Expect(proposals()).To(HaveLen(1))
+			Expect(argo.calls).To(Equal(1), "the live state is read once, then the annotation is enough")
+		})
+
+		It("still counts the proposal as open, so the same drift does not create a second one", func() {
+			setSyncedRevision("def456")
+			reconcileDrift()
+			Expect(isOpen(&proposals()[0])).To(BeTrue())
+
+			By("the change is made again in the cluster")
+			argo.items[0].NormalizedLiveState = configMapState("debug")
+			setResources(configMapRes("OutOfSync"))
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1), "the proposal that waits in its merge request is the one")
+			Expect(annotations()).NotTo(HaveKey(annotationLiveReverted), "the change is live again")
+		})
+
+		It("retires the proposal when the cluster was reset in place, at the same revision", func() {
+			reconcileDrift()
+			Expect(annotations()).To(HaveKey(annotationReverted))
+			Expect(annotations()).NotTo(HaveKey(annotationLiveReverted))
+			Expect(argo.calls).To(BeZero(), "no API call: the status alone settles it")
+		})
+
+		It("retires the proposal when Git adopted the change at a new revision", func() {
+			setSyncedRevision("def456")
+			argo.items[0].NormalizedLiveState = configMapState("debug") // the recorded live value, now also in Git
+			reconcileDrift()
+			Expect(annotations()).To(HaveKey(annotationReverted))
+			Expect(annotations()).NotTo(HaveKey(annotationLiveReverted))
+		})
+
+		It("retires the proposal when the field holds neither value", func() {
+			setSyncedRevision("def456")
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileDrift()
+			Expect(annotations()).To(HaveKey(annotationReverted))
+			Expect(annotations()).NotTo(HaveKey(annotationLiveReverted))
+		})
+
+		It("waits instead of guessing when the live state cannot be read", func() {
+			setSyncedRevision("def456")
+			argo.err = errors.New("argo is down")
+			reconcileDrift()
+			Expect(annotations()).NotTo(HaveKey(annotationReverted))
+			Expect(annotations()).NotTo(HaveKey(annotationLiveReverted))
+
+			argo.err = nil
+			reconcileDrift()
+			Expect(annotations()).To(HaveKey(annotationLiveReverted))
+		})
+
+		It("retires a proposal that has no merge request, whatever reset the cluster", func() {
+			p := proposals()[0]
+			p.Status.Phase = backflowv1alpha1.PhaseMapping
+			p.Status.MergeRequest = nil
+			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
+			setSyncedRevision("def456")
+
+			reconcileDrift()
+			Expect(annotations()).To(HaveKey(annotationReverted))
+			Expect(annotations()).NotTo(HaveKey(annotationLiveReverted))
+		})
+	})
+
 	It("does not call Argo CD when nothing is OutOfSync and nothing is open", func() {
 		setResources(configMapRes("Synced"))
 		reconcileOnce()
