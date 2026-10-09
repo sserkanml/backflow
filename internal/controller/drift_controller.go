@@ -84,6 +84,9 @@ type DriftReconciler struct {
 	aheadMu       sync.Mutex
 	aheadReported map[string]string // per Application: the revisions an Event was last emitted for
 	aheadChecks   map[aheadKey]aheadCheck
+
+	stableMu sync.Mutex
+	pending  map[pendingKey]*pendingDrift // drifts seen but not yet stable enough to propose
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
@@ -197,6 +200,10 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// from the cluster only because a commit has not been applied yet. A
 	// proposal made now could undo that commit, so no new one is made.
 	paused := len(candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
+	st := gitAhead(app)
+	if len(candidates) == 0 {
+		r.forgetStable(policy, summary.Name, nil)
+	}
 
 	// The Argo CD API is only worth calling for an application that has
 	// something to compare (an OutOfSync resource) or something to follow up
@@ -249,7 +256,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 					continue
 				}
 				drifting[res.hash()] = changes
-				if err := r.ensureProposal(ctx, policy, summary, res, changes, all, paused); err != nil && firstErr == nil {
+				if err := r.ensureProposal(ctx, policy, summary, res, changes, all, paused, st); err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}
@@ -257,6 +264,16 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 				return firstErr
 			}
 		}
+	}
+
+	// What was seen of resources that no longer drift is forgotten: a drift
+	// that comes back starts its window again.
+	if apiOK {
+		keep := make(map[string]bool, len(drifting))
+		for rh := range drifting {
+			keep[rh] = true
+		}
+		r.forgetStable(policy, summary.Name, keep)
 	}
 
 	// Close open proposals whose drift is gone. Without a successful API call
@@ -315,7 +332,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 // The spec of an existing proposal is never modified.
 func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, res appResource,
-	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool) error {
+	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool, st aheadState) error {
 	log := logf.FromContext(ctx)
 
 	srcType, ok := proposalSourceType(summary.SourceType)
@@ -351,6 +368,14 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	case current == nil:
 		if blocker := blockingProposal(all, rh, changes, summary.SyncedRevision); blocker != nil {
 			return r.noteBlocked(ctx, policy, summary, blocker)
+		}
+		if ready, wait := r.stable(policy, summary.Name, rh, changes, st); !ready {
+			logf.FromContext(ctx).V(1).Info("Drift seen; waiting for it to stay the same before proposing",
+				"application", summary.Name, "resource", res.Name, "recheckIn", wait.String())
+			if again, ok := ctx.Value(recheckKey{}).(*recheck); ok {
+				again.ask(wait)
+			}
+			return nil
 		}
 		attempt := 0
 		for names[proposalName(summary.Name, res, changes, attempt)] {

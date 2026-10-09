@@ -80,8 +80,11 @@ type BackflowPolicySpec struct {
 	// +optional
 	MergeRequest *MergeRequestOptions `json:"mergeRequest,omitempty"`
 
-	// Changes to the same Application within this window are grouped
-	// into a single proposal.
+	// A drift becomes a proposal only after it has stayed the same, at the
+	// same synced revision, for this long and across at least two
+	// observations. A drift that disappears within the window is never
+	// proposed, and several quick edits to the same resource give one
+	// proposal for the final state.
 	// +kubebuilder:default="30s"
 	BatchWindow metav1.Duration `json:"batchWindow,omitempty"`
 }

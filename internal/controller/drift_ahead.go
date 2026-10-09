@@ -20,12 +20,6 @@ const (
 	aheadErrorTTL = 30 * time.Second
 	// aheadCacheMax bounds the number of remembered looks.
 	aheadCacheMax = 256
-	// syncSettleGrace is how long after a sync finished no new proposal is
-	// made. Argo CD records the finished sync and the resource statuses in
-	// separate updates, and compares against a cache of the cluster that can
-	// still lag behind what the sync applied; both can make a resource look
-	// OutOfSync for a moment after the sync fixed it.
-	syncSettleGrace = 15 * time.Second
 )
 
 // recheck collects the earliest time a reconcile wants to look again.
@@ -66,9 +60,6 @@ type aheadState struct {
 	// the revision of the last sync, or there was none.
 	paused           bool
 	compared, synced string // revisions, joined with commas for several sources
-	// settleFor is how much longer the Application settles because a sync
-	// finished moments ago; zero when it does not.
-	settleFor time.Duration
 }
 
 // revisions reads the single revision at the path, or the list of revisions of
@@ -100,11 +91,11 @@ func statusTime(app *unstructured.Unstructured, path ...string) time.Time {
 // compared revision there is nothing to judge, and nothing is paused.
 //
 // Argo CD writes the result of a sync and the new resource statuses in
-// separate updates, and its comparison can rest on a cache of the cluster that
-// lags behind the sync. The Application is settling while a sync runs, until a
-// comparison after it is recorded (reconciledAt reaches the sync's finishedAt),
-// and for syncSettleGrace after it finished.
-func gitAhead(app *unstructured.Unstructured, now time.Time) aheadState {
+// separate updates. The Application is settling while a sync runs and until a
+// comparison after it is recorded (reconciledAt reaches the sync's finishedAt).
+// Its comparison can still rest on a cache of the cluster that lags behind the
+// sync; the stability rule (see stable) covers that without guessing how long.
+func gitAhead(app *unstructured.Unstructured) aheadState {
 	st := aheadState{
 		compared: revisions(app, []string{"status", "sync", "revision"}, []string{"status", "sync", "revisions"}),
 		synced: revisions(app, []string{"status", "operationState", "syncResult", "revision"},
@@ -121,13 +112,6 @@ func gitAhead(app *unstructured.Unstructured, now time.Time) aheadState {
 	reconciled := statusTime(app, "status", "reconciledAt")
 	if !finished.IsZero() && !reconciled.IsZero() && reconciled.Before(finished) {
 		st.settling = true
-	}
-	// Even a comparison made after the sync can rest on a lagging cache.
-	if !finished.IsZero() {
-		if left := finished.Add(syncSettleGrace).Sub(now); left > 0 {
-			st.settling = true
-			st.settleFor = left
-		}
 	}
 	return st
 }
@@ -286,15 +270,9 @@ func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflow
 // Application now, and says why in an Event when that is Git being ahead.
 func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) bool {
-	st := gitAhead(app, r.now())
+	st := gitAhead(app)
 	if st.settling {
 		logf.FromContext(ctx).V(1).Info("A sync is running or not yet compared; no new proposals", "application", summary.Name)
-		if st.settleFor > 0 {
-			// Nothing else will wake this up when the grace period ends.
-			if c, ok := ctx.Value(recheckKey{}).(*recheck); ok {
-				c.ask(st.settleFor + time.Second)
-			}
-		}
 		return true
 	}
 	if !st.paused {
