@@ -96,11 +96,12 @@ func (c *Cache) branchTipLocked(ctx context.Context, repoURL, branch string, aut
 	return sha, nil
 }
 
-// remoteBranch lists the remote's refs and returns the tip of branch.
-func remoteBranch(ctx context.Context, repo *git.Repository, branch string, auth *Auth) (string, error) {
+// listRemote lists the refs the remote advertises. An empty repository
+// advertises none.
+func listRemote(ctx context.Context, repo *git.Repository, auth *Auth) ([]*plumbing.Reference, error) {
 	remote, err := repo.Remote("origin")
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	opts := &git.ListOptions{}
 	if fo := fetchOptions(auth, nil); fo != nil {
@@ -109,9 +110,18 @@ func remoteBranch(ctx context.Context, repo *git.Repository, branch string, auth
 	refs, err := remote.ListContext(ctx, opts)
 	if err != nil {
 		if errors.Is(classify(err), ErrRevisionNotFound) { // empty repository
-			return "", fmt.Errorf("%w: %s", ErrBranchNotFound, branch)
+			return nil, nil
 		}
-		return "", classify(err)
+		return nil, classify(err)
+	}
+	return refs, nil
+}
+
+// remoteBranch lists the remote's refs and returns the tip of branch.
+func remoteBranch(ctx context.Context, repo *git.Repository, branch string, auth *Auth) (string, error) {
+	refs, err := listRemote(ctx, repo, auth)
+	if err != nil {
+		return "", err
 	}
 	want := plumbing.NewBranchReferenceName(branch)
 	for _, ref := range refs {
@@ -120,6 +130,58 @@ func remoteBranch(ctx context.Context, repo *git.Repository, branch string, auth
 		}
 	}
 	return "", fmt.Errorf("%w: %s", ErrBranchNotFound, branch)
+}
+
+// DefaultBranch returns the branch HEAD points to on the remote. It returns
+// ErrBranchNotFound when the remote does not say (no symbolic HEAD): the
+// default branch is never guessed.
+func (c *Cache) DefaultBranch(ctx context.Context, repoURL string, auth *Auth) (string, error) {
+	unlock, err := c.lock(ctx, c.Dir(repoURL))
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	repo, err := openOrInit(c.Dir(repoURL), repoURL)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	refs, err := listRemote(ctx, repo, auth)
+	if err != nil {
+		return "", err
+	}
+	for _, ref := range refs {
+		if ref.Name() == plumbing.HEAD && ref.Type() == plumbing.SymbolicReference && ref.Target().IsBranch() {
+			return ref.Target().Short(), nil
+		}
+	}
+	return "", fmt.Errorf("%w: the remote does not report its default branch", ErrBranchNotFound)
+}
+
+// CommitInfo is what Backflow needs to know about a commit it did not build.
+type CommitInfo struct {
+	Message string
+	Parents []string
+}
+
+// CommitInfo reads a commit, fetching it into the cache when needed.
+func (c *Cache) CommitInfo(ctx context.Context, repoURL, sha string, auth *Auth) (*CommitInfo, error) {
+	if !fullSHA.MatchString(sha) {
+		return nil, fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, sha)
+	}
+	unlock, err := c.lock(ctx, c.Dir(repoURL))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	_, commit, err := c.openCommit(ctx, repoURL, sha, auth)
+	if err != nil {
+		return nil, err
+	}
+	info := &CommitInfo{Message: commit.Message}
+	for _, p := range commit.ParentHashes {
+		info.Parents = append(info.Parents, p.String())
+	}
+	return info, nil
 }
 
 // CommitFile creates a commit on top of baseSHA whose tree equals the base

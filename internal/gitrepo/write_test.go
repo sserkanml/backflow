@@ -565,3 +565,47 @@ func TestCreateBranchDoesNotAdoptADifferentChange(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultBranch(t *testing.T) {
+	src, _ := seed(t)
+	cache := NewCache(t.TempDir())
+	got, err := cache.DefaultBranch(t.Context(), src.url(), nil)
+	if err != nil || got != "master" {
+		t.Fatalf("DefaultBranch = %q, %v; want master", got, err)
+	}
+	if _, err := cache.DefaultBranch(t.Context(), "file:///does/not/exist", nil); err == nil || errors.Is(err, ErrBranchNotFound) {
+		t.Errorf("unreachable repository: err = %v", err)
+	}
+	empty := newSourceRepo(t)
+	if _, err := cache.DefaultBranch(t.Context(), empty.url(), nil); !errors.Is(err, ErrBranchNotFound) {
+		t.Errorf("empty repository: err = %v, want ErrBranchNotFound", err)
+	}
+}
+
+func TestCommitInfo(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	sha, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte("x\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := cache.CommitInfo(ctx, src.url(), sha, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Message != meta.Message || len(info.Parents) != 1 || info.Parents[0] != base {
+		t.Errorf("info = %+v", info)
+	}
+	if _, err := cache.CommitInfo(ctx, src.url(), "short", nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
+	}
+	if _, err := cache.CommitInfo(ctx, src.url(), strings.Repeat("0", 40), nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("unknown sha: err = %v", err)
+	}
+	// A commit the cache does not have yet is fetched.
+	fresh := NewCache(t.TempDir())
+	if info, err := fresh.CommitInfo(ctx, src.url(), base, nil); err != nil || len(info.Parents) != 0 {
+		t.Errorf("fresh cache: %+v, %v", info, err)
+	}
+}
