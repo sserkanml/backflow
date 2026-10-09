@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -58,6 +59,7 @@ func init() {
 func main() {
 	var metricsAddr string
 	var repoCacheDir string
+	var mrPollInterval time.Duration
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
@@ -70,6 +72,8 @@ func main() {
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&repoCacheDir, "repo-cache-dir", "",
 		"Directory where Git repositories are cached for mapping. Defaults to <os.TempDir()>/backflow-repos.")
+	flag.DurationVar(&mrPollInterval, "merge-request-poll-interval", 2*time.Minute,
+		"How often the state of an open merge request is polled.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -220,10 +224,11 @@ func main() {
 	}
 	repoCache := gitrepo.NewCache(repoCacheDir)
 	if err := (&controller.DriftProposalReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Repos:  controller.CacheReader{Cache: repoCache},
-		Writer: repoCache,
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Repos:         controller.CacheReader{Cache: repoCache},
+		Writer:        repoCache,
+		TrackInterval: mrPollInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)

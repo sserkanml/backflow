@@ -150,7 +150,7 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: trackInterval}, nil
+	return ctrl.Result{RequeueAfter: r.trackEvery()}, nil
 }
 
 // trackingFailure records that the merge request could not be read and tries
@@ -164,7 +164,7 @@ func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backf
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	delay := trackInterval
+	delay := r.trackEvery()
 	if advised > delay {
 		delay = min(advised, retryMax)
 	}

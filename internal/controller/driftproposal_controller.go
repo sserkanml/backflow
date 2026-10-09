@@ -52,8 +52,19 @@ type DriftProposalReconciler struct {
 	// NewProvider builds the merge request client of an ScmConnection.
 	// Defaults to scm.New.
 	NewProvider func(scm.Config) (scm.Provider, error)
+	// TrackInterval is how often an open merge request is polled. Defaults to
+	// two minutes.
+	TrackInterval time.Duration
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
+}
+
+// trackEvery is how often an open merge request is polled.
+func (r *DriftProposalReconciler) trackEvery() time.Duration {
+	if r.TrackInterval > 0 {
+		return r.TrackInterval
+	}
+	return trackInterval
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals,verbs=get;list;watch;create;update;patch;delete
