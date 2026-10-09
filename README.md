@@ -75,3 +75,16 @@ make test               # unit and envtest tests
   When a policy stops matching an Application, conflicts with another policy
   or its connection is not Ready, proposals that are already open keep their
   phase; they are not closed or withdrawn.
+- **While Git is ahead of the last sync of an Application (manual sync, or a
+  failing sync), drift detection for that Application is paused, so Backflow
+  never proposes to revert a commit.** For a Directory source, only commits
+  that change files under the Application's directory count (respecting
+  `directory.recurse`); a commit elsewhere in the repository does not pause
+  anything. For Helm and Kustomize sources, Applications with several sources,
+  Applications that were never synced, directories that contain a symbolic
+  link (at either revision), and when the repository cannot be read, every
+  commit pauses detection, because the check cannot be trusted. One Event on
+  the policy says so. Proposals that are already open are left as they are.
+  Detection is also held back while a sync is running, until Argo CD has
+  compared again after it, and for 15 seconds after it finished, because Argo CD
+  can show a resource as OutOfSync for a moment after the sync fixed it.
