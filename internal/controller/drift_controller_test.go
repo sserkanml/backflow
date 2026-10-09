@@ -94,14 +94,6 @@ func TestGitAheadSettling(t *testing.T) {
 			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
 			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "reconciledAt")
 		}, false},
-		{"finished a moment ago: Argo CD's cache may lag", func(o map[string]interface{}) {
-			_ = unstructured.SetNestedField(o, at(11, 59, 50), "status", "operationState", "finishedAt")
-			_ = unstructured.SetNestedField(o, at(11, 59, 55), "status", "reconciledAt")
-		}, true},
-		{"finished long enough ago", func(o map[string]interface{}) {
-			_ = unstructured.SetNestedField(o, at(11, 59, 40), "status", "operationState", "finishedAt")
-			_ = unstructured.SetNestedField(o, at(11, 59, 55), "status", "reconciledAt")
-		}, false},
 		{"times missing or unreadable: nothing to judge", func(o map[string]interface{}) {
 			_ = unstructured.SetNestedField(o, "yesterday", "status", "operationState", "finishedAt")
 			_ = unstructured.SetNestedField(o, at(10, 0, 3), "status", "reconciledAt")
@@ -109,7 +101,7 @@ func TestGitAheadSettling(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := gitAhead(app(tt.mutate), time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)).settling; got != tt.settling {
+			if got := gitAhead(app(tt.mutate)).settling; got != tt.settling {
 				t.Errorf("settling = %v, want %v", got, tt.settling)
 			}
 		})
@@ -195,7 +187,7 @@ func TestGitAhead(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := gitAhead(app(tt.compared, tt.synced, tt.multi), time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC))
+			got := gitAhead(app(tt.compared, tt.synced, tt.multi))
 			if got.paused != tt.paused {
 				t.Errorf("paused = %v, want %v (%+v)", got.paused, tt.paused, got)
 			}
@@ -333,6 +325,16 @@ var _ = Describe("Drift detection", func() {
 			"version": "v1", "kind": "ConfigMap", "namespace": "demo", "name": "demo-config", "status": status,
 		}
 	}
+	// The drift controller reads time from this clock, which tests move.
+	var (
+		clockBase   time.Time
+		clockOffset time.Duration
+	)
+	clock := func() time.Time { return clockBase.Add(clockOffset) }
+	advance := func(d time.Duration) { clockOffset += d }
+	// settle moves the clock past the batch window of the policy.
+	settle := func() { advance(policy.Spec.BatchWindow.Duration + time.Second) }
+
 	// reconcileDrift runs only the drift controller, which never writes status.
 	reconcileDrift := func() {
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
@@ -341,6 +343,10 @@ var _ = Describe("Drift detection", func() {
 	// reconcileOnce runs the drift controller, then the DriftProposal
 	// controller for every proposal, like the manager would.
 	reconcileOnce := func() {
+		// A drift becomes a proposal after two observations a batch window
+		// apart, so this looks twice with the clock moved on in between.
+		reconcileDrift()
+		settle()
 		reconcileDrift()
 		var list backflowv1alpha1.DriftProposalList
 		ExpectWithOffset(1, k8sClient.List(ctx, &list, client.InNamespace(ns),
@@ -379,6 +385,9 @@ var _ = Describe("Drift detection", func() {
 				ArgoCDNamespace: ns,
 				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"drift-app"}},
 				Mode:            backflowv1alpha1.ModeReportOnly,
+				// A typed client sends 0s for an unset duration; the API default
+				// of 30s only applies to a manifest that leaves the field out.
+				BatchWindow: metav1.Duration{Duration: 30 * time.Second},
 				ArgoCD: &backflowv1alpha1.ArgoCDServer{
 					URL: "https://argocd.test",
 					TokenSecretRef: corev1.SecretKeySelector{
@@ -411,8 +420,9 @@ var _ = Describe("Drift detection", func() {
 			PredictedLiveState: configMapState("info"), NormalizedLiveState: configMapState("debug"),
 		}}}
 		recorder = events.NewFakeRecorder(50)
+		clockBase, clockOffset = time.Now(), 0
 		r = &DriftReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: recorder,
+			Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: recorder, Now: clock,
 			NewArgoClient: func(argocd.Config) (ManagedResourcesGetter, error) { return argo, nil },
 		}
 	})
@@ -428,6 +438,9 @@ var _ = Describe("Drift detection", func() {
 
 	It("creates one proposal per drift and follows it until it is reverted", func() {
 		By("creating the proposal without touching its status")
+		reconcileDrift()
+		Expect(proposals()).To(BeEmpty(), "seen once is not enough")
+		settle()
 		reconcileDrift()
 		Expect(proposals()).To(HaveLen(1))
 		Expect(proposals()[0].Status.Phase).To(BeEmpty())
@@ -850,7 +863,8 @@ var _ = Describe("Drift detection", func() {
 			}, 0, "Git is ahead of the last sync of drift-app ("),
 			Entry("never synced", func() { setRevisions(sha2, "") }, 0, "(2222222 vs never synced)"),
 			Entry("a compared revision that is not a commit", func() { setRevisions("main", sha1) }, 0, "(main vs 1111111)"),
-			Entry("an unreadable repository", func() { differ.err = errors.New("repository unavailable") }, 1, "(2222222 vs 1111111)"),
+			// reconcileOnce looks twice, a batch window apart; a failed look is only remembered for 30s.
+			Entry("an unreadable repository", func() { differ.err = errors.New("repository unavailable") }, 2, "(2222222 vs 1111111)"),
 			Entry("no way to read the repository at all", func() { r.Git = nil }, 0, "(2222222 vs 1111111)"),
 		)
 
@@ -907,21 +921,21 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("tries an unreadable repository again, but not at once", func() {
-			base := time.Now()
-			offset := time.Duration(0)
-			r.Now = func() time.Time { return base.Add(offset) }
 			differ.err = errors.New("repository unavailable")
 
-			reconcileOnce()
-			reconcileOnce()
+			reconcileDrift()
+			advance(5 * time.Second)
+			reconcileDrift()
 			Expect(differ.calls).To(Equal(1), "a failure is remembered for a moment")
 			Expect(proposals()).To(BeEmpty())
 
-			offset = aheadErrorTTL + time.Second
+			advance(aheadErrorTTL + time.Second)
 			differ.err = nil
 			differ.paths = []string{"README.md"}
-			reconcileOnce()
+			reconcileDrift() // looks again; the commit is outside the directory, so the drift is first seen now
 			Expect(differ.calls).To(Equal(2))
+			settle()
+			reconcileDrift()
 			Expect(proposals()).To(HaveLen(1), "once readable, an unrelated commit does not pause")
 		})
 	})
@@ -943,23 +957,15 @@ var _ = Describe("Drift detection", func() {
 			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 		}
 
-		It("waits a moment after the sync finished, and asks to be looked at again when it is over", func() {
-			base := time.Now()
-			offset := time.Duration(0)
-			r.Now = func() time.Time { return base.Add(offset) }
-			finished := base.Add(-5 * time.Second).UTC().Format(time.RFC3339)
-			reconciled := base.Add(-1 * time.Second).UTC().Format(time.RFC3339)
-			setOperation("Succeeded", finished, reconciled)
-
-			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(proposals()).To(BeEmpty(), "a sync finished seconds ago; the OutOfSync status may be stale")
-			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
-			Expect(res.RequeueAfter).To(BeNumerically("<=", syncSettleGrace), "not the two minutes of the periodic resync")
-
-			offset = syncSettleGrace + 2*time.Second
-			reconcileOnce()
-			Expect(proposals()).To(HaveLen(1), "still OutOfSync after the grace period: a real drift")
+		It("does not propose for a status that was stale for a moment after the sync", func() {
+			setOperation("Succeeded", "2026-03-04T10:00:05Z", "2026-03-04T10:00:06Z")
+			reconcileDrift() // first seen: Argo CD still shows the resource OutOfSync
+			advance(8 * time.Second)
+			setResources(configMapRes("Synced")) // the next comparison catches up
+			reconcileDrift()
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty(), "it never stayed the same for the whole window")
 		})
 
 		It("makes no proposal while the sync runs or its result is not compared yet, and no noise either", func() {
@@ -983,6 +989,201 @@ var _ = Describe("Drift detection", func() {
 			setOperation("Succeeded", "2026-03-04T10:00:05Z", "2026-03-04T10:00:06Z")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1), "compared after the sync: a real drift is proposed")
+		})
+	})
+
+	Context("a drift has to stay the same before it becomes a proposal", func() {
+		window := func() time.Duration { return policy.Spec.BatchWindow.Duration }
+		resultOf := func() reconcile.Result {
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			return res
+		}
+
+		It("defaults the window to 30s for a manifest that leaves it out", func() {
+			raw := &unstructured.Unstructured{Object: map[string]interface{}{
+				"apiVersion": "backflow.io/v1alpha1", "kind": "BackflowPolicy",
+				"metadata": map[string]interface{}{"name": "window-default", "namespace": ns},
+				"spec": map[string]interface{}{
+					"applications": map[string]interface{}{"names": []interface{}{"x"}},
+				},
+			}}
+			Expect(k8sClient.Create(ctx, raw)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, raw)).To(Succeed()) }()
+			var got backflowv1alpha1.BackflowPolicy
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(raw), &got)).To(Succeed())
+			Expect(got.Spec.BatchWindow.Duration).To(Equal(30 * time.Second))
+		})
+
+		It("makes no proposal for a drift that disappears within the window", func() {
+			reconcileDrift()
+			advance(10 * time.Second)
+			setResources(configMapRes("Synced"))
+			reconcileDrift()
+			advance(window())
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty())
+		})
+
+		It("starts the window again when the drift comes back", func() {
+			reconcileDrift()
+			advance(10 * time.Second)
+			setResources(configMapRes("Synced"))
+			reconcileDrift()
+			advance(10 * time.Second)
+
+			setResources(configMapRes("OutOfSync"))
+			reconcileDrift() // first seen again
+			advance(window() - time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty(), "less than a window since it came back")
+			advance(2 * time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("makes one proposal for the final state of quick edits", func() {
+			reconcileDrift() // debug
+			advance(10 * time.Second)
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileDrift()
+			advance(10 * time.Second)
+			argo.items[0].NormalizedLiveState = configMapState("warn")
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty())
+
+			advance(window() - 5*time.Second) // the final value has been there for less than the window
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty(), "each edit restarts the window")
+
+			advance(10 * time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(proposals()[0].Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{{
+				Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"warn"`,
+			}}), "the final state, not an intermediate one")
+		})
+
+		It("proposes a stable drift once the window has passed, after a second observation", func() {
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty(), "one observation is never enough")
+			advance(window() - time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty(), "two observations, but the window is not over")
+			advance(2 * time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("still needs a second observation when the window is zero", func() {
+			Expect(k8sClient.Patch(ctx, policy, client.RawPatch(types.MergePatchType,
+				[]byte(`{"spec":{"batchWindow":"0s"}}`)))).To(Succeed())
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty())
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("starts over when the synced revision moves inside the window", func() {
+			reconcileDrift()
+			advance(window() - 5*time.Second)
+			setRevisions("def456", "def456") // a sync of another commit; the drift is still there
+			reconcileDrift()
+			advance(10 * time.Second) // more than a window since the first look, less since the revision moved
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty())
+
+			advance(window())
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(proposals()[0].Spec.Source.Revision).To(Equal("abc123"), "the revision comes from the policy status")
+		})
+
+		It("starts over when only the compared revision moves", func() {
+			const sha1 = "1111111111111111111111111111111111111111"
+			const sha2 = "2222222222222222222222222222222222222222"
+			const sha3 = "3333333333333333333333333333333333333333"
+			r.Git = &fakeDiffer{paths: []string{"README.md"}} // commits outside the directory do not pause
+			setRevisions(sha2, sha1)
+			reconcileDrift()
+			advance(window() - 5*time.Second)
+			setRevisions(sha3, sha1)
+			reconcileDrift()
+			advance(10 * time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty())
+		})
+
+		It("asks to be looked at again when the window is over", func() {
+			res := resultOf()
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(res.RequeueAfter).To(BeNumerically("<=", window()), "not the two minutes of the periodic resync")
+			advance(10 * time.Second)
+			res = resultOf()
+			Expect(res.RequeueAfter).To(BeNumerically("<=", window()-10*time.Second))
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		})
+
+		It("leaves an open proposal alone while a different drift proves stable, then supersedes it", func() {
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			first := proposals()[0]
+
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(proposals()[0].Annotations).NotTo(HaveKey(annotationSupersededBy), "not before the new drift is stable")
+
+			advance(window() + time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(2))
+			Expect(byPhase("")).NotTo(BeEmpty())
+			var got backflowv1alpha1.DriftProposal
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&first), &got)).To(Succeed())
+			Expect(got.Annotations).To(HaveKey(annotationSupersededBy))
+		})
+
+		It("loses what it has seen on a restart, which only delays the proposal", func() {
+			reconcileDrift()
+			advance(window() - time.Second)
+			restarted := &DriftReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: recorder, Now: clock,
+				NewArgoClient: func(argocd.Config) (ManagedResourcesGetter, error) { return argo, nil },
+			}
+			r = restarted
+			reconcileDrift() // first observation of the new process
+			advance(2 * time.Second)
+			reconcileDrift()
+			Expect(proposals()).To(BeEmpty(), "the window starts again")
+			advance(window())
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("forgets a resource that stopped drifting while another one still does", func() {
+			svc := map[string]interface{}{"version": "v1", "kind": "Service", "namespace": "demo", "name": "demo", "status": "OutOfSync"}
+			setResources(configMapRes("OutOfSync"), svc)
+			argo.items = append(argo.items, argocd.ManagedResource{
+				Kind: "Service", Namespace: "demo", Name: "demo",
+				PredictedLiveState:  map[string]interface{}{"spec": map[string]interface{}{"port": "80"}},
+				NormalizedLiveState: map[string]interface{}{"spec": map[string]interface{}{"port": "81"}},
+			})
+			reconcileDrift()
+			Expect(r.pending).To(HaveLen(2))
+
+			By("the Service difference goes away (still reported OutOfSync for a moment), the ConfigMap still drifts")
+			argo.items[1].NormalizedLiveState = argo.items[1].PredictedLiveState
+			reconcileDrift()
+			Expect(r.pending).To(HaveLen(1))
+		})
+
+		It("forgets a drift whose resource is gone from the Application", func() {
+			reconcileDrift()
+			Expect(r.pending).To(HaveLen(1))
+			// The ConfigMap left the Application; only a Service is left, and it is in sync.
+			setResources(map[string]interface{}{"version": "v1", "kind": "Service", "namespace": "demo", "name": "demo", "status": "Synced"})
+			reconcileDrift()
+			Expect(r.pending).To(BeEmpty())
 		})
 	})
 
@@ -1093,9 +1294,9 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	It("calls Argo CD once per reconcile for an OutOfSync application", func() {
-		reconcileOnce()
+		reconcileDrift()
 		Expect(argo.calls).To(Equal(1))
-		reconcileOnce()
+		reconcileDrift()
 		Expect(argo.calls).To(Equal(2))
 	})
 
@@ -1115,7 +1316,7 @@ var _ = Describe("Drift detection", func() {
 			JSONPointers: []string{"/data/LOG_LEVEL"},
 		}}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
-		reconcileOnce()
+		reconcileDrift()
 		Expect(proposals()).To(BeEmpty())
 		Expect(argo.calls).To(Equal(1))
 
