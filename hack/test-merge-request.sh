@@ -14,8 +14,12 @@
 #      the proposal Merged with the merge commit. After Argo CD syncs the new
 #      commit the resource is Synced and no new proposal appears.
 #   d. A drift whose merge request is open and whose live value then goes back to
-#      Git makes the proposal Reverted; its merge request is closed with a
-#      comment and its branch deleted.
+#      Git (same revision) makes the proposal Reverted; its merge request is
+#      closed with a comment and its branch deleted.
+#   e. A drift whose merge request is open, then an unrelated commit to main:
+#      Argo CD syncs the new revision and resets the cluster. The change is not
+#      lost: the proposal stays Proposed, the merge request stays open with one
+#      comment saying so, and merging it brings the change back to the cluster.
 #
 # Requires the environment from ./hack/dev-up.sh and GITLAB_TOKEN with the api
 # and write_repository scopes (owner or maintainer of the demo project). Without
@@ -77,6 +81,7 @@ WORKDIR=""
 P_A=""
 P_C=""
 P_D=""
+P_E=""
 RESTORE_CLUSTER=false
 LABEL_PREEXISTED=true
 MAIN_ORIG_SHA=""
@@ -191,9 +196,11 @@ set_log_level() {
 
 # sync_app: run one sync of the Application and wait until it is Synced. The
 # demo Application has automated sync (without selfHeal), which applies each new
-# Git commit once. After scenario c the merge commit has not been applied by a
-# sync operation yet, so the next drift would be reverted by that first
-# automated sync instead of being left visible.
+# Git commit once, the first time the Application is OutOfSync at it. After
+# scenario c the merge commit has not been applied by a sync operation yet, so
+# the next drift would be reset by that automated sync straight away. Spending
+# it here keeps the drifts of scenarios d and e visible until the test itself
+# resets them (d) or pushes a new commit (e).
 sync_app() {
   k -n "$ARGOCD_NS" patch application "$APP" --type merge \
     -p '{"operation":{"initiatedBy":{"username":"backflow-test"},"sync":{}}}' >/dev/null 2>&1 || true
@@ -377,7 +384,7 @@ cleanup() {
     k delete namespace "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-mr-test.* ]]; then
-    rm -f "$WORKDIR/gl.py" "$WORKDIR/seen" "$WORKDIR/token"
+    rm -f "$WORKDIR/gl.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/unrelated.json" "$WORKDIR/paths"
     find "$WORKDIR/orig" -type f -exec rm -f {} + 2>/dev/null
     find "$WORKDIR/orig" -depth -type d -exec rmdir {} + 2>/dev/null
     rmdir "$WORKDIR" 2>/dev/null
@@ -672,6 +679,68 @@ if [[ -n "$P_D" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+step "e. A new sync resets the cluster while the merge request is open"
+set_log_level error
+wait_for "proposal is Proposed (warn -> error)" has_proposal Proposed '/data/LOG_LEVEL:Replace:"warn">"error"'
+remember_proposals
+P_E="$(proposal_with Proposed '>"error"' | head -n 1)"
+if [[ -n "$P_E" ]]; then
+  BRANCH_E="backflow/$P_E"
+  IFS='|' read -r IID_E STATE_E _ _ <<<"$(mr_info "$BRANCH_E")"
+  expect_eq "merge request state" "opened" "$STATE_E"
+
+  # An unrelated commit to main: the Application's revision changes, Argo CD's
+  # automated sync applies it and resets the drifted ConfigMap to Git.
+  python3 - "$WORKDIR" >"$WORKDIR/unrelated.json" <<'PY'
+import json, sys
+work = sys.argv[1]
+readme = open(work + "/orig/README.md", encoding="utf-8").read()
+print(json.dumps({"branch": "main", "commit_message": "test: an unrelated change (Backflow e2e)",
+                  "actions": [{"action": "update", "file_path": "README.md",
+                               "content": readme + "\nAn unrelated line added by the Backflow e2e test.\n"}]}))
+PY
+  UNRELATED_SHA="$(gl POST "$(project_path "/repository/commits")" "$(cat "$WORKDIR/unrelated.json")" | jx 'd["id"]')"
+  rm -f "$WORKDIR/unrelated.json"
+  expect_nonempty "unrelated commit on main" "$UNRELATED_SHA"
+
+  wait_for "$APP is Synced at the unrelated commit" app_synced_at "$UNRELATED_SHA"
+  expect_eq "Argo CD reset the live LOG_LEVEL to Git" "warn" "$(live_log_level)"
+  live_reverted() { [[ "$(condition "$P_E" LiveReverted status)" == "True" ]]; }
+  wait_for "LiveReverted=True on the proposal" live_reverted
+  expect_eq "LiveReverted reason" "SyncedNewRevision" "$(condition "$P_E" LiveReverted reason)"
+  expect_eq "the proposal stays Proposed" "Proposed" "$(dp_field "$P_E" .status.phase)"
+  IFS='|' read -r _ STATE_E2 _ _ <<<"$(mr_info "$BRANCH_E")"
+  expect_eq "the merge request stays open" "opened" "$STATE_E2"
+  expect_eq "the branch is kept" "true" "$(branch_exists "$BRANCH_E" && echo true || echo false)"
+  notes_e() { gl GET "$(project_path "/merge_requests/$IID_E/notes?per_page=50")" | jx '"\n".join(n["body"] for n in d if not n.get("system"))'; }
+  NOTES_E="$(notes_e)"
+  expect_contains "comment" "The cluster was reset to Git by an Argo CD sync of $UNRELATED_SHA." "$NOTES_E"
+  expect_contains "comment" "Merging this merge request makes the change permanent again." "$NOTES_E"
+  sleep "$QUIET"
+  expect_eq "the comment is posted once" "1" "$(notes_e | grep -c 'reset to Git by an Argo CD sync' || true)"
+  expect_eq "the proposal is still Proposed" "Proposed" "$(dp_field "$P_E" .status.phase)"
+  expect_eq "the merge request is still open" "opened" "$(mr_info "$BRANCH_E" | cut -d'|' -f2)"
+
+  merged=false
+  for _ in $(seq 1 20); do
+    if gl PUT "$(project_path "/merge_requests/$IID_E/merge")" '{"should_remove_source_branch":false}' >/dev/null 2>&1; then
+      merged=true; break
+    fi
+    sleep 3
+  done
+  if [[ "$merged" == "true" ]]; then pass "merged !$IID_E through the API"; else fail "could not merge !$IID_E"; fi
+  MERGE_E="$(gl GET "$(project_path "/merge_requests/$IID_E")" | jx 'd.get("merge_commit_sha") or d["sha"]')"
+  wait_for "proposal is Merged" phase_is "$P_E" Merged
+  expect_eq "status.commitSHA is the merge commit" "$MERGE_E" "$(dp_field "$P_E" .status.commitSHA)"
+  wait_for "$APP is Synced at the merge commit" app_synced_at "$MERGE_E"
+  level_is_error() { [[ "$(live_log_level)" == "error" ]]; }
+  wait_for "the change is back in the cluster after the sync" level_is_error
+  sleep "$QUIET"
+  expect_eq "proposals for demo-config (no new one)" "4" "$(proposal_count)"
+  expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
+fi
+
+# ---------------------------------------------------------------------------
 step "Secrets"
 refresh_log
 if grep -qF -- "$GITLAB_TOKEN" "$LOG_FILE" 2>/dev/null; then
@@ -680,7 +749,7 @@ else
   pass "the GitLab token does not appear in the operator log"
 fi
 LEAK=false
-for p in "$P_A" "$P_C" "$P_D"; do
+for p in "$P_A" "$P_C" "$P_D" "$P_E"; do
   [[ -n "$p" ]] || continue
   if k -n "$NS" get driftproposal "$p" -o yaml | grep -qF -- "$GITLAB_TOKEN"; then LEAK=true; fi
 done
