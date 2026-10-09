@@ -15,9 +15,14 @@
 #
 # The demo resources are always restored to their Git state on exit.
 #
+# With IN_CLUSTER=true the operator is the one deployed by 'make deploy'
+# (see "In-cluster" in the README); the script then starts no local operator
+# and no port-forward, and reaches Argo CD at its in-cluster service URL.
+#
 # Usage (from the repository root):
 #   ./hack/test-drift.sh
 #   KEEP=true ./hack/test-drift.sh      # keep test resources for inspection
+#   IN_CLUSTER=true ./hack/test-drift.sh   # test the deployed operator
 
 set -euo pipefail
 
@@ -30,6 +35,11 @@ POLICY="drift-policy"
 TOKEN_SECRET_NS="${TOKEN_SECRET_NS:-backflow-system}"
 TOKEN_SECRET="${TOKEN_SECRET:-argocd-token}"
 KEEP="${KEEP:-false}"
+# Test the operator deployed in the cluster instead of a local bin/manager.
+IN_CLUSTER="${IN_CLUSTER:-false}"
+MANAGER_NS="${MANAGER_NS:-backflow-system}"
+MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
+ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
 # Seconds to wait for Argo CD to notice a change and the operator to react.
 WAIT="${WAIT:-90}"
 # Seconds to wait before asserting that nothing happened.
@@ -58,6 +68,15 @@ fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
 
 k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
+
+# refresh_log: make $LOG_FILE hold the current operator log. A local operator
+# writes it directly; the deployed one is read from the cluster.
+refresh_log() {
+  if [[ "$IN_CLUSTER" == "true" ]]; then
+    mkdir -p "$LOG_DIR"
+    k -n "$MANAGER_NS" logs "deploy/$MANAGER_DEPLOY" >"$LOG_FILE" 2>&1 || true
+  fi
+}
 
 # wait_for <description> <command...>: poll until the command succeeds.
 # A timeout is recorded as a failure; the script carries on.
@@ -196,7 +215,9 @@ k cluster-info >/dev/null 2>&1 || die "cluster kind-$CLUSTER_NAME is not reachab
 k get crd applications.argoproj.io >/dev/null 2>&1 || die "Argo CD is not installed. Run ./hack/dev-up.sh first."
 k -n "$ARGOCD_NS" get application "$APP" >/dev/null 2>&1 || die "Application $APP not found. Run ./hack/dev-up.sh first."
 k -n "$TOKEN_SECRET_NS" get secret "$TOKEN_SECRET" >/dev/null 2>&1 || die "Secret $TOKEN_SECRET_NS/$TOKEN_SECRET not found. Run ./hack/dev-up.sh first."
-if curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then
+if [[ "$IN_CLUSTER" == "true" ]]; then
+  k -n "$MANAGER_NS" get deployment "$MANAGER_DEPLOY" >/dev/null 2>&1 || die "Deployment $MANAGER_NS/$MANAGER_DEPLOY not found. Run make docker-build, kind load docker-image and make deploy first."
+elif curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then
   die "An operator is already running on port 8081 (probably 'make run'). Stop it first."
 fi
 
@@ -219,32 +240,43 @@ APP_PATH="$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.source.
 APP_TARGET="$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.source.targetRevision}')"
 
 # ---------------------------------------------------------------------------
-step "Argo CD port-forward"
-PF_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
-# Call kubectl directly (not through k) so $! is the kubectl process itself.
-kubectl --context "kind-$CLUSTER_NAME" -n "$ARGOCD_NS" port-forward svc/argocd-server "$PF_PORT":443 >/dev/null 2>&1 &
-PF_PID=$!
-for _ in $(seq 1 30); do
-  curl -ksf -o /dev/null "https://localhost:$PF_PORT/api/version" && break
-  kill -0 "$PF_PID" 2>/dev/null || die "port-forward exited"
-  sleep 1
-done
-curl -ksf -o /dev/null "https://localhost:$PF_PORT/api/version" || die "Argo CD is not reachable on localhost:$PF_PORT"
-pass "Argo CD reachable on https://localhost:$PF_PORT"
+step "Argo CD connection"
+if [[ "$IN_CLUSTER" == "true" ]]; then
+  PF_PORT=""
+  pass "operator reaches Argo CD at $ARGOCD_URL"
+else
+  PF_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  # Call kubectl directly (not through k) so $! is the kubectl process itself.
+  kubectl --context "kind-$CLUSTER_NAME" -n "$ARGOCD_NS" port-forward svc/argocd-server "$PF_PORT":443 >/dev/null 2>&1 &
+  PF_PID=$!
+  for _ in $(seq 1 30); do
+    curl -ksf -o /dev/null "https://localhost:$PF_PORT/api/version" && break
+    kill -0 "$PF_PID" 2>/dev/null || die "port-forward exited"
+    sleep 1
+  done
+  curl -ksf -o /dev/null "https://localhost:$PF_PORT/api/version" || die "Argo CD is not reachable on localhost:$PF_PORT"
+  ARGOCD_URL="https://localhost:$PF_PORT"
+  pass "Argo CD reachable on $ARGOCD_URL"
+fi
 
 # ---------------------------------------------------------------------------
-step "Building and starting the operator"
-make manifests install >/dev/null
-make build >/dev/null
-mkdir -p "$LOG_DIR"
-"$ROOT/bin/manager" >"$LOG_FILE" 2>&1 &
-MANAGER_PID=$!
-for _ in $(seq 1 60); do
-  curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
-  kill -0 "$MANAGER_PID" 2>/dev/null || die "operator exited, log: $LOG_FILE"
-  sleep 1
-done
-curl -fs -o /dev/null http://localhost:8081/readyz || die "operator did not become ready, log: $LOG_FILE"
+step "Operator"
+if [[ "$IN_CLUSTER" == "true" ]]; then
+  k -n "$MANAGER_NS" rollout status "deploy/$MANAGER_DEPLOY" --timeout=120s >/dev/null || die "deployment $MANAGER_NS/$MANAGER_DEPLOY is not available"
+else
+  make manifests install >/dev/null
+  make build >/dev/null
+  mkdir -p "$LOG_DIR"
+  "$ROOT/bin/manager" >"$LOG_FILE" 2>&1 &
+  MANAGER_PID=$!
+  for _ in $(seq 1 60); do
+    curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
+    kill -0 "$MANAGER_PID" 2>/dev/null || die "operator exited, log: $LOG_FILE"
+    sleep 1
+  done
+  curl -fs -o /dev/null http://localhost:8081/readyz || die "operator did not become ready, log: $LOG_FILE"
+fi
+refresh_log
 if grep -q "Argo CD Application CRD not found" "$LOG_FILE"; then
   fail "operator did not start watching Argo CD Applications"
 else
@@ -273,7 +305,7 @@ spec:
   applications:
     names: ["$APP"]
   argoCD:
-    url: https://localhost:$PF_PORT
+    url: $ARGOCD_URL
     insecureSkipTLSVerify: true
     tokenSecretRef:
       name: argocd-token
