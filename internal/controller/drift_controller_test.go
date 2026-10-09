@@ -283,6 +283,167 @@ var _ = Describe("Drift detection", func() {
 		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
 	})
 
+	Context("a drift that was already handled and ended without a fix", func() {
+		// retire puts the only proposal into a terminal phase, as its controller would.
+		retire := func(phase backflowv1alpha1.ProposalPhase, mutate func(st *backflowv1alpha1.DriftProposalStatus)) {
+			p := proposals()[0]
+			p.Status.Phase = phase
+			if mutate != nil {
+				mutate(&p.Status)
+			}
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, &p)).To(Succeed())
+		}
+		rejected := func(st *backflowv1alpha1.DriftProposalStatus) {
+			st.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: "https://git.test/-/merge_requests/7", Number: 7, State: "closed"}
+		}
+		drainEvents := func() []string {
+			var out []string
+			for {
+				select {
+				case e := <-recorder.Events:
+					out = append(out, e)
+				default:
+					return out
+				}
+			}
+		}
+		count := func(events []string, reason string) int {
+			n := 0
+			for _, e := range events {
+				if strings.Contains(e, reason) {
+					n++
+				}
+			}
+			return n
+		}
+		setRevision := func(rev string) {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Applications[0].SyncedRevision = rev
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		}
+
+		BeforeEach(func() {
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("does not reopen a Rejected proposal, and reports the rejection once", func() {
+			retire(backflowv1alpha1.PhaseRejected, rejected)
+			drainEvents()
+
+			var seen []string
+			for i := 0; i < 4; i++ {
+				reconcileOnce()
+				seen = append(seen, drainEvents()...)
+			}
+			Expect(proposals()).To(HaveLen(1), "no new proposal and no new merge request")
+			Expect(count(seen, "ChangeRejected")).To(Equal(1), "reported once, not on every cycle")
+			Expect(seen).To(ContainElement(And(
+				ContainSubstring("Normal"), ContainSubstring("ChangeRejected"),
+				ContainSubstring("merge_requests/7"), ContainSubstring("Sync Application drift-app in Argo CD"))))
+			Expect(proposals()[0].Annotations).To(HaveKey(annotationRejectionReported))
+		})
+
+		It("does not reopen a Failed proposal, and stays quiet about it", func() {
+			retire(backflowv1alpha1.PhaseFailed, func(st *backflowv1alpha1.DriftProposalStatus) {
+				st.Message = "targetRevision is not a branch"
+			})
+			drainEvents()
+			for i := 0; i < 3; i++ {
+				reconcileOnce()
+			}
+			Expect(proposals()).To(HaveLen(1))
+			Expect(count(drainEvents(), "ChangeRejected")).To(BeZero())
+		})
+
+		It("does not reopen a proposal superseded because Git changed", func() {
+			retire(backflowv1alpha1.PhaseSuperseded, func(st *backflowv1alpha1.DriftProposalStatus) {
+				st.Message = "The source changed in Git after the drift was detected."
+			})
+			for i := 0; i < 3; i++ {
+				reconcileOnce()
+			}
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("proposes again when the changes differ", func() {
+			retire(backflowv1alpha1.PhaseRejected, rejected)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(2))
+			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		})
+
+		It("proposes again when Argo CD synced a new revision", func() {
+			retire(backflowv1alpha1.PhaseRejected, rejected)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+
+			setRevision("def456")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(2))
+			fresh := byPhase(backflowv1alpha1.PhaseDetected)
+			Expect(fresh).To(HaveLen(1))
+			Expect(fresh[0].Spec.Source.Revision).To(Equal("def456"))
+		})
+
+		It("proposes again for a Failed or Git-superseded one when a new revision is synced", func() {
+			retire(backflowv1alpha1.PhaseFailed, nil)
+			setRevision("def456")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(2))
+		})
+
+		It("reports a second rejection of a different drift again", func() {
+			retire(backflowv1alpha1.PhaseRejected, rejected)
+			reconcileOnce()
+			Expect(count(drainEvents(), "ChangeRejected")).To(Equal(1))
+
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileOnce()
+			second := byPhase(backflowv1alpha1.PhaseDetected)
+			Expect(second).To(HaveLen(1))
+			second[0].Status.Phase = backflowv1alpha1.PhaseRejected
+			Expect(k8sClient.Status().Update(ctx, &second[0])).To(Succeed())
+			drainEvents()
+
+			reconcileOnce()
+			Expect(count(drainEvents(), "ChangeRejected")).To(Equal(1), "once for the new proposal, none for the old")
+			reconcileOnce()
+			Expect(count(drainEvents(), "ChangeRejected")).To(BeZero())
+		})
+
+		It("does not let a Merged proposal block the same drift coming back", func() {
+			retire(backflowv1alpha1.PhaseMerged, nil)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(2))
+			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		})
+
+		It("does not let a Reverted proposal block the same drift coming back", func() {
+			retire(backflowv1alpha1.PhaseReverted, nil)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(2))
+		})
+
+		It("does not let a proposal superseded by a newer drift block its own changes coming back", func() {
+			By("a newer drift supersedes the first")
+			argo.items[0].NormalizedLiveState = configMapState("trace")
+			reconcileOnce()
+			Expect(byPhase(backflowv1alpha1.PhaseSuperseded)).To(HaveLen(1))
+			Expect(byPhase(backflowv1alpha1.PhaseSuperseded)[0].Status.SupersededBy).NotTo(BeEmpty())
+
+			By("the original drift returns")
+			argo.items[0].NormalizedLiveState = configMapState("debug")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(3))
+			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		})
+	})
+
 	It("does not call Argo CD when nothing is OutOfSync and nothing is open", func() {
 		setResources(configMapRes("Synced"))
 		reconcileOnce()

@@ -305,6 +305,9 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 
 	switch {
 	case current == nil:
+		if blocker := blockingProposal(all, rh, changes, summary.SyncedRevision); blocker != nil {
+			return r.noteBlocked(ctx, policy, summary, blocker)
+		}
 		attempt := 0
 		for names[proposalName(summary.Name, res, changes, attempt)] {
 			attempt++
@@ -369,6 +372,64 @@ func (r *DriftReconciler) annotate(ctx context.Context, p *backflowv1alpha1.Drif
 	}
 	p.Annotations[key] = value
 	return r.Patch(ctx, p, client.MergeFrom(orig))
+}
+
+// annotationRejectionReported marks a Rejected proposal whose rejection was
+// already reported as an Event, so it is reported once.
+const annotationRejectionReported = "backflow.io/rejection-reported"
+
+// blockingProposal returns a terminal proposal that makes a new proposal for
+// the same drift pointless, or nil. Without selfHeal a closed merge request
+// leaves the live value in place and the resource OutOfSync, so the next
+// cycle would see the same drift again and reopen what a person just closed.
+// A proposal blocks when it ended in Rejected, Failed, or Superseded because
+// Git changed, had identical changes, and was made at the same synced
+// revision. Other changes or a new synced revision are new information.
+// Reverted, Merged and Superseded by a newer drift never block: the drift
+// went away or was handled, and when it comes back it is a new event.
+func blockingProposal(all []backflowv1alpha1.DriftProposal, resourceHash string,
+	changes []backflowv1alpha1.FieldChange, revision string) *backflowv1alpha1.DriftProposal {
+	for i := range all {
+		p := &all[i]
+		if p.Labels[labelResource] != resourceHash || p.Spec.Source.Revision != revision ||
+			!reflect.DeepEqual(p.Spec.Changes, changes) {
+			continue
+		}
+		switch p.Status.Phase {
+		case backflowv1alpha1.PhaseRejected, backflowv1alpha1.PhaseFailed:
+			return p
+		case backflowv1alpha1.PhaseSuperseded:
+			if p.Status.SupersededBy == "" && p.Annotations[annotationSupersededBy] == "" {
+				return p // replaced because the source changed in Git
+			}
+		}
+	}
+	return nil
+}
+
+// noteBlocked leaves a blocked drift alone. A Rejected one is reported once
+// per proposal, because the cluster still differs from Git and only the
+// user can resolve that.
+func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, blocker *backflowv1alpha1.DriftProposal) error {
+	logf.FromContext(ctx).V(1).Info("Not proposing the same drift again",
+		"proposal", blocker.Name, "phase", blocker.Status.Phase)
+	if blocker.Status.Phase != backflowv1alpha1.PhaseRejected || blocker.Annotations[annotationRejectionReported] != "" {
+		return nil
+	}
+	// Mark first: a missed Event is better than one on every cycle.
+	if err := r.annotate(ctx, blocker, annotationRejectionReported, "true"); err != nil {
+		return err
+	}
+	where := ""
+	if blocker.Status.MergeRequest != nil {
+		where = " " + blocker.Status.MergeRequest.URL
+	}
+	r.event(policy, corev1.EventTypeNormal, "ChangeRejected", fmt.Sprintf(
+		"The merge request%s for %s was closed without merging, and the cluster still differs from Git. "+
+			"Sync Application %s in Argo CD to revert the cluster to what Git says.",
+		where, resourceLabel(blocker.Spec.Resource), summary.Name))
+	return nil
 }
 
 func (r *DriftReconciler) event(policy *backflowv1alpha1.BackflowPolicy, eventType, reason, msg string) {
