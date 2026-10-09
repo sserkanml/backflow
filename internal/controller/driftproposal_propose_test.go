@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -159,21 +158,40 @@ func (g *gitFixture) createBranchAt(name, sha string) {
 // --- fake merge request provider --------------------------------------------
 
 type fakeProvider struct {
-	mu      sync.Mutex
-	open    map[string]*scm.MergeRequest // by source branch
-	nextNum int64
-	created []scm.CreateRequest
-	calls   []string
+	mu       sync.Mutex
+	open     map[string]*scm.MergeRequest // open merge requests by source branch
+	byNumber map[int64]*scm.MergeRequest
+	nextNum  int64
+	created  []scm.CreateRequest
+	calls    []string
 
-	createErr error // returned once from CreateMergeRequest when set
-	findErr   error
+	// Injected failures. A non-nil error is returned (once, when the name
+	// ends in Once) by the call it is named after.
+	createErr, findErr, getErr            error
+	commentErr, closeErr, deleteErr       error
+	commentErrOnce, closeErrOnce, delOnce bool
+
+	comments []string
+	closed   []int64
+	deleted  []string
 }
 
 func newFakeProvider() *fakeProvider {
-	return &fakeProvider{open: map[string]*scm.MergeRequest{}, nextNum: 7}
+	return &fakeProvider{open: map[string]*scm.MergeRequest{}, byNumber: map[int64]*scm.MergeRequest{}, nextNum: 7}
 }
 
 func (f *fakeProvider) record(c string) { f.calls = append(f.calls, c) }
+
+// setState changes a merge request behind the operator's back, as a person would.
+func (f *fakeProvider) setState(number int64, state scm.State, mergeSHA string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	mr := f.byNumber[number]
+	mr.State, mr.MergeCommitSHA = state, mergeSHA
+	if state != scm.StateOpen {
+		delete(f.open, mr.SourceBranch)
+	}
+}
 
 func (f *fakeProvider) FindOpenMergeRequest(_ context.Context, project, branch string) (*scm.MergeRequest, error) {
 	f.mu.Lock()
@@ -201,17 +219,71 @@ func (f *fakeProvider) CreateMergeRequest(_ context.Context, project string, req
 	}
 	f.nextNum++
 	f.open[req.SourceBranch] = mr
+	f.byNumber[mr.Number] = mr
 	return mr, nil
 }
 
-func (f *fakeProvider) GetMergeRequest(context.Context, string, int64) (*scm.MergeRequest, error) {
-	return nil, errors.New("not used in this phase")
+func (f *fakeProvider) GetMergeRequest(_ context.Context, _ string, number int64) (*scm.MergeRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(fmt.Sprintf("get %d", number))
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	mr, ok := f.byNumber[number]
+	if !ok {
+		return nil, fmt.Errorf("%w: merge request %d", scm.ErrNotFound, number)
+	}
+	cp := *mr
+	return &cp, nil
 }
-func (f *fakeProvider) CloseMergeRequest(context.Context, string, int64) error { return nil }
-func (f *fakeProvider) CommentOnMergeRequest(context.Context, string, int64, string) error {
+
+// once returns err and clears it when once is set.
+func once(err *error, once *bool) error {
+	e := *err
+	if *once {
+		*err, *once = nil, false
+	}
+	return e
+}
+
+func (f *fakeProvider) CloseMergeRequest(_ context.Context, _ string, number int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(fmt.Sprintf("close %d", number))
+	if err := once(&f.closeErr, &f.closeErrOnce); err != nil {
+		return err
+	}
+	f.closed = append(f.closed, number)
+	if mr := f.byNumber[number]; mr != nil {
+		mr.State = scm.StateClosed
+		delete(f.open, mr.SourceBranch)
+	}
 	return nil
 }
-func (f *fakeProvider) DeleteBranch(context.Context, string, string) error { return nil }
+
+func (f *fakeProvider) CommentOnMergeRequest(_ context.Context, _ string, number int64, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(fmt.Sprintf("comment %d", number))
+	if err := once(&f.commentErr, &f.commentErrOnce); err != nil {
+		return err
+	}
+	f.comments = append(f.comments, body)
+	return nil
+}
+
+func (f *fakeProvider) DeleteBranch(_ context.Context, _ string, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("delete " + branch)
+	if err := once(&f.deleteErr, &f.delOnce); err != nil {
+		return err
+	}
+	f.deleted = append(f.deleted, branch)
+	return nil
+}
+
 func (f *fakeProvider) LookupUser(context.Context, string) (*scm.User, error) {
 	return nil, scm.ErrNotFound
 }
@@ -389,7 +461,7 @@ var _ = Describe("DriftProposal proposing", func() {
 		It("pushes a branch, opens a merge request and records it", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.IsZero()).To(BeTrue())
+			Expect(res.RequeueAfter).To(Equal(trackInterval), "the merge request is polled from now on")
 
 			got := latest()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
@@ -712,6 +784,300 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
 			Expect(provider.created[0].TargetBranch).To(Equal("main"))
+		})
+	})
+
+	Context("tracking and cleanup", func() {
+		branch := "backflow/prop-dp"
+		annotate := func(key, value string) {
+			ExpectWithOffset(1, k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
+				[]byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))))).To(Succeed())
+		}
+		cleaned := func() *metav1.Condition { return condition(conditionCleanedUp) }
+
+		BeforeEach(func() {
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			provider.calls = nil
+		})
+
+		It("keeps polling while the merge request is open", func() {
+			before := latest()
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(2 * time.Minute))
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(got.Status.MergeRequest.State).To(Equal("open"))
+			Expect(got.ResourceVersion).To(Equal(before.ResourceVersion), "an unchanged state writes nothing")
+			Expect(provider.calls).To(Equal([]string{"get 7"}))
+		})
+
+		It("records a merge as Merged with the merge commit", func() {
+			provider.setState(7, scm.StateMerged, "abc123def")
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.IsZero()).To(BeTrue())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(got.Status.CommitSHA).To(Equal("abc123def"))
+			Expect(got.Status.MergeRequest.State).To(Equal("merged"))
+			Expect(got.Status.Message).To(ContainSubstring("merged"))
+			Expect(provider.calls).To(Equal([]string{"get 7"}), "nothing is closed or deleted after a merge")
+
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.calls).To(HaveLen(1), "terminal: no more polling")
+		})
+
+		It("records a close without merge as Rejected and leaves the branch alone", func() {
+			provider.setState(7, scm.StateClosed, "")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+			Expect(got.Status.MergeRequest.State).To(Equal("closed"))
+			Expect(got.Status.Message).To(ContainSubstring("Argo CD can revert"))
+			Expect(provider.deleted).To(BeEmpty())
+			Expect(repo.branch(branch)).NotTo(BeEmpty())
+		})
+
+		DescribeTable("closes the merge request with a comment and deletes the branch",
+			func(key, value, phase, wantInComment string) {
+				annotate(key, value)
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.IsZero()).To(BeTrue())
+
+				got := latest()
+				Expect(string(got.Status.Phase)).To(Equal(phase))
+				Expect(provider.comments).To(HaveLen(1))
+				Expect(provider.comments[0]).To(ContainSubstring(wantInComment))
+				Expect(provider.comments[0]).To(ContainSubstring("default/prop-dp"))
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+				Expect(provider.calls).To(Equal([]string{"get 7", "get 7", "comment 7", "close 7", "delete " + branch}),
+					"the reason is posted before the merge request is closed")
+				Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+				Expect(cleaned().Reason).To(Equal(reasonCleanedUp))
+				Expect(got.Status.MergeRequest.State).To(Equal("closed"))
+			},
+			Entry("superseded by a newer drift", annotationSupersededBy, "newer-dp", "Superseded", "A newer drift on the same resource replaced this proposal."),
+			Entry("reverted: live went back to Git", annotationReverted, "The live resource is back in sync with Git.", "Reverted", "The live resource is back in sync with Git."),
+		)
+
+		It("records the newer proposal on a superseded one", func() {
+			annotate(annotationSupersededBy, "newer-dp")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.SupersededBy).To(Equal("newer-dp"))
+		})
+
+		It("prefers what happened to the merge request over a pending revert", func() {
+			By("merged: Argo CD saw the merged Git state, the drift is gone, the drift controller says reverted")
+			provider.setState(7, scm.StateMerged, "abc123")
+			annotate(annotationReverted, "The live resource is back in sync with Git.")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(got.Status.CommitSHA).To(Equal("abc123"))
+			Expect(provider.comments).To(BeEmpty())
+			Expect(provider.closed).To(BeEmpty())
+			Expect(provider.deleted).To(BeEmpty())
+		})
+
+		It("calls a closed merge request Rejected even when the cluster already reverted", func() {
+			provider.setState(7, scm.StateClosed, "")
+			annotate(annotationReverted, "The live resource is back in sync with Git.")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+			Expect(provider.comments).To(BeEmpty())
+		})
+
+		It("waits instead of guessing when the merge request cannot be read", func() {
+			annotate(annotationReverted, "The live resource is back in sync with Git.")
+			provider.getErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
+
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">=", trackInterval))
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed), "no verdict without looking")
+			Expect(got.Status.Message).To(ContainSubstring("Cannot read the state of merge request"))
+			Expect(provider.closed).To(BeEmpty())
+
+			provider.getErr = nil
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+			Expect(provider.closed).To(Equal([]int64{7}))
+		})
+
+		It("keeps polling through a provider outage without changing the phase", func() {
+			provider.getErr = fmt.Errorf("%w: boom", scm.ErrForbidden)
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(trackInterval))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+		})
+
+		It("does not repeat the comment when closing failed the first time", func() {
+			annotate(annotationSupersededBy, "newer-dp")
+			provider.closeErr, provider.closeErrOnce = fmt.Errorf("%w: boom", scm.ErrUnavailable), true
+
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded), "the phase is already final")
+			Expect(cleaned().Status).To(Equal(metav1.ConditionFalse))
+			Expect(cleaned().Reason).To(Equal(reasonCommented))
+			Expect(provider.comments).To(HaveLen(1))
+			Expect(provider.deleted).To(BeEmpty(), "the branch stays while the merge request is open")
+
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.comments).To(HaveLen(1), "the explanation is posted once")
+			Expect(provider.closed).To(Equal([]int64{7}))
+			Expect(provider.deleted).To(Equal([]string{branch}))
+			Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("retries the comment when it could not be posted, and does not close without it", func() {
+			annotate(annotationReverted, "back in sync")
+			provider.commentErr, provider.commentErrOnce = fmt.Errorf("%w: boom", scm.ErrUnavailable), true
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.closed).To(BeEmpty())
+			Expect(cleaned().Reason).To(Equal(reasonCleanupFailed))
+
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.comments).To(HaveLen(1))
+			Expect(provider.closed).To(Equal([]int64{7}))
+			Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("finishes the cleanup when only deleting the branch failed", func() {
+			annotate(annotationSupersededBy, "newer-dp")
+			provider.deleteErr, provider.delOnce = fmt.Errorf("%w: boom", scm.ErrUnavailable), true
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.closed).To(Equal([]int64{7}))
+			Expect(cleaned().Status).To(Equal(metav1.ConditionFalse))
+
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.closed).To(Equal([]int64{7}), "closed once")
+			Expect(provider.comments).To(HaveLen(1))
+			Expect(provider.deleted).To(Equal([]string{branch}))
+			Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("treats an already deleted branch as done", func() {
+			annotate(annotationReverted, "back in sync")
+			provider.deleteErr = fmt.Errorf("%w: branch", scm.ErrNotFound)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("does not guess when tracking cannot find the merge request", func() {
+			delete(provider.byNumber, 7)
+			delete(provider.open, branch)
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">=", trackInterval))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed), "a 404 can also mean the token lost access")
+		})
+
+		It("only deletes the branch when the merge request of a retired proposal is gone", func() {
+			got := latest()
+			got.Status.Phase = backflowv1alpha1.PhaseReverted
+			got.Status.Message = "back in sync"
+			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
+			delete(provider.byNumber, 7)
+			delete(provider.open, branch)
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.comments).To(BeEmpty())
+			Expect(provider.closed).To(BeEmpty())
+			Expect(provider.deleted).To(Equal([]string{branch}))
+			Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("does nothing for a proposal that is already cleaned up", func() {
+			annotate(annotationSupersededBy, "newer-dp")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			provider.calls = nil
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.IsZero()).To(BeTrue())
+			Expect(provider.calls).To(BeEmpty())
+		})
+
+		It("cleans up a retired proposal a restarted operator finds", func() {
+			By("the phase is final but the merge request was never closed")
+			got := latest()
+			got.Status.Phase = backflowv1alpha1.PhaseReverted
+			got.Status.Message = "back in sync"
+			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.closed).To(Equal([]int64{7}))
+			Expect(provider.deleted).To(Equal([]string{branch}))
+			Expect(provider.comments[0]).To(ContainSubstring("back in sync"))
+		})
+
+		It("leaves a merge request that was merged during the cleanup alone", func() {
+			got := latest()
+			got.Status.Phase = backflowv1alpha1.PhaseSuperseded
+			got.Status.Message = "replaced"
+			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
+			provider.setState(7, scm.StateMerged, "abc")
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.closed).To(BeEmpty())
+			Expect(provider.deleted).To(BeEmpty())
+			Expect(provider.comments).To(BeEmpty())
+			Expect(cleaned().Reason).To(Equal(reasonAlreadyMerged))
+			Expect(latest().Status.MergeRequest.State).To(Equal("merged"))
+		})
+
+		It("holds the cleanup while the ScmConnection is gone", func() {
+			annotate(annotationSupersededBy, "newer-dp")
+			setConnection("")
+			// Tracking cannot read the merge request without a connection.
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(provider.calls).To(BeEmpty())
+		})
+	})
+
+	Context("retiring a proposal that has no merge request yet", func() {
+		It("does not touch the provider", func() {
+			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
+				[]byte(`{"metadata":{"annotations":{"`+annotationSupersededBy+`":"newer"}}}`)))).To(Succeed())
+
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(provider.calls).To(BeEmpty())
+			Expect(condition(conditionCleanedUp)).To(BeNil())
 		})
 	})
 
