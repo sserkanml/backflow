@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -621,14 +622,21 @@ func (r *DriftProposalReconciler) scmFailure(ctx context.Context, dp *backflowv1
 	return r.holdProposal(ctx, dp, reasonScmUnavailable, err, min(delay, retryMax))
 }
 
-// accessFor finds the ScmConnection the policy matched to the Application's
-// repository and reads its token and CA bundle. It returns nil when there is
-// no connection. Unreadable credentials are reported as gitrepo.ErrAuth.
+// accessFor finds the ScmConnection the policy matched to the proposal's
+// Application and reads its token and CA bundle. See scmAccessFor.
 func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	policy *backflowv1alpha1.BackflowPolicy) (*scmAccess, error) {
+	return scmAccessFor(ctx, r.Client, dp.Namespace, policy, dp.Spec.Application.Name)
+}
+
+// scmAccessFor finds the ScmConnection the policy matched to an Application's
+// repository and reads its token and CA bundle. It returns nil when there is
+// no connection. Unreadable credentials are reported as gitrepo.ErrAuth.
+func scmAccessFor(ctx context.Context, c client.Reader, namespace string,
+	policy *backflowv1alpha1.BackflowPolicy, appName string) (*scmAccess, error) {
 	var connName string
 	for _, a := range policy.Status.Applications {
-		if a.Name == dp.Spec.Application.Name {
+		if a.Name == appName {
 			connName = a.ScmConnection
 			break
 		}
@@ -638,7 +646,7 @@ func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1a
 	}
 
 	var conn backflowv1alpha1.ScmConnection
-	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: connName}, &conn); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: connName}, &conn); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: ScmConnection %q not found", gitrepo.ErrAuth, connName)
 		}
@@ -646,7 +654,7 @@ func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1a
 	}
 	ref := conn.Spec.TokenSecretRef
 	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ref.Name}, &secret); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ref.Name}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: token Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ref.Name, connName)
 		}
@@ -660,7 +668,7 @@ func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1a
 
 	if ca := conn.Spec.CASecretRef; ca != nil {
 		var caSecret corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ca.Name}, &caSecret); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ca.Name}, &caSecret); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("%w: CA Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ca.Name, connName)
 			}

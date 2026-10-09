@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -70,6 +71,19 @@ type DriftReconciler struct {
 	Recorder events.EventRecorder
 	// NewArgoClient builds the Argo CD client. Defaults to argocd.New.
 	NewArgoClient func(argocd.Config) (ManagedResourcesGetter, error)
+
+	// Git lists the files that differ between two commits. It lets the
+	// pause for "Git is ahead of the last sync" be limited to commits that
+	// touch the Application's own directory. When nil, or when it cannot
+	// answer, the pause applies to every commit.
+	Git GitDiffer
+
+	// Now returns the current time. Defaults to time.Now.
+	Now func() time.Time
+
+	aheadMu       sync.Mutex
+	aheadReported map[string]string // per Application: the revisions an Event was last emitted for
+	aheadChecks   map[aheadKey]aheadCheck
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
@@ -104,6 +118,11 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// Some decisions are about the moment (a sync has just finished). They ask
+	// for an earlier look instead of waiting for the next resync.
+	again := &recheck{}
+	ctx = context.WithValue(ctx, recheckKey{}, again)
+
 	var firstErr error
 	for _, summary := range policy.Status.Applications {
 		if err := r.reconcileApplication(ctx, &policy, argo, summary, proposals.Items); err != nil && firstErr == nil {
@@ -113,7 +132,7 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if firstErr != nil {
 		return ctrl.Result{}, firstErr
 	}
-	return ctrl.Result{RequeueAfter: driftResyncInterval}, nil
+	return ctrl.Result{RequeueAfter: again.within(driftResyncInterval)}, nil
 }
 
 // appResource is one entry of an Application's status.resources.
@@ -174,6 +193,11 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		}
 	}
 
+	// While Git is ahead of the last sync, an OutOfSync resource may differ
+	// from the cluster only because a commit has not been applied yet. A
+	// proposal made now could undo that commit, so no new one is made.
+	paused := len(candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
+
 	// The Argo CD API is only worth calling for an application that has
 	// something to compare (an OutOfSync resource) or something to follow up
 	// on (an open proposal). Everything else is settled by the Application
@@ -225,7 +249,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 					continue
 				}
 				drifting[res.hash()] = changes
-				if err := r.ensureProposal(ctx, policy, summary, res, changes, all); err != nil && firstErr == nil {
+				if err := r.ensureProposal(ctx, policy, summary, res, changes, all, paused); err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}
@@ -291,7 +315,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 // The spec of an existing proposal is never modified.
 func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, res appResource,
-	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal) error {
+	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool) error {
 	log := logf.FromContext(ctx)
 
 	srcType, ok := proposalSourceType(summary.SourceType)
@@ -321,6 +345,9 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	}
 
 	switch {
+	case current == nil && paused:
+		// Git is ahead of the last sync: nothing is created or superseded.
+		return nil
 	case current == nil:
 		if blocker := blockingProposal(all, rh, changes, summary.SyncedRevision); blocker != nil {
 			return r.noteBlocked(ctx, policy, summary, blocker)
