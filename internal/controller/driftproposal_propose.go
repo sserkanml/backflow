@@ -1,9 +1,11 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"time"
 
@@ -62,6 +64,8 @@ type RepositoryWriter interface {
 	CommitInfo(ctx context.Context, repoURL, sha string, auth *gitrepo.Auth) (*gitrepo.CommitInfo, error)
 	CommitFile(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, filePath string, content []byte, meta gitrepo.CommitMeta) (string, error)
 	CreateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
+	IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *gitrepo.Auth) (bool, error)
+	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
 	UpdateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
 }
 
@@ -209,36 +213,26 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(r.gitFailure(ctx, dp, err))
 	}
 
-	src, err := r.directorySource(ctx, dp)
+	res, err := r.mapAt(ctx, dp, access, head)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return stop(r.holdProposal(ctx, dp, reasonApplicationNotFound,
-				fmt.Errorf("Argo CD Application %s/%s not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name), 0))
+		var held *heldError
+		if errors.As(err, &held) {
+			return stop(r.holdProposal(ctx, dp, held.reason, held.cause, 0))
+		}
+		var verdict *verdictError
+		if errors.As(err, &verdict) {
+			if head == dp.Spec.Source.Revision {
+				// Same tree that mapped before: nothing changed in Git, so this
+				// is not "the source moved on".
+				reason, _ := mappingReason(verdict.err)
+				return stop(ctrl.Result{}, r.unmapped(ctx, dp, reason, verdict.err.Error()))
+			}
+			return stop(r.supersededByGit(ctx, dp, sourceChangedMessage+" "+verdict.err.Error()))
+		}
+		if isGitError(err) {
+			return stop(r.gitFailure(ctx, dp, err))
 		}
 		return stop(ctrl.Result{}, err)
-	}
-	tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, head, access.auth)
-	if err != nil {
-		return stop(r.gitFailure(ctx, dp, err))
-	}
-	defer func() { _ = tree.Close() }()
-
-	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
-		mapping.ResourceID{
-			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
-			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
-		}, dp.Spec.Changes)
-	if err != nil {
-		reason, verdict := mappingReason(err)
-		if !verdict {
-			return stop(ctrl.Result{}, err) // reading the repository failed; retried with backoff
-		}
-		if head == dp.Spec.Source.Revision {
-			// Same tree that mapped before: nothing changed in Git, so this is
-			// not "the source moved on".
-			return stop(ctrl.Result{}, r.unmapped(ctx, dp, reason, err.Error()))
-		}
-		return stop(r.supersededByGit(ctx, dp, sourceChangedMessage+" "+err.Error()))
 	}
 
 	sha, err := r.Writer.CommitFile(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.File, res.Edited, r.commitMeta(dp, access))
@@ -252,6 +246,129 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(r.gitFailure(ctx, dp, err))
 	}
 	return &preparedChange{head: head, sha: sha, result: res}, nil
+}
+
+// verdictError is a mapping error that is a verdict about the source (not
+// found, ambiguous, does not verify) rather than a failure to read it.
+type verdictError struct{ err error }
+
+func (e *verdictError) Error() string { return e.err.Error() }
+func (e *verdictError) Unwrap() error { return e.err }
+
+// heldError asks the caller to hold the proposal with a reason.
+type heldError struct {
+	reason string
+	cause  error
+}
+
+func (e *heldError) Error() string { return e.cause.Error() }
+
+// isGitError reports whether err comes from reading or writing the repository.
+func isGitError(err error) bool {
+	for _, target := range []error{gitrepo.ErrAuth, gitrepo.ErrRepositoryNotFound, gitrepo.ErrRevisionNotFound,
+		gitrepo.ErrUnavailable, gitrepo.ErrPushRejected} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// mapAt re-runs Locate/Apply/Verify on the repository at commit sha. A
+// verdict about the source is returned as a *verdictError; other errors are
+// failures to read.
+func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	access *scmAccess, sha string) (*mapping.Result, error) {
+	src, err := r.directorySource(ctx, dp)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, &heldError{reason: reasonApplicationNotFound, cause: fmt.Errorf(
+				"Argo CD Application %s/%s not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name)}
+		}
+		return nil, err
+	}
+	tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, sha, access.auth)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tree.Close() }()
+
+	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
+		mapping.ResourceID{
+			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
+			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
+		}, dp.Spec.Changes)
+	if err != nil {
+		if _, verdict := mappingReason(err); verdict {
+			return nil, &verdictError{err: err}
+		}
+		return nil, err // reading the repository failed; retried with backoff
+	}
+	return res, nil
+}
+
+// ownBranch reports whether an existing branch is this proposal's own work
+// that an earlier run of the operator pushed, so it can be reused instead of
+// failing with BranchConflict. All of these must hold:
+//
+//  1. the tip carries this proposal's "Proposal:" trailer;
+//  2. the tip has exactly one parent, and that parent is an ancestor of the
+//     current head of the target branch;
+//  3. relative to its parent the tip changes only the mapped file, and to
+//     exactly the content the mapping produces from that parent.
+//
+// Anything else is someone else's work, which is never overwritten. The
+// string says why a branch is not ours.
+func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	access *scmAccess, tip, head string) (bool, string, error) {
+	url := dp.Spec.Source.RepoURL
+	info, err := r.Writer.CommitInfo(ctx, url, tip, access.auth)
+	if err != nil {
+		return false, "", err
+	}
+	if !hasProposalTrailer(info.Message, dp.Name) {
+		return false, "its tip does not carry this proposal's trailer", nil
+	}
+	if len(info.Parents) != 1 {
+		return false, fmt.Sprintf("its tip has %d parents, not one", len(info.Parents)), nil
+	}
+	parent := info.Parents[0]
+	ancestor, err := r.Writer.IsAncestor(ctx, url, parent, head, access.auth)
+	if err != nil {
+		return false, "", err
+	}
+	if !ancestor {
+		return false, fmt.Sprintf("its base %s is not part of the target branch history", parent), nil
+	}
+
+	res, err := r.mapAt(ctx, dp, access, parent)
+	if err != nil {
+		var verdict *verdictError
+		if errors.As(err, &verdict) {
+			return false, "the change cannot be reproduced from its base: " + verdict.err.Error(), nil
+		}
+		return false, "", err
+	}
+	changed, err := r.Writer.ChangedPaths(ctx, url, parent, tip, access.auth)
+	if err != nil {
+		return false, "", err
+	}
+	if len(changed) != 1 || changed[0] != res.File {
+		return false, fmt.Sprintf("it changes %v, not only %s", changed, res.File), nil
+	}
+	tree, err := r.Repos.Open(ctx, url, tip, access.auth)
+	if err != nil {
+		return false, "", err
+	}
+	defer func() { _ = tree.Close() }()
+	got, err := fs.ReadFile(tree, res.File)
+	if err != nil {
+		return false, "", fmt.Errorf("%w: reading %s at %s: %v", gitrepo.ErrUnavailable, res.File, tip, err)
+	}
+	if !bytes.Equal(got, res.Edited) {
+		return false, fmt.Sprintf("%s differs from the content this proposal produces", res.File), nil
+	}
+	return true, "", nil
 }
 
 // commitMeta builds the commit identity. The commit time is the time the
@@ -289,11 +406,19 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 
 	if err := r.Writer.CreateBranch(ctx, dp.Spec.Source.RepoURL, branch, change.sha, access.auth); err != nil {
 		var exists *gitrepo.BranchExistsError
-		if errors.As(err, &exists) {
-			return r.fail(ctx, dp, reasonBranchConflict, fmt.Sprintf(
-				"Branch %q already exists at %s and holds a different change; it was left untouched.", branch, exists.SHA))
+		if !errors.As(err, &exists) {
+			return r.gitFailure(ctx, dp, err)
 		}
-		return r.gitFailure(ctx, dp, err)
+		// An earlier run of ours may have pushed it before the target branch moved.
+		ours, why, oerr := r.ownBranch(ctx, dp, access, exists.SHA, change.head)
+		if oerr != nil {
+			return r.gitFailure(ctx, dp, oerr)
+		}
+		if !ours {
+			return r.fail(ctx, dp, reasonBranchConflict, fmt.Sprintf(
+				"Branch %q already exists at %s and is not this proposal's work (%s); it was left untouched.", branch, exists.SHA, why))
+		}
+		logf.FromContext(ctx).Info("Reusing the branch pushed earlier", "proposal", dp.Name, "branch", branch, "tip", exists.SHA)
 	}
 
 	mr, err := provider.FindOpenMergeRequest(ctx, project, branch)

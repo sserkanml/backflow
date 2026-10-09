@@ -90,6 +90,8 @@ func (g *gitFixture) close() {
 
 // commit writes the files (an empty content deletes the file) and commits on the current branch.
 func (g *gitFixture) commit(files map[string]string, msg string) string {
+	// Fresh handle: objects pushed by the operator arrive in packs an old one has not seen.
+	g.repo = g.open()
 	wt, err := g.repo.Worktree()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
 	for name, content := range files {
@@ -138,7 +140,18 @@ func (g *gitFixture) file(sha, path string) string {
 	return s
 }
 
-// createBranch makes a branch at sha with one extra commit of other content.
+// commitOnBranch commits on another branch and returns to main.
+func (g *gitFixture) commitOnBranch(branch string, files map[string]string, msg string) string {
+	g.repo = g.open()
+	wt, err := g.repo.Worktree()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	ExpectWithOffset(1, wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(branch), Force: true})).To(Succeed())
+	sha := g.commit(files, msg)
+	ExpectWithOffset(1, wt.Checkout(&git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName("main"), Force: true})).To(Succeed())
+	return sha
+}
+
+// createBranchAt makes a branch point at sha.
 func (g *gitFixture) createBranchAt(name, sha string) {
 	ExpectWithOffset(1, g.open().Storer.SetReference(plumbing.NewHashReference(plumbing.NewBranchReferenceName(name), plumbing.NewHash(sha)))).To(Succeed())
 }
@@ -568,6 +581,101 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(got.Status.Message).To(ContainSubstring(other))
 			Expect(repo.branch("backflow/prop-dp")).To(Equal(other))
 			Expect(provider.created).To(BeEmpty())
+		})
+
+		Context("an existing branch of the same name", func() {
+			ourMessage := "backflow: sync ConfigMap demo/demo-config from cluster\n\nProposal: prop-dp\n"
+			debugMap := strings.Replace(proposeConfigMap, "LOG_LEVEL: info", "LOG_LEVEL: debug", 1)
+
+			// pushedEarlier: the operator pushed the branch, then lost its status.
+			pushedEarlier := func() string {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				tip := repo.branch("backflow/prop-dp")
+				forgetStatus()
+				provider.open = map[string]*scm.MergeRequest{}
+				return tip
+			}
+			expectConflict := func(tip, why string) {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonBranchConflict))
+				Expect(got.Status.Message).To(ContainSubstring(why))
+				Expect(repo.branch("backflow/prop-dp")).To(Equal(tip), "someone else's branch is never touched")
+				Expect(provider.created).To(HaveLen(1), "no second merge request")
+			}
+
+			It("is adopted after the target branch moved on", func() {
+				tip := pushedEarlier()
+				head := repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change")
+
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(got.Status.MergeRequest.Branch).To(Equal("backflow/prop-dp"))
+				Expect(repo.branch("backflow/prop-dp")).To(Equal(tip), "the branch is reused as it is")
+				Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(initial))
+				Expect(repo.branch("main")).To(Equal(head))
+				Expect(provider.created).To(HaveLen(2), "a merge request is opened for it again")
+			})
+
+			It("is not adopted when a human commit sits on top", func() {
+				tip := pushedEarlier()
+				human := repo.commitOnBranch("backflow/prop-dp", map[string]string{"README.md": "reviewer fix\n"}, "address review")
+				Expect(human).NotTo(Equal(tip))
+				repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change")
+
+				expectConflict(human, "trailer")
+			})
+
+			It("is not adopted when the file content differs", func() {
+				repo.createBranchAt("backflow/prop-dp", initial)
+				tip := repo.commitOnBranch("backflow/prop-dp",
+					map[string]string{"apps/demo/configmap.yaml": strings.Replace(proposeConfigMap, "LOG_LEVEL: info", "LOG_LEVEL: trace", 1)}, ourMessage)
+				provider.created = append(provider.created, scm.CreateRequest{}) // keeps expectConflict's count honest
+				expectConflict(tip, "differs from the content")
+			})
+
+			It("is not adopted when it also changes another file", func() {
+				repo.createBranchAt("backflow/prop-dp", initial)
+				tip := repo.commitOnBranch("backflow/prop-dp",
+					map[string]string{"apps/demo/configmap.yaml": debugMap, "README.md": "sneaked in\n"}, ourMessage)
+				provider.created = append(provider.created, scm.CreateRequest{})
+				expectConflict(tip, "not only apps/demo/configmap.yaml")
+			})
+
+			It("is not adopted when its base is not in the target branch history", func() {
+				repo.createBranchAt("side", initial)
+				side := repo.commitOnBranch("side", map[string]string{"README.md": "side work\n"}, "side")
+				repo.createBranchAt("backflow/prop-dp", side)
+				tip := repo.commitOnBranch("backflow/prop-dp", map[string]string{"apps/demo/configmap.yaml": debugMap}, ourMessage)
+				provider.created = append(provider.created, scm.CreateRequest{})
+				expectConflict(tip, "not part of the target branch history")
+			})
+
+			It("without our trailer is only reused while it is exactly the change we would push", func() {
+				repo.createBranchAt("backflow/prop-dp", initial)
+				tip := repo.commitOnBranch("backflow/prop-dp", map[string]string{"apps/demo/configmap.yaml": debugMap}, "someone's identical edit")
+
+				By("same base and same tree: it is the very change, whoever committed it")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(repo.branch("backflow/prop-dp")).To(Equal(tip))
+
+				By("once the target moved, the trailer is required")
+				forgetStatus()
+				provider.open = map[string]*scm.MergeRequest{}
+				repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change")
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(latest().Status.Message).To(ContainSubstring("trailer"))
+				Expect(repo.branch("backflow/prop-dp")).To(Equal(tip))
+			})
 		})
 
 		It("fails with TargetNotABranch when the Application tracks a tag", func() {
