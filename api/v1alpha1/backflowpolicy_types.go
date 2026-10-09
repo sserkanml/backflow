@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -84,9 +86,25 @@ type BackflowPolicySpec struct {
 	// same synced revision, for this long and across at least two
 	// observations. A drift that disappears within the window is never
 	// proposed, and several quick edits to the same resource give one
-	// proposal for the final state.
+	// proposal for the final state. An explicit 0s waits for the second
+	// observation only. Defaults to 30s.
 	// +kubebuilder:default="30s"
-	BatchWindow metav1.Duration `json:"batchWindow,omitempty"`
+	// +optional
+	BatchWindow *metav1.Duration `json:"batchWindow,omitempty"`
+}
+
+// DefaultBatchWindow is the batch window of a policy that does not set one.
+const DefaultBatchWindow = 30 * time.Second
+
+// EffectiveBatchWindow returns the batch window to use: the configured one,
+// including an explicit 0s, or DefaultBatchWindow when unset. The API server
+// fills in the default for stored objects; this covers objects that did not
+// go through it.
+func (s BackflowPolicySpec) EffectiveBatchWindow() time.Duration {
+	if s.BatchWindow == nil {
+		return DefaultBatchWindow
+	}
+	return s.BatchWindow.Duration
 }
 
 // ArgoCDServer describes how to reach the Argo CD API.

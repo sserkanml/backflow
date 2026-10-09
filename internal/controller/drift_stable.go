@@ -33,7 +33,7 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 	changes []backflowv1alpha1.FieldChange, st aheadState) (ready bool, wait time.Duration) {
 	enc, _ := json.Marshal(changes)
 	key := pendingKey{policy: policy.Namespace + "/" + policy.Name, app: app, resource: resource}
-	window := policy.Spec.BatchWindow.Duration
+	window := policy.Spec.EffectiveBatchWindow()
 	now := r.now()
 
 	r.stableMu.Lock()

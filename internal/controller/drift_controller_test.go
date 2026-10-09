@@ -333,7 +333,7 @@ var _ = Describe("Drift detection", func() {
 	clock := func() time.Time { return clockBase.Add(clockOffset) }
 	advance := func(d time.Duration) { clockOffset += d }
 	// settle moves the clock past the batch window of the policy.
-	settle := func() { advance(policy.Spec.BatchWindow.Duration + time.Second) }
+	settle := func() { advance(policy.Spec.EffectiveBatchWindow() + time.Second) }
 
 	// reconcileDrift runs only the drift controller, which never writes status.
 	reconcileDrift := func() {
@@ -385,9 +385,6 @@ var _ = Describe("Drift detection", func() {
 				ArgoCDNamespace: ns,
 				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"drift-app"}},
 				Mode:            backflowv1alpha1.ModeReportOnly,
-				// A typed client sends 0s for an unset duration; the API default
-				// of 30s only applies to a manifest that leaves the field out.
-				BatchWindow: metav1.Duration{Duration: 30 * time.Second},
 				ArgoCD: &backflowv1alpha1.ArgoCDServer{
 					URL: "https://argocd.test",
 					TokenSecretRef: corev1.SecretKeySelector{
@@ -993,14 +990,39 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	Context("a drift has to stay the same before it becomes a proposal", func() {
-		window := func() time.Duration { return policy.Spec.BatchWindow.Duration }
+		window := func() time.Duration { return policy.Spec.EffectiveBatchWindow() }
 		resultOf := func() reconcile.Result {
 			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			return res
 		}
 
-		It("defaults the window to 30s for a manifest that leaves it out", func() {
+		It("uses 30s for a policy built in Go without the field", func() {
+			Expect(policy.Spec.BatchWindow).NotTo(BeNil(), "the API server filled in its default; omitempty let it")
+			Expect(policy.Spec.BatchWindow.Duration).To(Equal(30 * time.Second))
+			Expect(window()).To(Equal(30 * time.Second))
+
+			By("and for one that never went through the API server")
+			Expect(backflowv1alpha1.BackflowPolicySpec{}.EffectiveBatchWindow()).To(Equal(backflowv1alpha1.DefaultBatchWindow))
+		})
+
+		It("keeps an explicit 0s", func() {
+			zero := &backflowv1alpha1.BackflowPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "window-zero", Namespace: ns},
+				Spec: backflowv1alpha1.BackflowPolicySpec{
+					Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"x"}},
+					BatchWindow:  &metav1.Duration{},
+				},
+			}
+			Expect(k8sClient.Create(ctx, zero)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, zero)).To(Succeed()) }()
+			var got backflowv1alpha1.BackflowPolicy
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(zero), &got)).To(Succeed())
+			Expect(got.Spec.BatchWindow).NotTo(BeNil())
+			Expect(got.Spec.EffectiveBatchWindow()).To(BeZero(), "0s is a choice, not a missing value")
+		})
+
+		It("defaults the window for a manifest that leaves it out", func() {
 			raw := &unstructured.Unstructured{Object: map[string]interface{}{
 				"apiVersion": "backflow.io/v1alpha1", "kind": "BackflowPolicy",
 				"metadata": map[string]interface{}{"name": "window-default", "namespace": ns},
@@ -1012,7 +1034,7 @@ var _ = Describe("Drift detection", func() {
 			defer func() { Expect(k8sClient.Delete(ctx, raw)).To(Succeed()) }()
 			var got backflowv1alpha1.BackflowPolicy
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(raw), &got)).To(Succeed())
-			Expect(got.Spec.BatchWindow.Duration).To(Equal(30 * time.Second))
+			Expect(got.Spec.EffectiveBatchWindow()).To(Equal(30 * time.Second))
 		})
 
 		It("makes no proposal for a drift that disappears within the window", func() {

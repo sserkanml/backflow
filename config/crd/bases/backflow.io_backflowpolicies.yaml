@@ -196,7 +196,8 @@ spec:
                   same synced revision, for this long and across at least two
                   observations. A drift that disappears within the window is never
                   proposed, and several quick edits to the same resource give one
-                  proposal for the final state.
+                  proposal for the final state. An explicit 0s waits for the second
+                  observation only. Defaults to 30s.
                 type: string
               exclude:
                 description: |-
