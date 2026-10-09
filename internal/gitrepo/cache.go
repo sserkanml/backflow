@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -189,12 +190,29 @@ func fetch(ctx context.Context, repo *git.Repository, sha string, auth *Auth) er
 	// commit. Servers that allow fetching by SHA still serve it.
 	opts = fetchOptions(auth, []config.RefSpec{config.RefSpec(fmt.Sprintf("%s:refs/backflow/%s", sha, sha))})
 	if err := repo.FetchContext(ctx, opts); err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
-		if errors.Is(classify(err), ErrUnavailable) && ctx.Err() == nil {
+		// Only a refusal by the server means the commit is gone. A network
+		// error says nothing about the commit and may be transient.
+		if isRefusal(err) && ctx.Err() == nil {
 			return fmt.Errorf("%w: %s", ErrRevisionNotFound, sha)
 		}
 		return classify(err)
 	}
 	return nil
+}
+
+// isRefusal reports whether the server answered a fetch by SHA with a
+// refusal: it does not advertise the object ("not our ref", an ERR line), or
+// it does not allow fetching by SHA at all.
+func isRefusal(err error) bool {
+	var errLine *pktline.ErrorLine
+	var noMatch git.NoMatchingRefSpecError
+	switch {
+	case errors.Is(err, git.ErrExactSHA1NotSupported), errors.As(err, &errLine), errors.As(err, &noMatch):
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not our ref") || strings.Contains(msg, "unadvertised object") ||
+		strings.Contains(msg, "no such remote ref")
 }
 
 // fetchOptions builds the go-git fetch options for the given access.

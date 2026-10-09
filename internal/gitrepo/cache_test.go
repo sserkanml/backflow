@@ -28,6 +28,7 @@ import (
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/format/pktline"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
@@ -469,5 +470,62 @@ func TestClassify(t *testing.T) {
 		if got := classify(tt.err); !errors.Is(got, tt.want) {
 			t.Errorf("classify(%v) = %v, want %v", tt.err, got, tt.want)
 		}
+	}
+}
+
+func TestIsRefusal(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{git.ErrExactSHA1NotSupported, true},
+		{&pktline.ErrorLine{Text: "upload-pack: not our ref abc"}, true},
+		{fmt.Errorf("wrapped: %w", &pktline.ErrorLine{Text: "denied"}), true},
+		{errors.New("remote error: upload-pack: not our ref abc"), true},
+		{errors.New("dial tcp 10.0.0.1:443: connect: connection refused"), false},
+		{errors.New("unexpected EOF"), false},
+		{context.DeadlineExceeded, false},
+	}
+	for _, tt := range tests {
+		if got := isRefusal(tt.err); got != tt.want {
+			t.Errorf("isRefusal(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+// flakyTransport serves the first upload-pack session like a healthy server
+// and breaks the connection of every later one.
+type flakyTransport struct {
+	transport.Transport
+	mu       sync.Mutex
+	sessions int
+}
+
+func (f *flakyTransport) NewUploadPackSession(ep *transport.Endpoint, auth transport.AuthMethod) (transport.UploadPackSession, error) {
+	f.mu.Lock()
+	f.sessions++
+	n := f.sessions
+	f.mu.Unlock()
+	if n > 1 {
+		return nil, errors.New("read tcp 10.0.0.1:443: connection reset by peer")
+	}
+	return f.Transport.NewUploadPackSession(ep, auth)
+}
+
+// A network failure while fetching a commit by SHA is not "the commit is gone".
+func TestOpenNetworkErrorIsUnavailableNotRevisionNotFound(t *testing.T) {
+	src := newSourceRepo(t)
+	src.commit(map[string]string{"a.yaml": "a: 1\n"})
+	flaky := &flakyTransport{Transport: server.NewClient(server.NewFilesystemLoader(osfs.New("/")))}
+	client.InstallProtocol("flaky", flaky)
+
+	cache := NewCache(t.TempDir())
+	// The branch fetch succeeds, the fetch of the unknown SHA loses the connection.
+	_, err := cache.Open(t.Context(), "flaky://"+filepath.Join(src.dir, ".git"), strings.Repeat("a", 40), nil)
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrRevisionNotFound) {
+		t.Fatalf("err = %v, want ErrUnavailable and not ErrRevisionNotFound", err)
+	}
+	if flaky.sessions < 2 {
+		t.Errorf("sessions = %d; the SHA fetch was never attempted", flaky.sessions)
 	}
 }
