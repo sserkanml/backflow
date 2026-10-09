@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -607,5 +608,76 @@ func TestCommitInfo(t *testing.T) {
 	fresh := NewCache(t.TempDir())
 	if info, err := fresh.CommitInfo(ctx, src.url(), base, nil); err != nil || len(info.Parents) != 0 {
 		t.Errorf("fresh cache: %+v, %v", info, err)
+	}
+}
+
+func TestIsAncestor(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	child, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte("x\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sibling, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte("y\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchild, err := cache.CommitFile(ctx, src.url(), child, nil, "apps/demo/deploy.yaml", []byte("spec:\n  replicas: 2\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, a, d string
+		want       bool
+	}{
+		{"parent of child", base, child, true},
+		{"grandparent", base, grandchild, true},
+		{"itself", child, child, true},
+		{"child is not the parent's ancestor", child, base, false},
+		{"siblings", child, sibling, false},
+	}
+	for _, tc := range cases {
+		got, err := cache.IsAncestor(ctx, src.url(), tc.a, tc.d, nil)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %v, %v; want %v", tc.name, got, err, tc.want)
+		}
+	}
+	if _, err := cache.IsAncestor(ctx, src.url(), "short", child, nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
+	}
+	if _, err := cache.IsAncestor(ctx, src.url(), strings.Repeat("0", 40), child, nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("unknown sha: err = %v", err)
+	}
+}
+
+func TestChangedPaths(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	one, err := cache.CommitFile(ctx, src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := cache.CommitFile(ctx, src.url(), one, nil, "README.md", []byte("x\n"), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		from, to string
+		want     []string
+	}{
+		{base, one, []string{"apps/demo/configmap.yaml"}},
+		{base, two, []string{"README.md", "apps/demo/configmap.yaml"}},
+		{one, two, []string{"README.md"}},
+		{base, base, []string{}},
+	} {
+		got, err := cache.ChangedPaths(ctx, src.url(), tc.from, tc.to, nil)
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("ChangedPaths = %v, %v; want %v", got, err, tc.want)
+		}
+	}
+	if _, err := cache.ChangedPaths(ctx, src.url(), "short", one, nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
 	}
 }

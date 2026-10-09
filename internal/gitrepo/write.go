@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -182,6 +183,87 @@ func (c *Cache) CommitInfo(ctx context.Context, repoURL, sha string, auth *Auth)
 		info.Parents = append(info.Parents, p.String())
 	}
 	return info, nil
+}
+
+// IsAncestor reports whether commit ancestor is reachable from commit
+// descendant. A commit is its own ancestor. Both are fetched when missing.
+func (c *Cache) IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *Auth) (bool, error) {
+	for _, sha := range []string{ancestor, descendant} {
+		if !fullSHA.MatchString(sha) {
+			return false, fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, sha)
+		}
+	}
+	unlock, err := c.lock(ctx, c.Dir(repoURL))
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	_, a, err := c.openCommit(ctx, repoURL, ancestor, auth)
+	if err != nil {
+		return false, err
+	}
+	_, d, err := c.openCommit(ctx, repoURL, descendant, auth)
+	if err != nil {
+		return false, err
+	}
+	if a.Hash == d.Hash {
+		return true, nil
+	}
+	ok, err := a.IsAncestor(d)
+	if err != nil {
+		return false, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	return ok, nil
+}
+
+// ChangedPaths returns the sorted paths of the files that differ between the
+// trees of two commits. Both are fetched when missing.
+func (c *Cache) ChangedPaths(ctx context.Context, repoURL, from, to string, auth *Auth) ([]string, error) {
+	for _, sha := range []string{from, to} {
+		if !fullSHA.MatchString(sha) {
+			return nil, fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, sha)
+		}
+	}
+	unlock, err := c.lock(ctx, c.Dir(repoURL))
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	_, a, err := c.openCommit(ctx, repoURL, from, auth)
+	if err != nil {
+		return nil, err
+	}
+	_, b, err := c.openCommit(ctx, repoURL, to, auth)
+	if err != nil {
+		return nil, err
+	}
+	ta, err := a.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	tb, err := b.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	changes, err := object.DiffTreeContext(ctx, ta, tb)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	seen := map[string]bool{}
+	for _, ch := range changes {
+		// A rename or type change touches both names.
+		for _, name := range []string{ch.From.Name, ch.To.Name} {
+			if name != "" {
+				seen[name] = true
+			}
+		}
+	}
+	paths := make([]string, 0, len(seen))
+	for p := range seen {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // CommitFile creates a commit on top of baseSHA whose tree equals the base
