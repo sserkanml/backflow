@@ -52,3 +52,26 @@ IN_CLUSTER=true ./hack/test-mapping.sh
 make run                # run the operator locally against the current kube context
 make test               # unit and envtest tests
 ```
+
+## Limitations
+
+- **Directory sources only.** Drift in resources rendered by Kustomize or Helm
+  is detected, but the proposal ends `Unmapped` with a reason; nothing is
+  written to Git for it.
+- **YAML manifests only.** A resource defined in a JSON manifest cannot be
+  edited; its proposal is `Unmapped` (`UnsupportedFileFormat`).
+- **Array style is re-rendered.** Changing a value inside a list re-renders
+  the entry that holds it, so its indentation and flow or block style may
+  differ from your file. Items cannot be added to or removed from lists.
+- **Comments on removed keys are orphaned.** When a change removes a key, the
+  comments attached to that key are left behind or dropped with it.
+- **The repository cache is never pruned and holds full clones.** It lives in
+  the volume mounted at `--repo-cache-dir` and only grows. Size it for your
+  repositories, or restart the pod with an empty volume to clear it.
+- **All Secrets are cached cluster-wide.** The operator reads token Secrets
+  through an informer that watches every Secret in the cluster, which costs
+  memory in clusters with many of them.
+- **Open proposals of a blocked or not-Ready policy are left as they are.**
+  When a policy stops matching an Application, conflicts with another policy
+  or its connection is not Ready, proposals that are already open keep their
+  phase; they are not closed or withdrawn.
