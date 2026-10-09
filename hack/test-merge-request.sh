@@ -21,6 +21,13 @@
 #      lost: the proposal stays Proposed, the merge request stays open with one
 #      comment saying so, and merging it brings the change back to the cluster.
 #
+#   f. With automated sync switched off, the demo is behind the commits to main.
+#      A commit outside apps/demo does not matter: a real drift is still proposed.
+#      A commit under apps/demo puts the demo ahead of its last sync: the changed
+#      ConfigMap is OutOfSync, but no proposal is made for it (it would undo the
+#      commit) and one Event says why. After a sync the detection works again.
+#      Automated sync is switched back on.
+#
 # Requires the environment from ./hack/dev-up.sh and GITLAB_TOKEN with the api
 # and write_repository scopes (owner or maintainer of the demo project). Without
 # GITLAB_TOKEN the test is skipped with a message and exits 0.
@@ -82,8 +89,12 @@ P_A=""
 P_C=""
 P_D=""
 P_E=""
+P_F=""
+P_F1=""
 RESTORE_CLUSTER=false
 LABEL_PREEXISTED=true
+AUTOMATED_ORIG=""
+AUTOSYNC_DISABLED=false
 MAIN_ORIG_SHA=""
 ORIG_LOG_LEVEL=""
 ORIG_REPLICAS=""
@@ -239,6 +250,43 @@ restore_demo() {
   return 1
 }
 
+# Automated sync of the Application is switched off for scenario f and must
+# come back whatever happens.
+disable_autosync() {
+  k -n "$ARGOCD_NS" patch application "$APP" --type json \
+    -p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]' >/dev/null 2>&1 && AUTOSYNC_DISABLED=true
+}
+restore_autosync() {
+  [[ "$AUTOSYNC_DISABLED" == "true" ]] || return 0
+  k -n "$ARGOCD_NS" patch application "$APP" --type merge \
+    -p '{"spec":{"syncPolicy":{"automated":{}}}}' >/dev/null 2>&1 && AUTOSYNC_DISABLED=false
+}
+autosync_enabled() { [[ -n "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.syncPolicy.automated}' 2>/dev/null)" ]]; }
+# app_ahead_at <sha>: OutOfSync, comparing against sha, which has not been synced.
+app_ahead_at() {
+  refresh_app hard
+  [[ "$(app_sync_status)" == "OutOfSync" &&
+     "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.revision}')" == "$1" &&
+     "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.operationState.syncResult.revision}')" != "$1" ]]
+}
+git_ahead_events() {
+  k -n "$NS" get events -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}' 2>/dev/null | grep -c GitAhead || true
+}
+# git_ahead_notes: the text of every GitAhead Event in the test namespace.
+git_ahead_notes() {
+  k -n "$NS" get events -o json 2>/dev/null | python3 -c '
+import sys, json
+for e in json.load(sys.stdin)["items"]:
+    if e.get("reason") == "GitAhead":
+        print(e.get("note") or e.get("message") or "")'
+}
+events_exceed() { [[ "$(git_ahead_events)" -gt "$1" ]]; }
+# app_compared_at <sha>: Argo CD compares against sha (whether or not it is synced).
+app_compared_at() {
+  refresh_app hard
+  [[ "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.revision}')" == "$1" ]]
+}
+
 # proposals: one line per DriftProposal of the policy for demo-config:
 #   <name>|<phase>|<supersededBy>|<path>:<op>:<desired>><live>;...
 proposals() {
@@ -372,6 +420,11 @@ cleanup() {
     fi
   fi
 
+  if [[ "$AUTOSYNC_DISABLED" == "true" ]]; then
+    if restore_autosync; then echo "  automated sync of $APP is on again"; else
+      echo "  ${RED}WARNING:${NC} could not switch automated sync of $APP back on: kubectl -n $ARGOCD_NS patch application $APP --type merge -p '{\"spec\":{\"syncPolicy\":{\"automated\":{}}}}'" >&2
+    fi
+  fi
   if [[ "$RESTORE_CLUSTER" == "true" ]]; then
     echo "Restoring demo resources to their Git state..."
     if restore_demo "$(main_sha 2>/dev/null)"; then
@@ -416,6 +469,7 @@ else
   fi
 fi
 
+AUTOMATED_ORIG="$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.syncPolicy.automated}')"
 APP_REPO="$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.source.repoURL}')"
 [[ "$APP_REPO" == *"gitlab.com/$GITLAB_PROJECT"* ]] || die "$APP tracks $APP_REPO, not gitlab.com/$GITLAB_PROJECT"
 
@@ -741,6 +795,76 @@ PY
 fi
 
 # ---------------------------------------------------------------------------
+step "f. Git ahead of the last sync pauses drift detection"
+if [[ -z "$AUTOMATED_ORIG" ]]; then
+  note "skipped: $APP has no automated sync to switch off"
+else
+  if disable_autosync; then pass "automated sync switched off"; else fail "could not switch automated sync off"; fi
+
+  echo "  a commit outside apps/demo (the repository has other content too)..."
+  python3 - "$WORKDIR" "$(raw_file README.md main)" >"$WORKDIR/outside.json" <<'PY'
+import json, sys
+print(json.dumps({"branch": "main", "commit_message": "test: a commit outside the Application directory (Backflow e2e)",
+                  "actions": [{"action": "update", "file_path": "README.md",
+                               "content": sys.argv[2] + "\nA line outside apps/demo, added by the Backflow e2e test.\n"}]}))
+PY
+  OUTSIDE_SHA="$(gl POST "$(project_path "/repository/commits")" "$(cat "$WORKDIR/outside.json")" | jx 'd["id"]')"
+  rm -f "$WORKDIR/outside.json"
+  expect_nonempty "commit outside apps/demo" "$OUTSIDE_SHA"
+  wait_for "Argo CD compares against it" app_compared_at "$OUTSIDE_SHA"
+  expect_eq "it is not synced (manual sync)" "true" "$([[ "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.operationState.syncResult.revision}')" != "$OUTSIDE_SHA" ]] && echo true || echo false)"
+  EVENTS_BEFORE="$(git_ahead_events)"
+  set_log_level debug
+  wait_for "a real drift is proposed although Git is ahead (error -> debug)" has_proposal 'Detected|Mapping|Proposed' '/data/LOG_LEVEL:Replace:"error">"debug"'
+  remember_proposals
+  P_F1="$(proposal_with 'Detected|Mapping|Proposed' '>"debug"' | head -n 1)"
+  expect_eq "no pause Event for a commit outside the directory" "$EVENTS_BEFORE" "$(git_ahead_events)"
+  set_log_level error
+  if [[ -n "$P_F1" ]]; then wait_for "and retired when the live value goes back" phase_is "$P_F1" Reverted; fi
+
+  echo "  a commit under apps/demo..."
+  BEFORE_F="$(proposal_count)"
+  EVENTS_BEFORE="$(git_ahead_events)"
+  CURRENT_CM="$(raw_file apps/demo/configmap.yaml main)"
+  python3 - "$WORKDIR" "$CURRENT_CM" >"$WORKDIR/ahead.json" <<'PY'
+import json, re, sys
+content = re.sub(r"LOG_LEVEL: \S+", "LOG_LEVEL: trace", sys.argv[2], count=1)
+print(json.dumps({"branch": "main", "commit_message": "test: a commit the Application has not synced yet (Backflow e2e)",
+                  "actions": [{"action": "update", "file_path": "apps/demo/configmap.yaml", "content": content}]}))
+PY
+  AHEAD_SHA="$(gl POST "$(project_path "/repository/commits")" "$(cat "$WORKDIR/ahead.json")" | jx 'd["id"]')"
+  rm -f "$WORKDIR/ahead.json"
+  expect_nonempty "commit under apps/demo" "$AHEAD_SHA"
+
+  wait_for "$APP is OutOfSync, comparing against the commit but not synced to it" app_ahead_at "$AHEAD_SHA"
+  expect_eq "live LOG_LEVEL is still the old one" "error" "$(live_log_level)"
+  echo "  waiting ${QUIET}s: no proposal may be made for the pending commit..."
+  sleep "$QUIET"
+  expect_eq "proposals for demo-config (none new)" "$BEFORE_F" "$(proposal_count)"
+  expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
+  wait_for "an Event says that detection is paused" events_exceed "$EVENTS_BEFORE"
+  expect_eq "new GitAhead events (one per combination of revisions)" "$((EVENTS_BEFORE + 1))" "$(git_ahead_events)"
+  expect_contains "Event text" "1 file(s) under apps/demo changed" "$(git_ahead_notes | tail -n 1)"
+  expect_contains "Event text" "drift detection for it is paused until Argo CD syncs" "$(git_ahead_notes | tail -n 1)"
+
+  if sync_app; then pass "synced the Application"; else fail "$APP did not become Synced"; fi
+  wait_for "$APP is Synced at the commit" app_synced_at "$AHEAD_SHA"
+  expect_eq "live LOG_LEVEL after the sync" "trace" "$(live_log_level)"
+  expect_eq "proposals for demo-config (still none new)" "$BEFORE_F" "$(proposal_count)"
+
+  echo "  after the sync a real drift is detected again..."
+  set_log_level debug
+  wait_for "proposal is made for the real drift (trace -> debug)" has_proposal 'Detected|Mapping|Proposed' '/data/LOG_LEVEL:Replace:"trace">"debug"'
+  remember_proposals
+  P_F="$(proposal_with 'Detected|Mapping|Proposed' '>"debug"' | head -n 1)"
+  set_log_level trace
+  if [[ -n "$P_F" ]]; then wait_for "and retired when the live value goes back" phase_is "$P_F" Reverted; fi
+
+  if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on"; fi
+  if autosync_enabled; then pass "$APP has automated sync again"; else fail "$APP has no automated sync"; fi
+fi
+
+# ---------------------------------------------------------------------------
 step "Secrets"
 refresh_log
 if grep -qF -- "$GITLAB_TOKEN" "$LOG_FILE" 2>/dev/null; then
@@ -749,7 +873,7 @@ else
   pass "the GitLab token does not appear in the operator log"
 fi
 LEAK=false
-for p in "$P_A" "$P_C" "$P_D" "$P_E"; do
+for p in "$P_A" "$P_C" "$P_D" "$P_E" "$P_F1" "$P_F"; do
   [[ -n "$p" ]] || continue
   if k -n "$NS" get driftproposal "$p" -o yaml | grep -qF -- "$GITLAB_TOKEN"; then LEAK=true; fi
 done
