@@ -63,6 +63,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --repo-cache-dir=/var/cache/backflow
         image: controller:latest
         name: manager
         ports:
@@ -87,16 +88,24 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # Starting points, not guarantees: memory grows with the number of
+        # Secrets and Argo CD Applications held in the informer caches and with
+        # the size of the Git repositories being mapped. Tune per cluster.
         resources:
           limits:
             cpu: 500m
-            memory: 128Mi
+            memory: 512Mi
           requests:
-            cpu: 10m
-            memory: 64Mi
-        volumeMounts: []
-      volumes: []
+            cpu: 50m
+            memory: 128Mi
+        volumeMounts:
+        - name: repo-cache
+          mountPath: /var/cache/backflow
+      volumes:
+      # The root file system is read-only, so Git repositories are cached on a
+      # volume. The cache is disposable: it is refetched when empty.
+      - name: repo-cache
+        emptyDir:
+          sizeLimit: 2Gi
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
