@@ -85,6 +85,13 @@ make test               # unit and envtest tests
   link (at either revision), and when the repository cannot be read, every
   commit pauses detection, because the check cannot be trusted. One Event on
   the policy says so. Proposals that are already open are left as they are.
-  Detection is also held back while a sync is running, until Argo CD has
-  compared again after it, and for 15 seconds after it finished, because Argo CD
-  can show a resource as OutOfSync for a moment after the sync fixed it.
+  Detection is also held back while a sync is running and until Argo CD has
+  compared again after it.
+- **A drift becomes a proposal only after it has been stable.** It must be
+  seen with the same changes at the same synced and compared revision for the
+  policy's `spec.batchWindow` (default 30s), across at least two observations.
+  A drift that disappears within the window is never proposed, and several quick
+  edits to a resource give one proposal for the final state. This also covers
+  the moment after a sync, when Argo CD can still show a resource as OutOfSync.
+  What was seen is kept in memory; after a restart the window starts again,
+  which only delays a proposal.
