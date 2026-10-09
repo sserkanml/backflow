@@ -218,10 +218,12 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "backflowpolicy")
 		os.Exit(1)
 	}
+	repoCache := gitrepo.NewCache(repoCacheDir)
 	if err := (&controller.DriftProposalReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Repos:  controller.CacheReader{Cache: gitrepo.NewCache(repoCacheDir)},
+		Repos:  controller.CacheReader{Cache: repoCache},
+		Writer: repoCache,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)

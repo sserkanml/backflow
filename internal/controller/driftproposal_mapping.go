@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,7 +97,12 @@ func (r *DriftProposalReconciler) now() time.Time {
 // retryDelay is how long to wait before trying again. It grows with the time
 // the source has been unreadable (half of it), between retryMin and retryMax.
 func (r *DriftProposalReconciler) retryDelay(dp *backflowv1alpha1.DriftProposal) time.Duration {
-	c := meta.FindStatusCondition(dp.Status.Conditions, conditionMapped)
+	return r.retryDelayFor(dp, conditionMapped)
+}
+
+// retryDelayFor is retryDelay for the given condition type.
+func (r *DriftProposalReconciler) retryDelayFor(dp *backflowv1alpha1.DriftProposal, conditionType string) time.Duration {
+	c := meta.FindStatusCondition(dp.Status.Conditions, conditionType)
 	if c == nil || c.Status != metav1.ConditionFalse {
 		return retryMin
 	}
@@ -242,21 +246,35 @@ func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha
 	return ctrl.Result{RequeueAfter: delay}, nil
 }
 
+// heldReasons are the reasons of a False Mapped or Proposed condition that
+// the user fixes by changing a Secret, an ScmConnection or a BackflowPolicy.
+var heldReasons = map[string]bool{
+	reasonRepositoryAuthFailed: true, reasonRepositoryNotFound: true,
+	reasonMissingScmConnection: true, reasonPolicyNotFound: true,
+	reasonScmAuthFailed: true, reasonScmForbidden: true, reasonScmProjectNotFound: true,
+}
+
 // authFailedProposals enqueues the proposals in the namespace of a changed
-// Secret or ScmConnection that are waiting for access to be fixed: the
-// credentials were rejected, or the repository is not visible to them.
+// Secret, ScmConnection or BackflowPolicy that are waiting for access to be
+// fixed: the credentials were rejected, the repository is not visible to
+// them, or no ScmConnection matched yet.
 func (r *DriftProposalReconciler) authFailedProposals(ctx context.Context, obj client.Object) []reconcile.Request {
 	var list backflowv1alpha1.DriftProposalList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
+	policy, isPolicy := obj.(*backflowv1alpha1.BackflowPolicy)
 	var requests []reconcile.Request
 	for i := range list.Items {
 		p := &list.Items[i]
-		if c := meta.FindStatusCondition(p.Status.Conditions, conditionMapped); c != nil &&
-			p.Status.Phase == backflowv1alpha1.PhaseMapping && c.Status == metav1.ConditionFalse &&
-			(c.Reason == reasonRepositoryAuthFailed || c.Reason == reasonRepositoryNotFound) {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
+		if p.Status.Phase != backflowv1alpha1.PhaseMapping || (isPolicy && p.Spec.PolicyName != policy.Name) {
+			continue
+		}
+		for _, t := range []string{conditionMapped, conditionProposed} {
+			if c := meta.FindStatusCondition(p.Status.Conditions, t); c != nil && c.Status == metav1.ConditionFalse && heldReasons[c.Reason] {
+				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
+				break
+			}
 		}
 	}
 	return requests
@@ -305,56 +323,11 @@ func (r *DriftProposalReconciler) repositoryAuth(ctx context.Context, dp *backfl
 	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, &policy); err != nil {
 		return nil, err
 	}
-	var connName string
-	for _, a := range policy.Status.Applications {
-		if a.Name == dp.Spec.Application.Name {
-			connName = a.ScmConnection
-			break
-		}
-	}
-	if connName == "" {
-		return nil, nil
-	}
-
-	var conn backflowv1alpha1.ScmConnection
-	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: connName}, &conn); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("%w: ScmConnection %q not found", gitrepo.ErrAuth, connName)
-		}
+	access, err := r.accessFor(ctx, dp, &policy)
+	if err != nil || access == nil {
 		return nil, err
 	}
-	ref := conn.Spec.TokenSecretRef
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ref.Name}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("%w: token Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ref.Name, connName)
-		}
-		return nil, err
-	}
-	token := strings.TrimSpace(string(secret.Data[ref.Key]))
-	if token == "" {
-		return nil, fmt.Errorf("%w: Secret %q has no key %q", gitrepo.ErrAuth, ref.Name, ref.Key)
-	}
-	auth := gitrepo.BasicAuth(string(conn.Spec.Provider), token)
-
-	if ca := conn.Spec.CASecretRef; ca != nil {
-		var caSecret corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Namespace: conn.Namespace, Name: ca.Name}, &caSecret); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil, fmt.Errorf("%w: CA Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ca.Name, connName)
-			}
-			return nil, err
-		}
-		bundle := caSecret.Data[ca.Key]
-		if len(bundle) == 0 {
-			return nil, fmt.Errorf("%w: Secret %q has no key %q", gitrepo.ErrAuth, ca.Name, ca.Key)
-		}
-		if auth == nil {
-			auth = &gitrepo.Auth{}
-		}
-		auth.CABundle = bundle
-	}
-	return auth, nil
+	return access.auth, nil
 }
 
 // truncateDiff keeps a diff within maxDiffBytes, cutting at a line boundary.

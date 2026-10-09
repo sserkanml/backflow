@@ -21,6 +21,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 // DriftProposalReconciler is the only writer of DriftProposal status. The
@@ -44,6 +46,12 @@ type DriftProposalReconciler struct {
 	// Repos reads the source repository at the synced commit. When nil,
 	// mapping is disabled and proposals stay in Detected.
 	Repos RepositoryReader
+	// Writer writes proposals to Git. When nil, mapped proposals are not
+	// proposed and stay in Mapping.
+	Writer RepositoryWriter
+	// NewProvider builds the merge request client of an ScmConnection.
+	// Defaults to scm.New.
+	NewProvider func(scm.Config) (scm.Provider, error)
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
 }
@@ -106,10 +114,22 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Info("Proposal phase set", "proposal", dp.Name, "phase", dp.Status.Phase)
 	}
 
-	if r.Repos == nil || dp.Status.Phase != backflowv1alpha1.PhaseMapping || mappingSettled(&dp) {
+	if r.Repos == nil || dp.Status.Phase != backflowv1alpha1.PhaseMapping {
 		return ctrl.Result{}, nil
 	}
-	return r.mapProposal(ctx, &dp)
+	if !mappingSettled(&dp) {
+		res, err := r.mapProposal(ctx, &dp)
+		// Recording the mapping does not change the generation, so go on to
+		// propose in this pass.
+		if err != nil || !res.IsZero() || dp.Status.Phase != backflowv1alpha1.PhaseMapping ||
+			!meta.IsStatusConditionTrue(dp.Status.Conditions, conditionMapped) {
+			return res, err
+		}
+	}
+	if r.Writer == nil {
+		return ctrl.Result{}, nil
+	}
+	return r.propose(ctx, &dp)
 }
 
 // patchStatus writes the status changes made to dp since orig. It is a no-op
@@ -146,6 +166,8 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// A proposal that has no access to its repository recovers by itself
 		// once the token Secret or the ScmConnection is fixed.
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals)).
+		// The policy's status names the ScmConnection that matches a repository.
+		Watches(&backflowv1alpha1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals)).
 		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("driftproposal").
