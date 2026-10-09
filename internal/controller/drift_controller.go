@@ -44,6 +44,9 @@ const (
 	// controller, which is the only writer of DriftProposal status.
 	annotationSupersededBy = "backflow.io/superseded-by"
 	annotationReverted     = "backflow.io/reverted"
+	// annotationLiveReverted carries the revision of the sync that reset the
+	// cluster to Git while the proposal's merge request is still open.
+	annotationLiveReverted = "backflow.io/live-reverted"
 
 	// Periodic resync, in case an Application event was missed.
 	driftResyncInterval = 2 * time.Minute
@@ -234,6 +237,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 
 	// Close open proposals whose drift is gone. Without a successful API call
 	// only resources that are in sync (or gone) can be judged.
+	var managed managedResourcesCache
 	for i := range all {
 		p := &all[i]
 		if p.Labels[labelApplication] != safeLabel(summary.Name) || !isOpen(p) {
@@ -255,6 +259,19 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		var msg string
 		switch {
 		case !outOfSync[rh]:
+			// Synced again. If a new sync did it while a merge request still
+			// holds the change, the change is not lost: it waits in the merge
+			// request. Otherwise it is a plain revert.
+			if hasOpenMergeRequest(p) {
+				held, err := r.resetBySync(ctx, argo, policy, summary, app, p, &managed)
+				if err != nil {
+					log.Info("Cannot tell why the resource is in sync again; will look again", "proposal", p.Name, "cause", err.Error())
+					continue
+				}
+				if held {
+					continue
+				}
+			}
 			msg = "The live resource is back in sync with Git, or no longer part of the Application."
 		case apiOK:
 			msg = "The live resource no longer differs from Git after ignored fields and filters."
@@ -351,6 +368,14 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		current = dp
 	}
 
+	// The change is live again, so a proposal that was waiting in its merge
+	// request after a reset is no longer reset.
+	if current.Annotations[annotationLiveReverted] != "" {
+		if err := r.unannotate(ctx, current, annotationLiveReverted); err != nil {
+			return err
+		}
+	}
+
 	for _, p := range open {
 		if p.Name == current.Name {
 			continue
@@ -430,6 +455,93 @@ func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1alp
 			"Sync Application %s in Argo CD to revert the cluster to what Git says.",
 		where, resourceLabel(blocker.Spec.Resource), summary.Name))
 	return nil
+}
+
+func (r *DriftReconciler) unannotate(ctx context.Context, p *backflowv1alpha1.DriftProposal, key string) error {
+	orig := p.DeepCopy()
+	delete(p.Annotations, key)
+	return r.Patch(ctx, p, client.MergeFrom(orig))
+}
+
+// hasOpenMergeRequest reports whether a proposal's change waits in an open
+// merge request.
+func hasOpenMergeRequest(p *backflowv1alpha1.DriftProposal) bool {
+	return p.Status.Phase == backflowv1alpha1.PhaseProposed && p.Status.MergeRequest != nil
+}
+
+// syncedRevision is the revision Argo CD compared the Application with.
+func syncedRevision(app *unstructured.Unstructured) string {
+	rev, _, _ := unstructured.NestedString(app.Object, "status", "sync", "revision")
+	if rev == "" {
+		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, "status", "sync", "revisions"); ok && len(revs) > 0 {
+			rev = revs[0]
+		}
+	}
+	return rev
+}
+
+// managedResourcesCache reads an Application's managed resources at most once
+// per reconcile, and only when needed.
+type managedResourcesCache struct {
+	done  bool
+	byKey map[string]argocd.ManagedResource
+	err   error
+}
+
+func (c *managedResourcesCache) get(ctx context.Context, argo ManagedResourcesGetter, appName, appNamespace string) (map[string]argocd.ManagedResource, error) {
+	if !c.done {
+		c.done = true
+		managed, err := argo.GetManagedResources(ctx, appName, appNamespace)
+		if err != nil {
+			c.err = err
+		} else {
+			c.byKey = make(map[string]argocd.ManagedResource, len(managed))
+			for _, m := range managed {
+				c.byKey[resourceHash(m.Group, m.Kind, m.Namespace, m.Name)] = m
+			}
+		}
+	}
+	return c.byKey, c.err
+}
+
+// resetBySync decides, for a proposal with an open merge request whose
+// resource is in sync again, whether Argo CD synced a new revision that reset
+// the cluster to Git. If so it marks the proposal live-reverted (it is not
+// retired: the change waits in the merge request) and reports true.
+//
+// Two things must hold. The Application's revision differs from the one the
+// proposal was made at, so a sync of other commits is what changed the
+// resource; and the changed fields hold the values Git had, not the recorded
+// live ones, so Git did not simply adopt the change. A reset in place, at the
+// same revision, is an ordinary revert.
+func (r *DriftReconciler) resetBySync(ctx context.Context, argo ManagedResourcesGetter,
+	policy *backflowv1alpha1.BackflowPolicy, summary backflowv1alpha1.ApplicationSummary,
+	app *unstructured.Unstructured, p *backflowv1alpha1.DriftProposal, managed *managedResourcesCache) (bool, error) {
+	rev := syncedRevision(app)
+	if rev == "" || rev == p.Spec.Source.Revision {
+		return false, nil
+	}
+	if p.Annotations[annotationLiveReverted] != "" {
+		return true, nil // already recorded; nothing more to do each cycle
+	}
+	byKey, err := managed.get(ctx, argo, summary.Name, policy.Spec.ArgoCDNamespace)
+	if err != nil {
+		return false, err
+	}
+	m, ok := byKey[p.Labels[labelResource]]
+	if !ok || m.NormalizedLiveState == nil {
+		return false, fmt.Errorf("the live state of the resource is not available")
+	}
+	atDesired, _ := drift.Where(m.NormalizedLiveState, p.Spec.Changes)
+	if !atDesired {
+		return false, nil
+	}
+	if err := r.annotate(ctx, p, annotationLiveReverted, rev); err != nil {
+		return false, err
+	}
+	logf.FromContext(ctx).Info("Live change reset by a sync; it waits in its merge request",
+		"proposal", p.Name, "revision", rev)
+	return true, nil
 }
 
 func (r *DriftReconciler) event(policy *backflowv1alpha1.BackflowPolicy, eventType, reason, msg string) {

@@ -22,9 +22,20 @@ const (
 	// trackInterval is how often the state of an open merge request is polled.
 	trackInterval = 2 * time.Minute
 
+	// conditionLiveReverted is True while Argo CD has reset the cluster to Git
+	// but the proposal's merge request is still open: the change is not lost,
+	// it waits in the merge request.
+	conditionLiveReverted = "LiveReverted"
+
 	// conditionCleanedUp is True once the merge request of a Superseded or
 	// Reverted proposal is closed and its branch deleted.
 	conditionCleanedUp = "CleanedUp"
+)
+
+// Reasons of the LiveReverted condition.
+const (
+	reasonSyncedNewRevision  = "SyncedNewRevision"
+	reasonLiveChangeReturned = "LiveChangeReturned"
 )
 
 // Reasons of the CleanedUp condition.
@@ -76,9 +87,9 @@ func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1a
 	return &mrClient{provider: provider, project: project}, nil
 }
 
-// pendingLifecycle returns the superseded or reverted annotation waiting to
-// be applied, if any.
-func pendingLifecycle(dp *backflowv1alpha1.DriftProposal) bool {
+// retiring reports whether a superseded or reverted annotation waits to be
+// applied.
+func retiring(dp *backflowv1alpha1.DriftProposal) bool {
 	return dp.Annotations[annotationSupersededBy] != "" || dp.Annotations[annotationReverted] != ""
 }
 
@@ -94,6 +105,12 @@ func applyLifecycle(dp *backflowv1alpha1.DriftProposal) bool {
 	case dp.Annotations[annotationReverted] != "":
 		dp.Status.Phase = backflowv1alpha1.PhaseReverted
 		dp.Status.Message = dp.Annotations[annotationReverted]
+		return true
+	case dp.Annotations[annotationLiveReverted] != "":
+		// Only reached when there is no open merge request to keep the change
+		// in (a proposal with one is handled by trackProposed): a plain revert.
+		dp.Status.Phase = backflowv1alpha1.PhaseReverted
+		dp.Status.Message = "The live resource was reset to Git by an Argo CD sync of " + dp.Annotations[annotationLiveReverted] + "."
 		return true
 	}
 	return false
@@ -139,7 +156,7 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 	}
 
 	// Still open.
-	if applyLifecycle(dp) {
+	if retiring(dp) && applyLifecycle(dp) {
 		if err := r.patchStatus(ctx, dp, orig); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -150,7 +167,45 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.syncLiveReverted(ctx, c, dp); err != nil {
+		return r.trackingFailure(ctx, dp, err, scm.RetryAfter(err))
+	}
 	return ctrl.Result{RequeueAfter: r.trackEvery()}, nil
+}
+
+// syncLiveReverted keeps the LiveReverted condition in line with the
+// annotation the drift controller sets. When Argo CD reset the cluster to Git
+// by syncing a new revision, the proposal stays Proposed: one comment on the
+// merge request says why the cluster no longer shows the change and that
+// merging makes it permanent. When the change is live again, the condition
+// goes False.
+func (r *DriftProposalReconciler) syncLiveReverted(ctx context.Context, c *mrClient, dp *backflowv1alpha1.DriftProposal) error {
+	rev := dp.Annotations[annotationLiveReverted]
+	cond := meta.FindStatusCondition(dp.Status.Conditions, conditionLiveReverted)
+	switch {
+	case rev != "" && (cond == nil || cond.Status != metav1.ConditionTrue):
+		if err := c.provider.CommentOnMergeRequest(ctx, c.project, dp.Status.MergeRequest.Number, liveRevertedComment(rev)); err != nil {
+			return err
+		}
+		orig := dp.DeepCopy()
+		dp.Status.Message = fmt.Sprintf("The cluster was reset to Git by an Argo CD sync of %s; the change waits in merge request %s.",
+			rev, dp.Status.MergeRequest.URL)
+		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+			Type: conditionLiveReverted, Status: metav1.ConditionTrue, Reason: reasonSyncedNewRevision,
+			Message: dp.Status.Message, ObservedGeneration: dp.Generation,
+		})
+		logf.FromContext(ctx).Info("Live change reset by a sync; kept in its merge request", "proposal", dp.Name, "revision", rev)
+		return r.patchStatus(ctx, dp, orig)
+	case rev == "" && cond != nil && cond.Status == metav1.ConditionTrue:
+		orig := dp.DeepCopy()
+		dp.Status.Message = fmt.Sprintf("The change is live again; merge request %s proposes it.", dp.Status.MergeRequest.URL)
+		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+			Type: conditionLiveReverted, Status: metav1.ConditionFalse, Reason: reasonLiveChangeReturned,
+			Message: dp.Status.Message, ObservedGeneration: dp.Generation,
+		})
+		return r.patchStatus(ctx, dp, orig)
+	}
+	return nil
 }
 
 // trackingFailure records that the merge request could not be read and tries

@@ -157,7 +157,7 @@ func (r *DriftProposalReconciler) patchStatus(ctx context.Context, dp, orig *bac
 func lifecycleAnnotationsChanged() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			for _, k := range []string{annotationSupersededBy, annotationReverted} {
+			for _, k := range []string{annotationSupersededBy, annotationReverted, annotationLiveReverted} {
 				if e.ObjectOld.GetAnnotations()[k] != e.ObjectNew.GetAnnotations()[k] {
 					return true
 				}

@@ -155,3 +155,10 @@ func closingComment(dp *backflowv1alpha1.DriftProposal) string {
 		"Nothing needs to be done: Git stays the source of truth. DriftProposal: `%s/%s`.\n",
 		singleLine(dp.Status.Message), dp.Namespace, dp.Name)
 }
+
+// liveRevertedComment tells reviewers why the cluster no longer shows the
+// change while the merge request is still open.
+func liveRevertedComment(revision string) string {
+	return fmt.Sprintf("The cluster was reset to Git by an Argo CD sync of %s. "+
+		"Merging this merge request makes the change permanent again.\n", singleLine(revision))
+}
