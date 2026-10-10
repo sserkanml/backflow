@@ -196,6 +196,12 @@ spec:
             description: DriftProposalStatus tracks the proposal through mapping and
               review.
             properties:
+              branch:
+                description: |-
+                  Branch Backflow pushes (or is about to push) for the merge request. It is
+                  recorded before the push, so a branch or merge request left behind by a
+                  crash can still be found and cleaned up.
+                type: string
               commitSHA:
                 description: Commit that contains the change, once merged or committed
                   directly.

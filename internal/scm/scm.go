@@ -105,6 +105,10 @@ type Provider interface {
 	// FindOpenMergeRequest returns the open merge request from sourceBranch,
 	// or nil when there is none.
 	FindOpenMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error)
+	// FindMergeRequest returns the merge request from sourceBranch in any
+	// state, or nil when there never was one. An open one is preferred; of
+	// several closed or merged ones the newest is returned.
+	FindMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error)
 	CreateMergeRequest(ctx context.Context, project string, req CreateRequest) (*MergeRequest, error)
 	GetMergeRequest(ctx context.Context, project string, number int64) (*MergeRequest, error)
 	// CloseMergeRequest closes an open merge request without merging it.
@@ -113,6 +117,20 @@ type Provider interface {
 	DeleteBranch(ctx context.Context, project, branch string) error
 	// LookupUser returns the account with the given username, or ErrNotFound.
 	LookupUser(ctx context.Context, username string) (*User, error)
+}
+
+// preferOpen picks the merge request FindMergeRequest returns from candidates
+// listed newest first: the first open one, else the newest.
+func preferOpen(candidates []*MergeRequest) *MergeRequest {
+	for _, mr := range candidates {
+		if mr.State == StateOpen {
+			return mr
+		}
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return nil
 }
 
 // Config describes how to reach a provider.

@@ -201,6 +201,11 @@ type DriftProposalStatus struct {
 	Mapping *Mapping `json:"mapping,omitempty"`
 	// +optional
 	MergeRequest *MergeRequestRef `json:"mergeRequest,omitempty"`
+	// Branch Backflow pushes (or is about to push) for the merge request. It is
+	// recorded before the push, so a branch or merge request left behind by a
+	// crash can still be found and cleaned up.
+	// +optional
+	Branch string `json:"branch,omitempty"`
 	// Commit that contains the change, once merged or committed directly.
 	// +optional
 	CommitSHA string `json:"commitSHA,omitempty"`

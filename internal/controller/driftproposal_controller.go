@@ -105,7 +105,15 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	orig := dp.DeepCopy()
 	if applyLifecycle(&dp) {
-		return ctrl.Result{}, r.patchStatus(ctx, &dp, orig)
+		if err := r.patchStatus(ctx, &dp, orig); err != nil {
+			return ctrl.Result{}, err
+		}
+		// A proposal retired before its merge request was recorded can still
+		// have pushed a branch and opened a merge request.
+		if r.Writer != nil && needsCleanup(&dp) {
+			return r.cleanup(ctx, &dp)
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if dp.Status.Phase == "" {
@@ -138,7 +146,12 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if r.Writer == nil {
 		return ctrl.Result{}, nil
 	}
-	return r.propose(ctx, &dp)
+	res, err := r.propose(ctx, &dp)
+	if err == nil && r.Writer != nil && needsCleanup(&dp) {
+		// Superseded by a change in Git after a branch or merge request was left behind.
+		return r.cleanup(ctx, &dp)
+	}
+	return res, err
 }
 
 // patchStatus writes the status changes made to dp since orig. It is a no-op

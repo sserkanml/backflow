@@ -30,6 +30,10 @@ const (
 	defaultBranchPrefix = "backflow/"
 	// directCommitAttempts is the first try plus one retry from the new head.
 	directCommitAttempts = 2
+	// commitScanLimit bounds the first-parent history searched for a commit of
+	// the proposal's own, from the head of the target branch back to the
+	// revision the proposal was made at.
+	commitScanLimit = 500
 )
 
 // Reasons of the Proposed condition. A False condition on a proposal that is
@@ -68,6 +72,7 @@ type RepositoryWriter interface {
 	IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *gitrepo.Auth) (bool, error)
 	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
 	UpdateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
+	FirstParentLog(ctx context.Context, repoURL, tip, stop string, limit int, auth *gitrepo.Auth) ([]gitrepo.LogEntry, bool, error)
 }
 
 // scmAccess is everything needed to talk to the Git host of a repository.
@@ -393,16 +398,39 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		return r.fail(ctx, dp, reasonBranchConflict, fmt.Sprintf("The proposal branch %q is the target branch.", branch))
 	}
 
-	change, out := r.prepare(ctx, dp, access, target)
-	if out != nil {
-		return out.result, out.err
-	}
-
 	provider, err := r.newProvider(scm.Config{
 		Provider: string(access.conn.Spec.Provider), BaseURL: access.conn.Spec.URL, Token: access.token, CACert: access.ca,
 	})
 	if err != nil {
 		return r.fail(ctx, dp, reasonUnsupportedProvider, err.Error())
+	}
+
+	// An earlier run got as far as pushing, and may have opened a merge request
+	// that was not recorded before the operator stopped. Whatever happened to it
+	// since (merged, closed) is the truth: look before building anything new.
+	if dp.Status.Branch != "" {
+		mr, err := provider.FindMergeRequest(ctx, project, branch)
+		if err != nil {
+			return r.scmFailure(ctx, dp, err)
+		}
+		if mr != nil {
+			return r.adoptMergeRequest(ctx, dp, mr, branch, target)
+		}
+	}
+
+	change, out := r.prepare(ctx, dp, access, target)
+	if out != nil {
+		return out.result, out.err
+	}
+
+	// Record the branch before pushing it: a crash between the push and the
+	// merge request would otherwise leave a branch nobody knows about.
+	if dp.Status.Branch != branch {
+		orig := dp.DeepCopy()
+		dp.Status.Branch = branch
+		if err := r.patchStatus(ctx, dp, orig); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	if err := r.Writer.CreateBranch(ctx, dp.Spec.Source.RepoURL, branch, change.sha, access.auth); err != nil {
@@ -422,45 +450,78 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		logf.FromContext(ctx).Info("Reusing the branch pushed earlier", "proposal", dp.Name, "branch", branch, "tip", exists.SHA)
 	}
 
-	mr, err := provider.FindOpenMergeRequest(ctx, project, branch)
+	// In any state: a merge request that was merged or closed meanwhile is not
+	// opened a second time.
+	mr, err := provider.FindMergeRequest(ctx, project, branch)
 	if err != nil {
 		return r.scmFailure(ctx, dp, err)
 	}
-	if mr == nil {
-		assignee := ""
-		if opts.AssignActor && dp.Spec.Actor != nil && !strings.HasPrefix(dp.Spec.Actor.Username, "system:") {
-			assignee = singleLine(dp.Spec.Actor.Username)
-		}
-		mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
-			SourceBranch: branch, TargetBranch: target,
-			Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.Diff),
-			Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
-		})
-		if err != nil {
-			if errors.Is(err, scm.ErrConflict) {
-				// Somebody opened it between our lookup and create; adopt it next time.
-				return r.holdProposal(ctx, dp, reasonScmUnavailable, err, retryMin)
-			}
-			return r.scmFailure(ctx, dp, err)
-		}
-		for _, w := range mr.Warnings {
-			logf.FromContext(ctx).Info("Merge request created with a warning", "proposal", dp.Name, "warning", w)
-		}
+	if mr != nil {
+		return r.adoptMergeRequest(ctx, dp, mr, branch, target)
 	}
-
-	orig := dp.DeepCopy()
-	dp.Status.Phase = backflowv1alpha1.PhaseProposed
-	dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: mr.URL, Number: mr.Number, Branch: branch, State: string(mr.State)}
-	dp.Status.Message = fmt.Sprintf("Merge request %s proposes the change against %s.", mr.URL, target)
-	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
-		Type: conditionProposed, Status: metav1.ConditionTrue, Reason: reasonMergeRequestOpened,
-		Message: dp.Status.Message, ObservedGeneration: dp.Generation,
+	assignee := ""
+	if opts.AssignActor && dp.Spec.Actor != nil && !strings.HasPrefix(dp.Spec.Actor.Username, "system:") {
+		assignee = singleLine(dp.Spec.Actor.Username)
+	}
+	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
+		SourceBranch: branch, TargetBranch: target,
+		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.Diff),
+		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
+	if err != nil {
+		if errors.Is(err, scm.ErrConflict) {
+			// Somebody opened it between our lookup and create; adopt it next time.
+			return r.holdProposal(ctx, dp, reasonScmUnavailable, err, retryMin)
+		}
+		return r.scmFailure(ctx, dp, err)
+	}
+	for _, w := range mr.Warnings {
+		logf.FromContext(ctx).Info("Merge request created with a warning", "proposal", dp.Name, "warning", w)
+	}
+	return r.adoptMergeRequest(ctx, dp, mr, branch, target)
+}
+
+// adoptMergeRequest records the merge request of the proposal's branch in the
+// state it is in: open (Proposed), or already merged or closed by a person
+// while the operator was away.
+func (r *DriftProposalReconciler) adoptMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	mr *scm.MergeRequest, branch, target string) (ctrl.Result, error) {
+	orig := dp.DeepCopy()
+	dp.Status.Branch = branch
+	dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: mr.URL, Number: mr.Number, Branch: branch, State: string(mr.State)}
+	switch mr.State {
+	case scm.StateMerged:
+		dp.Status.Phase = backflowv1alpha1.PhaseMerged
+		dp.Status.CommitSHA = mr.MergeCommitSHA
+		dp.Status.Message = mergedMessage(mr.URL)
+	case scm.StateClosed:
+		dp.Status.Phase = backflowv1alpha1.PhaseRejected
+		dp.Status.Message = closedMessage(mr.URL)
+	default:
+		dp.Status.Phase = backflowv1alpha1.PhaseProposed
+		dp.Status.Message = fmt.Sprintf("Merge request %s proposes the change against %s.", mr.URL, target)
+		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+			Type: conditionProposed, Status: metav1.ConditionTrue, Reason: reasonMergeRequestOpened,
+			Message: dp.Status.Message, ObservedGeneration: dp.Generation,
+		})
+	}
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	logf.FromContext(ctx).Info("Merge request proposed", "proposal", dp.Name, "url", mr.URL, "branch", branch, "target", target)
+	logf.FromContext(ctx).Info("Merge request recorded", "proposal", dp.Name, "url", mr.URL, "branch", branch,
+		"target", target, "state", string(mr.State))
+	if mr.State != scm.StateOpen {
+		return ctrl.Result{}, nil
+	}
 	return ctrl.Result{RequeueAfter: r.trackEvery()}, nil
+}
+
+func mergedMessage(url string) string {
+	return fmt.Sprintf("Merge request %s was merged; Git now holds the live change.", url)
+}
+
+func closedMessage(url string) string {
+	return fmt.Sprintf("Merge request %s was closed without merging; Argo CD can revert the cluster to what Git says.", url)
 }
 
 func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -494,19 +555,26 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 	return ctrl.Result{}, nil // unreachable
 }
 
-// alreadyCommitted recognises the proposal's own commit at the tip of the
-// target branch: the operator restarted after pushing, before recording it.
+// alreadyCommitted recognises the proposal's own commit on the target branch:
+// the operator restarted after pushing, before recording it. Other people may
+// have pushed on top since, so the first-parent history is searched from the
+// head back to the revision the proposal was made at, not just the tip.
 func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	access *scmAccess, target string) (bool, ctrl.Result, error) {
 	tip, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, target, access.auth)
 	if err != nil {
 		return false, ctrl.Result{}, nil // prepare reports it
 	}
-	info, err := r.Writer.CommitInfo(ctx, dp.Spec.Source.RepoURL, tip, access.auth)
-	if err != nil || !hasProposalTrailer(info.Message, dp.Name) {
+	log, _, err := r.Writer.FirstParentLog(ctx, dp.Spec.Source.RepoURL, tip, dp.Spec.Source.Revision, commitScanLimit, access.auth)
+	if err != nil {
 		return false, ctrl.Result{}, nil
 	}
-	return true, ctrl.Result{}, r.recordCommitted(ctx, dp, target, tip)
+	for _, e := range log {
+		if hasProposalTrailer(e.Message, dp.Name) {
+			return true, ctrl.Result{}, r.recordCommitted(ctx, dp, target, e.SHA)
+		}
+	}
+	return false, ctrl.Result{}, nil
 }
 
 func (r *DriftProposalReconciler) recordCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal, target, sha string) error {

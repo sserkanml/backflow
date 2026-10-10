@@ -611,6 +611,56 @@ func TestCommitInfo(t *testing.T) {
 	}
 }
 
+func TestFirstParentLog(t *testing.T) {
+	src := newSourceRepo(t)
+	c1 := src.commit(map[string]string{"a": "1\n"})
+	c2 := src.commit(map[string]string{"a": "2\n"})
+	c3 := src.commit(map[string]string{"a": "3\n"})
+	c4 := src.commit(map[string]string{"a": "4\n"})
+	cache := NewCache(t.TempDir())
+	ctx := t.Context()
+	shas := func(es []LogEntry) []string {
+		var out []string
+		for _, e := range es {
+			out = append(out, e.SHA)
+		}
+		return out
+	}
+
+	tests := []struct {
+		name        string
+		tip, stop   string
+		limit       int
+		want        []string
+		wantFound   bool
+		wantParents int // of the newest entry
+	}{
+		{"back to the stop, which is not included", c4, c2, 100, []string{c4, c3}, true, 1},
+		{"the stop is the tip itself", c4, c4, 100, nil, true, 0},
+		{"no stop walks to the root", c3, "", 100, []string{c3, c2, c1}, false, 1},
+		{"a stop that is not in the history", c3, strings.Repeat("0", 40), 100, []string{c3, c2, c1}, false, 1},
+		{"the limit cuts the walk", c4, c1, 2, []string{c4, c3}, false, 1},
+		{"the stop right at the limit is found", c4, c2, 2, []string{c4, c3}, true, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found, err := cache.FirstParentLog(ctx, src.url(), tt.tip, tt.stop, tt.limit, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(shas(got), tt.want) || found != tt.wantFound {
+				t.Errorf("FirstParentLog = %v, %v; want %v, %v", shas(got), found, tt.want, tt.wantFound)
+			}
+			if len(got) > 0 && got[0].Message != "test" || len(got) > 0 && got[0].Parents != tt.wantParents {
+				t.Errorf("first entry = %+v", got[0])
+			}
+		})
+	}
+	if _, _, err := cache.FirstParentLog(ctx, src.url(), "short", "", 10, nil); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
+	}
+}
+
 func TestIsAncestor(t *testing.T) {
 	src, base := seed(t)
 	cache := NewCache(t.TempDir())

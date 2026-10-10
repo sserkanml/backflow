@@ -3,6 +3,7 @@ package scm
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,52 @@ func TestGitHubFindOpenMergeRequest(t *testing.T) {
 			if _, err := p.FindOpenMergeRequest(t.Context(), "o/r", "b"); !errors.Is(err, want) {
 				t.Errorf("status %d: err = %v, want %v", status, err, want)
 			}
+		}
+	})
+}
+
+func TestGitHubFindMergeRequest(t *testing.T) {
+	const path = "GET /api/v3/repos/o/r/pulls"
+	pr := func(number, state string, merged bool) string {
+		return `{"number":` + number + `,"html_url":"https://github.example.com/o/r/pull/` + number + `","state":"` + state +
+			`","merged":` + map[bool]string{true: "true", false: "false"}[merged] +
+			`,"merge_commit_sha":"mc","head":{"ref":"backflow/dp-1"},"base":{"ref":"main"}}`
+	}
+	tests := []struct {
+		name   string
+		body   string
+		want   int64
+		wState State
+	}{
+		{"none", `[]`, 0, ""},
+		{"a closed one", "[" + pr("12", "closed", false) + "]", 12, StateClosed},
+		{"a merged one", "[" + pr("12", "closed", true) + "]", 12, StateMerged},
+		{"the newest of several", "[" + pr("14", "closed", false) + "," + pr("12", "closed", true) + "]", 14, StateClosed},
+		{"an open one is preferred", "[" + pr("14", "closed", false) + "," + pr("12", "open", false) + "]", 12, StateOpen},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, srv := newGitHubTest(t, map[string]reply{path: {200, tt.body}})
+			got, err := p.FindMergeRequest(t.Context(), "o/r", "backflow/dp-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == 0 {
+				if got != nil {
+					t.Fatalf("got %+v, want nil", got)
+				}
+			} else if got == nil || got.Number != tt.want || got.State != tt.wState {
+				t.Fatalf("got %+v, want #%d %s", got, tt.want, tt.wState)
+			}
+			if q := srv.find("GET", "/api/v3/repos/o/r/pulls").Query; !strings.Contains(q, "state=all") {
+				t.Errorf("query = %q, want every state", q)
+			}
+		})
+	}
+	t.Run("errors", func(t *testing.T) {
+		p, _ := newGitHubTest(t, map[string]reply{path: {503, `{"message":"x"}`}})
+		if _, err := p.FindMergeRequest(t.Context(), "o/r", "b"); !errors.Is(err, ErrUnavailable) {
+			t.Errorf("err = %v", err)
 		}
 	})
 }

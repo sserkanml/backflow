@@ -186,6 +186,46 @@ func (c *Cache) CommitInfo(ctx context.Context, repoURL, sha string, auth *Auth)
 	return info, nil
 }
 
+// LogEntry is one commit of a first-parent history.
+type LogEntry struct {
+	SHA     string
+	Message string
+	Parents int
+}
+
+// FirstParentLog walks the first-parent history from the commit tip back to
+// stop, which is not included, and returns the commits newest first. It ends
+// when stop is reached, at a root commit, or after limit commits; found tells
+// whether stop was reached. An empty stop walks to the end. Merge commits
+// count once: only their first parent is followed.
+func (c *Cache) FirstParentLog(ctx context.Context, repoURL, tip, stop string, limit int, auth *Auth) (entries []LogEntry, found bool, err error) {
+	if !fullSHA.MatchString(tip) {
+		return nil, false, fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, tip)
+	}
+	unlock, err := c.lock(ctx, c.Dir(repoURL))
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
+	repo, commit, err := c.openCommit(ctx, repoURL, tip, auth)
+	if err != nil {
+		return nil, false, err
+	}
+	for len(entries) < limit {
+		if commit.Hash.String() == stop {
+			return entries, true, nil
+		}
+		entries = append(entries, LogEntry{SHA: commit.Hash.String(), Message: commit.Message, Parents: len(commit.ParentHashes)})
+		if len(commit.ParentHashes) == 0 {
+			return entries, false, nil
+		}
+		if commit, err = repo.CommitObject(commit.ParentHashes[0]); err != nil {
+			return nil, false, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
+	}
+	return entries, commit.Hash.String() == stop, nil
+}
+
 // IsAncestor reports whether commit ancestor is reachable from commit
 // descendant. A commit is its own ancestor. Both are fetched when missing.
 func (c *Cache) IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *Auth) (bool, error) {

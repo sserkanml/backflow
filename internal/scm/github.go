@@ -85,6 +85,22 @@ func (g *github) FindOpenMergeRequest(ctx context.Context, project, sourceBranch
 	return nil, nil
 }
 
+func (g *github) FindMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {
+	owner, _, _ := strings.Cut(project, "/")
+	var list []githubPR
+	q := url.Values{"state": {"all"}, "head": {owner + ":" + sourceBranch}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
+	if err := g.do(ctx, http.MethodGet, githubRepo(project)+"/pulls", q, nil, &list); err != nil {
+		return nil, err
+	}
+	var found []*MergeRequest
+	for _, p := range list {
+		if p.Head.Ref == sourceBranch {
+			found = append(found, p.convert())
+		}
+	}
+	return preferOpen(found), nil
+}
+
 func (g *github) CreateMergeRequest(ctx context.Context, project string, req CreateRequest) (*MergeRequest, error) {
 	body := map[string]any{
 		"title": req.Title, "body": req.Body,

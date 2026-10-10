@@ -79,6 +79,21 @@ func (g *gitlab) FindOpenMergeRequest(ctx context.Context, project, sourceBranch
 	return nil, nil
 }
 
+func (g *gitlab) FindMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {
+	var list []gitlabMR
+	q := url.Values{"state": {"all"}, "source_branch": {sourceBranch}, "order_by": {"created_at"}, "sort": {"desc"}, "per_page": {"100"}}
+	if err := g.do(ctx, http.MethodGet, gitlabProject(project)+"/merge_requests", q, nil, &list); err != nil {
+		return nil, err
+	}
+	var found []*MergeRequest
+	for _, m := range list {
+		if m.SourceBranch == sourceBranch {
+			found = append(found, m.convert())
+		}
+	}
+	return preferOpen(found), nil
+}
+
 func (g *gitlab) CreateMergeRequest(ctx context.Context, project string, req CreateRequest) (*MergeRequest, error) {
 	var warnings []string
 	body := map[string]any{

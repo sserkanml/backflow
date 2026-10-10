@@ -203,6 +203,28 @@ func (f *fakeProvider) FindOpenMergeRequest(_ context.Context, project, branch s
 	return f.open[branch], nil
 }
 
+// FindMergeRequest returns the merge request of the branch in any state: the
+// open one, else the newest.
+func (f *fakeProvider) FindMergeRequest(_ context.Context, project, branch string) (*scm.MergeRequest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record("find-any " + project + " " + branch)
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	if mr := f.open[branch]; mr != nil {
+		return mr, nil
+	}
+	var newest *scm.MergeRequest
+	for _, mr := range f.byNumber {
+		// A merge request still marked open but missing from f.open was dropped by the test.
+		if mr.SourceBranch == branch && mr.State != scm.StateOpen && (newest == nil || mr.Number > newest.Number) {
+			newest = mr
+		}
+	}
+	return newest, nil
+}
+
 func (f *fakeProvider) CreateMergeRequest(_ context.Context, project string, req scm.CreateRequest) (*scm.MergeRequest, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -306,6 +328,19 @@ func (w *racingWriter) UpdateBranch(ctx context.Context, url, branch, sha string
 		}
 	}
 	return w.RepositoryWriter.UpdateBranch(ctx, url, branch, sha, auth)
+}
+
+// branchWriter wraps the real cache and runs hook before a branch is created.
+type branchWriter struct {
+	RepositoryWriter
+	hook func()
+}
+
+func (w *branchWriter) CreateBranch(ctx context.Context, url, branch, sha string, auth *gitrepo.Auth) error {
+	if w.hook != nil {
+		w.hook()
+	}
+	return w.RepositoryWriter.CreateBranch(ctx, url, branch, sha, auth)
 }
 
 // --- specs ------------------------------------------------------------------
@@ -512,7 +547,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(req.Labels).To(Equal([]string{"backflow"}))
 			Expect(req.Reviewers).To(Equal([]string{"bob"}))
 			Expect(req.Assignee).To(Equal("alice"))
-			Expect(provider.calls).To(ContainElement("find group/proj backflow/prop-dp"))
+			Expect(provider.calls).To(ContainElement("find-any group/proj backflow/prop-dp"))
 		})
 
 		It("uses the committer of the ScmConnection and a custom branch prefix", func() {
@@ -1180,6 +1215,158 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 	})
 
+	Context("an operator that stopped half way through proposing", func() {
+		const branch = "backflow/prop-dp"
+		// loseStatus forgets everything the operator recorded after it pushed
+		// the branch, as if it stopped before the status patch.
+		loseStatus := func() {
+			got := latest()
+			recorded := got.Status.Branch
+			got.Status = backflowv1alpha1.DriftProposalStatus{Branch: recorded}
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, got)).To(Succeed())
+		}
+		annotate := func(key, value string) {
+			ExpectWithOffset(1, k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
+				[]byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))))).To(Succeed())
+		}
+		restarted := func() {
+			r.Repos = reader()
+			r.Writer = gitrepo.NewCache(cacheDir + "-restarted")
+			DeferCleanup(os.RemoveAll, cacheDir+"-restarted")
+		}
+
+		It("records the branch before it pushes it", func() {
+			var seen string
+			r.Writer = &branchWriter{RepositoryWriter: writer, hook: func() { seen = latest().Status.Branch }}
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(seen).To(Equal(branch))
+			Expect(latest().Status.Branch).To(Equal(branch))
+		})
+
+		Context("after the branch was pushed and before the merge request was opened", func() {
+			BeforeEach(func() {
+				provider.createErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(repo.branch(branch)).NotTo(BeEmpty())
+				Expect(latest().Status.MergeRequest).To(BeNil())
+				Expect(latest().Status.Branch).To(Equal(branch))
+			})
+
+			It("deletes the orphaned branch when the proposal is reverted", func() {
+				annotate(annotationReverted, "back in sync")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+				Expect(provider.closed).To(BeEmpty())
+				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
+			})
+
+			It("deletes the orphaned branch when the proposal is superseded", func() {
+				annotate(annotationSupersededBy, "newer")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+			})
+		})
+
+		Context("after the merge request was opened and before it was recorded", func() {
+			BeforeEach(func() {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(provider.created).To(HaveLen(1))
+				loseStatus()
+				restarted()
+			})
+
+			It("adopts the open merge request", func() {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(got.Status.MergeRequest.Number).To(Equal(int64(7)))
+				Expect(provider.created).To(HaveLen(1))
+			})
+
+			It("records a merge request closed meanwhile as Rejected, and opens no second one", func() {
+				provider.setState(7, scm.StateClosed, "")
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.IsZero()).To(BeTrue())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+				Expect(got.Status.MergeRequest).To(Equal(&backflowv1alpha1.MergeRequestRef{
+					URL: "https://git.test/group/proj/-/merge_requests/7", Number: 7, Branch: branch, State: "closed",
+				}))
+				Expect(provider.created).To(HaveLen(1))
+			})
+
+			It("records a merge request merged meanwhile as Merged, and opens no second one", func() {
+				merged := repo.commit(map[string]string{"README.md": "merged\n"}, "merge")
+				provider.setState(7, scm.StateMerged, merged)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+				Expect(got.Status.CommitSHA).To(Equal(merged))
+				Expect(got.Status.MergeRequest.State).To(Equal("merged"))
+				Expect(provider.created).To(HaveLen(1))
+			})
+
+			It("looks the merge request up in any state even if only the pushed branch is known", func() {
+				provider.setState(7, scm.StateClosed, "")
+				// The status is gone entirely; the branch is found by its tip.
+				forgetStatus()
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+				Expect(provider.created).To(HaveLen(1))
+			})
+
+			It("closes the merge request found by its branch when the proposal is retired", func() {
+				annotate(annotationSupersededBy, "newer")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+				Expect(provider.comments).To(HaveLen(1))
+				Expect(got.Status.MergeRequest).NotTo(BeNil(), "the merge request that was found is recorded")
+				Expect(got.Status.MergeRequest.Number).To(Equal(int64(7)))
+				Expect(got.Status.MergeRequest.State).To(Equal("closed"))
+				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
+			})
+
+			It("leaves a merge request merged meanwhile alone when the proposal is retired", func() {
+				provider.setState(7, scm.StateMerged, repo.commit(map[string]string{"README.md": "merged\n"}, "merge"))
+				annotate(annotationReverted, "back in sync")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(provider.closed).To(BeEmpty())
+				Expect(provider.deleted).To(BeEmpty())
+				Expect(condition(conditionCleanedUp).Reason).To(Equal(reasonAlreadyMerged))
+			})
+		})
+
+		It("deletes the branch left behind when Git changes under the proposal before the retry", func() {
+			provider.createErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repo.branch(branch)).NotTo(BeEmpty())
+
+			repo.commit(map[string]string{"apps/demo/configmap.yaml": ""}, "remove the ConfigMap")
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(provider.deleted).To(Equal([]string{branch}))
+			Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
 	Context("retiring a proposal that has no merge request yet", func() {
 		It("treats a reset by a sync as a plain revert", func() {
 			setMode(backflowv1alpha1.ModeReportOnly, nil)
@@ -1248,6 +1435,38 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
 			Expect(got.Status.CommitSHA).To(Equal(tip))
 			Expect(repo.branch("main")).To(Equal(tip), "no second commit")
+		})
+
+		It("recognises its own commit when other commits were pushed on top, after a restart", func() {
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			ours := repo.branch("main")
+			Expect(repo.commitAt(ours).Message).To(ContainSubstring("Proposal: prop-dp\n"))
+			var top string
+			for i := 0; i < 3; i++ {
+				top = repo.commit(map[string]string{"README.md": fmt.Sprintf("change %d\n", i)}, fmt.Sprintf("later change %d", i))
+			}
+
+			forgetStatus()
+			r.Writer = gitrepo.NewCache(cacheDir + "-restarted")
+			DeferCleanup(os.RemoveAll, cacheDir+"-restarted")
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(got.Status.CommitSHA).To(Equal(ours))
+			Expect(repo.branch("main")).To(Equal(top), "no second commit")
+		})
+
+		It("does not mistake another proposal's commit for its own", func() {
+			other := repo.commit(map[string]string{"README.md": "x\n"}, "backflow: other\n\nProposal: someone-else\n")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(got.Status.CommitSHA).NotTo(Equal(other))
+			Expect(repo.branch("main")).To(Equal(got.Status.CommitSHA))
 		})
 
 		It("retries once from the new head when the branch moved during the push", func() {

@@ -3,6 +3,7 @@ package scm
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +61,58 @@ func TestGitLabFindOpenMergeRequest(t *testing.T) {
 			if _, err := p.FindOpenMergeRequest(t.Context(), "g/sub/p", "b"); !errors.Is(err, want) {
 				t.Errorf("status %d: err = %v, want %v", status, err, want)
 			}
+		}
+	})
+}
+
+func TestGitLabFindMergeRequest(t *testing.T) {
+	const path = "GET /api/v4/projects/g%2Fp/merge_requests"
+	mr := func(iid, state string) string {
+		return `{"iid":` + iid + `,"web_url":"https://gitlab.example.com/g/p/-/merge_requests/` + iid + `","state":"` + state +
+			`","source_branch":"backflow/dp-1","target_branch":"main","merge_commit_sha":"mc"}`
+	}
+	tests := []struct {
+		name   string
+		body   string
+		want   int64 // 0: none
+		wState State
+	}{
+		{"none", `[]`, 0, ""},
+		{"a closed one", "[" + mr("7", "closed") + "]", 7, StateClosed},
+		{"a merged one", "[" + mr("7", "merged") + "]", 7, StateMerged},
+		{"the newest of several closed ones", "[" + mr("9", "closed") + "," + mr("7", "closed") + "]", 9, StateClosed},
+		{"an open one is preferred over a newer closed one", "[" + mr("9", "closed") + "," + mr("7", "opened") + "]", 7, StateOpen},
+		{"locked counts as open", "[" + mr("7", "locked") + "]", 7, StateOpen},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, srv := newGitLabTest(t, map[string]reply{path: {200, tt.body}})
+			got, err := p.FindMergeRequest(t.Context(), "g/p", "backflow/dp-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want == 0 {
+				if got != nil {
+					t.Fatalf("got %+v, want nil", got)
+				}
+			} else if got == nil || got.Number != tt.want || got.State != tt.wState {
+				t.Fatalf("got %+v, want #%d %s", got, tt.want, tt.wState)
+			}
+			if q := srv.find("GET", "/api/v4/projects/g%2Fp/merge_requests").Query; !strings.Contains(q, "state=all") {
+				t.Errorf("query = %q, want every state", q)
+			}
+		})
+	}
+	t.Run("other branches are ignored", func(t *testing.T) {
+		p, _ := newGitLabTest(t, map[string]reply{path: {200, "[" + mr("7", "closed") + "]"}})
+		if got, err := p.FindMergeRequest(t.Context(), "g/p", "backflow/other"); err != nil || got != nil {
+			t.Fatalf("got %v, %v", got, err)
+		}
+	})
+	t.Run("errors", func(t *testing.T) {
+		p, _ := newGitLabTest(t, map[string]reply{path: {500, `{"message":"x"}`}})
+		if _, err := p.FindMergeRequest(t.Context(), "g/p", "b"); !errors.Is(err, ErrUnavailable) {
+			t.Errorf("err = %v", err)
 		}
 	})
 }

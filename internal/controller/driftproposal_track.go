@@ -144,13 +144,13 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 		dp.Status.Phase = backflowv1alpha1.PhaseMerged
 		dp.Status.CommitSHA = cur.MergeCommitSHA
 		ref.State = string(scm.StateMerged)
-		dp.Status.Message = fmt.Sprintf("Merge request %s was merged; Git now holds the live change.", ref.URL)
+		dp.Status.Message = mergedMessage(ref.URL)
 		log.Info("Merge request merged", "proposal", dp.Name, "url", ref.URL, "commit", cur.MergeCommitSHA)
 		return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
 	case scm.StateClosed:
 		dp.Status.Phase = backflowv1alpha1.PhaseRejected
 		ref.State = string(scm.StateClosed)
-		dp.Status.Message = fmt.Sprintf("Merge request %s was closed without merging; Argo CD can revert the cluster to what Git says.", ref.URL)
+		dp.Status.Message = closedMessage(ref.URL)
 		log.Info("Merge request closed without merging", "proposal", dp.Name, "url", ref.URL)
 		return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
 	}
@@ -229,9 +229,11 @@ func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backf
 }
 
 // needsCleanup reports whether a Superseded or Reverted proposal still has a
-// merge request to close.
+// merge request or a branch to clean up. A recorded branch is enough: the
+// operator may have stopped after pushing it and before recording the merge
+// request.
 func needsCleanup(dp *backflowv1alpha1.DriftProposal) bool {
-	if dp.Status.MergeRequest == nil {
+	if dp.Status.MergeRequest == nil && dp.Status.Branch == "" {
 		return false
 	}
 	if dp.Status.Phase != backflowv1alpha1.PhaseSuperseded && dp.Status.Phase != backflowv1alpha1.PhaseReverted {
@@ -241,12 +243,18 @@ func needsCleanup(dp *backflowv1alpha1.DriftProposal) bool {
 }
 
 // cleanup closes the merge request of a Superseded or Reverted proposal with
-// a comment that says why, then deletes its branch. Every step can be
+// a comment that says why, then deletes its branch. The merge request is the
+// recorded one, or else the one found by the recorded branch in any state: it
+// may have been opened just before the operator stopped. Every step can be
 // repeated, and progress is kept in the CleanedUp condition, so a failure
 // part-way is picked up again.
 func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	ref := dp.Status.MergeRequest
+	branch := dp.Status.Branch
+	if ref != nil && ref.Branch != "" {
+		branch = ref.Branch
+	}
 
 	c, err := r.clientFor(ctx, dp)
 	if err != nil {
@@ -257,19 +265,32 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		return ctrl.Result{}, err
 	}
 
-	cur, err := c.provider.GetMergeRequest(ctx, c.project, ref.Number)
+	var cur *scm.MergeRequest
 	done := reasonCleanedUp
-	switch {
-	case errors.Is(err, scm.ErrNotFound):
-		cur, done = nil, reasonAlreadyClosed // gone: only the branch is left
-	case err != nil:
+	if ref != nil {
+		cur, err = c.provider.GetMergeRequest(ctx, c.project, ref.Number)
+		if errors.Is(err, scm.ErrNotFound) {
+			cur, err, done = nil, nil, reasonAlreadyClosed // gone: only the branch is left
+		}
+	} else {
+		cur, err = c.provider.FindMergeRequest(ctx, c.project, branch)
+	}
+	if err != nil {
 		return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
-	case cur.State == scm.StateMerged:
+	}
+	where := "branch " + branch
+	if cur != nil {
+		where = fmt.Sprintf("Merge request %s", cur.URL)
+	} else if ref != nil {
+		where = fmt.Sprintf("Merge request %s", ref.URL)
+	}
+	switch {
+	case cur != nil && cur.State == scm.StateMerged:
 		// Merged while the proposal was being retired: the change is in Git,
 		// so there is nothing to close and the branch is left to the host.
-		return ctrl.Result{}, r.finishCleanup(ctx, dp, string(scm.StateMerged), reasonAlreadyMerged,
-			fmt.Sprintf("Merge request %s was merged.", ref.URL))
-	case cur.State == scm.StateClosed:
+		return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, string(scm.StateMerged), reasonAlreadyMerged,
+			fmt.Sprintf("Merge request %s was merged.", cur.URL))
+	case cur != nil && cur.State == scm.StateClosed:
 		done = reasonAlreadyClosed
 	}
 
@@ -277,24 +298,26 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		// Comment first so the reason is on the page when it closes, and
 		// remember it so a retry of the close does not comment again.
 		if prog := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); prog == nil || prog.Reason != reasonCommented {
-			if err := c.provider.CommentOnMergeRequest(ctx, c.project, ref.Number, closingComment(dp)); err != nil {
+			if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number, closingComment(dp)); err != nil {
 				return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 			}
 			if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reasonCommented, "Commented on the merge request; closing it."); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
-		if err := c.provider.CloseMergeRequest(ctx, c.project, ref.Number); err != nil {
+		if err := c.provider.CloseMergeRequest(ctx, c.project, cur.Number); err != nil {
 			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 		}
 	}
 
-	if err := c.provider.DeleteBranch(ctx, c.project, ref.Branch); err != nil && !errors.Is(err, scm.ErrNotFound) {
-		return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
+	if branch != "" {
+		if err := c.provider.DeleteBranch(ctx, c.project, branch); err != nil && !errors.Is(err, scm.ErrNotFound) {
+			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
+		}
 	}
-	log.Info("Merge request closed and branch deleted", "proposal", dp.Name, "url", ref.URL, "branch", ref.Branch)
-	return ctrl.Result{}, r.finishCleanup(ctx, dp, string(scm.StateClosed), done,
-		fmt.Sprintf("Merge request %s closed and branch %s deleted.", ref.URL, ref.Branch))
+	log.Info("Merge request closed and branch deleted", "proposal", dp.Name, "merge request", where, "branch", branch)
+	state := string(scm.StateClosed)
+	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, done, fmt.Sprintf("%s closed and branch %s deleted.", where, branch))
 }
 
 // setCleanedUp records progress of the cleanup.
@@ -309,9 +332,17 @@ func (r *DriftProposalReconciler) setCleanedUp(ctx context.Context, dp *backflow
 
 // finishCleanup records that nothing is left to do for the merge request.
 func (r *DriftProposalReconciler) finishCleanup(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	mrState, reason, message string) error {
+	found *scm.MergeRequest, mrState, reason, message string) error {
 	orig := dp.DeepCopy()
-	dp.Status.MergeRequest.State = mrState
+	switch {
+	case dp.Status.MergeRequest != nil:
+		dp.Status.MergeRequest.State = mrState
+	case found != nil:
+		// Found by its branch: record it, so the proposal says what it opened.
+		dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{
+			URL: found.URL, Number: found.Number, Branch: dp.Status.Branch, State: mrState,
+		}
+	}
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionCleanedUp, Status: metav1.ConditionTrue, Reason: reason, Message: message, ObservedGeneration: dp.Generation,
 	})
