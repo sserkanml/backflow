@@ -65,18 +65,15 @@ func (g *gitlab) mrPath(project string, number int64) string {
 	return gitlabProject(project) + "/merge_requests/" + strconv.FormatInt(number, 10)
 }
 
+// FindOpenMergeRequest lists every state and keeps what convert reports as
+// open: a merge request GitLab is merging right now is "locked", which a
+// filter on state=opened would miss.
 func (g *gitlab) FindOpenMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {
-	var list []gitlabMR
-	q := url.Values{"state": {"opened"}, "source_branch": {sourceBranch}, "per_page": {"100"}}
-	if err := g.do(ctx, http.MethodGet, gitlabProject(project)+"/merge_requests", q, nil, &list); err != nil {
+	mr, err := g.FindMergeRequest(ctx, project, sourceBranch)
+	if err != nil || mr == nil || mr.State != StateOpen {
 		return nil, err
 	}
-	for _, m := range list {
-		if m.SourceBranch == sourceBranch {
-			return m.convert(), nil
-		}
-	}
-	return nil, nil
+	return mr, nil
 }
 
 func (g *gitlab) FindMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {

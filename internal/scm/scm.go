@@ -280,6 +280,10 @@ func statusError(method, path string, status int, header http.Header, body []byt
 		// GitHub signals rate limits with 403 plus rate limit headers.
 		if w, limited := rateLimitWait(status, header); limited {
 			kind, wait = ErrUnavailable, w
+		} else if mentionsRateLimit(body) {
+			// A secondary rate limit comes as a plain 403 whose message says so,
+			// often without any header. GitHub asks for at least a minute then.
+			kind, wait = ErrUnavailable, secondaryRateLimitWait
 		} else {
 			kind = ErrForbidden
 		}
@@ -299,6 +303,15 @@ func statusError(method, path string, status int, header http.Header, body []byt
 		msg += ": " + m
 	}
 	return &Error{kind: kind, msg: msg, retryIn: wait}
+}
+
+// secondaryRateLimitWait is how long to wait after a secondary rate limit that
+// came without a Retry-After header.
+const secondaryRateLimitWait = time.Minute
+
+// mentionsRateLimit reports whether an error body says the request was rate limited.
+func mentionsRateLimit(body []byte) bool {
+	return strings.Contains(strings.ToLower(string(body)), "rate limit")
 }
 
 // rateLimitWait reports whether a 403/429 response is rate limiting and how
@@ -375,6 +388,28 @@ func apiMessage(body []byte) string {
 	return msg
 }
 
+// CanonicalHost lower-cases a host name and maps www.github.com to github.com,
+// so the same service is recognised however its URL was typed.
+func CanonicalHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "www.github.com" {
+		return "github.com"
+	}
+	return host
+}
+
+// GitHubAPIRoot returns the REST API root for the web URL of a GitHub:
+// api.github.com for github.com (in any case, with or without www), and the
+// /api/v3 path under the base URL for GitHub Enterprise Server.
+func GitHubAPIRoot(base string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if u, err := url.Parse(base); err == nil && u.Scheme == "https" && u.Port() == "" &&
+		(u.Path == "" || u.Path == "/") && CanonicalHost(u.Hostname()) == "github.com" {
+		return "https://api.github.com"
+	}
+	return base + "/api/v3"
+}
+
 // ParseRepoURL splits a Git remote URL into its host and project path.
 // It accepts https://host/group/repo(.git), ssh://git@host/group/repo.git and
 // the scp-like git@host:group/repo.git.
@@ -406,5 +441,5 @@ func ParseRepoURL(raw string) (host, project string, err error) {
 	if path == "" || !strings.Contains(path, "/") {
 		return "", "", fmt.Errorf("scm: repository URL %q has no project path", raw)
 	}
-	return strings.ToLower(host), path, nil
+	return CanonicalHost(host), path, nil
 }

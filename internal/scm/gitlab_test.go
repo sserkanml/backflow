@@ -37,7 +37,7 @@ func TestGitLabFindOpenMergeRequest(t *testing.T) {
 		if rec.Header.Get("PRIVATE-TOKEN") != "glpat-x" {
 			t.Errorf("token header = %q", rec.Header.Get("PRIVATE-TOKEN"))
 		}
-		if rec.Query != "per_page=100&source_branch=backflow%2Fdp-1&state=opened" {
+		if rec.Query != "order_by=created_at&per_page=100&sort=desc&source_branch=backflow%2Fdp-1&state=all" {
 			t.Errorf("query = %q", rec.Query)
 		}
 	})
@@ -46,6 +46,30 @@ func TestGitLabFindOpenMergeRequest(t *testing.T) {
 		mr, err := p.FindOpenMergeRequest(t.Context(), "g/sub/p", "backflow/dp-1")
 		if err != nil || mr != nil {
 			t.Fatalf("got %v, %v; want nil, nil", mr, err)
+		}
+	})
+	t.Run("a locked merge request counts as open", func(t *testing.T) {
+		locked := strings.Replace(glMR, `"state":"opened"`, `"state":"locked"`, 1)
+		p, _ := newGitLabTest(t, map[string]reply{path: {200, "[" + locked + "]"}})
+		mr, err := p.FindOpenMergeRequest(t.Context(), "g/sub/p", "backflow/dp-1")
+		if err != nil || mr == nil || mr.State != StateOpen || mr.Number != 7 {
+			t.Fatalf("got %+v, %v; want the open merge request 7", mr, err)
+		}
+	})
+	t.Run("merged and closed ones are not open", func(t *testing.T) {
+		for _, state := range []string{"merged", "closed"} {
+			done := strings.Replace(glMR, `"state":"opened"`, `"state":"`+state+`"`, 1)
+			p, _ := newGitLabTest(t, map[string]reply{path: {200, "[" + done + "]"}})
+			if mr, err := p.FindOpenMergeRequest(t.Context(), "g/sub/p", "backflow/dp-1"); err != nil || mr != nil {
+				t.Errorf("%s: got %+v, %v; want nil, nil", state, mr, err)
+			}
+		}
+	})
+	t.Run("an open one is found among older closed ones", func(t *testing.T) {
+		older := strings.Replace(strings.Replace(glMR, `"iid":7`, `"iid":3`, 1), `"state":"opened"`, `"state":"closed"`, 1)
+		p, _ := newGitLabTest(t, map[string]reply{path: {200, "[" + older + "," + glMR + "]"}})
+		if mr, err := p.FindOpenMergeRequest(t.Context(), "g/sub/p", "backflow/dp-1"); err != nil || mr == nil || mr.Number != 7 {
+			t.Fatalf("got %+v, %v", mr, err)
 		}
 	})
 	t.Run("other branch ignored", func(t *testing.T) {

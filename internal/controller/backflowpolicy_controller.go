@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 // applicationGVK identifies Argo CD Applications. We read them as
@@ -337,7 +338,7 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.Appli
 	return s
 }
 
-// repoHost returns the lower-cased host of a Git URL. It understands
+// repoHost returns the canonical (lower-cased, www.github.com as github.com) host of a Git URL. It understands
 // https://host/..., ssh://git@host/... and scp-like git@host:group/repo.git.
 func repoHost(repoURL string) string {
 	if strings.Contains(repoURL, "://") {
@@ -345,13 +346,13 @@ func repoHost(repoURL string) string {
 		if err != nil {
 			return ""
 		}
-		return strings.ToLower(u.Hostname())
+		return scm.CanonicalHost(u.Hostname())
 	}
 	if at := strings.Index(repoURL, "@"); at >= 0 {
 		repoURL = repoURL[at+1:]
 	}
 	if colon := strings.Index(repoURL, ":"); colon >= 0 {
-		return strings.ToLower(repoURL[:colon])
+		return scm.CanonicalHost(repoURL[:colon])
 	}
 	return ""
 }
@@ -370,7 +371,7 @@ func connectionFor(repoURL string, conns []backflowv1alpha1.ScmConnection) strin
 			hosts = []string{repoHost(c.Spec.URL)}
 		}
 		for _, h := range hosts {
-			if strings.EqualFold(h, host) {
+			if scm.CanonicalHost(h) == host {
 				return c.Name
 			}
 		}

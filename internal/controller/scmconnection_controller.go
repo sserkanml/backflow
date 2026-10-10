@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 const (
@@ -116,11 +117,7 @@ func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1al
 		return u.Username, err
 
 	case backflowv1alpha1.ScmProviderGitHub:
-		apiURL := "https://api.github.com"
-		if baseURL != "https://github.com" {
-			// GitHub Enterprise Server
-			apiURL = baseURL + "/api/v3"
-		}
+		apiURL := scm.GitHubAPIRoot(baseURL)
 		var u struct {
 			Login string `json:"login"`
 		}

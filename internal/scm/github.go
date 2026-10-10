@@ -13,13 +13,8 @@ import (
 type github struct{ api }
 
 func newGitHub(base, token string, c *http.Client) *github {
-	apiRoot := "https://api.github.com"
-	if base != "https://github.com" {
-		// GitHub Enterprise Server
-		apiRoot = base + "/api/v3"
-	}
 	return &github{api{
-		base: apiRoot,
+		base: GitHubAPIRoot(base),
 		headers: map[string]string{
 			"Authorization":        "Bearer " + token,
 			"Accept":               "application/vnd.github+json",
@@ -160,7 +155,12 @@ func (g *github) CommentOnMergeRequest(ctx context.Context, project string, numb
 
 func (g *github) DeleteBranch(ctx context.Context, project, branch string) error {
 	// Branch names may contain slashes, which are part of the ref path.
-	return g.do(ctx, http.MethodDelete, githubRepo(project)+"/git/refs/heads/"+escapePath(branch), nil, nil, nil)
+	err := g.do(ctx, http.MethodDelete, githubRepo(project)+"/git/refs/heads/"+escapePath(branch), nil, nil, nil)
+	// GitHub answers 422 "Reference does not exist" for a branch that is gone.
+	if errors.Is(err, ErrInvalid) && strings.Contains(strings.ToLower(err.Error()), "reference does not exist") {
+		return fmt.Errorf("%w: %v", ErrNotFound, err)
+	}
+	return err
 }
 
 func (g *github) LookupUser(ctx context.Context, username string) (*User, error) {

@@ -1851,3 +1851,29 @@ var _ = Describe("Drift detection", func() {
 		Expect(k8sClient.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "argocd-token-drift", Namespace: ns}})).To(Succeed())
 	})
 })
+
+func TestConnectionForGitHubHostSpellings(t *testing.T) {
+	conn := func(name, url string, hosts ...string) backflowv1alpha1.ScmConnection {
+		c := backflowv1alpha1.ScmConnection{}
+		c.Name = name
+		c.Spec.URL, c.Spec.Hosts = url, hosts
+		return c
+	}
+	conns := []backflowv1alpha1.ScmConnection{
+		conn("gh", "https://www.GitHub.com"),
+		conn("gl", "https://gitlab.com", "GitLab.com"),
+	}
+	tests := []struct{ repo, want string }{
+		{"https://github.com/o/r.git", "gh"},
+		{"https://GitHub.COM/o/r", "gh"},
+		{"https://www.github.com/o/r", "gh"},
+		{"git@www.github.com:o/r.git", "gh"},
+		{"https://gitlab.com/g/r.git", "gl"},
+		{"https://example.com/g/r.git", ""},
+	}
+	for _, tt := range tests {
+		if got := connectionFor(tt.repo, conns); got != tt.want {
+			t.Errorf("connectionFor(%q) = %q, want %q", tt.repo, got, tt.want)
+		}
+	}
+}

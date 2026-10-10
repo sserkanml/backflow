@@ -28,6 +28,11 @@ func TestGitHubAPIRoot(t *testing.T) {
 	if g := newGitHub("https://ghe.example.com", "t", nil); g.base != "https://ghe.example.com/api/v3" {
 		t.Errorf("enterprise base = %q", g.base)
 	}
+	for _, in := range []string{"https://GitHub.com", "https://www.github.com", "https://WWW.GITHUB.COM/"} {
+		if g := newGitHub(strings.TrimRight(in, "/"), "t", nil); g.base != "https://api.github.com" {
+			t.Errorf("%s: base = %q", in, g.base)
+		}
+	}
 }
 
 func TestGitHubFindOpenMergeRequest(t *testing.T) {
@@ -245,7 +250,15 @@ func TestGitHubDeleteBranchErrors(t *testing.T) {
 	p, _ := newGitHubTest(t, map[string]reply{
 		"DELETE /api/v3/repos/o/r/git/refs/heads/gone": {404, `{"message":"Not Found"}`},
 		"DELETE /api/v3/repos/o/r/git/refs/heads/deny": {403, `{"message":"Resource not accessible"}`},
+		"DELETE /api/v3/repos/o/r/git/refs/heads/nope": {422, `{"message":"Reference does not exist"}`},
+		"DELETE /api/v3/repos/o/r/git/refs/heads/bad":  {422, `{"message":"Something else is wrong"}`},
 	})
+	if err := p.DeleteBranch(t.Context(), "o/r", "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("422 reference does not exist: err = %v, want ErrNotFound", err)
+	}
+	if err := p.DeleteBranch(t.Context(), "o/r", "bad"); !errors.Is(err, ErrInvalid) || errors.Is(err, ErrNotFound) {
+		t.Errorf("other 422: err = %v, want ErrInvalid", err)
+	}
 	if err := p.DeleteBranch(t.Context(), "o/r", "gone"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("gone: err = %v", err)
 	}

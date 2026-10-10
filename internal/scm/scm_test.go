@@ -104,6 +104,9 @@ func TestParseRepoURL(t *testing.T) {
 	}{
 		{"https://gitlab.com/sserkanml/backflow-demo.git", "gitlab.com", "sserkanml/backflow-demo", false},
 		{"https://GitLab.com/a/b/c/", "gitlab.com", "a/b/c", false},
+		{"https://GitHub.com/O/R.git", "github.com", "O/R", false},
+		{"https://www.github.com/o/r", "github.com", "o/r", false},
+		{"git@WWW.GitHub.com:o/r.git", "github.com", "o/r", false},
 		{"https://token@github.com/o/r", "github.com", "o/r", false},
 		{"git@github.com:o/r.git", "github.com", "o/r", false},
 		{"ssh://git@gitlab.example.com:2222/g/s/r.git", "gitlab.example.com", "g/s/r", false},
@@ -221,6 +224,59 @@ func TestRateLimitMapping(t *testing.T) {
 	}
 	if RetryAfter(errors.New("plain")) != 0 || RetryAfter(nil) != 0 {
 		t.Error("RetryAfter of a foreign error must be 0")
+	}
+}
+
+func TestSecondaryRateLimit(t *testing.T) {
+	cases := []struct {
+		name, body string
+		header     http.Header
+		want       error
+		wait       time.Duration
+	}{
+		{"message without any header", `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`,
+			http.Header{}, ErrUnavailable, time.Minute},
+		{"upper case message", `{"message":"API RATE LIMIT exceeded"}`, http.Header{}, ErrUnavailable, time.Minute},
+		{"Retry-After still wins", `{"message":"secondary rate limit"}`, http.Header{"Retry-After": {"7"}}, ErrUnavailable, 7 * time.Second},
+		{"another 403 stays forbidden", `{"message":"Resource not accessible by personal access token"}`, http.Header{}, ErrForbidden, 0},
+		{"empty 403 stays forbidden", ``, http.Header{}, ErrForbidden, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := statusError("POST", "/x", 403, tc.header, []byte(tc.body))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if got := RetryAfter(err); got != tc.wait {
+				t.Errorf("RetryAfter = %v, want %v", got, tc.wait)
+			}
+		})
+	}
+}
+
+func TestCanonicalHostAndGitHubAPIRoot(t *testing.T) {
+	for in, want := range map[string]string{
+		"github.com": "github.com", "GitHub.COM": "github.com", "www.github.com": "github.com", " WWW.GitHub.com ": "github.com",
+		"gitlab.com": "gitlab.com", "www.gitlab.com": "www.gitlab.com", "ghe.example.com": "ghe.example.com",
+	} {
+		if got := CanonicalHost(in); got != want {
+			t.Errorf("CanonicalHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"https://github.com":          "https://api.github.com",
+		"https://github.com/":         "https://api.github.com",
+		"https://GitHub.com":          "https://api.github.com",
+		"https://www.github.com":      "https://api.github.com",
+		"HTTPS://WWW.GITHUB.COM/":     "https://api.github.com",
+		"https://ghe.example.com":     "https://ghe.example.com/api/v3",
+		"https://ghe.example.com/git": "https://ghe.example.com/git/api/v3",
+		"https://github.com:8443":     "https://github.com:8443/api/v3",
+		"http://github.com":           "http://github.com/api/v3",
+	} {
+		if got := GitHubAPIRoot(in); got != want {
+			t.Errorf("GitHubAPIRoot(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
