@@ -33,9 +33,26 @@ Things to know when running the operator in a cluster:
 - Memory requests/limits (128Mi/512Mi) are a starting point; tune them to the
   number of Secrets and Applications in the cluster and the size of the
   repositories.
+- `--merge-request-poll-interval` (default `2m`) is how often the state of an
+  open merge request is polled. A shorter interval notices a merge or a close
+  sooner and costs more calls to the Git host's API.
 - Argo CD is reached at `spec.argoCD.url` of the policy, by default
   `https://argocd-server.argocd.svc`. An Argo CD with a private CA needs
   `caSecretRef` (a Secret key holding the PEM bundle).
+
+### Trust
+
+**One operator instance is a single trust domain.** The repository cache is
+shared by every `BackflowPolicy` and `ScmConnection` the instance serves: a
+repository fetched with one connection's token stays in the cache and can be
+read for another policy that names the same URL. All Secrets are also readable
+by the operator cluster-wide. Run a separate instance (own namespace, own cache
+volume) for teams or tenants that must not see each other's repositories.
+
+An Argo CD `repoURL` that carries credentials (`https://user:token@host/...`)
+is not used: its proposals end `Unmapped` with the reason
+`RepositoryURLHasCredentials`, and the URL is redacted in every message. Give
+Backflow access with an `ScmConnection` instead.
 
 To run the end-to-end scenarios against the deployed operator instead of a
 local `bin/manager`:
@@ -55,6 +72,8 @@ make test               # unit and envtest tests
 
 ## Limitations
 
+- **One source per Application.** An Application with `spec.sources` gets one
+  `UnsupportedSource` Event and no proposals.
 - **Directory sources only.** Drift in resources rendered by Kustomize or Helm
   is detected, but the proposal ends `Unmapped` with a reason; nothing is
   written to Git for it.
@@ -63,6 +82,10 @@ make test               # unit and envtest tests
 - **Array style is re-rendered.** Changing a value inside a list re-renders
   the entry that holds it, so its indentation and flow or block style may
   differ from your file. Items cannot be added to or removed from lists.
+- **Comments inside a re-rendered entry can be lost.** Only a changed scalar
+  keeps its line and its trailing comment. When a change replaces a list or a
+  map, adds a field to a flow map (`{}`) or removes a key from one, the whole
+  entry is written again and comments between its lines are not kept.
 - **Comments on removed keys are orphaned.** When a change removes a key, the
   comments attached to that key are left behind or dropped with it.
 - **The repository cache is never pruned and holds full clones.** It lives in
@@ -80,11 +103,14 @@ make test               # unit and envtest tests
   never proposes to revert a commit.** For a Directory source, only commits
   that change files under the Application's directory count (respecting
   `directory.recurse`); a commit elsewhere in the repository does not pause
-  anything. For Helm and Kustomize sources, Applications with several sources,
-  Applications that were never synced, directories that contain a symbolic
-  link (at either revision), and when the repository cannot be read, every
-  commit pauses detection, because the check cannot be trusted. One Event on
-  the policy says so. Proposals that are already open are left as they are.
+  anything. For Helm and Kustomize sources, Applications that were never
+  synced, directories that contain a symbolic link or a Jsonnet file (or use
+  `directory.jsonnet`) at either revision, and when the repository cannot be
+  read, every commit pauses detection, because the check cannot be trusted.
+  Detection is also paused, whatever the revisions, when the last sync did not
+  succeed or was selective (only some resources), and when the Application's
+  source (path, directory options, target revision, Helm, Kustomize, plugin)
+  changed since the last sync. One Event on the policy says so. Proposals that are already open are left as they are.
   Detection is also held back while a sync is running and until Argo CD has
   compared again after it.
 - **A drift becomes a proposal only after it has been stable.** It must be
