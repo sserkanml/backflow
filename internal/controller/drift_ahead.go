@@ -60,6 +60,11 @@ type aheadState struct {
 	// the revision of the last sync, or there was none.
 	paused           bool
 	compared, synced string // revisions, joined with commas for several sources
+	// unfinished is set when the last sync cannot be taken as "Git was applied
+	// up to the synced revision": it failed, or it touched only some resources.
+	// The comparison of paths under the directory proves nothing then, so the
+	// pause cannot be lifted by it.
+	unfinished string
 }
 
 // revisions reads the single revision at the path, or the list of revisions of
@@ -104,6 +109,20 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 	st.paused = st.compared != "" && st.compared != st.synced
 
 	phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
+	if st.compared != "" && !st.paused { // when Git is ahead, that is the reason given
+		selective, _, _ := unstructured.NestedSlice(app.Object, "status", "operationState", "operation", "sync", "resources")
+		switch {
+		case phase == "Running" || phase == "Terminating":
+			// Settling covers a sync that is still running.
+		case phase != "Succeeded":
+			if phase == "" {
+				phase = "none"
+			}
+			st.unfinished = fmt.Sprintf("the last sync did not succeed (phase %s)", phase)
+		case len(selective) > 0:
+			st.unfinished = "the last sync was selective and applied only some resources"
+		}
+	}
 	_, requested, _ := unstructured.NestedMap(app.Object, "operation")
 	if requested || phase == "Running" || phase == "Terminating" {
 		st.settling = true
@@ -275,6 +294,10 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 		logf.FromContext(ctx).V(1).Info("A sync is running or not yet compared; no new proposals", "application", summary.Name)
 		return true
 	}
+	if st.unfinished != "" {
+		r.reportUnfinishedSync(policy, summary, st)
+		return true
+	}
 	if !st.paused {
 		return false
 	}
@@ -287,20 +310,38 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 	return true
 }
 
-// reportGitAhead emits one Event per Application and combination of compared
-// and synced revision, so a long wait does not repeat itself.
-func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, st aheadState, changed int, checked bool) {
+// reportUnfinishedSync emits one Event per Application, revision and reason
+// when drift detection is paused because the last sync did not apply everything.
+func (r *DriftReconciler) reportUnfinishedSync(policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, st aheadState) {
+	if !r.firstReport(policy, summary, "unfinished/"+st.compared+"/"+st.unfinished) {
+		return
+	}
+	r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
+		"Drift detection for %s is paused: %s (revision %s). It resumes after a complete, successful sync.",
+		summary.Name, st.unfinished, shortRevision(st.compared)))
+}
+
+// firstReport records what was last reported for an Application and says
+// whether it is new.
+func (r *DriftReconciler) firstReport(policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, combo string) bool {
 	key := policy.Namespace + "/" + policy.Name + "/" + summary.Name
-	combo := st.compared + ">" + st.synced
 	r.aheadMu.Lock()
+	defer r.aheadMu.Unlock()
 	if r.aheadReported == nil {
 		r.aheadReported = map[string]string{}
 	}
 	seen := r.aheadReported[key] == combo
 	r.aheadReported[key] = combo
-	r.aheadMu.Unlock()
-	if seen {
+	return !seen
+}
+
+// reportGitAhead emits one Event per Application and combination of compared
+// and synced revision, so a long wait does not repeat itself.
+func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, st aheadState, changed int, checked bool) {
+	if !r.firstReport(policy, summary, st.compared+">"+st.synced) {
 		return
 	}
 	synced := "never synced"

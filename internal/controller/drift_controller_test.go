@@ -195,6 +195,56 @@ func TestGitAhead(t *testing.T) {
 	}
 }
 
+func TestGitAheadUnfinishedSync(t *testing.T) {
+	app := func(phase string, selective bool) *unstructured.Unstructured {
+		o := map[string]interface{}{}
+		_ = unstructured.SetNestedField(o, "bbb", "status", "sync", "revision")
+		_ = unstructured.SetNestedField(o, "bbb", "status", "operationState", "syncResult", "revision")
+		if phase != "" {
+			_ = unstructured.SetNestedField(o, phase, "status", "operationState", "phase")
+		}
+		if selective {
+			_ = unstructured.SetNestedSlice(o, []interface{}{map[string]interface{}{"kind": "ConfigMap", "name": "c"}},
+				"status", "operationState", "operation", "sync", "resources")
+		}
+		return &unstructured.Unstructured{Object: o}
+	}
+	tests := []struct {
+		name       string
+		phase      string
+		selective  bool
+		unfinished string
+	}{
+		{"succeeded full sync", "Succeeded", false, ""},
+		{"failed", "Failed", false, "phase Failed"},
+		{"error", "Error", false, "phase Error"},
+		{"selective sync", "Succeeded", true, "selective"},
+		{"no operation state at all", "", false, "phase none"},
+		{"running is left to the settling rule", "Running", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := gitAhead(app(tt.phase, tt.selective))
+			if tt.unfinished == "" && got.unfinished != "" {
+				t.Errorf("unfinished = %q, want none", got.unfinished)
+			}
+			if tt.unfinished != "" && !strings.Contains(got.unfinished, tt.unfinished) {
+				t.Errorf("unfinished = %q, want it to contain %q", got.unfinished, tt.unfinished)
+			}
+			if got.paused {
+				t.Error("same revisions must not count as Git being ahead")
+			}
+		})
+	}
+
+	t.Run("nothing compared: nothing to judge", func(t *testing.T) {
+		o := &unstructured.Unstructured{Object: map[string]interface{}{}}
+		if got := gitAhead(o); got.unfinished != "" {
+			t.Errorf("unfinished = %q", got.unfinished)
+		}
+	})
+}
+
 func TestShortRevision(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	for in, want := range map[string]string{
@@ -315,6 +365,9 @@ var _ = Describe("Drift detection", func() {
 		}
 		if synced != "" {
 			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, synced, "status", "operationState", "syncResult", "revision")).To(Succeed())
+			if phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase"); phase == "" {
+				ExpectWithOffset(1, unstructured.SetNestedField(app.Object, "Succeeded", "status", "operationState", "phase")).To(Succeed())
+			}
 		} else {
 			unstructured.RemoveNestedField(app.Object, "status", "operationState")
 		}
@@ -755,11 +808,45 @@ var _ = Describe("Drift detection", func() {
 			Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(HaveLen(1))
 		})
 
+		DescribeTable("pauses when the last sync did not apply everything, even at the compared revision",
+			func(phase string, selective bool, wantMessage string) {
+				setRevisions(sha1, sha1)
+				ExpectWithOffset(1, unstructured.SetNestedField(app.Object, phase, "status", "operationState", "phase")).To(Succeed())
+				if selective {
+					ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object,
+						[]interface{}{map[string]interface{}{"kind": "ConfigMap", "name": "demo-config"}},
+						"status", "operationState", "operation", "sync", "resources")).To(Succeed())
+				}
+				ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
+				reconcileOnce()
+				reconcileOnce()
+				Expect(proposals()).To(BeEmpty())
+				var got []string
+				for len(recorder.Events) > 0 {
+					if e := <-recorder.Events; strings.Contains(e, "GitAhead") {
+						got = append(got, e)
+					}
+				}
+				Expect(got).To(HaveLen(1), "reported once per application and revision")
+				Expect(got[0]).To(ContainSubstring(wantMessage))
+			},
+			Entry("Failed", "Failed", false, "phase Failed"),
+			Entry("Error", "Error", false, "phase Error"),
+			Entry("selective sync", "Succeeded", true, "selective"),
+		)
+
+		It("proposes after a full, successful sync", func() {
+			setRevisions(sha1, sha1)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
 		It("follows multi-source Applications by their lists of revisions", func() {
 			setRevisions("", "")
 			unstructured.RemoveNestedField(app.Object, "status", "sync", "revision")
 			Expect(unstructured.SetNestedStringSlice(app.Object, []string{sha1, "feedface"}, "status", "sync", "revisions")).To(Succeed())
 			Expect(unstructured.SetNestedStringSlice(app.Object, []string{sha1, "feedface"}, "status", "operationState", "syncResult", "revisions")).To(Succeed())
+			Expect(unstructured.SetNestedField(app.Object, "Succeeded", "status", "operationState", "phase")).To(Succeed())
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1), "same revisions: not ahead")
