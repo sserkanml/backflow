@@ -156,14 +156,16 @@ func replaceEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (ed
 		// Defaulted by Kubernetes or Argo CD, not written in the file.
 		return addEdit(li, root, segs, live)
 	}
-	last := steps[len(steps)-1]
-	last.container.Content[last.idx] = assign(last.child(), nw)
-
 	unit := nearestEntry(steps, len(steps)-1)
 	if unit < 0 {
 		return edit{}, cannot("the field is not inside a mapping entry")
 	}
-	return renderEntryEdit(li, steps, unit)
+	// The range is read from the tree as it was parsed: assigning the new
+	// value changes what the entry looks like, but not the lines it occupies.
+	start, end := entryRange(li, steps, unit)
+	last := steps[len(steps)-1]
+	last.container.Content[last.idx] = assign(last.child(), nw)
+	return renderEntryEdit(li, steps, unit, start, end)
 }
 
 func removeEdit(li *lineIndex, root *yaml.Node, segs []string) (edit, error) {
@@ -186,12 +188,13 @@ func removeEdit(li *lineIndex, root *yaml.Node, segs []string) (edit, error) {
 
 	// Otherwise take the key out of the tree and re-render the entry that
 	// holds the mapping.
-	last.container.Content = append(last.container.Content[:last.idx-1:last.idx-1], last.container.Content[last.idx+1:]...)
 	unit := nearestEntry(steps, level-1)
 	if unit < 0 {
 		return edit{}, cannot("the last field of a document cannot be removed")
 	}
-	return renderEntryEdit(li, steps, unit)
+	start, end := entryRange(li, steps, unit)
+	last.container.Content = append(last.container.Content[:last.idx-1:last.idx-1], last.container.Content[last.idx+1:]...)
+	return renderEntryEdit(li, steps, unit, start, end)
 }
 
 func addEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (edit, error) {
@@ -210,6 +213,14 @@ func addEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (edit, 
 		value = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{strNode(rest[i]), value}}
 	}
 	key := strNode(rest[0])
+
+	// Where the entry that holds the new field sits in the text, read before
+	// the tree is changed.
+	unit := nearestEntry(steps, len(steps)-1)
+	var start, end int
+	if unit >= 0 {
+		start, end = entryRange(li, steps, unit)
+	}
 
 	if parent.Kind == yaml.ScalarNode && parent.Tag == "!!null" {
 		*parent = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", LineComment: parent.LineComment, Line: parent.Line, Column: parent.Column}
@@ -235,13 +246,12 @@ func addEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (edit, 
 	}
 
 	// Empty or flow mapping: add the pair and re-render the entry holding it.
-	parent.Style &^= yaml.FlowStyle
-	parent.Content = append(parent.Content, key, value)
-	unit := nearestEntry(steps, len(steps)-1)
 	if unit < 0 {
 		return edit{}, cannot("the new field would be added to an empty document")
 	}
-	return renderEntryEdit(li, steps, unit)
+	parent.Style &^= yaml.FlowStyle
+	parent.Content = append(parent.Content, key, value)
+	return renderEntryEdit(li, steps, unit, start, end)
 }
 
 // nearestEntry returns the deepest level at or above from whose container is
@@ -262,11 +272,11 @@ func startsLine(li *lineIndex, n *yaml.Node) bool {
 }
 
 // renderEntryEdit re-renders the mapping entry at steps[level] from the
-// (already modified) tree and returns the edit that swaps it into the text.
-func renderEntryEdit(li *lineIndex, steps []step, level int) (edit, error) {
+// (already modified) tree and returns the edit that swaps it into the text
+// range start:end, which was measured before the tree was modified.
+func renderEntryEdit(li *lineIndex, steps []step, level, start, end int) (edit, error) {
 	s := steps[level]
 	key := s.container.Content[s.idx-1]
-	start, end := entryRange(li, steps, level)
 	text, err := renderEntry(key, s.child(), key.Column-1, false)
 	if err != nil {
 		return edit{}, err
@@ -307,6 +317,12 @@ func entryRange(li *lineIndex, steps []step, level int) (start, end int) {
 	if last > li.lines() {
 		last = li.lines()
 	}
+	// The lines of a literal or folded block scalar at the end of the entry
+	// are its value, whatever they look like: a "# ..." line is script text,
+	// and with keep chomping (|+) trailing blank lines are part of the value.
+	if scalar, indent := trailingBlockScalar(li, key, s.child()); scalar != nil {
+		return start, li.lineEnd(blockScalarLastLine(li, scalar, indent, last))
+	}
 	for last > key.Line {
 		t := strings.TrimSpace(li.lineText(last))
 		if t != "" && !strings.HasPrefix(t, "#") {
@@ -315,6 +331,71 @@ func entryRange(li *lineIndex, steps []step, level int) (start, end int) {
 		last--
 	}
 	return start, li.lineEnd(last)
+}
+
+// trailingBlockScalar returns the literal or folded block scalar that ends the
+// entry key: value, and the indentation of the line that owns it (its lines
+// are indented further), or nil when the entry does not end in one.
+func trailingBlockScalar(li *lineIndex, key, value *yaml.Node) (scalar *yaml.Node, indent int) {
+	cur, indent := value, key.Column-1
+	for len(cur.Content) > 0 && cur.Kind != yaml.AliasNode {
+		switch cur.Kind {
+		case yaml.MappingNode:
+			if cur.Style&yaml.FlowStyle != 0 {
+				return nil, 0
+			}
+			indent = cur.Content[len(cur.Content)-2].Column - 1
+			cur = cur.Content[len(cur.Content)-1]
+		case yaml.SequenceNode:
+			if cur.Style&yaml.FlowStyle != 0 {
+				return nil, 0
+			}
+			cur = cur.Content[len(cur.Content)-1]
+			if cur.Line < 1 || cur.Line > li.lines() {
+				return nil, 0
+			}
+			indent = leadingIndent(li.lineText(cur.Line))
+		default:
+			return nil, 0
+		}
+	}
+	if cur.Kind == yaml.ScalarNode && cur.Style&(yaml.LiteralStyle|yaml.FoldedStyle) != 0 {
+		return cur, indent
+	}
+	return nil, 0
+}
+
+func leadingIndent(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
+}
+
+// blockScalarLastLine returns the last line, up to limit, that belongs to the
+// block scalar: blank lines and lines indented more than indent. Trailing
+// blank lines count only with keep chomping, where they are part of the value.
+func blockScalarLastLine(li *lineIndex, scalar *yaml.Node, indent, limit int) int {
+	lastContent, lastAny := scalar.Line, scalar.Line
+	for l := scalar.Line + 1; l <= limit; l++ {
+		text := li.lineText(l)
+		if strings.TrimSpace(text) == "" {
+			lastAny = l
+			continue
+		}
+		if leadingIndent(text) <= indent {
+			break
+		}
+		lastContent, lastAny = l, l
+	}
+	header := li.lineText(scalar.Line)
+	if c := scalar.Column - 1; c >= 0 && c < len(header) {
+		header = header[c:]
+	}
+	if i := strings.IndexAny(header, " #"); i >= 0 {
+		header = header[:i]
+	}
+	if strings.Contains(header, "+") {
+		return lastAny
+	}
+	return lastContent
 }
 
 // renderEntry renders "key: value" as block YAML. Lines after the first are
@@ -341,8 +422,8 @@ func renderEntry(key, value *yaml.Node, indent int, indentFirst bool) (string, e
 		if l == "" {
 			continue
 		}
-		if i > 0 || indentFirst {
-			out.WriteString(pad)
+		if (i > 0 || indentFirst) && strings.TrimRight(l, "\r\n") != "" {
+			out.WriteString(pad) // blank lines, such as those a |+ value ends with, stay empty
 		}
 		out.WriteString(l)
 	}

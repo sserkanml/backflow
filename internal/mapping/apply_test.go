@@ -313,6 +313,115 @@ func TestApply(t *testing.T) {
 	}
 }
 
+const blockScalarsYAML = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scripts
+data:
+  start.sh: |
+    #!/bin/sh
+    echo hello
+    # a comment line that is script text
+  keep: |+
+    kept
+
+  clip: |
+    clipped
+
+  folded: >-
+    folded
+    text
+  last.sh: |
+    echo last
+    # the final line is script text too
+`
+
+func TestApplyBlockScalars(t *testing.T) {
+	tests := []struct {
+		name    string
+		changes []v1alpha1.FieldChange
+		from    string
+		to      string
+	}{
+		{
+			name:    "replace a script that ends with a comment-looking line",
+			changes: []v1alpha1.FieldChange{replace("/data/start.sh", `"#!/bin/sh\necho bye\n# a comment line that is script text\n"`)},
+			from:    "    echo hello\n    # a comment line that is script text\n",
+			to:      "    echo bye\n    # a comment line that is script text\n",
+		},
+		{
+			name:    "replace the last entry, a script that ends with a comment-looking line",
+			changes: []v1alpha1.FieldChange{replace("/data/last.sh", `"echo done\n# the final line is script text too\n"`)},
+			from:    "    echo last\n",
+			to:      "    echo done\n",
+		},
+		{
+			name:    "keep chomping: trailing blank lines are part of the value",
+			changes: []v1alpha1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
+			from:    "    kept\n\n  clip:",
+			to:      "    changed\n\n  clip:",
+		},
+		{
+			name:    "clip chomping: the blank line after the value is not part of it and stays",
+			changes: []v1alpha1.FieldChange{replace("/data/clip", `"other\n"`)},
+			from:    "    clipped\n\n  folded:",
+			to:      "    other\n\n  folded:",
+		},
+		{
+			name:    "a folded scalar is replaced as a whole",
+			changes: []v1alpha1.FieldChange{replace("/data/folded", `"new"`)},
+			from:    "  folded: >-\n    folded\n    text\n",
+			to:      "  folded: new\n",
+		},
+		{
+			name:    "an entry added after a script that ends with a comment-looking line comes after all of it",
+			changes: []v1alpha1.FieldChange{add("/data/new", `"x"`)},
+			from:    "    # the final line is script text too\n",
+			to:      "    # the final line is script text too\n  new: x\n",
+		},
+		{
+			name:    "an entry removed next to a script leaves the script alone",
+			changes: []v1alpha1.FieldChange{remove("/data/folded")},
+			from:    "  folded: >-\n    folded\n    text\n",
+			to:      "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Apply("cm.yaml", []byte(blockScalarsYAML), 0, tt.changes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := swap(t, blockScalarsYAML, tt.from, tt.to)
+			if string(got) != want {
+				t.Errorf("edited file differs\n--- got ---\n%s\n--- want ---\n%s", got, want)
+			}
+		})
+	}
+
+	t.Run("editing another entry never touches the scripts", func(t *testing.T) {
+		got, err := Apply("cm.yaml", []byte(blockScalarsYAML), 0, []v1alpha1.FieldChange{replace("/metadata/name", `"renamed"`)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := swap(t, blockScalarsYAML, "name: scripts", "name: renamed"); string(got) != want {
+			t.Errorf("got:\n%s", got)
+		}
+	})
+}
+
+func TestApplyKeepChompingAtTheEndOfTheFile(t *testing.T) {
+	in := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: k\ndata:\n  keep: |+\n    kept\n\n\n"
+	got, err := Apply("cm.yaml", []byte(in), 0, []v1alpha1.FieldChange{add("/data/new", `"x"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := in + "  new: x\n"
+	if string(got) != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
 func TestApplyKeepsOtherDocumentsAndLinesByteForByte(t *testing.T) {
 	got, err := Apply("all.yaml", []byte(multiDocYAML), 1, []v1alpha1.FieldChange{
 		replace("/spec/replicas", `3`),
