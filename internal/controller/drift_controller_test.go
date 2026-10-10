@@ -245,6 +245,74 @@ func TestGitAheadUnfinishedSync(t *testing.T) {
 	})
 }
 
+func TestSourceChange(t *testing.T) {
+	base := func() map[string]interface{} {
+		return map[string]interface{}{
+			"repoURL": "https://git.example/r.git", "path": "apps/demo", "targetRevision": "main",
+			"directory": map[string]interface{}{"recurse": true, "include": "*.yaml"},
+		}
+	}
+	app := func(spec, synced map[string]interface{}) *unstructured.Unstructured {
+		o := map[string]interface{}{}
+		if spec != nil {
+			_ = unstructured.SetNestedMap(o, spec, "spec", "source")
+		}
+		if synced != nil {
+			_ = unstructured.SetNestedMap(o, synced, "status", "operationState", "syncResult", "source")
+		}
+		return &unstructured.Unstructured{Object: o}
+	}
+	with := func(mut func(m map[string]interface{})) map[string]interface{} {
+		m := base()
+		mut(m)
+		return m
+	}
+	tests := []struct {
+		name         string
+		spec, synced map[string]interface{}
+		want         string // substring of the reason, "" for no change
+	}{
+		{"identical", base(), base(), ""},
+		{"changed path", with(func(m map[string]interface{}) { m["path"] = "apps/other" }), base(), "path"},
+		{"changed directory.include", with(func(m map[string]interface{}) {
+			m["directory"] = map[string]interface{}{"recurse": true, "include": "*.json"}
+		}), base(), "directory"},
+		{"changed directory.recurse", with(func(m map[string]interface{}) {
+			m["directory"] = map[string]interface{}{"recurse": false, "include": "*.yaml"}
+		}), base(), "directory"},
+		{"changed target revision", with(func(m map[string]interface{}) { m["targetRevision"] = "v2" }), base(), "targetRevision"},
+		{"changed repository", with(func(m map[string]interface{}) { m["repoURL"] = "https://git.example/other.git" }), base(), "repoURL"},
+		{"helm values added", with(func(m map[string]interface{}) {
+			m["helm"] = map[string]interface{}{"valueFiles": []interface{}{"values.yaml"}}
+		}), base(), "helm"},
+		{"path spelled differently", with(func(m map[string]interface{}) { m["path"] = "./apps/demo/" }), base(), ""},
+		{"defaults spelled out", with(func(m map[string]interface{}) {
+			m["directory"] = map[string]interface{}{"recurse": true, "include": "*.yaml", "jsonnet": map[string]interface{}{}}
+			m["plugin"] = map[string]interface{}{}
+		}), base(), ""},
+		{"never synced: nothing to compare", base(), nil, ""},
+		{"no source: nothing to compare", nil, base(), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sourceChange(app(tt.spec, tt.synced))
+			if (tt.want == "") != (got == "") || !strings.Contains(got, tt.want) {
+				t.Errorf("sourceChange = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("several sources", func(t *testing.T) {
+		o := map[string]interface{}{}
+		_ = unstructured.SetNestedSlice(o, []interface{}{base(), base()}, "spec", "sources")
+		_ = unstructured.SetNestedSlice(o, []interface{}{base(), with(func(m map[string]interface{}) { m["path"] = "x" })},
+			"status", "operationState", "syncResult", "sources")
+		if got := sourceChange(&unstructured.Unstructured{Object: o}); !strings.Contains(got, "path") {
+			t.Errorf("sourceChange = %q", got)
+		}
+	})
+}
+
 func TestShortRevision(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	for in, want := range map[string]string{
@@ -834,6 +902,26 @@ var _ = Describe("Drift detection", func() {
 			Entry("Error", "Error", false, "phase Error"),
 			Entry("selective sync", "Succeeded", true, "selective"),
 		)
+
+		It("pauses when the source changed without a new revision, and resumes once a sync applies it", func() {
+			setRevisions(sha1, sha1)
+			synced := map[string]interface{}{"repoURL": "https://git.example/r.git", "path": "apps/demo", "targetRevision": "main"}
+			Expect(unstructured.SetNestedMap(app.Object, synced, "status", "operationState", "syncResult", "source")).To(Succeed())
+			changed := map[string]interface{}{"repoURL": "https://git.example/r.git", "path": "apps/other", "targetRevision": "main"}
+			Expect(unstructured.SetNestedMap(app.Object, changed, "spec", "source")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			got := eventsOf("GitAhead")
+			Expect(got).To(HaveLen(1), "reported once")
+			Expect(got[0]).To(ContainSubstring("source changed since the last sync (path)"))
+
+			Expect(unstructured.SetNestedMap(app.Object, changed, "status", "operationState", "syncResult", "source")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+		})
 
 		It("proposes after a full, successful sync", func() {
 			setRevisions(sha1, sha1)

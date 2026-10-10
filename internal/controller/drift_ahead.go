@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -65,6 +66,19 @@ type aheadState struct {
 	// The comparison of paths under the directory proves nothing then, so the
 	// pause cannot be lifted by it.
 	unfinished string
+	// sourceChanged describes how the Application's source differs from the
+	// source of its last sync. A new source can change what is rendered without
+	// a new revision, and neither the revisions nor the paths say so.
+	sourceChanged string
+}
+
+// hold is the reason a pause cannot be lifted by looking at the files under
+// the Application's directory, or "".
+func (s aheadState) hold() string {
+	if s.unfinished != "" {
+		return s.unfinished
+	}
+	return s.sourceChanged
 }
 
 // revisions reads the single revision at the path, or the list of revisions of
@@ -108,8 +122,10 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 	}
 	st.paused = st.compared != "" && st.compared != st.synced
 
+	st.sourceChanged = sourceChange(app)
+
 	phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
-	if st.compared != "" && !st.paused { // when Git is ahead, that is the reason given
+	if st.compared != "" && st.synced != "" { // never synced: Git being ahead is the reason given
 		selective, _, _ := unstructured.NestedSlice(app.Object, "status", "operationState", "operation", "sync", "resources")
 		switch {
 		case phase == "Running" || phase == "Terminating":
@@ -133,6 +149,118 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 		st.settling = true
 	}
 	return st
+}
+
+// sourceFields are the parts of an Application source that decide what is
+// rendered from a revision.
+var sourceFields = []string{"repoURL", "path", "targetRevision", "chart", "directory", "helm", "kustomize", "plugin"}
+
+// sourcesOf reads the source of an Application at the path (a map), or its
+// sources (a list). ok is false when neither is there.
+func sourcesOf(app *unstructured.Unstructured, single, list []string) (out []map[string]interface{}, ok bool) {
+	if m, found, _ := unstructured.NestedMap(app.Object, single...); found {
+		return []map[string]interface{}{m}, true
+	}
+	items, found, _ := unstructured.NestedSlice(app.Object, list...)
+	if !found {
+		return nil, false
+	}
+	for _, it := range items {
+		m, _ := it.(map[string]interface{})
+		out = append(out, m)
+	}
+	return out, true
+}
+
+// normalizeSource keeps the fields that matter and drops what carries no
+// meaning, so a source Argo CD wrote without a default compares equal to one
+// that spells the default out: empty values, false, and a path with "./" or "/".
+func normalizeSource(src map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	for _, f := range sourceFields {
+		v := pruneEmpty(src[f])
+		if v == nil {
+			continue
+		}
+		if s, ok := v.(string); ok && f == "path" {
+			if s = strings.Trim(strings.TrimPrefix(s, "./"), "/"); s == "" || s == "." {
+				continue
+			}
+			v = s
+		}
+		out[f] = v
+	}
+	return out
+}
+
+// pruneEmpty returns v without nil, false, empty strings, and empty maps and
+// slices, or nil when nothing is left.
+func pruneEmpty(v interface{}) interface{} {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case bool:
+		if !t {
+			return nil
+		}
+	case string:
+		if t == "" {
+			return nil
+		}
+	case map[string]interface{}:
+		out := map[string]interface{}{}
+		for k, e := range t {
+			if p := pruneEmpty(e); p != nil {
+				out[k] = p
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case []interface{}:
+		var out []interface{}
+		for _, e := range t {
+			out = append(out, pruneEmpty(e))
+		}
+		allNil := true
+		for _, e := range out {
+			allNil = allNil && e == nil
+		}
+		if allNil {
+			return nil
+		}
+		return out
+	}
+	return v
+}
+
+// sourceChange says how the current source (spec.source or spec.sources)
+// differs from the source of the last sync, or returns "". With no recorded
+// sync there is nothing to compare, and the revisions speak for themselves.
+func sourceChange(app *unstructured.Unstructured) string {
+	spec, specOK := sourcesOf(app, []string{"spec", "source"}, []string{"spec", "sources"})
+	synced, syncedOK := sourcesOf(app, []string{"status", "operationState", "syncResult", "source"},
+		[]string{"status", "operationState", "syncResult", "sources"})
+	if !specOK || !syncedOK {
+		return ""
+	}
+	if len(spec) != len(synced) {
+		return fmt.Sprintf("the number of sources changed since the last sync (%d now, %d then)", len(spec), len(synced))
+	}
+	for i := range spec {
+		a, b := normalizeSource(spec[i]), normalizeSource(synced[i])
+		var fields []string
+		for _, f := range sourceFields {
+			if !reflect.DeepEqual(a[f], b[f]) {
+				fields = append(fields, f)
+			}
+		}
+		if len(fields) > 0 {
+			return fmt.Sprintf("the Application's source changed since the last sync (%s)", strings.Join(fields, ", "))
+		}
+	}
+	return ""
 }
 
 // shortRevision abbreviates commit SHAs for messages; other revisions are kept.
@@ -294,8 +422,8 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 		logf.FromContext(ctx).V(1).Info("A sync is running or not yet compared; no new proposals", "application", summary.Name)
 		return true
 	}
-	if st.unfinished != "" {
-		r.reportUnfinishedSync(policy, summary, st)
+	if st.hold() != "" {
+		r.reportHeld(policy, summary, st)
 		return true
 	}
 	if !st.paused {
@@ -310,16 +438,17 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 	return true
 }
 
-// reportUnfinishedSync emits one Event per Application, revision and reason
-// when drift detection is paused because the last sync did not apply everything.
-func (r *DriftReconciler) reportUnfinishedSync(policy *backflowv1alpha1.BackflowPolicy,
+// reportHeld emits one Event per Application, revision and reason when drift
+// detection is paused because the last sync did not apply the Application as it
+// is now: it failed or was partial, or the source changed since.
+func (r *DriftReconciler) reportHeld(policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, st aheadState) {
-	if !r.firstReport(policy, summary, "unfinished/"+st.compared+"/"+st.unfinished) {
+	if !r.firstReport(policy, summary, "held/"+st.compared+"/"+st.hold()) {
 		return
 	}
 	r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
-		"Drift detection for %s is paused: %s (revision %s). It resumes after a complete, successful sync.",
-		summary.Name, st.unfinished, shortRevision(st.compared)))
+		"Drift detection for %s is paused: %s (revision %s). It resumes after a complete, successful sync of the current source.",
+		summary.Name, st.hold(), shortRevision(st.compared)))
 }
 
 // firstReport records what was last reported for an Application and says
