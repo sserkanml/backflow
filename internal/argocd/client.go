@@ -25,7 +25,11 @@ var (
 	ErrUnreachable = errors.New("argocd: unreachable")
 )
 
-const defaultTimeout = 30 * time.Second
+const (
+	defaultTimeout = 30 * time.Second
+	// idleConnTimeout closes kept-alive connections that nobody used for a while.
+	idleConnTimeout = 90 * time.Second
+)
 
 // Config describes how to reach Argo CD.
 type Config struct {
@@ -87,11 +91,19 @@ func New(cfg Config) (*Client, error) {
 		baseURL: strings.TrimRight(cfg.URL, "/"),
 		token:   cfg.Token,
 		http: &http.Client{
-			Timeout:   timeout,
-			Transport: &http.Transport{TLSClientConfig: tlsCfg, Proxy: http.ProxyFromEnvironment},
+			Timeout: timeout,
+			Transport: &http.Transport{
+				TLSClientConfig: tlsCfg,
+				Proxy:           http.ProxyFromEnvironment,
+				IdleConnTimeout: idleConnTimeout,
+			},
 		},
 	}, nil
 }
+
+// CloseIdleConnections closes the connections the client keeps open. Call it
+// when the client is replaced, so they do not outlive it.
+func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
 
 type managedResourcesResponse struct {
 	Items []struct {

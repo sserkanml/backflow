@@ -401,10 +401,13 @@ func (f *fakeDiffer) ChangedPaths(_ context.Context, _, from, to string, _ *gitr
 }
 
 type fakeArgo struct {
-	items []argocd.ManagedResource
-	err   error
-	calls int
+	items  []argocd.ManagedResource
+	err    error
+	calls  int
+	closed int
 }
+
+func (f *fakeArgo) CloseIdleConnections() { f.closed++ }
 
 func (f *fakeArgo) GetManagedResources(context.Context, string, string) ([]argocd.ManagedResource, error) {
 	f.calls++
@@ -1705,6 +1708,102 @@ var _ = Describe("Drift detection", func() {
 			}
 		}
 		Expect(superseded).To(Equal(1))
+	})
+
+	Context("memory and connections", func() {
+		const sha1 = "1111111111111111111111111111111111111111"
+		const sha2 = "2222222222222222222222222222222222222222"
+		sizes := func() (pending, reported, clients int) {
+			r.stableMu.Lock()
+			pending = len(r.pending)
+			r.stableMu.Unlock()
+			r.aheadMu.Lock()
+			reported = len(r.aheadReported)
+			r.aheadMu.Unlock()
+			r.clientMu.Lock()
+			clients = len(r.clients)
+			r.clientMu.Unlock()
+			return
+		}
+		builds := 0
+		BeforeEach(func() {
+			builds = 0
+			r.NewArgoClient = func(argocd.Config) (ManagedResourcesGetter, error) { builds++; return argo, nil }
+		})
+		// fill leaves a pending drift (seen once) and a reported pause.
+		fill := func() {
+			setRevisions(sha2, sha1)
+			reconcileDrift()
+			p, rep, c := sizes()
+			ExpectWithOffset(1, p).To(Equal(0), "a paused Application is not watched for stability")
+			ExpectWithOffset(1, rep).To(Equal(1))
+			ExpectWithOffset(1, c).To(Equal(1))
+			setRevisions(sha1, sha1)
+			reconcileDrift()
+			p, _, _ = sizes()
+			ExpectWithOffset(1, p).To(Equal(1))
+		}
+
+		It("reuses one client per policy, and replaces it when the token changes", func() {
+			for i := 0; i < 4; i++ {
+				reconcileDrift()
+			}
+			Expect(builds).To(Equal(1))
+			Expect(argo.closed).To(BeZero())
+
+			var secret corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "argocd-token-drift"}, &secret)).To(Succeed())
+			secret.Data["token"] = []byte("rotated")
+			Expect(k8sClient.Update(ctx, &secret)).To(Succeed())
+			reconcileDrift()
+			reconcileDrift()
+			Expect(builds).To(Equal(2))
+			Expect(argo.closed).To(Equal(1), "the old client's connections are closed")
+		})
+
+		It("forgets a deleted policy", func() {
+			fill()
+			Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
+			reconcileDrift()
+			p, rep, c := sizes()
+			Expect([]int{p, rep, c}).To(Equal([]int{0, 0, 0}))
+			Expect(argo.closed).To(Equal(1))
+			// Recreated for AfterEach.
+			policy.ResourceVersion = ""
+			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+		})
+
+		It("forgets a policy that is not Ready", func() {
+			fill()
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Conditions[0].Status = metav1.ConditionFalse
+			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			reconcileDrift()
+			p, rep, c := sizes()
+			Expect([]int{p, rep, c}).To(Equal([]int{0, 0, 0}))
+		})
+
+		It("forgets an Application that was deleted", func() {
+			fill()
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+			reconcileDrift()
+			p, rep, _ := sizes()
+			Expect([]int{p, rep}).To(Equal([]int{0, 0}))
+			// Recreated for AfterEach.
+			app.SetResourceVersion("")
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		It("forgets an Application that dropped out of the policy status", func() {
+			fill()
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Applications = nil
+			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			reconcileDrift()
+			p, rep, c := sizes()
+			Expect([]int{p, rep}).To(Equal([]int{0, 0}))
+			Expect(c).To(Equal(1), "the policy is still in use")
+		})
 	})
 
 	It("reports an unsupported source type once per revision", func() {

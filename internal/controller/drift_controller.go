@@ -87,6 +87,15 @@ type DriftReconciler struct {
 
 	stableMu sync.Mutex
 	pending  map[pendingKey]*pendingDrift // drifts seen but not yet stable enough to propose
+
+	clientMu sync.Mutex
+	clients  map[string]cachedArgoClient // per policy, so connections are reused
+}
+
+// cachedArgoClient is the Argo CD client of a policy and what it was built from.
+type cachedArgoClient struct {
+	key    string
+	client ManagedResourcesGetter
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
@@ -101,9 +110,13 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.forgetPolicy(req.Namespace + "/" + req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if policy.Spec.ArgoCD == nil || !meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready") {
+		r.forgetPolicy(policy.Namespace + "/" + policy.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -127,11 +140,14 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	ctx = context.WithValue(ctx, recheckKey{}, again)
 
 	var firstErr error
+	tracked := make(map[string]bool, len(policy.Status.Applications))
 	for _, summary := range policy.Status.Applications {
+		tracked[summary.Name] = true
 		if err := r.reconcileApplication(ctx, &policy, argo, summary, proposals.Items); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
+	r.forgetApplications(policy.Namespace+"/"+policy.Name, tracked)
 	if firstErr != nil {
 		return ctrl.Result{}, firstErr
 	}
@@ -175,6 +191,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Spec.ArgoCDNamespace, Name: summary.Name}, app); err != nil {
 		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
 			log.Info("Application not found; leaving its proposals untouched")
+			r.forgetApplication(policy.Namespace+"/"+policy.Name, summary.Name)
 			return nil
 		}
 		return err
@@ -661,10 +678,88 @@ func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alph
 			return nil, fmt.Errorf("Argo CD CA bundle: %w", err)
 		}
 	}
-	if r.NewArgoClient != nil {
-		return r.NewArgoClient(cfg)
+	return r.cachedClient(policy.Namespace+"/"+policy.Name, cfg)
+}
+
+// cachedClient returns the policy's Argo CD client, built again only when what
+// it is built from changed (URL, CA bundle, TLS option or token), so one policy
+// does not open new connections on every reconcile. A replaced client has its
+// idle connections closed.
+func (r *DriftReconciler) cachedClient(pol string, cfg argocd.Config) (ManagedResourcesGetter, error) {
+	h := sha256.New()
+	for _, part := range [][]byte{[]byte(cfg.URL), cfg.CACert, []byte(strconv.FormatBool(cfg.InsecureSkipTLSVerify)), []byte(cfg.Token)} {
+		fmt.Fprintf(h, "%d:", len(part))
+		h.Write(part)
 	}
-	return argocd.New(cfg)
+	key := hex.EncodeToString(h.Sum(nil))
+
+	r.clientMu.Lock()
+	defer r.clientMu.Unlock()
+	if hit, ok := r.clients[pol]; ok && hit.key == key {
+		return hit.client, nil
+	}
+	build := r.NewArgoClient
+	if build == nil {
+		build = func(c argocd.Config) (ManagedResourcesGetter, error) { return argocd.New(c) }
+	}
+	c, err := build(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if old, ok := r.clients[pol]; ok {
+		closeIdle(old.client)
+	}
+	if r.clients == nil {
+		r.clients = map[string]cachedArgoClient{}
+	}
+	r.clients[pol] = cachedArgoClient{key: key, client: c}
+	return c, nil
+}
+
+func closeIdle(c ManagedResourcesGetter) {
+	if cl, ok := c.(interface{ CloseIdleConnections() }); ok {
+		cl.CloseIdleConnections()
+	}
+}
+
+// forgetPolicy drops everything kept in memory for a policy that is gone or not
+// usable: its client, what was seen of drifts and what was reported.
+func (r *DriftReconciler) forgetPolicy(pol string) {
+	r.clientMu.Lock()
+	if old, ok := r.clients[pol]; ok {
+		closeIdle(old.client)
+		delete(r.clients, pol)
+	}
+	r.clientMu.Unlock()
+	r.forgetApplications(pol, nil)
+}
+
+// forgetApplications drops what is kept for the policy's Applications that are
+// not in keep (all of them when keep is empty).
+func (r *DriftReconciler) forgetApplications(pol string, keep map[string]bool) {
+	r.forgetWhere(pol, func(app string) bool { return !keep[app] })
+}
+
+// forgetApplication drops what is kept for one Application of a policy.
+func (r *DriftReconciler) forgetApplication(pol, app string) {
+	r.forgetWhere(pol, func(name string) bool { return name == app })
+}
+
+func (r *DriftReconciler) forgetWhere(pol string, drop func(app string) bool) {
+	r.stableMu.Lock()
+	for k := range r.pending {
+		if k.policy == pol && drop(k.app) {
+			delete(r.pending, k)
+		}
+	}
+	r.stableMu.Unlock()
+	r.aheadMu.Lock()
+	for k := range r.aheadReported {
+		if k.policy == pol && drop(k.app) {
+			delete(r.aheadReported, k)
+		}
+	}
+	r.aheadMu.Unlock()
 }
 
 func (r *DriftReconciler) secretValue(ctx context.Context, namespace string, ref corev1.SecretKeySelector) ([]byte, error) {
