@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -166,6 +167,10 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 		return r.cleanup(ctx, dp)
 	}
 	ref.State = string(scm.StateOpen)
+	if strings.HasPrefix(dp.Status.Message, trackingFailurePrefix) {
+		// The poll works again: the message of the failure is stale.
+		dp.Status.Message = openMessage(dp, cur)
+	}
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -173,6 +178,24 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 		return r.trackingFailure(ctx, dp, err, scm.RetryAfter(err))
 	}
 	return ctrl.Result{RequeueAfter: r.trackEvery()}, nil
+}
+
+// trackingFailurePrefix starts the message of a proposal whose merge request
+// could not be read.
+const trackingFailurePrefix = "Cannot read the state of merge request"
+
+// openMessage is the message of a proposal whose merge request is open.
+func openMessage(dp *backflowv1alpha1.DriftProposal, cur *scm.MergeRequest) string {
+	ref := dp.Status.MergeRequest
+	if rev := dp.Annotations[annotationLiveReverted]; rev != "" &&
+		meta.IsStatusConditionTrue(dp.Status.Conditions, conditionLiveReverted) {
+		return fmt.Sprintf("The cluster was reset to Git by an Argo CD sync of %s; the change waits in merge request %s.", rev, ref.URL)
+	}
+	target := cur.TargetBranch
+	if target == "" {
+		target = "its target branch"
+	}
+	return fmt.Sprintf("Merge request %s proposes the change against %s.", ref.URL, target)
 }
 
 // syncLiveReverted keeps the LiveReverted condition in line with the
@@ -217,7 +240,7 @@ func (r *DriftProposalReconciler) syncLiveReverted(ctx context.Context, c *mrCli
 func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	cause error, advised time.Duration) (ctrl.Result, error) {
 	orig := dp.DeepCopy()
-	dp.Status.Message = fmt.Sprintf("Cannot read the state of merge request %s: %v", dp.Status.MergeRequest.URL, cause)
+	dp.Status.Message = fmt.Sprintf("%s %s: %v", trackingFailurePrefix, dp.Status.MergeRequest.URL, cause)
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}

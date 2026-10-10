@@ -221,16 +221,24 @@ func fetch(ctx context.Context, repo *git.Repository, sha string, auth *Auth) er
 }
 
 // isRefusal reports whether the server answered a fetch by SHA with a
-// refusal: it does not advertise the object ("not our ref", an ERR line), or
-// it does not allow fetching by SHA at all.
+// refusal to serve the object: it does not advertise it ("not our ref",
+// "unadvertised object"), has no such ref, or does not allow fetching by SHA
+// at all. Any other ERR line (a rate limit, a denied or expired credential, a
+// server fault) says nothing about the commit and stays transient.
 func isRefusal(err error) bool {
 	var errLine *pktline.ErrorLine
 	var noMatch git.NoMatchingRefSpecError
 	switch {
-	case errors.Is(err, git.ErrExactSHA1NotSupported), errors.As(err, &errLine), errors.As(err, &noMatch):
+	case errors.Is(err, git.ErrExactSHA1NotSupported), errors.As(err, &noMatch):
 		return true
+	case errors.As(err, &errLine):
+		return refusesObject(errLine.Text)
 	}
-	msg := strings.ToLower(err.Error())
+	return refusesObject(err.Error())
+}
+
+func refusesObject(text string) bool {
+	msg := strings.ToLower(text)
 	return strings.Contains(msg, "not our ref") || strings.Contains(msg, "unadvertised object") ||
 		strings.Contains(msg, "no such remote ref")
 }
@@ -255,7 +263,9 @@ func classify(err error) error {
 	case errors.Is(err, transport.ErrRepositoryNotFound):
 		return fmt.Errorf("%w: %v", ErrRepositoryNotFound, err)
 	case errors.Is(err, transport.ErrEmptyRemoteRepository):
-		return fmt.Errorf("%w: the repository is empty", ErrRevisionNotFound)
+		// A repository that is still empty may be filled any moment: that is
+		// not a verdict about any commit.
+		return fmt.Errorf("%w: the repository is empty", ErrUnavailable)
 	}
 	return fmt.Errorf("%w: %v", ErrUnavailable, err)
 }

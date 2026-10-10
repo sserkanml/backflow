@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -30,6 +31,25 @@ data:
   LOG_LEVEL: info
 `
 
+// brokenTree is a repository whose files cannot be read.
+type brokenTree struct{}
+
+func (brokenTree) Open(string) (fs.File, error) { return nil, errors.New("input/output error") }
+func (brokenTree) Close() error                 { return nil }
+
+// failingApplications fails every read of an Argo CD Application.
+type failingApplications struct {
+	client.Client
+	err error
+}
+
+func (f failingApplications) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if u, ok := obj.(*unstructured.Unstructured); ok && u.GroupVersionKind() == applicationGVK {
+		return f.err
+	}
+	return f.Client.Get(ctx, key, obj, opts...)
+}
+
 type fakeTree struct{ fstest.MapFS }
 
 func (fakeTree) Close() error { return nil }
@@ -38,6 +58,7 @@ func (fakeTree) Close() error { return nil }
 type fakeRepos struct {
 	files    fstest.MapFS
 	err      error
+	broken   bool // files cannot be read
 	calls    int
 	gotURL   string
 	gotSHA   string
@@ -50,6 +71,9 @@ func (f *fakeRepos) Open(_ context.Context, url, sha string, auth *gitrepo.Auth)
 	f.gotURL, f.gotSHA, f.gotAuth, f.authSeen = url, sha, auth, true
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.broken {
+		return brokenTree{}, nil
 	}
 	return fakeTree{f.files}, nil
 }
@@ -563,6 +587,75 @@ var _ = Describe("DriftProposal mapping", func() {
 		_, err = reconcileDP()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	Context("failures that are not a verdict about the source", func() {
+		It("retries, with the cap, while the BackflowPolicy is missing, and maps when it is back", func() {
+			saved := policy.DeepCopy()
+			Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(retryMin))
+			Expect(mapped().Reason).To(Equal(reasonPolicyNotFound))
+			Expect(mapped().Message).To(ContainSubstring("map-policy"))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+
+			offset = 365 * 24 * time.Hour
+			res, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(retryMax))
+
+			By("being picked up when the policy is created again")
+			saved.ResourceVersion, saved.UID = "", ""
+			status := saved.Status
+			Expect(k8sClient.Create(ctx, saved)).To(Succeed())
+			saved.Status = status
+			Expect(k8sClient.Status().Update(ctx, saved)).To(Succeed())
+			policy = saved
+			Expect(r.authFailedProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("retries instead of failing the reconcile when the Application cannot be read", func() {
+			r.Client = failingApplications{Client: k8sClient, err: errors.New("etcdserver: request timed out")}
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(retryMin))
+			Expect(mapped().Reason).To(Equal(reasonApplicationUnavailable))
+			Expect(mapped().Message).To(ContainSubstring("request timed out"))
+
+			offset = 365 * 24 * time.Hour
+			res, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(retryMax))
+
+			r.Client = k8sClient
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("retries, with the cap, when the files of the repository cannot be read", func() {
+			repos.broken = true
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(retryMin))
+			Expect(mapped().Reason).To(Equal(reasonRepositoryUnavailable))
+			Expect(mapped().Message).To(ContainSubstring("input/output error"))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+
+			offset = 365 * 24 * time.Hour
+			res, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(retryMax))
+
+			repos.broken = false
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
+		})
 	})
 
 	It("does not map when mapping is disabled", func() {

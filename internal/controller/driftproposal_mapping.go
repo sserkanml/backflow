@@ -53,6 +53,8 @@ const (
 	reasonRepositoryNotFound    = "RepositoryNotFound"
 	reasonRevisionNotFound      = "RevisionNotFound"
 	reasonApplicationNotFound   = "ApplicationNotFound"
+	// The Application or the BackflowPolicy could not be read: not a verdict, so retried.
+	reasonApplicationUnavailable = "ApplicationUnavailable"
 )
 
 // SourceTree is a read-only view of a repository at one commit.
@@ -126,15 +128,18 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 			return r.retry(ctx, dp, reasonApplicationNotFound,
 				fmt.Errorf("Argo CD Application %s/%s not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name))
 		}
-		return ctrl.Result{}, err
+		return r.retry(ctx, dp, reasonApplicationUnavailable, fmt.Errorf("cannot read the Argo CD Application: %w", err))
 	}
 
 	auth, err := r.repositoryAuth(ctx, dp)
 	if err != nil {
-		if errors.Is(err, gitrepo.ErrAuth) {
+		switch {
+		case errors.Is(err, gitrepo.ErrAuth):
 			return r.retry(ctx, dp, reasonRepositoryAuthFailed, err)
+		case apierrors.IsNotFound(err):
+			return r.retry(ctx, dp, reasonPolicyNotFound, fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyName))
 		}
-		return ctrl.Result{}, err
+		return r.retry(ctx, dp, reasonRepositoryUnavailable, fmt.Errorf("cannot read the access to the repository: %w", err))
 	}
 
 	tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, dp.Spec.Source.Revision, auth)
@@ -163,7 +168,9 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err != nil {
 		reason, ok := mappingReason(err)
 		if !ok {
-			return ctrl.Result{}, err // reading the repository failed; retried with backoff
+			// Reading the repository failed: not a verdict, so it is retried
+			// with the same backoff and cap as an unavailable repository.
+			return r.retry(ctx, dp, reasonRepositoryUnavailable, err)
 		}
 		return ctrl.Result{}, r.unmapped(ctx, dp, reason, err.Error())
 	}

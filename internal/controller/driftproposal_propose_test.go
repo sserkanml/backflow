@@ -965,6 +965,39 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(provider.closed).To(Equal([]int64{7}))
 		})
 
+		It("restores the message once the merge request can be read again", func() {
+			before := latest().Status.Message
+			Expect(before).To(ContainSubstring("proposes the change against main"))
+			provider.getErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Message).To(HavePrefix(trackingFailurePrefix))
+
+			provider.getErr = nil
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(got.Status.Message).To(Equal(before))
+		})
+
+		It("restores the live-reverted message, not the plain one, after a failed poll", func() {
+			annotate(annotationLiveReverted, "0123456789abcdef")
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			reverted := latest().Status.Message
+			Expect(reverted).To(ContainSubstring("reset to Git"))
+
+			provider.getErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Message).To(HavePrefix(trackingFailurePrefix))
+			provider.getErr = nil
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Message).To(Equal(reverted))
+		})
+
 		It("keeps polling through a provider outage without changing the phase", func() {
 			provider.getErr = fmt.Errorf("%w: boom", scm.ErrForbidden)
 			res, err := reconcileDP()

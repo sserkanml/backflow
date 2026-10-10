@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -302,5 +303,28 @@ func TestLocateExtensionsAreCaseSensitiveLikeArgoCD(t *testing.T) {
 	_, err := Locate(repo, "a", DirectoryOptions{}, "demo", ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// brokenFS is a file system whose reads fail.
+type brokenFS struct{}
+
+func (brokenFS) Open(name string) (fs.File, error) {
+	return nil, &fs.PathError{Op: "open", Path: name, Err: errors.New("input/output error")}
+}
+
+// A directory that cannot be read is not a directory that is not there: only
+// the latter is a verdict about the source.
+func TestLocateReadFailureIsNotAVerdict(t *testing.T) {
+	cm := ResourceID{Kind: "ConfigMap", Name: "c"}
+	for _, recurse := range []bool{false, true} {
+		_, err := Locate(brokenFS{}, "apps/demo", DirectoryOptions{Recurse: recurse}, "demo", cm)
+		if err == nil || errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "input/output error") {
+			t.Errorf("recurse=%v: err = %v, want a plain read error", recurse, err)
+		}
+	}
+	_, err := Locate(fstest.MapFS{}, "apps/missing", DirectoryOptions{}, "demo", cm)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing directory: err = %v, want ErrNotFound", err)
 	}
 }

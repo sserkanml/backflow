@@ -456,6 +456,9 @@ func selfSignedCA(t *testing.T) []byte {
 }
 
 func TestClassify(t *testing.T) {
+	if errors.Is(classify(transport.ErrEmptyRemoteRepository), ErrRevisionNotFound) {
+		t.Error("an empty repository must not be reported as a missing revision")
+	}
 	tests := []struct {
 		err  error
 		want error
@@ -463,7 +466,7 @@ func TestClassify(t *testing.T) {
 		{transport.ErrAuthenticationRequired, ErrAuth},
 		{transport.ErrAuthorizationFailed, ErrAuth},
 		{transport.ErrRepositoryNotFound, ErrRepositoryNotFound},
-		{transport.ErrEmptyRemoteRepository, ErrRevisionNotFound},
+		{transport.ErrEmptyRemoteRepository, ErrUnavailable},
 		{errors.New("connection refused"), ErrUnavailable},
 	}
 	for _, tt := range tests {
@@ -480,8 +483,16 @@ func TestIsRefusal(t *testing.T) {
 	}{
 		{git.ErrExactSHA1NotSupported, true},
 		{&pktline.ErrorLine{Text: "upload-pack: not our ref abc"}, true},
-		{fmt.Errorf("wrapped: %w", &pktline.ErrorLine{Text: "denied"}), true},
+		{&pktline.ErrorLine{Text: "upload-pack: unadvertised object abc"}, true},
+		{fmt.Errorf("wrapped: %w", &pktline.ErrorLine{Text: "not our ref abc"}), true},
 		{errors.New("remote error: upload-pack: not our ref abc"), true},
+		{git.NoMatchingRefSpecError{}, true},
+		// Other ERR lines say nothing about the commit.
+		{fmt.Errorf("wrapped: %w", &pktline.ErrorLine{Text: "denied"}), false},
+		{&pktline.ErrorLine{Text: "API rate limit exceeded"}, false},
+		{&pktline.ErrorLine{Text: "Authentication failed for repository"}, false},
+		{&pktline.ErrorLine{Text: "internal server error"}, false},
+		{errors.New("remote error: access denied or repository not exported"), false},
 		{errors.New("dial tcp 10.0.0.1:443: connect: connection refused"), false},
 		{errors.New("unexpected EOF"), false},
 		{context.DeadlineExceeded, false},
@@ -557,5 +568,16 @@ func TestEnsureWritable(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not writable") {
 			t.Errorf("read-only directory: err = %v", err)
 		}
+	}
+}
+
+// An empty remote may be filled any moment: reading a commit from it is
+// retried, not a verdict that the commit does not exist.
+func TestOpenEmptyRepositoryIsUnavailable(t *testing.T) {
+	empty := newSourceRepo(t)
+	cache := NewCache(t.TempDir())
+	_, err := cache.Open(t.Context(), empty.url(), strings.Repeat("a", 40), nil)
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("err = %v, want ErrUnavailable and not ErrRevisionNotFound", err)
 	}
 }

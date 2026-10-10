@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"path"
@@ -188,12 +189,12 @@ func manifestFiles(fsys fs.FS, root string, opts DirectoryOptions) ([]string, er
 			return nil
 		})
 		if err != nil {
-			return nil, fmt.Errorf("%w: reading %q: %v", ErrNotFound, root, err)
+			return nil, readError(root, err)
 		}
 	} else {
 		entries, err := fs.ReadDir(fsys, root)
 		if err != nil {
-			return nil, fmt.Errorf("%w: reading %q: %v", ErrNotFound, root, err)
+			return nil, readError(root, err)
 		}
 		for _, d := range entries {
 			add(path.Join(root, d.Name()), d)
@@ -201,4 +202,14 @@ func manifestFiles(fsys fs.FS, root string, opts DirectoryOptions) ([]string, er
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// readError reports a directory that cannot be listed. A directory that is not
+// there is a verdict about the source (ErrNotFound); any other failure is only
+// a failure to look, which carries no sentinel so callers retry it.
+func readError(root string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrInvalid) {
+		return fmt.Errorf("%w: reading %q: %v", ErrNotFound, root, err)
+	}
+	return fmt.Errorf("reading %q: %w", root, err)
 }

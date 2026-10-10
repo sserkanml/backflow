@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 var (
@@ -111,7 +112,7 @@ func listRemote(ctx context.Context, repo *git.Repository, auth *Auth) ([]*plumb
 	}
 	refs, err := remote.ListContext(ctx, opts)
 	if err != nil {
-		if errors.Is(classify(err), ErrRevisionNotFound) { // empty repository
+		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
 			return nil, nil
 		}
 		return nil, classify(err)
