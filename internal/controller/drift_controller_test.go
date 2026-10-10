@@ -27,24 +27,27 @@ func TestProposalName(t *testing.T) {
 	res := appResource{Kind: "ConfigMap", Name: "demo-config", Namespace: "demo"}
 	changes := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpAdd, Live: `"1"`}}
 
-	name := proposalName("demo-app", res, changes, 0)
+	name := proposalName("argocd", "demo-app", res, changes, 0)
 	if !strings.HasPrefix(name, "demo-app-configmap-demo-config-") {
 		t.Errorf("name = %q", name)
 	}
-	if name != proposalName("demo-app", res, changes, 0) {
+	if name != proposalName("argocd", "demo-app", res, changes, 0) {
 		t.Error("name is not deterministic")
 	}
 	other := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpAdd, Live: `"2"`}}
-	if name == proposalName("demo-app", res, other, 0) {
+	if name == proposalName("argocd", "demo-app", res, other, 0) {
 		t.Error("different changes produced the same name")
 	}
-	if name == proposalName("demo-app", res, changes, 1) {
+	if name == proposalName("openshift-gitops", "demo-app", res, changes, 0) {
+		t.Error("the Argo CD namespace did not change the name")
+	}
+	if name == proposalName("argocd", "demo-app", res, changes, 1) {
 		t.Error("attempt did not change the name")
 	}
 
 	long := appResource{Kind: "ClusterRoleBinding", Name: strings.Repeat("Very_Long.Name", 10)}
 	for attempt := 0; attempt < 12; attempt++ {
-		n := proposalName(strings.Repeat("app", 30), long, changes, attempt)
+		n := proposalName("argocd", strings.Repeat("app", 30), long, changes, attempt)
 		if len(n) > 63 {
 			t.Errorf("len(%q) = %d", n, len(n))
 		}
@@ -1644,6 +1647,64 @@ var _ = Describe("Drift detection", func() {
 			}
 		}
 		Expect(n).To(Equal(1))
+	})
+
+	It("keeps the proposals of two Applications that track the same object apart", func() {
+		second := &unstructured.Unstructured{}
+		second.SetGroupVersionKind(applicationGVK)
+		second.SetName("drift-app-2")
+		second.SetNamespace(ns)
+		Expect(k8sClient.Create(ctx, second)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, second)).To(Succeed()) })
+		Expect(unstructured.SetNestedField(second.Object, "abc123", "status", "sync", "revision")).To(Succeed())
+		Expect(unstructured.SetNestedField(second.Object, "abc123", "status", "operationState", "syncResult", "revision")).To(Succeed())
+		Expect(unstructured.SetNestedField(second.Object, "Succeeded", "status", "operationState", "phase")).To(Succeed())
+		Expect(unstructured.SetNestedSlice(second.Object, []interface{}{configMapRes("OutOfSync")}, "status", "resources")).To(Succeed())
+		Expect(k8sClient.Update(ctx, second)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+		policy.Status.Applications = append(policy.Status.Applications, backflowv1alpha1.ApplicationSummary{
+			Name: "drift-app-2", RepoURL: "https://gitlab.com/x/y.git", Path: "apps/demo",
+			TargetRevision: "main", SyncedRevision: "abc123", SourceType: "Directory",
+		})
+		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+
+		reconcileOnce()
+		got := proposals()
+		Expect(got).To(HaveLen(2), "the same drift in another Application is its own proposal")
+		Expect(got[0].Name).NotTo(Equal(got[1].Name))
+		Expect([]string{got[0].Spec.Application.Name, got[1].Spec.Application.Name}).To(ConsistOf("drift-app", "drift-app-2"))
+
+		By("a rejected proposal of one Application does not block the other")
+		for i := range got {
+			if got[i].Spec.Application.Name == "drift-app" {
+				got[i].Status.Phase = backflowv1alpha1.PhaseRejected
+				Expect(k8sClient.Status().Update(ctx, &got[i])).To(Succeed())
+			}
+		}
+		for _, p := range got {
+			if p.Spec.Application.Name == "drift-app-2" {
+				Expect(k8sClient.Delete(ctx, &p)).To(Succeed())
+			}
+		}
+		reconcileOnce()
+		var again []string
+		for _, p := range proposals() {
+			again = append(again, p.Spec.Application.Name)
+		}
+		Expect(again).To(ConsistOf("drift-app", "drift-app-2"), "drift-app-2 is proposed again; drift-app stays blocked")
+
+		By("a different drift supersedes only the proposal of its own Application")
+		argo.items[0].NormalizedLiveState = configMapState("trace")
+		reconcileOnce()
+		superseded := 0
+		for _, p := range proposals() {
+			if p.Status.Phase == backflowv1alpha1.PhaseSuperseded {
+				superseded++
+				Expect(p.Spec.Application.Name).To(Equal("drift-app-2"))
+			}
+		}
+		Expect(superseded).To(Equal(1))
 	})
 
 	It("reports an unsupported source type once per revision", func() {

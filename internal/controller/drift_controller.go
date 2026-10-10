@@ -374,7 +374,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	for i := range all {
 		p := &all[i]
 		names[p.Name] = true
-		if p.Labels[labelResource] == rh && isOpen(p) {
+		if p.Labels[labelApplication] == safeLabel(summary.Name) && p.Labels[labelResource] == rh && isOpen(p) {
 			open = append(open, p)
 		}
 	}
@@ -392,7 +392,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		// Git is ahead of the last sync: nothing is created or superseded.
 		return nil
 	case current == nil:
-		if blocker := blockingProposal(all, rh, changes, revision); blocker != nil {
+		if blocker := blockingProposal(all, summary.Name, rh, changes, revision); blocker != nil {
 			return r.noteBlocked(ctx, policy, summary, blocker)
 		}
 		if ready, wait := r.stable(policy, summary.Name, rh, changes, st); !ready {
@@ -404,12 +404,12 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 			return nil
 		}
 		attempt := 0
-		for names[proposalName(summary.Name, res, changes, attempt)] {
+		for names[proposalName(policy.Spec.ArgoCDNamespace, summary.Name, res, changes, attempt)] {
 			attempt++
 		}
 		dp := &backflowv1alpha1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      proposalName(summary.Name, res, changes, attempt),
+				Name:      proposalName(policy.Spec.ArgoCDNamespace, summary.Name, res, changes, attempt),
 				Namespace: policy.Namespace,
 				Labels: map[string]string{
 					labelPolicy:      safeLabel(policy.Name),
@@ -490,11 +490,12 @@ const annotationRejectionReported = "backflow.io/rejection-reported"
 // revision. Other changes or a new synced revision are new information.
 // Reverted, Merged and Superseded by a newer drift never block: the drift
 // went away or was handled, and when it comes back it is a new event.
-func blockingProposal(all []backflowv1alpha1.DriftProposal, resourceHash string,
+func blockingProposal(all []backflowv1alpha1.DriftProposal, application, resourceHash string,
 	changes []backflowv1alpha1.FieldChange, revision string) *backflowv1alpha1.DriftProposal {
 	for i := range all {
 		p := &all[i]
-		if p.Labels[labelResource] != resourceHash || p.Spec.Source.Revision != revision ||
+		if p.Labels[labelApplication] != safeLabel(application) || p.Labels[labelResource] != resourceHash ||
+			p.Spec.Source.Revision != revision ||
 			!reflect.DeepEqual(p.Spec.Changes, changes) {
 			continue
 		}
@@ -732,9 +733,9 @@ func safeLabel(s string) string {
 // at most 63 characters. The hash covers the resource identity and the
 // changes. A non-zero attempt appends a counter, used when an older proposal
 // with identical changes already exists but is closed.
-func proposalName(app string, res appResource, changes []backflowv1alpha1.FieldChange, attempt int) string {
+func proposalName(argoNamespace, app string, res appResource, changes []backflowv1alpha1.FieldChange, attempt int) string {
 	raw, _ := json.Marshal(changes)
-	sum := sha256.Sum256(append([]byte(res.hash()+"|"), raw...))
+	sum := sha256.Sum256(append([]byte(argoNamespace+"/"+app+"|"+res.hash()+"|"), raw...))
 	tail := "-" + hex.EncodeToString(sum[:])[:8]
 	if attempt > 0 {
 		tail += "-" + strconv.Itoa(attempt)
