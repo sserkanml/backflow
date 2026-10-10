@@ -621,6 +621,7 @@ func (r *DriftProposalReconciler) setProposedCondition(ctx context.Context, dp *
 // A zero delay uses the backoff.
 func (r *DriftProposalReconciler) holdProposal(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	reason string, cause error, delay time.Duration) (ctrl.Result, error) {
+	cause = errors.New(redactText(cause.Error()))
 	if delay <= 0 {
 		delay = r.retryDelayFor(dp, conditionProposed)
 	}
@@ -635,6 +636,7 @@ func (r *DriftProposalReconciler) holdProposal(ctx context.Context, dp *backflow
 // fail ends the proposal in Failed. The cause is permanent: a retry would
 // give the same answer.
 func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string) (ctrl.Result, error) {
+	message = redactText(message)
 	orig := dp.DeepCopy()
 	dp.Status.Phase = backflowv1alpha1.PhaseFailed
 	dp.Status.Message = message
@@ -647,6 +649,7 @@ func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1
 
 // supersededByGit ends the proposal because Git changed under it. Git always wins.
 func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1alpha1.DriftProposal, message string) (ctrl.Result, error) {
+	message = redactText(message)
 	orig := dp.DeepCopy()
 	dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
 	dp.Status.Message = message

@@ -53,6 +53,7 @@ const (
 	reasonRepositoryNotFound    = "RepositoryNotFound"
 	reasonRevisionNotFound      = "RevisionNotFound"
 	reasonApplicationNotFound   = "ApplicationNotFound"
+	reasonRepositoryURLHasCreds = "RepositoryURLHasCredentials"
 	// The Application or the BackflowPolicy could not be read: not a verdict, so retried.
 	reasonApplicationUnavailable = "ApplicationUnavailable"
 )
@@ -120,6 +121,14 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if dp.Spec.Source.Type != backflowv1alpha1.SourceDirectory {
 		return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType,
 			fmt.Sprintf("Mapping %s sources is not supported yet; only Directory sources are mapped.", dp.Spec.Source.Type))
+	}
+
+	if hasCredentials(dp.Spec.Source.RepoURL) {
+		// The URL would put a credential into every log line, status and
+		// request that mentions it. Access comes from an ScmConnection.
+		return ctrl.Result{}, r.unmapped(ctx, dp, reasonRepositoryURLHasCreds, fmt.Sprintf(
+			"The repository URL %s of the Argo CD Application contains credentials, which Backflow does not use. "+
+				"Remove them from the Application and give Backflow access with an ScmConnection.", redactText(dp.Spec.Source.RepoURL)))
 	}
 
 	src, err := r.directorySource(ctx, dp)
@@ -222,6 +231,7 @@ func mappingReason(err error) (reason string, ok bool) {
 // unmapped records that the change cannot be traced back to Git with
 // certainty. A human decides what to do with it.
 func (r *DriftProposalReconciler) unmapped(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string) error {
+	message = redactText(message)
 	orig := dp.DeepCopy()
 	dp.Status.Phase = backflowv1alpha1.PhaseUnmapped
 	dp.Status.Message = message
@@ -239,6 +249,7 @@ func (r *DriftProposalReconciler) unmapped(ctx context.Context, dp *backflowv1al
 // with the reason, the phase stays Mapping, and the proposal is mapped as
 // soon as the problem is gone.
 func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason string, cause error) (ctrl.Result, error) {
+	cause = errors.New(redactText(cause.Error()))
 	delay := r.retryDelay(dp)
 	orig := dp.DeepCopy()
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{

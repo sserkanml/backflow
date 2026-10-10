@@ -658,6 +658,38 @@ var _ = Describe("DriftProposal mapping", func() {
 		})
 	})
 
+	Context("repository URLs with credentials", func() {
+		const withToken = "https://oauth2:glpat-supersecret@gitlab.com/x/y.git"
+
+		It("marks the proposal Unmapped without reading anything, and never repeats the credential", func() {
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Source.RepoURL = withToken })
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeZero())
+			Expect(repos.calls).To(BeZero(), "the repository is not touched")
+
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(mapped().Status).To(Equal(metav1.ConditionFalse))
+			Expect(mapped().Reason).To(Equal(reasonRepositoryURLHasCreds))
+			Expect(mapped().Message).To(ContainSubstring("https://REDACTED@gitlab.com/x/y.git"))
+			Expect(mapped().Message).To(ContainSubstring("ScmConnection"))
+			for _, text := range []string{got.Status.Message, got.Status.Mapping.Reason, mapped().Message} {
+				Expect(text).NotTo(ContainSubstring("glpat-supersecret"))
+				Expect(text).NotTo(ContainSubstring("oauth2"))
+			}
+		})
+
+		It("redacts credentials in the errors it reports for a repository", func() {
+			repos.err = errors.New(`Get "https://u:glpat-leaked@gitlab.com/x/y.git/info/refs": dial tcp: connection refused`)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mapped().Reason).To(Equal(reasonRepositoryUnavailable))
+			Expect(mapped().Message).To(ContainSubstring("https://REDACTED@gitlab.com"))
+			Expect(mapped().Message).NotTo(ContainSubstring("glpat-leaked"))
+		})
+	})
+
 	It("does not map when mapping is disabled", func() {
 		r.Repos = nil
 		_, err := reconcileDP()

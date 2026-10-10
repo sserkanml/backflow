@@ -240,7 +240,7 @@ func (r *DriftProposalReconciler) syncLiveReverted(ctx context.Context, c *mrCli
 func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	cause error, advised time.Duration) (ctrl.Result, error) {
 	orig := dp.DeepCopy()
-	dp.Status.Message = fmt.Sprintf("%s %s: %v", trackingFailurePrefix, dp.Status.MergeRequest.URL, cause)
+	dp.Status.Message = redactText(fmt.Sprintf("%s %s: %v", trackingFailurePrefix, dp.Status.MergeRequest.URL, cause))
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -469,7 +469,7 @@ func (r *DriftProposalReconciler) cleanupPending(ctx context.Context, dp *backfl
 	if advised > delay {
 		delay = min(advised, retryMax)
 	}
-	if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reason, cause.Error()); err != nil {
+	if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reason, redactText(cause.Error())); err != nil {
 		return ctrl.Result{}, err
 	}
 	logf.FromContext(ctx).Info("Cannot finish closing the merge request yet; will retry",
