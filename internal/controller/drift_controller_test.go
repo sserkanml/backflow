@@ -1062,10 +1062,6 @@ var _ = Describe("Drift detection", func() {
 			},
 			Entry("Kustomize", func() { setSourceType("Kustomize") }, 0, "Git is ahead of the last sync of drift-app ("),
 			Entry("Helm", func() { setSourceType("Helm") }, 0, "Git is ahead of the last sync of drift-app ("),
-			Entry("several sources", func() {
-				Expect(unstructured.SetNestedSlice(app.Object, []interface{}{map[string]interface{}{"path": "apps/demo"}}, "spec", "sources")).To(Succeed())
-				Expect(k8sClient.Update(ctx, app)).To(Succeed())
-			}, 0, "Git is ahead of the last sync of drift-app ("),
 			Entry("never synced", func() { setRevisions(sha2, "") }, 0, "(2222222 vs never synced)"),
 			Entry("a compared revision that is not a commit", func() { setRevisions("main", sha1) }, 0, "(main vs 1111111)"),
 			// reconcileOnce looks twice, a batch window apart; a failed look is only remembered for 30s.
@@ -1614,13 +1610,57 @@ var _ = Describe("Drift detection", func() {
 		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(BeEmpty())
 		Expect(proposals()).To(HaveLen(1))
 
-		var warned bool
+		warnings := func(reason string) int {
+			n := 0
+			for len(recorder.Events) > 0 {
+				if e := <-recorder.Events; strings.Contains(e, "Warning") && strings.Contains(e, reason) {
+					n++
+				}
+			}
+			return n
+		}
+		Expect(warnings("ResourceDeleted")).To(Equal(1), "expected a ResourceDeleted warning Event")
+
+		By("looking again: the same deletion is not reported again")
+		reconcileOnce()
+		reconcileOnce()
+		Expect(warnings("ResourceDeleted")).To(BeZero())
+	})
+
+	It("rejects an Application with several sources once, and makes no proposals", func() {
+		Expect(unstructured.SetNestedSlice(app.Object, []interface{}{
+			map[string]interface{}{"path": "apps/demo"}, map[string]interface{}{"path": "apps/other"},
+		}, "spec", "sources")).To(Succeed())
+		Expect(k8sClient.Update(ctx, app)).To(Succeed())
+		for i := 0; i < 3; i++ {
+			reconcileOnce()
+		}
+		Expect(proposals()).To(BeEmpty())
+		Expect(argo.calls).To(BeZero(), "nothing is read from Argo CD for it")
+		n := 0
 		for len(recorder.Events) > 0 {
-			if e := <-recorder.Events; strings.Contains(e, "Warning") && strings.Contains(e, "ResourceDeleted") {
-				warned = true
+			if e := <-recorder.Events; strings.Contains(e, "UnsupportedSource") {
+				n++
 			}
 		}
-		Expect(warned).To(BeTrue(), "expected a ResourceDeleted warning Event")
+		Expect(n).To(Equal(1))
+	})
+
+	It("reports an unsupported source type once per revision", func() {
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+		policy.Status.Applications[0].SourceType = "Plugin"
+		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		for i := 0; i < 3; i++ {
+			reconcileOnce()
+		}
+		Expect(proposals()).To(BeEmpty())
+		n := 0
+		for len(recorder.Events) > 0 {
+			if e := <-recorder.Events; strings.Contains(e, "UnsupportedSource") {
+				n++
+			}
+		}
+		Expect(n).To(Equal(1))
 	})
 
 	It("skips policies without argoCD or that are not Ready", func() {

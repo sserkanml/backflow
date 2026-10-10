@@ -82,7 +82,7 @@ type DriftReconciler struct {
 	Now func() time.Time
 
 	aheadMu       sync.Mutex
-	aheadReported map[string]string // per Application: the revisions an Event was last emitted for
+	aheadReported map[reportKey]string // what each repeating Event was last emitted for
 	aheadChecks   map[aheadKey]aheadCheck
 
 	stableMu sync.Mutex
@@ -181,6 +181,21 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	}
 	resources, known := appResources(app)
 	if !known {
+		return nil
+	}
+
+	// Several sources cannot be mapped to one place in Git yet. Say so once and
+	// leave the Application and its proposals alone.
+	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
+		for _, res := range resources {
+			if res.Status == syncOutOfSync && drift.Allowed(res.Group, res.Kind, policy.Spec.Include, policy.Spec.Exclude) {
+				if r.reportOnce(policy, summary.Name, "unsupportedSource", "", gitAhead(app).compared) {
+					r.event(policy, corev1.EventTypeWarning, "UnsupportedSource", fmt.Sprintf(
+						"Application %s has several sources, which is not supported yet; no proposals are made for it", summary.Name))
+				}
+				break
+			}
+		}
 		return nil
 	}
 
@@ -292,9 +307,11 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 			// Leave the proposal as it is; what to do about a deleted
 			// resource is a human decision.
 			log.Info("Resource of an open proposal was deleted from the cluster", "proposal", p.Name)
-			r.event(policy, corev1.EventTypeWarning, "ResourceDeleted",
-				fmt.Sprintf("%s %s in application %s was deleted from the cluster; proposal %s is left untouched",
-					res.Kind, res.Name, summary.Name, p.Name))
+			if r.reportOnce(policy, summary.Name, "resourceDeleted", rh, st.compared) {
+				r.event(policy, corev1.EventTypeWarning, "ResourceDeleted",
+					fmt.Sprintf("%s %s in application %s was deleted from the cluster; proposal %s is left untouched",
+						res.Kind, res.Name, summary.Name, p.Name))
+			}
 			continue
 		}
 		var msg string
@@ -337,8 +354,10 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 
 	srcType, ok := proposalSourceType(summary.SourceType)
 	if !ok {
-		r.event(policy, corev1.EventTypeWarning, "UnsupportedSource",
-			fmt.Sprintf("Application %s uses source type %q, which is not supported yet", summary.Name, summary.SourceType))
+		if r.reportOnce(policy, summary.Name, "unsupportedSource", "", st.compared) {
+			r.event(policy, corev1.EventTypeWarning, "UnsupportedSource",
+				fmt.Sprintf("Application %s uses source type %q, which is not supported yet", summary.Name, summary.SourceType))
+		}
 		return nil
 	}
 

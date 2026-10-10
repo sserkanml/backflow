@@ -464,7 +464,7 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 // is now: it failed or was partial, or the source changed since.
 func (r *DriftReconciler) reportHeld(policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, st aheadState) {
-	if !r.firstReport(policy, summary, "held/"+st.compared+"/"+st.hold()) {
+	if !r.reportOnce(policy, summary.Name, "ahead", "", "held/"+st.compared+"/"+st.hold()) {
 		return
 	}
 	r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
@@ -472,26 +472,32 @@ func (r *DriftReconciler) reportHeld(policy *backflowv1alpha1.BackflowPolicy,
 		summary.Name, st.hold(), shortRevision(st.compared)))
 }
 
-// firstReport records what was last reported for an Application and says
-// whether it is new.
-func (r *DriftReconciler) firstReport(policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, combo string) bool {
-	key := policy.Namespace + "/" + policy.Name + "/" + summary.Name
+// reportKey identifies what an Event was last emitted for.
+type reportKey struct {
+	policy, app, kind, resource string
+}
+
+// reportOnce records the value (usually a revision) an Event of the kind was
+// emitted for, per policy and Application, and per resource when given. It
+// says whether the value is new, so the same Event is not repeated on every
+// reconcile.
+func (r *DriftReconciler) reportOnce(policy *backflowv1alpha1.BackflowPolicy, app, kind, resource, value string) bool {
+	key := reportKey{policy: policy.Namespace + "/" + policy.Name, app: app, kind: kind, resource: resource}
 	r.aheadMu.Lock()
 	defer r.aheadMu.Unlock()
 	if r.aheadReported == nil {
-		r.aheadReported = map[string]string{}
+		r.aheadReported = map[reportKey]string{}
 	}
-	seen := r.aheadReported[key] == combo
-	r.aheadReported[key] = combo
-	return !seen
+	last, seen := r.aheadReported[key]
+	r.aheadReported[key] = value
+	return !seen || last != value
 }
 
 // reportGitAhead emits one Event per Application and combination of compared
 // and synced revision, so a long wait does not repeat itself.
 func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, st aheadState, changed int, checked bool) {
-	if !r.firstReport(policy, summary, st.compared+">"+st.synced) {
+	if !r.reportOnce(policy, summary.Name, "ahead", "", st.compared+">"+st.synced) {
 		return
 	}
 	synced := "never synced"
