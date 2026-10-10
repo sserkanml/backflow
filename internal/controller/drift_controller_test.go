@@ -696,7 +696,7 @@ var _ = Describe("Drift detection", func() {
 				st.Message = "targetRevision is not a branch"
 			})
 			drainEvents()
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				reconcileOnce()
 			}
 			Expect(proposals()).To(HaveLen(1))
@@ -707,7 +707,7 @@ var _ = Describe("Drift detection", func() {
 			retire(backflowv1alpha1.PhaseSuperseded, func(st *backflowv1alpha1.DriftProposalStatus) {
 				st.Message = "The source changed in Git after the drift was detected."
 			})
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				reconcileOnce()
 			}
 			Expect(proposals()).To(HaveLen(1))
@@ -810,7 +810,7 @@ var _ = Describe("Drift detection", func() {
 
 		It("creates no proposal and says so once", func() {
 			setRevisions(sha2, sha1) // a commit that the Application has not synced yet
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				reconcileOnce()
 			}
 			Expect(proposals()).To(BeEmpty(), "an OutOfSync resource may only differ because of the pending commit")
@@ -1142,7 +1142,7 @@ var _ = Describe("Drift detection", func() {
 
 		It("looks at the repository once per combination of revisions", func() {
 			differ.paths = []string{"README.md"}
-			for i := 0; i < 4; i++ {
+			for range 4 {
 				reconcileOnce()
 			}
 			Expect(differ.calls).To(Equal(1))
@@ -1473,7 +1473,7 @@ var _ = Describe("Drift detection", func() {
 
 		It("keeps the change in its merge request when a sync of a new revision reset the cluster", func() {
 			setSyncedRevision("def456")
-			for i := 0; i < 3; i++ {
+			for range 3 {
 				reconcileDrift()
 			}
 			Expect(annotations()).To(HaveKeyWithValue(annotationLiveReverted, "def456"))
@@ -1638,7 +1638,7 @@ var _ = Describe("Drift detection", func() {
 			map[string]interface{}{"path": "apps/demo"}, map[string]interface{}{"path": "apps/other"},
 		}, "spec", "sources")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			reconcileOnce()
 		}
 		Expect(proposals()).To(BeEmpty())
@@ -1745,7 +1745,7 @@ var _ = Describe("Drift detection", func() {
 		}
 
 		It("reuses one client per policy, and replaces it when the token changes", func() {
-			for i := 0; i < 4; i++ {
+			for range 4 {
 				reconcileDrift()
 			}
 			Expect(builds).To(Equal(1))
@@ -1810,7 +1810,7 @@ var _ = Describe("Drift detection", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		policy.Status.Applications[0].SourceType = "Plugin"
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			reconcileOnce()
 		}
 		Expect(proposals()).To(BeEmpty())

@@ -319,21 +319,9 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		done = reasonAlreadyClosed
 	}
 
-	// Only a branch that holds nothing but this proposal's own commits is
-	// deleted. What cannot be told is retried; it is never guessed.
-	keptWhy := ""
-	deleteBranch := branch != ""
-	if deleteBranch {
-		exists, why, err := r.branchIsOurs(ctx, dp, c.access, branch)
-		if err != nil {
-			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
-		}
-		switch {
-		case !exists:
-			deleteBranch = false // nothing left to delete
-		case why != "":
-			deleteBranch, keptWhy = false, why
-		}
+	deleteBranch, keptWhy, err := r.planBranchDeletion(ctx, dp, c.access, branch)
+	if err != nil {
+		return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 	}
 
 	if cur != nil && cur.State == scm.StateOpen {
@@ -369,6 +357,28 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		message = fmt.Sprintf("Branch %s deleted.", branch)
 	}
 	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, done, message)
+}
+
+// planBranchDeletion decides what to do with the proposal's branch. Only a
+// branch that holds nothing but this proposal's own commits is deleted; one
+// that cannot be read is retried, never guessed. keptWhy is set when the
+// branch is left in place.
+func (r *DriftProposalReconciler) planBranchDeletion(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	access *scmAccess, branch string) (deleteBranch bool, keptWhy string, err error) {
+	if branch == "" {
+		return false, "", nil
+	}
+	exists, why, err := r.branchIsOurs(ctx, dp, access, branch)
+	if err != nil {
+		return false, "", err
+	}
+	switch {
+	case !exists:
+		return false, "", nil // nothing left to delete
+	case why != "":
+		return false, why, nil
+	}
+	return true, "", nil
 }
 
 func branchIf(cond bool, branch string) string {

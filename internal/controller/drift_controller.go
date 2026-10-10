@@ -196,23 +196,8 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		}
 		return err
 	}
-	resources, known := appResources(app)
-	if !known {
-		return nil
-	}
-
-	// Several sources cannot be mapped to one place in Git yet. Say so once and
-	// leave the Application and its proposals alone.
-	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
-		for _, res := range resources {
-			if res.Status == syncOutOfSync && drift.Allowed(res.Group, res.Kind, policy.Spec.Include, policy.Spec.Exclude) {
-				if r.reportOnce(policy, summary.Name, "unsupportedSource", "", gitAhead(app).compared) {
-					r.event(policy, corev1.EventTypeWarning, "UnsupportedSource", fmt.Sprintf(
-						"Application %s has several sources, which is not supported yet; no proposals are made for it", summary.Name))
-				}
-				break
-			}
-		}
+	resources, ok := r.trackedResources(policy, summary, app)
+	if !ok {
 		return nil
 	}
 
@@ -324,11 +309,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 			// Leave the proposal as it is; what to do about a deleted
 			// resource is a human decision.
 			log.Info("Resource of an open proposal was deleted from the cluster", "proposal", p.Name)
-			if r.reportOnce(policy, summary.Name, "resourceDeleted", rh, st.compared) {
-				r.event(policy, corev1.EventTypeWarning, "ResourceDeleted",
-					fmt.Sprintf("%s %s in application %s was deleted from the cluster; proposal %s is left untouched",
-						res.Kind, res.Name, summary.Name, p.Name))
-			}
+			r.reportDeleted(policy, summary, res, p, st.compared)
 			continue
 		}
 		var msg string
@@ -359,6 +340,43 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		log.Info("Proposal reverted", "proposal", p.Name)
 	}
 	return nil
+}
+
+// reportDeleted says once per revision that the resource of an open proposal
+// was deleted from the cluster.
+func (r *DriftReconciler) reportDeleted(policy *backflowv1alpha1.BackflowPolicy, summary backflowv1alpha1.ApplicationSummary,
+	res appResource, p *backflowv1alpha1.DriftProposal, revision string) {
+	if r.reportOnce(policy, summary.Name, "resourceDeleted", res.hash(), revision) {
+		r.event(policy, corev1.EventTypeWarning, "ResourceDeleted",
+			fmt.Sprintf("%s %s in application %s was deleted from the cluster; proposal %s is left untouched",
+				res.Kind, res.Name, summary.Name, p.Name))
+	}
+}
+
+// trackedResources reads the resources of an Application's status. ok is false
+// when there is nothing to judge: Argo CD has not reported resources yet, or
+// the Application has several sources, which cannot be mapped to one place in
+// Git yet. For the latter, something that would be proposed is said once per
+// revision, and the proposals the Application has are left alone.
+func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) (resources []appResource, ok bool) {
+	resources, known := appResources(app)
+	if !known {
+		return nil, false
+	}
+	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
+		for _, res := range resources {
+			if res.Status == syncOutOfSync && drift.Allowed(res.Group, res.Kind, policy.Spec.Include, policy.Spec.Exclude) {
+				if r.reportOnce(policy, summary.Name, "unsupportedSource", "", gitAhead(app).compared) {
+					r.event(policy, corev1.EventTypeWarning, "UnsupportedSource", fmt.Sprintf(
+						"Application %s has several sources, which is not supported yet; no proposals are made for it", summary.Name))
+				}
+				break
+			}
+		}
+		return nil, false
+	}
+	return resources, true
 }
 
 // ensureProposal makes sure exactly one open proposal with these changes
@@ -688,8 +706,8 @@ func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alph
 func (r *DriftReconciler) cachedClient(pol string, cfg argocd.Config) (ManagedResourcesGetter, error) {
 	h := sha256.New()
 	for _, part := range [][]byte{[]byte(cfg.URL), cfg.CACert, []byte(strconv.FormatBool(cfg.InsecureSkipTLSVerify)), []byte(cfg.Token)} {
-		fmt.Fprintf(h, "%d:", len(part))
-		h.Write(part)
+		_, _ = fmt.Fprintf(h, "%d:", len(part))
+		_, _ = h.Write(part)
 	}
 	key := hex.EncodeToString(h.Sum(nil))
 

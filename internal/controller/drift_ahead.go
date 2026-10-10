@@ -162,16 +162,16 @@ var sourceFields = []string{"repoURL", "path", "targetRevision", "chart", "direc
 
 // sourcesOf reads the source of an Application at the path (a map), or its
 // sources (a list). ok is false when neither is there.
-func sourcesOf(app *unstructured.Unstructured, single, list []string) (out []map[string]interface{}, ok bool) {
+func sourcesOf(app *unstructured.Unstructured, single, list []string) (out []map[string]any, ok bool) {
 	if m, found, _ := unstructured.NestedMap(app.Object, single...); found {
-		return []map[string]interface{}{m}, true
+		return []map[string]any{m}, true
 	}
 	items, found, _ := unstructured.NestedSlice(app.Object, list...)
 	if !found {
 		return nil, false
 	}
 	for _, it := range items {
-		m, _ := it.(map[string]interface{})
+		m, _ := it.(map[string]any)
 		out = append(out, m)
 	}
 	return out, true
@@ -180,8 +180,8 @@ func sourcesOf(app *unstructured.Unstructured, single, list []string) (out []map
 // normalizeSource keeps the fields that matter and drops what carries no
 // meaning, so a source Argo CD wrote without a default compares equal to one
 // that spells the default out: empty values, false, and a path with "./" or "/".
-func normalizeSource(src map[string]interface{}) map[string]interface{} {
-	out := map[string]interface{}{}
+func normalizeSource(src map[string]any) map[string]any {
+	out := map[string]any{}
 	for _, f := range sourceFields {
 		v := pruneEmpty(src[f])
 		if v == nil {
@@ -200,7 +200,7 @@ func normalizeSource(src map[string]interface{}) map[string]interface{} {
 
 // pruneEmpty returns v without nil, false, empty strings, and empty maps and
 // slices, or nil when nothing is left.
-func pruneEmpty(v interface{}) interface{} {
+func pruneEmpty(v any) any {
 	switch t := v.(type) {
 	case nil:
 		return nil
@@ -212,8 +212,8 @@ func pruneEmpty(v interface{}) interface{} {
 		if t == "" {
 			return nil
 		}
-	case map[string]interface{}:
-		out := map[string]interface{}{}
+	case map[string]any:
+		out := map[string]any{}
 		for k, e := range t {
 			if p := pruneEmpty(e); p != nil {
 				out[k] = p
@@ -223,8 +223,8 @@ func pruneEmpty(v interface{}) interface{} {
 			return nil
 		}
 		return out
-	case []interface{}:
-		var out []interface{}
+	case []any:
+		var out []any
 		for _, e := range t {
 			out = append(out, pruneEmpty(e))
 		}
