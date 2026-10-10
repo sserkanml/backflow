@@ -660,6 +660,7 @@ var _ = Describe("Drift detection", func() {
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 			policy.Status.Applications[0].SyncedRevision = rev
 			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			setRevisions(rev, rev) // the Application moves first; the policy status follows
 		}
 
 		BeforeEach(func() {
@@ -927,6 +928,32 @@ var _ = Describe("Drift detection", func() {
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("stamps the proposal with the revision the Application compares against, not the policy status", func() {
+			setRevisions(sha2, sha2)
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Applications[0].SyncedRevision = sha1 // the policy controller has not caught up
+			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(proposals()[0].Spec.Source.Revision).To(Equal(sha2))
+		})
+
+		It("blocks on the fresh revision: a rejected proposal at the compared revision is not recreated", func() {
+			setRevisions(sha2, sha2)
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Applications[0].SyncedRevision = sha1
+			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			p := proposals()[0]
+			p.Status.Phase = backflowv1alpha1.PhaseRejected
+			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
+			reconcileDrift()
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1), "same drift at the same revision stays blocked")
 		})
 
 		It("proposes after a full, successful sync", func() {
@@ -1324,7 +1351,7 @@ var _ = Describe("Drift detection", func() {
 			advance(window())
 			reconcileDrift()
 			Expect(proposals()).To(HaveLen(1))
-			Expect(proposals()[0].Spec.Source.Revision).To(Equal("abc123"), "the revision comes from the policy status")
+			Expect(proposals()[0].Spec.Source.Revision).To(Equal("def456"), "the revision comes from the Application")
 		})
 
 		It("starts over when only the compared revision moves", func() {

@@ -342,6 +342,13 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		return nil
 	}
 
+	// The policy status can lag behind the Application, so the revision the
+	// drift was observed at comes from the Application itself.
+	revision := st.compared
+	if revision == "" {
+		revision = summary.SyncedRevision
+	}
+
 	rh := res.hash()
 	names := make(map[string]bool, len(all))
 	var open []*backflowv1alpha1.DriftProposal
@@ -366,7 +373,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		// Git is ahead of the last sync: nothing is created or superseded.
 		return nil
 	case current == nil:
-		if blocker := blockingProposal(all, rh, changes, summary.SyncedRevision); blocker != nil {
+		if blocker := blockingProposal(all, rh, changes, revision); blocker != nil {
 			return r.noteBlocked(ctx, policy, summary, blocker)
 		}
 		if ready, wait := r.stable(policy, summary.Name, rh, changes, st); !ready {
@@ -399,7 +406,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 				},
 				Source: backflowv1alpha1.SourceRef{
 					RepoURL:        summary.RepoURL,
-					Revision:       summary.SyncedRevision,
+					Revision:       revision,
 					TargetRevision: summary.TargetRevision,
 					Path:           summary.Path,
 					Type:           srcType,
