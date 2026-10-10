@@ -49,7 +49,12 @@ type GitDiffer interface {
 	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
 	// HasSymlink reports whether anything at or below dir at the commit is a symbolic link.
 	HasSymlink(ctx context.Context, repoURL, sha, dir string, auth *gitrepo.Auth) (bool, error)
+	// HasFileWithSuffix reports whether a file at or below dir at the commit has one of the suffixes.
+	HasFileWithSuffix(ctx context.Context, repoURL, sha, dir string, auth *gitrepo.Auth, suffixes ...string) (bool, error)
 }
+
+// jsonnetSuffixes name the files Argo CD evaluates as Jsonnet in a Directory source.
+var jsonnetSuffixes = []string{".jsonnet", ".libsonnet"}
 
 // aheadState describes how an Application's comparison relates to its last sync.
 type aheadState struct {
@@ -326,10 +331,11 @@ type aheadKey struct {
 
 type aheadCheck struct {
 	changed int
-	// err is a failed look, tried again after aheadErrorTTL. unchecked is a
-	// look that gives no answer for good (a symbolic link under the path).
+	// err is a failed look, tried again after aheadErrorTTL. unchecked is the
+	// reason for a look that gives no answer for good (a symbolic link or a
+	// Jsonnet file under the path).
 	err       error
-	unchecked bool
+	unchecked string
 	at        time.Time
 }
 
@@ -353,6 +359,13 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		return 0, false
 	}
 	if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
+		return 0, false
+	}
+	// Jsonnet can read any file, so which files the Application is made of
+	// cannot be told from its directory.
+	if jsonnet, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "directory", "jsonnet"); len(jsonnet) > 0 {
+		logf.FromContext(ctx).Info("The Application's directory source uses Jsonnet; pausing drift detection while Git is ahead",
+			"application", summary.Name)
 		return 0, false
 	}
 	recurse, _, _ := unstructured.NestedBool(app.Object, "spec", "source", "directory", "recurse")
@@ -380,8 +393,8 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		r.aheadChecks[key] = hit
 		r.aheadMu.Unlock()
 	}
-	if hit.err != nil || hit.unchecked {
-		cause := "a symbolic link below the directory"
+	if hit.err != nil || hit.unchecked != "" {
+		cause := hit.unchecked
 		if hit.err != nil {
 			cause = hit.err.Error()
 		}
@@ -393,8 +406,9 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 }
 
 // lookAtRepository counts the changed files under the Application's directory.
-// A symbolic link below the directory at either revision means the directory
-// can depend on files the comparison of paths does not see, so no answer is given.
+// A symbolic link or a Jsonnet file below the directory at either revision
+// means the directory can depend on files the comparison of paths does not
+// see, so no answer is given.
 func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
 	st aheadState, recurse bool, auth *gitrepo.Auth) (aheadCheck, error) {
 	for _, sha := range []string{st.synced, st.compared} {
@@ -403,7 +417,14 @@ func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflow
 			return aheadCheck{}, err
 		}
 		if linked {
-			return aheadCheck{unchecked: true}, nil
+			return aheadCheck{unchecked: "a symbolic link below the directory"}, nil
+		}
+		jsonnet, err := r.Git.HasFileWithSuffix(ctx, summary.RepoURL, sha, summary.Path, auth, jsonnetSuffixes...)
+		if err != nil {
+			return aheadCheck{}, err
+		}
+		if jsonnet {
+			return aheadCheck{unchecked: "a Jsonnet file below the directory"}, nil
 		}
 	}
 	paths, err := r.Git.ChangedPaths(ctx, summary.RepoURL, st.synced, st.compared, auth)

@@ -682,6 +682,44 @@ func TestChangedPaths(t *testing.T) {
 	}
 }
 
+func TestHasFileWithSuffix(t *testing.T) {
+	src := newSourceRepo(t)
+	sha := src.commit(map[string]string{
+		"apps/plain/configmap.yaml":  "a: 1\n",
+		"apps/jsonnet/main.jsonnet":  "{}\n",
+		"apps/lib/deep/x.libsonnet":  "{}\n",
+		"apps/other/jsonnet.yaml":    "a: 1\n",
+		"apps/dirsuffix.jsonnet/a.y": "a: 1\n",
+		"main.jsonnet":               "{}\n",
+	})
+	cache := NewCache(t.TempDir())
+	tests := []struct {
+		name, dir string
+		want      bool
+	}{
+		{"a .jsonnet file in the directory", "apps/jsonnet", true},
+		{"a .libsonnet file deeper", "apps/lib", true},
+		{"only yaml", "apps/plain", false},
+		{"a name that merely contains jsonnet", "apps/other", false},
+		{"a directory named like a jsonnet file is not a file", "apps/dirsuffix.jsonnet", false},
+		{"above the files", "apps", true},
+		{"the root", "", true},
+		{"the path itself is a jsonnet file", "main.jsonnet", true},
+		{"a path that does not exist", "apps/missing", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cache.HasFileWithSuffix(t.Context(), src.url(), sha, tt.dir, nil, ".jsonnet", ".libsonnet")
+			if err != nil || got != tt.want {
+				t.Errorf("HasFileWithSuffix(%q) = %v, %v; want %v", tt.dir, got, err, tt.want)
+			}
+		})
+	}
+	if _, err := cache.HasFileWithSuffix(t.Context(), src.url(), "short", "apps", nil, ".jsonnet"); !errors.Is(err, ErrRevisionNotFound) {
+		t.Errorf("short sha: err = %v", err)
+	}
+}
+
 func TestHasSymlink(t *testing.T) {
 	src := newSourceRepo(t)
 	if err := os.MkdirAll(filepath.Join(src.dir, "apps", "linked"), 0o750); err != nil {

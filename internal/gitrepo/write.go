@@ -222,6 +222,34 @@ func (c *Cache) IsAncestor(ctx context.Context, repoURL, ancestor, descendant st
 // when missing. A symbolic link can make a directory depend on files elsewhere
 // in the repository, which a comparison of paths cannot see.
 func (c *Cache) HasSymlink(ctx context.Context, repoURL, sha, dir string, auth *Auth) (bool, error) {
+	return c.anyBelow(ctx, repoURL, sha, dir, auth, func(_ string, mode filemode.FileMode) bool {
+		return mode == filemode.Symlink
+	})
+}
+
+// HasFileWithSuffix reports whether a file at or below dir in the tree of the
+// commit has one of the suffixes. A missing dir has none. Jsonnet files are
+// the reason to ask: they can import from anywhere, so which files an
+// Application is made of cannot be told from its directory.
+func (c *Cache) HasFileWithSuffix(ctx context.Context, repoURL, sha, dir string, auth *Auth, suffixes ...string) (bool, error) {
+	return c.anyBelow(ctx, repoURL, sha, dir, auth, func(name string, mode filemode.FileMode) bool {
+		if mode == filemode.Dir {
+			return false
+		}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(name, suffix) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// anyBelow reports whether match is true for an entry (the path relative to
+// dir, and its mode) at or below dir. The directory itself counts as an entry
+// of its parent, named by its full path.
+func (c *Cache) anyBelow(ctx context.Context, repoURL, sha, dir string, auth *Auth,
+	match func(name string, mode filemode.FileMode) bool) (bool, error) {
 	if !fullSHA.MatchString(sha) {
 		return false, fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, sha)
 	}
@@ -246,10 +274,8 @@ func (c *Cache) HasSymlink(ctx context.Context, repoURL, sha, dir string, auth *
 			return false, nil
 		case err != nil:
 			return false, fmt.Errorf("%w: %v", ErrUnavailable, err)
-		case entry.Mode == filemode.Symlink:
-			return true, nil
 		case entry.Mode != filemode.Dir:
-			return false, nil
+			return match(dir, entry.Mode), nil
 		}
 		if tree, err = tree.Tree(dir); err != nil {
 			return false, fmt.Errorf("%w: %v", ErrUnavailable, err)
@@ -258,14 +284,14 @@ func (c *Cache) HasSymlink(ctx context.Context, repoURL, sha, dir string, auth *
 	walker := object.NewTreeWalker(tree, true, nil)
 	defer walker.Close()
 	for {
-		_, entry, err := walker.Next()
+		name, entry, err := walker.Next()
 		if errors.Is(err, io.EOF) {
 			return false, nil
 		}
 		if err != nil {
 			return false, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
-		if entry.Mode == filemode.Symlink {
+		if match(name, entry.Mode) {
 			return true, nil
 		}
 	}

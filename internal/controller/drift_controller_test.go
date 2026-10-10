@@ -378,6 +378,12 @@ type fakeDiffer struct {
 	linked      map[string]bool
 	symlinkErr  error
 	symlinkCall int
+	// jsonnet lists the revisions that have a Jsonnet file below the directory.
+	jsonnet map[string]bool
+}
+
+func (f *fakeDiffer) HasFileWithSuffix(_ context.Context, _, sha, _ string, _ *gitrepo.Auth, _ ...string) (bool, error) {
+	return f.jsonnet[sha], nil
 }
 
 func (f *fakeDiffer) HasSymlink(_ context.Context, _, sha, _ string, _ *gitrepo.Auth) (bool, error) {
@@ -1072,6 +1078,31 @@ var _ = Describe("Drift detection", func() {
 			Expect(gitAheadEvents()).To(HaveLen(1))
 			Expect(differ.calls).To(BeZero())
 		})
+
+		It("does not use the path shortcut for Jsonnet: option set on the source", func() {
+			differ.paths = []string{"README.md"} // outside the directory, so a check would let it through
+			Expect(unstructured.SetNestedMap(app.Object, map[string]interface{}{"extVars": []interface{}{}, "tlas": []interface{}{map[string]interface{}{"name": "a", "value": "b"}}},
+				"spec", "source", "directory", "jsonnet")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			Expect(proposals()).To(BeEmpty())
+			Expect(differ.calls).To(BeZero())
+			Expect(differ.symlinkCall).To(BeZero())
+			Expect(gitAheadEvents()).To(HaveLen(1))
+		})
+
+		DescribeTable("does not use the path shortcut for Jsonnet: files below the directory",
+			func(atRevision string) {
+				differ.paths = []string{"README.md"}
+				differ.jsonnet = map[string]bool{atRevision: true}
+				reconcileOnce()
+				Expect(proposals()).To(BeEmpty())
+				Expect(differ.calls).To(BeZero(), "no diff is trusted once Jsonnet is found")
+				Expect(gitAheadEvents()).To(HaveLen(1))
+			},
+			Entry("at the compared revision", sha2),
+			Entry("at the last synced revision", sha1),
+		)
 
 		It("looks for links before it looks at paths", func() {
 			differ.paths = []string{"README.md"}
