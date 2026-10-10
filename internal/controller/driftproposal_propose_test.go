@@ -343,6 +343,20 @@ func (w *branchWriter) CreateBranch(ctx context.Context, url, branch, sha string
 	return w.RepositoryWriter.CreateBranch(ctx, url, branch, sha, auth)
 }
 
+// tipWriter wraps the real cache and fails BranchTip for one branch while err is set.
+type tipWriter struct {
+	RepositoryWriter
+	branch string
+	err    error
+}
+
+func (w *tipWriter) BranchTip(ctx context.Context, url, branch string, auth *gitrepo.Auth) (string, error) {
+	if w.err != nil && branch == w.branch {
+		return "", w.err
+	}
+	return w.RepositoryWriter.BranchTip(ctx, url, branch, auth)
+}
+
 // --- specs ------------------------------------------------------------------
 
 const proposeConfigMap = `# Managed by Argo CD.
@@ -1185,6 +1199,73 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(provider.closed).To(Equal([]int64{7}))
 			Expect(provider.deleted).To(Equal([]string{branch}))
 			Expect(provider.comments[0]).To(ContainSubstring("back in sync"))
+		})
+
+		Context("branches that are not only ours", func() {
+			retire := func() {
+				annotate(annotationSupersededBy, "newer")
+				_, err := reconcileDP()
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			}
+
+			It("deletes a branch that holds only the proposal's commits", func() {
+				retire()
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+				Expect(provider.comments[0]).NotTo(ContainSubstring("was not deleted"))
+				Expect(cleaned().Reason).To(Equal(reasonCleanedUp))
+			})
+
+			It("closes the merge request but leaves a branch a person pushed to, and says so", func() {
+				human := repo.commitOnBranch(branch, map[string]string{"README.md": "reviewer fix\n"}, "address review")
+				retire()
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(BeEmpty())
+				Expect(repo.branch(branch)).To(Equal(human), "the branch is untouched")
+				Expect(provider.comments).To(HaveLen(1))
+				Expect(provider.comments[0]).To(ContainSubstring("The branch `backflow/prop-dp` was not deleted"))
+				Expect(provider.comments[0]).To(ContainSubstring("someone else pushed to it"))
+				Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+				Expect(cleaned().Reason).To(Equal(reasonBranchKept))
+				Expect(cleaned().Message).To(ContainSubstring("left in place"))
+			})
+
+			It("leaves a branch that is the target branch's own history", func() {
+				// A branch with the same name that never held our commit: it points at main.
+				repo.createBranchAt(branch, repo.branch("main"))
+				retire()
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(BeEmpty())
+				Expect(cleaned().Reason).To(Equal(reasonBranchKept))
+			})
+
+			It("does not call the provider for a branch that is already gone", func() {
+				Expect(repo.open().Storer.RemoveReference(plumbing.NewBranchReferenceName(branch))).To(Succeed())
+				retire()
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(BeEmpty())
+				Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
+			})
+
+			It("waits, without closing or deleting, while it cannot read the branch", func() {
+				w := &tipWriter{RepositoryWriter: writer, branch: branch, err: fmt.Errorf("%w: boom", gitrepo.ErrUnavailable)}
+				r.Writer = w
+				annotate(annotationSupersededBy, "newer")
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+				Expect(provider.comments).To(BeEmpty())
+				Expect(provider.closed).To(BeEmpty())
+				Expect(provider.deleted).To(BeEmpty())
+				Expect(cleaned().Status).To(Equal(metav1.ConditionFalse))
+
+				w.err = nil
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(provider.closed).To(Equal([]int64{7}))
+				Expect(provider.deleted).To(Equal([]string{branch}))
+			})
 		})
 
 		It("leaves a merge request that was merged during the cleanup alone", func() {

@@ -155,3 +155,16 @@ func TestSingleLine(t *testing.T) {
 		}
 	}
 }
+
+func TestClosingCommentMentionsAKeptBranch(t *testing.T) {
+	dp := &backflowv1alpha1.DriftProposal{}
+	dp.Name, dp.Namespace = "dp", "ns"
+	dp.Status.Message = "A newer drift replaced this proposal."
+	if got := closingComment(dp, "", ""); strings.Contains(got, "not deleted") {
+		t.Errorf("no branch kept, but the comment says so:\n%s", got)
+	}
+	got := closingComment(dp, "backflow/dp", "someone else pushed to it")
+	if !strings.Contains(got, "The branch `backflow/dp` was not deleted: someone else pushed to it.") {
+		t.Errorf("comment = %q", got)
+	}
+}

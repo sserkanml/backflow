@@ -150,10 +150,16 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 }
 
 // closingComment tells the reviewers why Backflow closes a merge request.
-func closingComment(dp *backflowv1alpha1.DriftProposal) string {
-	return fmt.Sprintf("Backflow is closing this merge request.\n\n%s\n\n"+
+// keptBranch, when set, names a branch that is left in place and why, because
+// it holds more than the proposal's own commits.
+func closingComment(dp *backflowv1alpha1.DriftProposal, keptBranch, why string) string {
+	kept := ""
+	if keptBranch != "" {
+		kept = fmt.Sprintf("The branch `%s` was not deleted: %s.\n\n", singleLine(keptBranch), singleLine(why))
+	}
+	return fmt.Sprintf("Backflow is closing this merge request.\n\n%s\n\n%s"+
 		"Nothing needs to be done: Git stays the source of truth. DriftProposal: `%s/%s`.\n",
-		singleLine(dp.Status.Message), dp.Namespace, dp.Name)
+		singleLine(dp.Status.Message), kept, dp.Namespace, dp.Name)
 }
 
 // liveRevertedComment tells reviewers why the cluster no longer shows the

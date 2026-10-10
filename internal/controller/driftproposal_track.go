@@ -44,6 +44,7 @@ const (
 	reasonAlreadyClosed = "AlreadyClosed"
 	reasonAlreadyMerged = "AlreadyMerged"
 	reasonCommented     = "Commented"
+	reasonBranchKept    = "BranchKept"
 	reasonCleanupFailed = "CleanupPending"
 )
 
@@ -51,6 +52,7 @@ const (
 type mrClient struct {
 	provider scm.Provider
 	project  string
+	access   *scmAccess
 }
 
 // clientFor builds the provider client for the proposal's repository. A
@@ -84,7 +86,7 @@ func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1a
 	if err != nil {
 		return nil, &heldError{reason: reasonUnsupportedProvider, cause: err}
 	}
-	return &mrClient{provider: provider, project: project}, nil
+	return &mrClient{provider: provider, project: project, access: access}, nil
 }
 
 // retiring reports whether a superseded or reverted annotation waits to be
@@ -294,11 +296,28 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		done = reasonAlreadyClosed
 	}
 
+	// Only a branch that holds nothing but this proposal's own commits is
+	// deleted. What cannot be told is retried; it is never guessed.
+	keptWhy := ""
+	deleteBranch := branch != ""
+	if deleteBranch {
+		exists, why, err := r.branchIsOurs(ctx, dp, c.access, branch)
+		if err != nil {
+			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
+		}
+		switch {
+		case !exists:
+			deleteBranch = false // nothing left to delete
+		case why != "":
+			deleteBranch, keptWhy = false, why
+		}
+	}
+
 	if cur != nil && cur.State == scm.StateOpen {
 		// Comment first so the reason is on the page when it closes, and
 		// remember it so a retry of the close does not comment again.
 		if prog := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); prog == nil || prog.Reason != reasonCommented {
-			if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number, closingComment(dp)); err != nil {
+			if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number, closingComment(dp, branchIf(keptWhy != "", branch), keptWhy)); err != nil {
 				return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 			}
 			if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reasonCommented, "Commented on the merge request; closing it."); err != nil {
@@ -310,14 +329,80 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		}
 	}
 
-	if branch != "" {
+	state := string(scm.StateClosed)
+	if keptWhy != "" {
+		log.Info("Merge request closed; branch left in place", "proposal", dp.Name, "merge request", where, "branch", branch, "why", keptWhy)
+		return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, reasonBranchKept,
+			fmt.Sprintf("%s closed. Branch %s was left in place: %s.", where, branch, keptWhy))
+	}
+	if deleteBranch {
 		if err := c.provider.DeleteBranch(ctx, c.project, branch); err != nil && !errors.Is(err, scm.ErrNotFound) {
 			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 		}
 	}
 	log.Info("Merge request closed and branch deleted", "proposal", dp.Name, "merge request", where, "branch", branch)
-	state := string(scm.StateClosed)
-	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, done, fmt.Sprintf("%s closed and branch %s deleted.", where, branch))
+	message := fmt.Sprintf("%s closed and branch %s deleted.", where, branch)
+	if cur == nil && ref == nil {
+		message = fmt.Sprintf("Branch %s deleted.", branch)
+	}
+	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, done, message)
+}
+
+func branchIf(cond bool, branch string) string {
+	if cond {
+		return branch
+	}
+	return ""
+}
+
+// branchScanLimit bounds how many of the proposal's own commits are looked at
+// on its branch. A branch with more is not something Backflow built.
+const branchScanLimit = 50
+
+// branchIsOurs says whether a branch holds only this proposal's work: its tip
+// carries the proposal's "Proposal:" trailer, and so does every commit below
+// it down to the base (the first commit without it, which belongs to the
+// target branch). Each of those commits has exactly one parent. When it does
+// not, why says so and the branch is left alone: someone else may have pushed
+// to it. exists is false when the branch is already gone.
+func (r *DriftProposalReconciler) branchIsOurs(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	access *scmAccess, branch string) (exists bool, why string, err error) {
+	url := dp.Spec.Source.RepoURL
+	tip, err := r.Writer.BranchTip(ctx, url, branch, access.auth)
+	if err != nil {
+		if errors.Is(err, gitrepo.ErrBranchNotFound) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	log, _, err := r.Writer.FirstParentLog(ctx, url, tip, "", branchScanLimit+1, access.auth)
+	if err != nil {
+		return false, "", err
+	}
+	ours := 0
+	for _, e := range log {
+		if !hasProposalTrailer(e.Message, dp.Name) {
+			break
+		}
+		if e.Parents != 1 {
+			return true, fmt.Sprintf("commit %s on it is a merge or a root commit, not this proposal's work", shortSHA(e.SHA)), nil
+		}
+		ours++
+	}
+	switch {
+	case ours == 0:
+		return true, fmt.Sprintf("its tip %s does not carry this proposal's trailer, so someone else pushed to it", shortSHA(tip)), nil
+	case ours > branchScanLimit:
+		return true, fmt.Sprintf("it holds more than %d commits", branchScanLimit), nil
+	}
+	return true, "", nil
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // setCleanedUp records progress of the cleanup.
