@@ -22,6 +22,7 @@
 # Usage (from the repository root):
 #   ./hack/test-policy.sh
 #   KEEP=true ./hack/test-policy.sh      # keep test resources for inspection
+#   IN_CLUSTER=true ./hack/test-backflow-policy.sh   # test the operator deployed in the cluster
 
 set -euo pipefail
 
@@ -30,6 +31,11 @@ NS="${NS:-backflow-policy-test}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 APP="${APP:-demo-app}"
 KEEP="${KEEP:-false}"
+# With IN_CLUSTER=true the operator is the one deployed in the cluster (by the
+# Helm chart or 'make deploy'); the script then starts no local operator.
+IN_CLUSTER="${IN_CLUSTER:-false}"
+MANAGER_NS="${MANAGER_NS:-backflow-system}"
+MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-30s}"
 # Shorter than the 5 minute resync, so a pass proves the watch fired.
 WATCH_TIMEOUT="${WATCH_TIMEOUT:-20s}"
@@ -153,7 +159,7 @@ done
 k cluster-info >/dev/null 2>&1 || die "cluster kind-$CLUSTER_NAME is not reachable. Run ./hack/dev-up.sh first."
 k get crd applications.argoproj.io >/dev/null 2>&1 || die "Argo CD is not installed. Run ./hack/dev-up.sh first."
 k -n "$ARGOCD_NS" get application "$APP" >/dev/null 2>&1 || die "Application $APP not found. Run ./hack/dev-up.sh first."
-if curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then
+if [[ "$IN_CLUSTER" != "true" ]] && curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then
   die "An operator is already running on port 8081 (probably 'make run'). Stop it first."
 fi
 
@@ -166,6 +172,12 @@ pass "cluster, Argo CD and $APP found (repo host: $REPO_HOST)"
 
 # ---------------------------------------------------------------------------
 step "Building and starting the operator"
+if [[ "$IN_CLUSTER" == "true" ]]; then
+  k -n "$MANAGER_NS" rollout status "deploy/$MANAGER_DEPLOY" --timeout=120s >/dev/null ||
+    die "deployment $MANAGER_NS/$MANAGER_DEPLOY is not available"
+  mkdir -p "$LOG_DIR"
+  k -n "$MANAGER_NS" logs "deploy/$MANAGER_DEPLOY" >"$LOG_FILE" 2>&1 || true
+else
 make manifests install >/dev/null
 make build >/dev/null
 mkdir -p "$LOG_DIR"
@@ -177,6 +189,7 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl -fs -o /dev/null http://localhost:8081/readyz || die "operator did not become ready, log: $LOG_FILE"
+fi
 if grep -q "Argo CD Application CRD not found" "$LOG_FILE"; then
   fail "operator did not start watching Argo CD Applications"
 else
@@ -271,6 +284,9 @@ if [[ "$KEEP" == "true" ]]; then
   echo "Test resources kept in namespace '$NS': kubectl -n $NS get bfp,scm"
 fi
 if (( FAIL > 0 )); then
+  if [[ "$IN_CLUSTER" == "true" ]]; then
+    k -n "$MANAGER_NS" logs "deploy/$MANAGER_DEPLOY" >"$LOG_FILE" 2>&1 || true
+  fi
   echo "Operator log: tmp/test-policy-manager.log"
   exit 1
 fi

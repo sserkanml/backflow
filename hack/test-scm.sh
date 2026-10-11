@@ -15,6 +15,7 @@
 #   GITLAB_TOKEN=glpat-xxxx ./hack/test-scm.sh
 #   GITLAB_URL=https://gitlab.example.com GITLAB_TOKEN=... ./hack/test-scm.sh
 #   KEEP=true ./hack/test-scm.sh        # keep test resources for inspection
+#   IN_CLUSTER=true ./hack/test-scm.sh  # test the operator deployed in the cluster
 #
 # Podman users: KIND_EXPERIMENTAL_PROVIDER=podman ./hack/test-scm.sh
 
@@ -25,6 +26,11 @@ NS="${NS:-backflow-test}"
 GITLAB_URL="${GITLAB_URL:-https://gitlab.com}"
 GITLAB_TOKEN="${GITLAB_TOKEN:-}"
 KEEP="${KEEP:-false}"
+# With IN_CLUSTER=true the operator is the one deployed in the cluster (by the
+# Helm chart or 'make deploy'); the script then starts no local operator.
+IN_CLUSTER="${IN_CLUSTER:-false}"
+MANAGER_NS="${MANAGER_NS:-backflow-system}"
+MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-90s}"
 # Must be shorter than the 1 minute retry interval, so a pass proves the
 # Secret watch fired rather than the periodic retry.
@@ -51,6 +57,14 @@ skip() { echo "  ${YELLOW}–${NC} $*"; SKIP=$((SKIP + 1)); }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
 
 k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
+
+# refresh_log: make $LOG_FILE hold the current operator log.
+refresh_log() {
+  if [[ "$IN_CLUSTER" == "true" ]]; then
+    mkdir -p "$LOG_DIR"
+    k -n "$MANAGER_NS" logs "deploy/$MANAGER_DEPLOY" >"$LOG_FILE" 2>&1 || true
+  fi
+}
 
 cleanup() {
   if [[ -n "$MANAGER_PID" ]] && kill -0 "$MANAGER_PID" 2>/dev/null; then
@@ -123,7 +137,7 @@ for cmd in kind kubectl make curl go; do
 done
 pass "kind, kubectl, make, curl, go found"
 
-if curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then
+if [[ "$IN_CLUSTER" != "true" ]] && curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then
   die "An operator is already running on port 8081 (probably 'make run'). Stop it first."
 fi
 
@@ -141,7 +155,7 @@ kubectl config use-context "kind-$CLUSTER_NAME" >/dev/null
 
 # ---------------------------------------------------------------------------
 step "CRDs"
-make install >/dev/null
+if [[ "$IN_CLUSTER" != "true" ]]; then make install >/dev/null; fi
 for crd in scmconnections backflowpolicies driftproposals; do
   if k get crd "$crd.backflow.io" >/dev/null 2>&1; then
     pass "$crd.backflow.io installed"
@@ -151,6 +165,13 @@ for crd in scmconnections backflowpolicies driftproposals; do
 done
 
 # ---------------------------------------------------------------------------
+if [[ "$IN_CLUSTER" == "true" ]]; then
+  step "Operator (deployed)"
+  k -n "$MANAGER_NS" rollout status "deploy/$MANAGER_DEPLOY" --timeout=120s >/dev/null ||
+    die "deployment $MANAGER_NS/$MANAGER_DEPLOY is not available"
+  refresh_log
+  pass "operator running in the cluster (log: tmp/test-scm-manager.log)"
+else
 step "Building and starting the operator"
 make build >/dev/null
 mkdir -p "$LOG_DIR"
@@ -164,6 +185,7 @@ for _ in $(seq 1 60); do
 done
 curl -fs -o /dev/null http://localhost:8081/readyz || die "operator did not become ready, log: $LOG_FILE"
 pass "operator running (log: tmp/test-scm-manager.log)"
+fi
 
 # ---------------------------------------------------------------------------
 step "Test namespace: $NS"
@@ -286,6 +308,7 @@ if [[ "$KEEP" == "true" ]]; then
   echo "Test resources kept in namespace '$NS': kubectl -n $NS get scm,bfp"
 fi
 if (( FAIL > 0 )); then
+  refresh_log
   echo "Operator log: tmp/test-scm-manager.log"
   exit 1
 fi
