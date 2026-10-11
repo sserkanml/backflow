@@ -373,9 +373,17 @@ func leadingIndent(line string) int {
 }
 
 // blockScalarLastLine returns the last line, up to limit, that belongs to the
-// block scalar: blank lines and lines indented more than indent. Trailing
-// blank lines count only with keep chomping, where they are part of the value.
+// block scalar. Its content is indented further than the line that owns it
+// (indent), to the same depth as its first non-blank line or as the
+// indentation indicator says; a less indented line that is not blank, such as
+// a comment, is not part of it. Blank lines belong to it, but trailing ones
+// only count with keep chomping (|+), where they are part of the value.
 func blockScalarLastLine(li *lineIndex, scalar *yaml.Node, indent, limit int) int {
+	header := blockHeader(li, scalar)
+	contentIndent := 0
+	if n := indentationIndicator(header); n > 0 {
+		contentIndent = indent + n
+	}
 	lastContent, lastAny := scalar.Line, scalar.Line
 	for l := scalar.Line + 1; l <= limit; l++ {
 		text := li.lineText(l)
@@ -383,22 +391,49 @@ func blockScalarLastLine(li *lineIndex, scalar *yaml.Node, indent, limit int) in
 			lastAny = l
 			continue
 		}
-		if leadingIndent(text) <= indent {
+		depth := leadingIndent(text)
+		if contentIndent == 0 && depth > indent {
+			contentIndent = depth // set by the first line with content
+		}
+		if depth <= indent || depth < contentIndent {
 			break
 		}
 		lastContent, lastAny = l, l
-	}
-	header := li.lineText(scalar.Line)
-	if c := scalar.Column - 1; c >= 0 && c < len(header) {
-		header = header[c:]
-	}
-	if i := strings.IndexAny(header, " #"); i >= 0 {
-		header = header[:i]
 	}
 	if strings.Contains(header, "+") {
 		return lastAny
 	}
 	return lastContent
+}
+
+// blockHeader returns the block scalar indicator of the node ("|", ">-", "|+",
+// "|2-"), read after any tag (!!str) or anchor (&a) that precedes it on the
+// line and before a trailing comment.
+func blockHeader(li *lineIndex, scalar *yaml.Node) string {
+	line := li.lineText(scalar.Line)
+	if c := scalar.Column - 1; c >= 0 && c <= len(line) {
+		line = line[c:]
+	}
+	if i := strings.Index(line, " #"); i >= 0 {
+		line = line[:i]
+	}
+	for _, field := range strings.Fields(line) {
+		if field[0] == '|' || field[0] == '>' {
+			return field
+		}
+	}
+	return ""
+}
+
+// indentationIndicator returns the explicit indentation digit of a block
+// scalar header ("|2-" is 2), or 0.
+func indentationIndicator(header string) int {
+	for _, c := range header {
+		if c >= '1' && c <= '9' {
+			return int(c - '0')
+		}
+	}
+	return 0
 }
 
 // renderEntry renders "key: value" as block YAML. Lines after the first are

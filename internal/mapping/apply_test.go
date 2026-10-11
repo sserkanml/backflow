@@ -488,3 +488,80 @@ func TestApplyErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		changes []v1alpha1.FieldChange
+		want    string
+	}{
+		{
+			name: "keep chomping is read after a tag",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  keep: !!str |+\n    kept\n\n  other: x\n",
+			changes: []v1alpha1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  keep: |+\n    changed\n\n  other: x\n",
+		},
+		{
+			name: "keep chomping is read after an anchor",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  keep: &a |+\n    kept\n\n  other: x\n",
+			changes: []v1alpha1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  keep: &a |+\n    changed\n\n  other: x\n",
+		},
+		{
+			name: "keep chomping is read after a tag and an anchor, with a comment",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n",
+			changes: []v1alpha1.FieldChange{add("/data/new", `"y"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n  new: y\n",
+		},
+		{
+			name: "a comment indented more than the key but less than the content is not content",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |\n      echo hi\n    # not part of the script\n  other: x\n",
+			changes: []v1alpha1.FieldChange{replace("/data/script", `"echo bye\n"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |\n    echo bye\n    # not part of the script\n  other: x\n",
+		},
+		{
+			name: "the same with keep chomping: blank lines before the comment are the value's",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |+\n      echo hi\n\n    # not part of the script\n  other: x\n",
+			changes: []v1alpha1.FieldChange{replace("/data/script", `"echo bye\n\n"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |+\n    echo bye\n\n    # not part of the script\n  other: x\n",
+		},
+		{
+			name: "a comment line that is as deep as the content is content",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |\n      echo hi\n      # part of the script\n  other: x\n",
+			changes: []v1alpha1.FieldChange{replace("/data/script", `"echo bye\n"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |\n    echo bye\n  other: x\n",
+		},
+		{
+			name: "an explicit indentation indicator sets the depth of the content",
+			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n",
+			changes: []v1alpha1.FieldChange{add("/data/new", `"y"`)},
+			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
+				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n  new: y\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Apply("cm.yaml", []byte(tt.input), 0, tt.changes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("edited file differs\n--- got ---\n%s\n--- want ---\n%s", got, tt.want)
+			}
+		})
+	}
+}
