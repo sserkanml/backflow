@@ -1317,6 +1317,62 @@ var _ = Describe("DriftProposal proposing", func() {
 			})
 		})
 
+		Context("what the cleanup says", func() {
+			retire := func() {
+				annotate(annotationSupersededBy, "newer")
+				_, err := reconcileDP()
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
+
+			It("claims a close and a delete only when it did them", func() {
+				retire()
+				Expect(cleaned().Message).To(ContainSubstring("closed."))
+				Expect(cleaned().Message).To(ContainSubstring("deleted."))
+			})
+
+			// retiredElsewhere is a proposal that was retired while the operator
+			// was not looking, and is cleaned up when it finds it.
+			retiredElsewhere := func() {
+				got := latest()
+				got.Status.Phase = backflowv1alpha1.PhaseReverted
+				got.Status.Message = "back in sync"
+				ExpectWithOffset(1, k8sClient.Status().Update(ctx, got)).To(Succeed())
+				_, err := reconcileDP()
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
+
+			It("says an already closed merge request was already closed, not closed by it", func() {
+				provider.setState(scm.StateClosed, "")
+				retiredElsewhere()
+				Expect(provider.closed).To(BeEmpty())
+				Expect(cleaned().Message).To(ContainSubstring("was already closed"))
+				Expect(cleaned().Message).To(ContainSubstring("Branch " + branch + " deleted"))
+			})
+
+			It("does not claim to have deleted a branch that was already gone", func() {
+				Expect(repo.open().Storer.RemoveReference(plumbing.NewBranchReferenceName(branch))).To(Succeed())
+				retire()
+				Expect(cleaned().Message).To(ContainSubstring("no longer exists"))
+				Expect(cleaned().Message).NotTo(ContainSubstring("deleted"))
+			})
+
+			It("does not claim a merge request was closed when it no longer existed", func() {
+				delete(provider.byNumber, 7)
+				delete(provider.open, branch)
+				retiredElsewhere()
+				Expect(cleaned().Message).To(ContainSubstring("no longer exists"))
+				Expect(cleaned().Message).NotTo(ContainSubstring("closed."))
+			})
+
+			It("redacts credentials in the cause it records while it retries", func() {
+				provider.closeErr = fmt.Errorf("%w: POST https://oauth2:glpat-leaked@git.test/x: boom", scm.ErrUnavailable)
+				retire()
+				Expect(cleaned().Status).To(Equal(metav1.ConditionFalse))
+				Expect(cleaned().Message).To(ContainSubstring("https://REDACTED@git.test"))
+				Expect(cleaned().Message).NotTo(ContainSubstring("glpat-leaked"))
+			})
+		})
+
 		It("leaves a merge request that was merged during the cleanup alone", func() {
 			got := latest()
 			got.Status.Phase = backflowv1alpha1.PhaseSuperseded
@@ -1545,6 +1601,33 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(got.Status.MergeRequest.Number).To(Equal(int64(7)))
 				Expect(got.Status.MergeRequest.State).To(Equal("closed"))
 				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
+			})
+
+			It("leaves the merge request and the branch alone when the branch is not ours", func() {
+				human := repo.commitOnBranch(branch, map[string]string{"README.md": "reviewer fix\n"}, "address review")
+				annotate(annotationSupersededBy, "newer")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(provider.comments).To(BeEmpty(), "no comment on a merge request that may not be ours")
+				Expect(provider.closed).To(BeEmpty())
+				Expect(provider.deleted).To(BeEmpty())
+				Expect(repo.branch(branch)).To(Equal(human))
+				Expect(got.Status.MergeRequest).To(BeNil(), "it is not recorded as ours")
+				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition(conditionCleanedUp).Reason).To(Equal(reasonBranchKept))
+				Expect(condition(conditionCleanedUp).Message).To(ContainSubstring("was not closed"))
+			})
+
+			It("leaves a merge request alone when its branch is gone and nothing can be told about it", func() {
+				Expect(repo.open().Storer.RemoveReference(plumbing.NewBranchReferenceName(branch))).To(Succeed())
+				annotate(annotationReverted, "back in sync")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(provider.closed).To(BeEmpty())
+				Expect(provider.comments).To(BeEmpty())
+				Expect(condition(conditionCleanedUp).Reason).To(Equal(reasonBranchKept))
 			})
 
 			It("leaves a merge request merged meanwhile alone when the proposal is retired", func() {

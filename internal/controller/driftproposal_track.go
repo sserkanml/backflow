@@ -248,7 +248,7 @@ func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backf
 		delay = min(advised, retryMax)
 	}
 	logf.FromContext(ctx).Info("Cannot read the merge request state; will retry",
-		"proposal", dp.Name, "cause", cause.Error(), "retryAfter", delay.String())
+		"proposal", dp.Name, "cause", redactText(cause.Error()), "retryAfter", delay.String())
 	return ctrl.Result{RequeueAfter: delay}, nil
 }
 
@@ -290,10 +290,11 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 
 	var cur *scm.MergeRequest
 	done := reasonCleanedUp
+	gone := false // the recorded merge request no longer exists
 	if ref != nil {
 		cur, err = c.provider.GetMergeRequest(ctx, c.project, ref.Number)
 		if errors.Is(err, scm.ErrNotFound) {
-			cur, err, done = nil, nil, reasonAlreadyClosed // gone: only the branch is left
+			cur, err, gone, done = nil, nil, true, reasonAlreadyClosed // only the branch is left
 		}
 	} else {
 		cur, err = c.provider.FindMergeRequest(ctx, c.project, branch)
@@ -301,32 +302,42 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 	if err != nil {
 		return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 	}
-	where := "branch " + branch
-	if cur != nil {
-		where = fmt.Sprintf("Merge request %s", cur.URL)
-	} else if ref != nil {
-		where = fmt.Sprintf("Merge request %s", ref.URL)
-	}
-	switch {
-	case cur != nil && cur.State == scm.StateMerged:
+	if cur != nil && cur.State == scm.StateMerged {
 		// Merged while the proposal was being retired: the change is in Git,
 		// so there is nothing to close and the branch is left to the host.
 		return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, string(scm.StateMerged), reasonAlreadyMerged,
 			fmt.Sprintf("Merge request %s was merged.", cur.URL))
-	case cur != nil && cur.State == scm.StateClosed:
-		done = reasonAlreadyClosed
 	}
 
-	deleteBranch, keptWhy, err := r.planBranchDeletion(ctx, dp, c.access, branch)
-	if err != nil {
-		return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
+	// Only a branch that holds nothing but this proposal's own commits is
+	// deleted; one that cannot be read is retried, never guessed.
+	exists, notOurs := branch != "", ""
+	if branch != "" {
+		if exists, notOurs, err = r.branchIsOurs(ctx, dp, c.access, branch); err != nil {
+			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
+		}
+	}
+	if ref == nil && cur != nil && (!exists || notOurs != "") {
+		// The merge request was only found by the branch name. Without a
+		// branch that is ours there is no telling whose work it carries.
+		why := notOurs
+		if !exists {
+			why = "the branch no longer exists, so whose work the merge request carries cannot be told"
+		}
+		log.Info("Leaving the merge request and branch found for a retired proposal alone",
+			"proposal", dp.Name, "branch", branch, "why", why)
+		return ctrl.Result{}, r.finishCleanup(ctx, dp, nil, "", reasonBranchKept, fmt.Sprintf(
+			"Branch %s was left in place and the merge request %s found for it was not closed: %s.", branch, cur.URL, why))
 	}
 
-	if cur != nil && cur.State == scm.StateOpen {
+	var parts []string
+	switch {
+	case cur != nil && cur.State == scm.StateOpen:
 		// Comment first so the reason is on the page when it closes, and
 		// remember it so a retry of the close does not comment again.
 		if prog := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); prog == nil || prog.Reason != reasonCommented {
-			if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number, closingComment(dp, branchIf(keptWhy != "", branch), keptWhy)); err != nil {
+			if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number,
+				closingComment(dp, branchIf(exists && notOurs != "", branch), notOurs)); err != nil {
 				return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 			}
 			if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reasonCommented, "Commented on the merge request; closing it."); err != nil {
@@ -336,47 +347,31 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 		if err := c.provider.CloseMergeRequest(ctx, c.project, cur.Number); err != nil {
 			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 		}
+		parts = append(parts, fmt.Sprintf("Merge request %s closed.", cur.URL))
+	case cur != nil: // closed before
+		done = reasonAlreadyClosed
+		parts = append(parts, fmt.Sprintf("Merge request %s was already closed.", cur.URL))
+	case gone:
+		parts = append(parts, fmt.Sprintf("Merge request %s no longer exists.", ref.URL))
 	}
 
-	state := string(scm.StateClosed)
-	if keptWhy != "" {
-		log.Info("Merge request closed; branch left in place", "proposal", dp.Name, "merge request", where, "branch", branch, "why", keptWhy)
-		return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, reasonBranchKept,
-			fmt.Sprintf("%s closed. Branch %s was left in place: %s.", where, branch, keptWhy))
-	}
-	if deleteBranch {
+	reason := done
+	switch {
+	case branch == "":
+	case !exists:
+		parts = append(parts, fmt.Sprintf("Branch %s no longer exists.", branch))
+	case notOurs != "":
+		reason = reasonBranchKept
+		parts = append(parts, fmt.Sprintf("Branch %s was left in place: %s.", branch, notOurs))
+	default:
 		if err := c.provider.DeleteBranch(ctx, c.project, branch); err != nil && !errors.Is(err, scm.ErrNotFound) {
 			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 		}
+		parts = append(parts, fmt.Sprintf("Branch %s deleted.", branch))
 	}
-	log.Info("Merge request closed and branch deleted", "proposal", dp.Name, "merge request", where, "branch", branch)
-	message := fmt.Sprintf("%s closed and branch %s deleted.", where, branch)
-	if cur == nil && ref == nil {
-		message = fmt.Sprintf("Branch %s deleted.", branch)
-	}
-	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, state, done, message)
-}
-
-// planBranchDeletion decides what to do with the proposal's branch. Only a
-// branch that holds nothing but this proposal's own commits is deleted; one
-// that cannot be read is retried, never guessed. keptWhy is set when the
-// branch is left in place.
-func (r *DriftProposalReconciler) planBranchDeletion(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	access *scmAccess, branch string) (deleteBranch bool, keptWhy string, err error) {
-	if branch == "" {
-		return false, "", nil
-	}
-	exists, why, err := r.branchIsOurs(ctx, dp, access, branch)
-	if err != nil {
-		return false, "", err
-	}
-	switch {
-	case !exists:
-		return false, "", nil // nothing left to delete
-	case why != "":
-		return false, why, nil
-	}
-	return true, "", nil
+	message := strings.Join(parts, " ")
+	log.Info("Cleaned up a retired proposal", "proposal", dp.Name, "result", message)
+	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, string(scm.StateClosed), reason, message)
 }
 
 func branchIf(cond bool, branch string) string {
@@ -481,6 +476,6 @@ func (r *DriftProposalReconciler) cleanupPending(ctx context.Context, dp *backfl
 		return ctrl.Result{}, err
 	}
 	logf.FromContext(ctx).Info("Cannot finish closing the merge request yet; will retry",
-		"proposal", dp.Name, "cause", cause.Error(), "retryAfter", delay.String())
+		"proposal", dp.Name, "cause", redactText(cause.Error()), "retryAfter", delay.String())
 	return ctrl.Result{RequeueAfter: delay}, nil
 }
