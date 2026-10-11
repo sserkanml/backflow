@@ -8,23 +8,141 @@ resource.
 Backflow never writes to the cluster: Argo CD is the only thing that applies
 manifests. Backflow reads the cluster and writes to Git.
 
-## In-cluster
+## Install
+
+Backflow runs in the cluster as one Deployment and is installed with a Helm
+chart (Helm 3.8 or later):
 
 ```bash
-make docker-build IMG=backflow:dev
-kind load docker-image backflow:dev --name backflow     # kind only
-make deploy IMG=backflow:dev                            # CRDs, RBAC, Deployment in backflow-system
-git checkout config/manager/kustomization.yaml          # `make deploy` rewrites the image there
+helm install backflow oci://ghcr.io/sserkanml/charts/backflow \
+  --version 0.1.0 --namespace backflow-system --create-namespace
 ```
 
-Then create the Secrets and resources from [config/samples](config/samples):
+The chart installs the CRDs (`ScmConnection`, `BackflowPolicy`,
+`DriftProposal`), a ClusterRole, the Deployment and, with
+`leaderElection: true` (the default), a leader election Role. The image is
+`ghcr.io/sserkanml/backflow`, for linux/amd64 and linux/arm64.
 
-- an `ScmConnection` for the Git host, with a token Secret (GitLab: `api` +
-  `write_repository`; GitHub: `contents` + `pull_requests`);
-- a `BackflowPolicy` that selects the Argo CD Applications, with a Secret
-  holding an Argo CD API token.
+### 1. A read-only Argo CD account
 
-Things to know when running the operator in a cluster:
+Backflow reads the Applications and their managed resources through the Argo CD
+API. Give it an account that can do nothing else:
+
+```bash
+kubectl -n argocd patch configmap argocd-cm --type merge \
+  -p '{"data":{"accounts.backflow":"apiKey"}}'
+kubectl -n argocd edit configmap argocd-rbac-cm      # add the two lines below to policy.csv
+```
+
+```
+p, role:backflow, applications, get, */*, allow
+g, backflow, role:backflow
+```
+
+```bash
+argocd login <argocd-server> --username admin
+TOKEN="$(argocd account generate-token --account backflow)"
+kubectl -n backflow-system create secret generic argocd-token --from-literal=token="$TOKEN"
+```
+
+### 2. A token for the Git host, and a policy
+
+Create the token with the scopes `api` and `write_repository` (GitLab) or
+`contents` and `pull_requests` (GitHub). It, the connection and the policy live
+in the same namespace.
+
+```bash
+kubectl -n backflow-system create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
+
+kubectl -n backflow-system apply -f - <<'YAML'
+apiVersion: backflow.io/v1alpha1
+kind: ScmConnection
+metadata:
+  name: gitlab
+spec:
+  provider: gitlab                  # or github
+  url: https://gitlab.com           # your server for a self-hosted one
+  tokenSecretRef: {name: gitlab-token, key: token}
+---
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
+metadata:
+  name: my-apps
+spec:
+  argoCDNamespace: argocd
+  applications:
+    names: [my-app]                 # or selector: {matchLabels: {env: test}}
+  mode: ReportOnly                  # MergeRequest and DirectCommit write to Git
+  argoCD:
+    url: https://argocd-server.argocd.svc
+    tokenSecretRef: {name: argocd-token, key: token}
+YAML
+
+kubectl -n backflow-system get scm,bfp,dp
+```
+
+With `ReportOnly` Backflow finds the file that defines each drifted resource and
+shows the verified edit in the `DriftProposal` (`kubectl get dp -o yaml`), but
+writes nothing to Git. Change `mode` to `MergeRequest` to get a merge request
+per drift. More options (ignored fields, included and excluded kinds, branch
+prefix, labels, reviewers, batch window) are in
+[config/samples](config/samples).
+
+### Values
+
+The most used values of the chart; all of them are in
+[charts/backflow/values.yaml](charts/backflow/values.yaml).
+
+| Value | Default | |
+|---|---|---|
+| `image.repository`, `image.tag` | `ghcr.io/sserkanml/backflow`, the chart's `appVersion` | |
+| `imagePullSecrets` | `[]` | for a mirror that needs credentials |
+| `replicaCount`, `leaderElection` | `1`, `true` | more than one replica needs leader election |
+| `mergeRequestPollInterval` | `2m` | how often an open merge request is polled |
+| `resources` | 50m/128Mi requests, 500m/512Mi limits | tune to the number of Secrets and Applications |
+| `repoCache.sizeLimit` | `2Gi` | the `emptyDir` Git repositories are cached on |
+| `extraArgs` | `[]` | extra operator flags |
+| `podSecurityContext`, `securityContext` | restricted, no fixed IDs | see OpenShift below |
+| `nodeSelector`, `tolerations`, `affinity`, `podAnnotations` | empty | |
+| `serviceAccount.create`, `.name`, `.annotations` | `true`, generated, `{}` | |
+| `metrics.enabled`, `metrics.certSecret` | `false`, none | HTTPS on 8443 behind Kubernetes authn/authz |
+| `serviceMonitor.enabled` | `false` | needs `metrics.enabled` and the Prometheus Operator |
+| `networkPolicy.enabled` | `false` | needs `metrics.enabled`; allows metrics ingress only |
+
+### OpenShift
+
+The chart works under the `restricted-v2` SCC as it is, with no SCC changes and
+no `anyuid`: the pod runs as non-root with a read-only root file system, no
+capabilities, the default seccomp profile, and no fixed user or group ID, so
+OpenShift assigns them. The repository cache is an `emptyDir`, which is
+writable for any assigned ID. If your cluster policy requires fixed IDs, set
+them in `podSecurityContext` (`runAsUser`, `fsGroup`).
+
+Argo CD on OpenShift (the GitOps operator) usually runs in `openshift-gitops`:
+use `argoCDNamespace: openshift-gitops` in the policy, its server URL
+(`https://openshift-gitops-server.openshift-gitops.svc`) in `argoCD.url`, and
+the `argocd-cm` and `argocd-rbac-cm` of that namespace (or the matching fields
+of the `ArgoCD` resource) for the account above. The server certificate is
+signed by the cluster's service CA: mount it in a Secret and set
+`argoCD.caSecretRef`.
+
+### Upgrade and uninstall
+
+```bash
+# CRDs are not touched by helm upgrade: apply the ones of the new version first
+helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <new> | kubectl apply --server-side -f -
+helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version <new> -n backflow-system
+
+helm uninstall backflow -n backflow-system
+# the CRDs, and with them every ScmConnection, BackflowPolicy and DriftProposal, stay:
+kubectl delete crd scmconnections.backflow.io backflowpolicies.backflow.io driftproposals.backflow.io
+```
+
+Helm installs the files in `crds/` once and never upgrades or removes them, so
+the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
+Branches and merge requests that Backflow opened stay in Git.
+
+### Running in a cluster
 
 - The container root file system is read-only. Git repositories are cached in
   an `emptyDir` (2Gi) mounted at `/var/cache/backflow` and passed with
@@ -39,6 +157,8 @@ Things to know when running the operator in a cluster:
 - Argo CD is reached at `spec.argoCD.url` of the policy, by default
   `https://argocd-server.argocd.svc`. An Argo CD with a private CA needs
   `caSecretRef` (a Secret key holding the PEM bundle).
+- Without the Argo CD Application CRD the operator starts anyway; policies are
+  `Ready=False` with the reason `ArgoCDNotFound` until Argo CD is installed.
 
 ### Trust
 
@@ -58,29 +178,49 @@ DriftProposal, the repository cache or a log. (A plain user name in an ssh URL,
 `git@host:path`, is not a credential.) Give Backflow access with an
 `ScmConnection` instead.
 
-To run the end-to-end scenarios against the deployed operator instead of a
-local `bin/manager`:
-
-```bash
-IN_CLUSTER=true ./hack/test-drift.sh
-IN_CLUSTER=true ./hack/test-mapping.sh
-```
-
 ## Development
 
 ```bash
 ./hack/dev-up.sh        # kind cluster "backflow", Argo CD, CRDs, demo-app
 make run                # run the operator locally against the current kube context
 make test               # unit and envtest tests
+make lint               # golangci-lint
+make helm-sync          # copy the CRDs and RBAC rules into charts/backflow after make manifests
 ```
+
+To try a local build in the cluster instead of the released image:
+
+```bash
+make docker-build IMG=backflow:dev
+kind load docker-image backflow:dev --name backflow
+helm install backflow charts/backflow -n backflow-system \
+  --set image.repository=backflow --set image.tag=dev --set image.pullPolicy=Never
+```
+
+The end-to-end scenarios run against a local `bin/manager`, or against the
+operator deployed in the cluster with `IN_CLUSTER=true`:
+
+```bash
+IN_CLUSTER=true ./hack/test-scm.sh
+IN_CLUSTER=true ./hack/test-backflow-policy.sh
+IN_CLUSTER=true ./hack/test-drift.sh
+IN_CLUSTER=true ./hack/test-mapping.sh
+```
+
+Releases are made by [release-please](https://github.com/googleapis/release-please)
+from Conventional Commits on `main`; the tag it creates publishes the image and
+the chart.
 
 ## Limitations
 
 - **One source per Application.** An Application with `spec.sources` gets one
   `UnsupportedSource` Event and no proposals.
-- **Directory sources only.** Drift in resources rendered by Kustomize or Helm
-  is detected, but the proposal ends `Unmapped` with a reason; nothing is
-  written to Git for it.
+- **Directory sources only: no Helm or Kustomize mapping yet.** Drift in
+  resources rendered by Kustomize or Helm is detected, but the proposal ends
+  `Unmapped` with a reason; nothing is written to Git for it.
+- **One operator instance is one trust domain.** Policies and connections of an
+  instance share the repository cache and the operator can read every Secret;
+  run one instance per tenant that must be kept apart (see Trust above).
 - **YAML manifests only.** A resource defined in a JSON manifest cannot be
   edited; its proposal is `Unmapped` (`UnsupportedFileFormat`).
 - **Array style is re-rendered.** Changing a value inside a list re-renders
