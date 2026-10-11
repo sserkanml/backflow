@@ -1,8 +1,6 @@
 resources:
-- manager.yaml
-# The released image; `make deploy IMG=...` replaces it. release-please keeps
-# newTag at the version of the latest release.
+  - manager.yaml
 images:
-- name: controller
-  newName: ghcr.io/sserkanml/backflow
-  newTag: 0.1.0
+  - name: controller
+    newName: ghcr.io/sserkanml/backflow
+    newTag: 0.1.0
