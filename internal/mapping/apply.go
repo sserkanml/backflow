@@ -417,7 +417,7 @@ func blockHeader(li *lineIndex, scalar *yaml.Node) string {
 	if i := strings.Index(line, " #"); i >= 0 {
 		line = line[:i]
 	}
-	for _, field := range strings.Fields(line) {
+	for field := range strings.FieldsSeq(line) {
 		if field[0] == '|' || field[0] == '>' {
 			return field
 		}

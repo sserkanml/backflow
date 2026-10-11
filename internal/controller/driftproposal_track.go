@@ -333,18 +333,7 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 	var parts []string
 	switch {
 	case cur != nil && cur.State == scm.StateOpen:
-		// Comment first so the reason is on the page when it closes, and
-		// remember it so a retry of the close does not comment again.
-		if prog := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); prog == nil || prog.Reason != reasonCommented {
-			if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number,
-				closingComment(dp, branchIf(exists && notOurs != "", branch), notOurs)); err != nil {
-				return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
-			}
-			if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reasonCommented, "Commented on the merge request; closing it."); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		if err := c.provider.CloseMergeRequest(ctx, c.project, cur.Number); err != nil {
+		if err := r.closeRetired(ctx, dp, c, cur, branchIf(exists && notOurs != "", branch), notOurs); err != nil {
 			return r.cleanupPending(ctx, dp, err, scm.RetryAfter(err))
 		}
 		parts = append(parts, fmt.Sprintf("Merge request %s closed.", cur.URL))
@@ -372,6 +361,22 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 	message := strings.Join(parts, " ")
 	log.Info("Cleaned up a retired proposal", "proposal", dp.Name, "result", message)
 	return ctrl.Result{}, r.finishCleanup(ctx, dp, cur, string(scm.StateClosed), reason, message)
+}
+
+// closeRetired comments on an open merge request of a retired proposal and
+// closes it. The comment comes first so the reason is on the page when it
+// closes, and it is remembered so a retry of the close does not comment again.
+func (r *DriftProposalReconciler) closeRetired(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	c *mrClient, cur *scm.MergeRequest, keptBranch, why string) error {
+	if prog := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); prog == nil || prog.Reason != reasonCommented {
+		if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number, closingComment(dp, keptBranch, why)); err != nil {
+			return err
+		}
+		if err := r.setCleanedUp(ctx, dp, metav1.ConditionFalse, reasonCommented, "Commented on the merge request; closing it."); err != nil {
+			return err
+		}
+	}
+	return c.provider.CloseMergeRequest(ctx, c.project, cur.Number)
 }
 
 func branchIf(cond bool, branch string) string {

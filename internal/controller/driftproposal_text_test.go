@@ -1,10 +1,11 @@
 package controller
 
 import (
-	"k8s.io/apimachinery/pkg/types"
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -183,7 +184,8 @@ func TestProposalBranch(t *testing.T) {
 	if proposalBranch("backflow/", dp("n", uid)) == proposalBranch("backflow/", dp("n", "99999999-7b44-4d55-a0aa-0123456789ab")) {
 		t.Error("two objects with the same name must not share a branch")
 	}
-	if proposalBranch("backflow/", dp("n", uid)) != proposalBranch("backflow/", dp("n", uid)) {
+	first, again := proposalBranch("backflow/", dp("n", uid)), proposalBranch("backflow/", dp("n", uid))
+	if first != again {
 		t.Error("the branch of one object must be stable")
 	}
 	if got := proposalBranch("x/", dp("n", "abc")); got != "x/n-abc" {
