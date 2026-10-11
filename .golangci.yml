@@ -52,6 +52,11 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # Fixtures repeat the same literals on purpose; a shared constant would
+      # only hide what each test is about.
+      - linters:
+          - goconst
+        path: _test\.go
     paths:
       - third_party$
       - builtin$
