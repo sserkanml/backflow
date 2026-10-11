@@ -107,10 +107,13 @@ make test               # unit and envtest tests
   synced, directories that contain a symbolic link or a Jsonnet file (or use
   `directory.jsonnet`) at either revision, and when the repository cannot be
   read, every commit pauses detection, because the check cannot be trusted.
-  Detection is also paused, whatever the revisions, when the last sync did not
-  succeed or was selective (only some resources), and when the Application's
-  source (path, directory options, target revision, Helm, Kustomize, plugin)
-  changed since the last sync. One Event on the policy says so. Proposals that are already open are left as they are.
+  When the last sync did not succeed or was selective (only some resources),
+  only the resources it did not apply are held back: a resource counts as
+  caught up when that sync was a full one that succeeded, or reports the
+  resource itself as Synced. Detection for the whole Application is paused when
+  its source (path, directory options, target revision, Helm, Kustomize,
+  plugin) changed since the last sync. One Event on the policy says so, once
+  per resource and revision. Proposals that are already open are left as they are.
   Detection is also held back while a sync is running and until Argo CD has
   compared again after it.
 - **A drift becomes a proposal only after it has been stable.** It must be

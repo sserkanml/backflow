@@ -67,23 +67,33 @@ type aheadState struct {
 	paused           bool
 	compared, synced string // revisions, joined with commas for several sources
 	// unfinished is set when the last sync cannot be taken as "Git was applied
-	// up to the synced revision": it failed, or it touched only some resources.
-	// The comparison of paths under the directory proves nothing then, so the
-	// pause cannot be lifted by it.
+	// up to the synced revision" for every resource: it failed, or it touched
+	// only some resources. Only the resources it did not apply are then held
+	// back (see resourceHold); the comparison of paths under the directory
+	// proves nothing about them.
 	unfinished string
+	// applied are the resources the last sync reports as Synced.
+	applied map[string]bool
 	// sourceChanged describes how the Application's source differs from the
 	// source of its last sync. A new source can change what is rendered without
 	// a new revision, and neither the revisions nor the paths say so.
 	sourceChanged string
 }
 
-// hold is the reason a pause cannot be lifted by looking at the files under
-// the Application's directory, or "".
-func (s aheadState) hold() string {
-	if s.unfinished != "" {
-		return s.unfinished
+// hold is the reason the whole Application is paused although the files under
+// its directory did not change, or "".
+func (s aheadState) hold() string { return s.sourceChanged }
+
+// resourceHold says why drift of one resource is not trusted, or returns "".
+// A resource is caught up at the compared revision when the last operation was
+// a full sync that succeeded, or when that sync reports the resource itself as
+// Synced. So a selective sync, or a failed one, holds back only the resources
+// it did not apply.
+func (s aheadState) resourceHold(res appResource) string {
+	if s.unfinished == "" || s.applied[res.hash()] {
+		return ""
 	}
-	return s.sourceChanged
+	return s.unfinished
 }
 
 // revisions reads the single revision at the path, or the list of revisions of
@@ -128,6 +138,16 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 	st.paused = st.compared != "" && st.compared != st.synced
 
 	st.sourceChanged = sourceChange(app)
+	if items, _, _ := unstructured.NestedSlice(app.Object, "status", "operationState", "syncResult", "resources"); len(items) > 0 {
+		st.applied = map[string]bool{}
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			str := func(k string) string { v, _ := m[k].(string); return v }
+			if str("status") == "Synced" {
+				st.applied[resourceHash(str("group"), str("kind"), str("namespace"), str("name"))] = true
+			}
+		}
+	}
 
 	phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
 	if st.compared != "" && st.synced != "" { // never synced: Git being ahead is the reason given
@@ -459,9 +479,29 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 	return true
 }
 
+// holdResource tells ensureProposal whether drift of the resource must not be
+// proposed now: the Application is paused as a whole, or the last sync did not
+// apply this resource. The latter is said once per resource and revision.
+func (r *DriftReconciler) holdResource(policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, res appResource, st aheadState, appPaused bool) bool {
+	if appPaused {
+		return true
+	}
+	why := st.resourceHold(res)
+	if why == "" {
+		return false
+	}
+	if r.reportOnce(policy, summary.Name, "resourceHeld", res.hash(), st.compared+"/"+why) {
+		r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
+			"Drift detection for %s %s in %s is paused: %s (revision %s). It resumes after a sync that applies it.",
+			res.Kind, res.Name, summary.Name, why, shortRevision(st.compared)))
+	}
+	return true
+}
+
 // reportHeld emits one Event per Application, revision and reason when drift
-// detection is paused because the last sync did not apply the Application as it
-// is now: it failed or was partial, or the source changed since.
+// detection is paused because the Application's source changed since the last
+// sync.
 func (r *DriftReconciler) reportHeld(policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, st aheadState) {
 	if !r.reportOnce(policy, summary.Name, "ahead", "", "held/"+st.compared+"/"+st.hold()) {

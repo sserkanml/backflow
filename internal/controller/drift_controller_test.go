@@ -316,6 +316,62 @@ func TestSourceChange(t *testing.T) {
 	})
 }
 
+func TestResourceHold(t *testing.T) {
+	cm := appResource{Kind: "ConfigMap", Namespace: "demo", Name: "a"}
+	dep := appResource{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "b"}
+	app := func(phase string, selective []any, results ...map[string]any) *unstructured.Unstructured {
+		o := map[string]any{}
+		_ = unstructured.SetNestedField(o, "bbb", "status", "sync", "revision")
+		_ = unstructured.SetNestedField(o, "bbb", "status", "operationState", "syncResult", "revision")
+		_ = unstructured.SetNestedField(o, phase, "status", "operationState", "phase")
+		if selective != nil {
+			_ = unstructured.SetNestedSlice(o, selective, "status", "operationState", "operation", "sync", "resources")
+		}
+		var rs []any
+		for _, r := range results {
+			rs = append(rs, r)
+		}
+		if rs != nil {
+			_ = unstructured.SetNestedSlice(o, rs, "status", "operationState", "syncResult", "resources")
+		}
+		return &unstructured.Unstructured{Object: o}
+	}
+	synced := func(group, kind, name, status string) map[string]any {
+		return map[string]any{"group": group, "kind": kind, "namespace": "demo", "name": name, "status": status}
+	}
+	tests := []struct {
+		name         string
+		app          *unstructured.Unstructured
+		heldA, heldB bool // ConfigMap a, Deployment b
+	}{
+		{"full sync that succeeded: nothing is held", app("Succeeded", nil), false, false},
+		{"full sync that succeeded, resources listed", app("Succeeded", nil, synced("", "ConfigMap", "a", "Synced")), false, false},
+		{"selective sync of a: only b is held",
+			app("Succeeded", []any{map[string]any{"kind": "ConfigMap", "name": "a"}}, synced("", "ConfigMap", "a", "Synced")), false, true},
+		{"selective sync without a result list holds everything",
+			app("Succeeded", []any{map[string]any{"kind": "ConfigMap", "name": "a"}}), true, true},
+		{"failed sync where a failed and b applied: only a is held",
+			app("Failed", nil, synced("", "ConfigMap", "a", "SyncFailed"), synced("apps", "Deployment", "b", "Synced")), true, false},
+		{"error before anything was applied holds everything", app("Error", nil), true, true},
+		{"a Synced resource of another kind with the same name does not count",
+			app("Failed", nil, synced("", "Service", "a", "Synced"), synced("apps", "Deployment", "b", "Synced")), true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := gitAhead(tt.app)
+			if got := st.resourceHold(cm) != ""; got != tt.heldA {
+				t.Errorf("ConfigMap a held = %v, want %v (%+v)", got, tt.heldA, st)
+			}
+			if got := st.resourceHold(dep) != ""; got != tt.heldB {
+				t.Errorf("Deployment b held = %v, want %v (%+v)", got, tt.heldB, st)
+			}
+			if st.paused || st.hold() != "" {
+				t.Errorf("the Application as a whole must not be paused: %+v", st)
+			}
+		})
+	}
+}
+
 func TestShortRevision(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	for in, want := range map[string]string{
@@ -1650,6 +1706,102 @@ var _ = Describe("Drift detection", func() {
 			}
 		}
 		Expect(n).To(Equal(1))
+	})
+
+	Context("a sync that did not apply every resource", func() {
+		const sha = "1111111111111111111111111111111111111111"
+		deployRes := func() map[string]any {
+			return map[string]any{
+				"group": "apps", "version": "v1", "kind": "Deployment", "namespace": "demo", "name": "demo", "status": "OutOfSync",
+			}
+		}
+		deployState := func(replicas int64) map[string]any {
+			return map[string]any{
+				"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "demo"},
+				"spec": map[string]any{"replicas": replicas},
+			}
+		}
+		result := func(group, kind, name, status string) map[string]any {
+			return map[string]any{"group": group, "kind": kind, "namespace": "demo", "name": name, "status": status}
+		}
+		// kinds returns the kinds that have an open proposal.
+		kinds := func() []string {
+			var out []string
+			for _, p := range proposals() {
+				out = append(out, p.Spec.Resource.Kind)
+			}
+			return out
+		}
+		holds := func() int {
+			n := 0
+			for len(recorder.Events) > 0 {
+				if e := <-recorder.Events; strings.Contains(e, "GitAhead") && strings.Contains(e, "is paused") {
+					n++
+				}
+			}
+			return n
+		}
+		// operation sets the last operation of the Application and what it applied.
+		operation := func(phase string, selective []any, results ...any) {
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sha, "status", "sync", "revision")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sha, "status", "operationState", "syncResult", "revision")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, phase, "status", "operationState", "phase")).To(Succeed())
+			unstructured.RemoveNestedField(app.Object, "status", "operationState", "operation")
+			if selective != nil {
+				ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, selective, "status", "operationState", "operation", "sync", "resources")).To(Succeed())
+			}
+			unstructured.RemoveNestedField(app.Object, "status", "operationState", "syncResult", "resources")
+			if results != nil {
+				ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, results, "status", "operationState", "syncResult", "resources")).To(Succeed())
+			}
+			ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, []any{configMapRes("OutOfSync"), deployRes()}, "status", "resources")).To(Succeed())
+			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
+		}
+
+		BeforeEach(func() {
+			argo.items = append(argo.items, argocd.ManagedResource{
+				Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo",
+				PredictedLiveState: deployState(1), NormalizedLiveState: deployState(3),
+			})
+		})
+
+		It("holds back only the resource a selective sync did not apply", func() {
+			operation("Succeeded", []any{map[string]any{"kind": "ConfigMap", "name": "demo-config"}},
+				result("", "ConfigMap", "demo-config", "Synced"))
+			reconcileOnce()
+			reconcileOnce()
+			Expect(kinds()).To(ConsistOf("ConfigMap"), "the Deployment was not part of the sync")
+			Expect(holds()).To(Equal(1), "said once for the Deployment")
+
+			By("a full sync lifts the hold")
+			operation("Succeeded", nil)
+			reconcileOnce()
+			Expect(kinds()).To(ConsistOf("ConfigMap", "Deployment"))
+		})
+
+		It("holds back only the resource a failed sync did not apply", func() {
+			operation("Failed", nil, result("", "ConfigMap", "demo-config", "SyncFailed"), result("apps", "Deployment", "demo", "Synced"))
+			reconcileOnce()
+			reconcileOnce()
+			Expect(kinds()).To(ConsistOf("Deployment"), "the ConfigMap failed to apply")
+			Expect(holds()).To(Equal(1))
+		})
+
+		It("holds nothing back after a full sync that succeeded", func() {
+			operation("Succeeded", nil, result("", "ConfigMap", "demo-config", "Synced"), result("apps", "Deployment", "demo", "Synced"))
+			reconcileOnce()
+			Expect(kinds()).To(ConsistOf("ConfigMap", "Deployment"))
+			Expect(holds()).To(BeZero())
+		})
+
+		It("keeps the whole Application paused when its source changed", func() {
+			operation("Succeeded", nil, result("", "ConfigMap", "demo-config", "Synced"), result("apps", "Deployment", "demo", "Synced"))
+			Expect(unstructured.SetNestedMap(app.Object, map[string]any{"path": "apps/other"}, "spec", "source")).To(Succeed())
+			Expect(unstructured.SetNestedMap(app.Object, map[string]any{"path": "apps/demo"}, "status", "operationState", "syncResult", "source")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			reconcileOnce()
+			Expect(kinds()).To(BeEmpty(), "applied resources do not lift an application-wide pause")
+		})
 	})
 
 	It("keeps the proposals of two Applications that track the same object apart", func() {

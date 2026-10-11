@@ -273,7 +273,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 					continue
 				}
 				drifting[res.hash()] = changes
-				if err := r.ensureProposal(ctx, policy, summary, res, changes, all, paused, st); err != nil && firstErr == nil {
+				if err := r.ensureProposal(ctx, policy, summary, res, changes, all, r.holdResource(policy, summary, res, st, paused), st); err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}
