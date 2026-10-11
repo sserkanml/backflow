@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -420,6 +421,54 @@ func GitHubAPIRoot(base string) string {
 	return base + "/api/v3"
 }
 
+// schemeUserinfo matches the user information of a URL with a scheme.
+var schemeUserinfo = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9+.\-]*://)[^/]*@`)
+
+// URLHasCredentials reports whether a repository URL carries a credential: a
+// password in any form (scheme URL or scp-like user:password@host:path), or a
+// user name in an http(s) URL, where it is the token. A plain user name in an
+// ssh URL or in git@host:path is not secret.
+func URLHasCredentials(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return schemeUserinfo.MatchString(raw) // cannot tell what is in it: do not trust it
+		}
+		if u.User == nil {
+			return false
+		}
+		if _, hasPassword := u.User.Password(); hasPassword {
+			return true
+		}
+		return u.Scheme == "http" || u.Scheme == "https"
+	}
+	at := strings.Index(raw, "@")
+	if at < 0 {
+		return false
+	}
+	if slash := strings.Index(raw, "/"); slash >= 0 && slash < at {
+		return false
+	}
+	return strings.Contains(raw[:at], ":")
+}
+
+// RedactURL hides the credential in a repository URL, leaving the rest. A URL
+// without one is returned as it is.
+func RedactURL(raw string) string {
+	if !URLHasCredentials(raw) {
+		return raw
+	}
+	trimmed := strings.TrimSpace(raw)
+	if m := schemeUserinfo.FindStringSubmatch(trimmed); m != nil {
+		return m[1] + "REDACTED" + trimmed[len(m[0])-1:]
+	}
+	if at := strings.Index(trimmed, "@"); at >= 0 {
+		return "REDACTED" + trimmed[at:]
+	}
+	return "REDACTED"
+}
+
 // ParseRepoURL splits a Git remote URL into its host and project path.
 // It accepts https://host/group/repo(.git), ssh://git@host/group/repo.git and
 // the scp-like git@host:group/repo.git.
@@ -437,19 +486,19 @@ func ParseRepoURL(raw string) (host, project string, err error) {
 		}
 		i := strings.Index(at, ":")
 		if i <= 0 {
-			return "", "", fmt.Errorf("scm: cannot parse repository URL %q", raw)
+			return "", "", fmt.Errorf("scm: cannot parse repository URL %q", RedactURL(raw))
 		}
 		host, path = at[:i], at[i+1:]
 	} else {
 		u, perr := url.Parse(raw)
 		if perr != nil || u.Hostname() == "" {
-			return "", "", fmt.Errorf("scm: cannot parse repository URL %q", raw)
+			return "", "", fmt.Errorf("scm: cannot parse repository URL %q", RedactURL(raw))
 		}
 		host, path = u.Hostname(), u.Path
 	}
 	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
 	if path == "" || !strings.Contains(path, "/") {
-		return "", "", fmt.Errorf("scm: repository URL %q has no project path", raw)
+		return "", "", fmt.Errorf("scm: repository URL %q has no project path", RedactURL(raw))
 	}
 	return CanonicalHost(host), path, nil
 }

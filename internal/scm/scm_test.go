@@ -299,3 +299,50 @@ func TestRetryAfterThroughHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestURLHasCredentialsAndRedactURL(t *testing.T) {
+	tests := []struct {
+		in       string
+		has      bool
+		redacted string
+	}{
+		{"https://gitlab.com/x/y.git", false, "https://gitlab.com/x/y.git"},
+		{"https://oauth2:glpat-secret@gitlab.com/x/y.git", true, "https://REDACTED@gitlab.com/x/y.git"},
+		{"https://ghp_token@github.com/o/r", true, "https://REDACTED@github.com/o/r"},
+		{"http://u:p@git.internal:8080/x/y", true, "http://REDACTED@git.internal:8080/x/y"},
+		{"ssh://git:s3cret@gitlab.com:2222/x/y.git", true, "ssh://REDACTED@gitlab.com:2222/x/y.git"},
+		{"ssh://git@gitlab.com/x/y.git", false, "ssh://git@gitlab.com/x/y.git"},
+		{"git@github.com:o/r.git", false, "git@github.com:o/r.git"},
+		{"git:s3cret@gitlab.com:x/y.git", true, "REDACTED@gitlab.com:x/y.git"},
+		{"gitlab.com:x/y@z.git", false, "gitlab.com:x/y@z.git"},
+		{"https://gitlab.com/x/@y/z", false, "https://gitlab.com/x/@y/z"},
+		{"", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := URLHasCredentials(tt.in); got != tt.has {
+				t.Errorf("URLHasCredentials = %v, want %v", got, tt.has)
+			}
+			if got := RedactURL(tt.in); got != tt.redacted {
+				t.Errorf("RedactURL = %q, want %q", got, tt.redacted)
+			}
+		})
+	}
+}
+
+func TestParseRepoURLErrorsDoNotLeakCredentials(t *testing.T) {
+	for _, raw := range []string{
+		"https://oauth2:glpat-secret@gitlab.com/onlyone",
+		"https://glpat-secret@gitlab.com",
+		"glpat:secret@host",
+	} {
+		_, _, err := ParseRepoURL(raw)
+		if err == nil {
+			t.Errorf("%q: want an error", raw)
+			continue
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Errorf("%q: the error leaks the credential: %v", raw, err)
+		}
+	}
+}

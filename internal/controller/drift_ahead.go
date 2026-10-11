@@ -423,7 +423,7 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 	if hit.err != nil || hit.unchecked != "" {
 		cause := hit.unchecked
 		if hit.err != nil {
-			cause = hit.err.Error()
+			cause = redactText(hit.err.Error())
 		}
 		logf.FromContext(ctx).Info("Cannot tell whether Git changed the Application's directory; pausing drift detection",
 			"application", summary.Name, "cause", cause)

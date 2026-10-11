@@ -216,8 +216,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.BackflowPolicyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("backflow-policy"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "backflowpolicy")
 		os.Exit(1)

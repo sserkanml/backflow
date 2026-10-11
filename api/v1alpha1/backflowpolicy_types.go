@@ -260,6 +260,11 @@ type ApplicationSummary struct {
 	// ScmConnection used for this repository. Empty when none matches.
 	// +optional
 	ScmConnection string `json:"scmConnection,omitempty"`
+	// Why Backflow does not track the Application, or empty when it does.
+	// CredentialsInRepoURL: a repository URL of the Application contains
+	// credentials; only the redacted URL is kept here.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // +kubebuilder:object:root=true

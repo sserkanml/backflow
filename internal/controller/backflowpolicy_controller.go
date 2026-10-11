@@ -9,14 +9,17 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,8 +49,16 @@ const policyResyncInterval = 5 * time.Minute
 // selects and records what it found in status.
 type BackflowPolicyReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
+
+	mu       sync.Mutex
+	reported map[string]string // policy/application -> redacted repoURL an Event was emitted for
 }
+
+// reasonCredentialsInRepoURL marks an Application that is not tracked because
+// a repository URL of it contains credentials.
+const reasonCredentialsInRepoURL = "CredentialsInRepoURL"
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies/status,verbs=get;update;patch
@@ -55,6 +66,8 @@ type BackflowPolicyReconciler struct {
 // +kubebuilder:rbac:groups=backflow.io,resources=scmconnections,verbs=get;list;watch
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals,verbs=get;list;watch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -86,16 +99,28 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	names := make([]string, 0, len(apps))
 	summaries := make([]backflowv1alpha1.ApplicationSummary, 0, len(apps))
-	var missingScm []string
+	var missingScm, withCredentials []string
 	for i := range apps {
+		names = append(names, apps[i].GetName())
+		// A credential in a repository URL is checked before anything of the
+		// Application is stored: only the redacted URL is kept, and the
+		// Application is not tracked.
+		if redacted, found := credentialedRepoURL(&apps[i]); found {
+			summaries = append(summaries, backflowv1alpha1.ApplicationSummary{
+				Name: apps[i].GetName(), RepoURL: redacted, Reason: reasonCredentialsInRepoURL,
+			})
+			withCredentials = append(withCredentials, apps[i].GetName())
+			r.reportCredentials(&policy, apps[i].GetName(), redacted)
+			continue
+		}
 		s := summarizeApplication(&apps[i])
 		s.ScmConnection = connectionFor(s.RepoURL, conns.Items)
 		if s.ScmConnection == "" {
 			missingScm = append(missingScm, s.Name)
 		}
-		names = append(names, s.Name)
 		summaries = append(summaries, s)
 	}
+	r.forgetCredentialReports(&policy, withCredentials)
 
 	var proposals backflowv1alpha1.DriftProposalList
 	if err := r.List(ctx, &proposals, client.InNamespace(policy.Namespace),
@@ -132,7 +157,11 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	default:
 		cond.Status = metav1.ConditionTrue
 		cond.Reason = "Resolved"
-		cond.Message = fmt.Sprintf("Watching %d application(s)", len(apps))
+		cond.Message = fmt.Sprintf("Watching %d application(s)", len(apps)-len(withCredentials))
+		if len(withCredentials) > 0 {
+			cond.Message += fmt.Sprintf("; not tracked because a repository URL contains credentials: %s",
+				strings.Join(withCredentials, ", "))
+		}
 	}
 
 	policy.Status.ObservedGeneration = policy.Generation
@@ -147,6 +176,66 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	log.Info("Policy resolved", "applications", names, "ready", cond.Status, "reason", cond.Reason)
 	return ctrl.Result{RequeueAfter: policyResyncInterval}, nil
+}
+
+// credentialedRepoURL returns the redacted repoURL of the first source of the
+// Application (spec.source or any of spec.sources) whose URL contains a
+// credential.
+func credentialedRepoURL(app *unstructured.Unstructured) (redacted string, found bool) {
+	var sources []map[string]any
+	if src, ok, _ := unstructured.NestedMap(app.Object, "spec", "source"); ok {
+		sources = append(sources, src)
+	}
+	if list, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok {
+		for _, it := range list {
+			if m, isMap := it.(map[string]any); isMap {
+				sources = append(sources, m)
+			}
+		}
+	}
+	for _, src := range sources {
+		if raw, _, _ := unstructured.NestedString(src, "repoURL"); scm.URLHasCredentials(raw) {
+			return scm.RedactURL(raw), true
+		}
+	}
+	return "", false
+}
+
+// reportCredentials emits one Event per Application (and URL) saying that it is
+// not tracked.
+func (r *BackflowPolicyReconciler) reportCredentials(policy *backflowv1alpha1.BackflowPolicy, app, redacted string) {
+	key := policy.Namespace + "/" + policy.Name + "/" + app
+	r.mu.Lock()
+	last, known := r.reported[key]
+	seen := known && last == redacted
+	if r.reported == nil {
+		r.reported = map[string]string{}
+	}
+	r.reported[key] = redacted
+	r.mu.Unlock()
+	if seen || r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, reasonCredentialsInRepoURL, "Tracking",
+		"Application %s is not tracked: its repository URL %s contains credentials. Remove them from the Application "+
+			"and give Backflow access with an ScmConnection", app, redacted)
+}
+
+// forgetCredentialReports drops the reports of Applications of the policy that
+// are no longer blocked, so a returning credential is reported again.
+func (r *BackflowPolicyReconciler) forgetCredentialReports(policy *backflowv1alpha1.BackflowPolicy, blocked []string) {
+	prefix := policy.Namespace + "/" + policy.Name + "/"
+	keep := map[string]bool{}
+	for _, app := range blocked {
+		keep[prefix+app] = true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key := range r.reported {
+		if strings.HasPrefix(key, prefix) && !keep[key] {
+			delete(r.reported, key)
+		}
+	}
 }
 
 // matchApplications lists Applications in the Argo CD namespace that match

@@ -49,10 +49,14 @@ read for another policy that names the same URL. All Secrets are also readable
 by the operator cluster-wide. Run a separate instance (own namespace, own cache
 volume) for teams or tenants that must not see each other's repositories.
 
-An Argo CD `repoURL` that carries credentials (`https://user:token@host/...`)
-is not used: its proposals end `Unmapped` with the reason
-`RepositoryURLHasCredentials`, and the URL is redacted in every message. Give
-Backflow access with an `ScmConnection` instead.
+An Argo CD `repoURL` that carries credentials (`https://user:token@host/...`,
+`ssh://user:password@host/...`) is never used or stored. The policy does not
+track that Application: its entry in `status.applications` has the reason
+`CredentialsInRepoURL` and only the redacted URL, one Event says so, and the
+Application is skipped by drift detection, so the URL never reaches a
+DriftProposal, the repository cache or a log. (A plain user name in an ssh URL,
+`git@host:path`, is not a credential.) Give Backflow access with an
+`ScmConnection` instead.
 
 To run the end-to-end scenarios against the deployed operator instead of a
 local `bin/manager`:

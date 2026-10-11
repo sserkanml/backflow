@@ -372,6 +372,12 @@ spec:
                       description: Path inside the repository; for Helm repositories,
                         the chart name.
                       type: string
+                    reason:
+                      description: |-
+                        Why Backflow does not track the Application, or empty when it does.
+                        CredentialsInRepoURL: a repository URL of the Application contains
+                        credentials; only the redacted URL is kept here.
+                      type: string
                     repoURL:
                       description: Git repository the Application deploys from.
                       type: string

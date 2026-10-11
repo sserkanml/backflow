@@ -27,6 +27,8 @@ func TestHasCredentials(t *testing.T) {
 		"https://token@github.com/o/r":             true,
 		"http://u:p@git.internal/x":                true,
 		"ssh://git@gitlab.com/x/y.git":             false,
+		"ssh://git:s3cret@gitlab.com/x/y.git":      true,
+		"git:s3cret@gitlab.com:x/y.git":            true,
 		"git@github.com:o/r.git":                   false,
 		"":                                         false,
 	} {

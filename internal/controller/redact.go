@@ -1,8 +1,9 @@
 package controller
 
 import (
-	"net/url"
 	"regexp"
+
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 // credentialsInURL matches the user information of a URL inside a text:
@@ -15,13 +16,6 @@ func redactText(s string) string {
 	return credentialsInURL.ReplaceAllString(s, "${1}REDACTED@")
 }
 
-// hasCredentials reports whether an http(s) repository URL carries user
-// information (a user name, a token or a password).
-func hasCredentials(repoURL string) bool {
-	u, err := url.Parse(repoURL)
-	if err != nil {
-		// An unparsable URL may still hold a credential.
-		return credentialsInURL.MatchString(repoURL)
-	}
-	return (u.Scheme == "http" || u.Scheme == "https") && u.User != nil
-}
+// hasCredentials reports whether a repository URL carries a credential (see
+// scm.URLHasCredentials).
+func hasCredentials(repoURL string) bool { return scm.URLHasCredentials(repoURL) }

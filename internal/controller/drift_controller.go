@@ -142,6 +142,9 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	var firstErr error
 	tracked := make(map[string]bool, len(policy.Status.Applications))
 	for _, summary := range policy.Status.Applications {
+		if summary.Reason != "" {
+			continue // not tracked (see the Reason of the summary); nothing of it is read or stored
+		}
 		tracked[summary.Name] = true
 		if err := r.reconcileApplication(ctx, &policy, argo, summary, proposals.Items); err != nil && firstErr == nil {
 			firstErr = err
