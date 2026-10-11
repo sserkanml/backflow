@@ -1425,6 +1425,72 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 	})
 
+	Context("a branch that was recorded", func() {
+		It("is used as it is, so a proposal of an older version keeps its backflow/<name> branch", func() {
+			old := latest()
+			old.Status.Branch = "backflow/prop-dp" // what older versions recorded
+			Expect(k8sClient.Status().Update(ctx, old)).To(Succeed())
+
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(got.Status.Branch).To(Equal("backflow/prop-dp"))
+			Expect(got.Status.MergeRequest.Branch).To(Equal("backflow/prop-dp"))
+			Expect(repo.branch("backflow/prop-dp")).NotTo(BeEmpty())
+			Expect(repo.branch(branch)).To(BeEmpty(), "the new style name is not used for it")
+			Expect(provider.created[0].SourceBranch).To(Equal("backflow/prop-dp"))
+		})
+
+		It("is used even when the branch prefix of the policy changed after it was pushed", func() {
+			provider.createErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			pushed := latest().Status.Branch
+			Expect(pushed).To(Equal(branch))
+			Expect(repo.branch(pushed)).NotTo(BeEmpty())
+
+			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "drift/"})
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(got.Status.MergeRequest.Branch).To(Equal(pushed))
+			Expect(provider.created).To(HaveLen(1))
+			Expect(provider.created[0].SourceBranch).To(Equal(pushed))
+			Expect(repo.branch("drift/"+dp.Name+"-"+string(dp.UID)[:8])).To(BeEmpty(), "no second branch under the new prefix")
+		})
+
+		It("is the one that is cleaned up, whatever the prefix is now", func() {
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			pushed := latest().Status.MergeRequest.Branch
+			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "other/"})
+			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
+				[]byte(`{"metadata":{"annotations":{"`+annotationSupersededBy+`":"newer"}}}`)))).To(Succeed())
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(provider.closed).To(Equal([]int64{7}))
+			Expect(provider.deleted).To(Equal([]string{pushed}))
+		})
+
+		It("is computed from the prefix only while nothing is recorded", func() {
+			dp := &backflowv1alpha1.DriftProposal{}
+			dp.Name, dp.UID = "n", "12345678-aaaa"
+			if got := recordedOrNewBranch("backflow/", dp); got != "backflow/n-12345678" {
+				Fail("new: " + got)
+			}
+			dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{Branch: "backflow/n"}
+			if got := recordedOrNewBranch("drift/", dp); got != "backflow/n" {
+				Fail("from the merge request: " + got)
+			}
+			dp.Status.Branch = "keep/me"
+			if got := recordedOrNewBranch("drift/", dp); got != "keep/me" {
+				Fail("recorded: " + got)
+			}
+		})
+	})
+
 	Context("a proposal that has the name of an earlier one", func() {
 		// Proposal names are content hashes: the user deletes a Rejected
 		// proposal to retry, and the same drift gets the same name again.

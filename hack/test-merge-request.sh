@@ -317,7 +317,16 @@ app_synced_at() {
 dp_field() { k -n "$NS" get driftproposal "$1" -o jsonpath="{$2}" 2>/dev/null; }
 
 # branch_of <proposal>: the branch Backflow pushes for a proposal, backflow/<name>-<first 8 of its UID>.
-branch_of() { printf 'backflow/%s-%s' "$1" "$(dp_field "$1" .metadata.uid | cut -c1-8)"; }
+# What it read is kept in $WORKDIR/branches, together with the branch the proposal
+# recorded, and printed when the test fails.
+branch_of() {
+  local uid branch
+  uid="$(dp_field "$1" .metadata.uid | cut -c1-8)"
+  branch="$(printf 'backflow/%s-%s' "$1" "$uid")"
+  printf '%s: uid8=%s -> %s (status.branch=%s)\n' "$1" "${uid:-<empty>}" "$branch" \
+    "$(dp_field "$1" .status.branch)" >>"$WORKDIR/branches"
+  printf '%s' "$branch"
+}
 condition()  { dp_field "$1" ".status.conditions[?(@.type==\"$2\")].$3"; }
 
 expect_eq() {
@@ -893,6 +902,10 @@ if [[ "$KEEP" == "true" ]]; then
   echo "Test namespace '$NS' kept: kubectl -n $NS get bfp,scm,driftproposals"
 fi
 if (( FAIL > 0 )); then
+  if [[ -s "$WORKDIR/branches" ]]; then
+    echo "Branch names read from the proposals (branch_of):"
+    sed 's/^/  /' "$WORKDIR/branches"
+  fi
   echo "Operator log: ${LOG_FILE#"$ROOT"/}"
   exit 1
 fi

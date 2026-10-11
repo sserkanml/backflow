@@ -391,7 +391,7 @@ func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal,
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	policy *backflowv1alpha1.BackflowPolicy, access *scmAccess, project, target string) (ctrl.Result, error) {
 	opts := mergeRequestOptions(policy)
-	branch := proposalBranch(opts.BranchPrefix, dp)
+	branch := recordedOrNewBranch(opts.BranchPrefix, dp)
 	if branch == target {
 		// Never push to the target branch in MergeRequest mode.
 		return r.fail(ctx, dp, reasonBranchConflict, fmt.Sprintf("The proposal branch %q is the target branch.", branch))
@@ -478,6 +478,21 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		logf.FromContext(ctx).Info("Merge request created with a warning", "proposal", dp.Name, "warning", w)
 	}
 	return r.adoptMergeRequest(ctx, dp, mr, branch, target)
+}
+
+// recordedOrNewBranch is the branch a proposal is pushed to. A branch that was
+// recorded is always used, whatever the name would be now: a proposal of an
+// older version has backflow/<name>, and the prefix of the policy may have
+// changed since the branch was pushed. The name is computed only for a
+// proposal that has not pushed anything yet.
+func recordedOrNewBranch(prefix string, dp *backflowv1alpha1.DriftProposal) string {
+	if dp.Status.Branch != "" {
+		return dp.Status.Branch
+	}
+	if ref := dp.Status.MergeRequest; ref != nil && ref.Branch != "" {
+		return ref.Branch
+	}
+	return proposalBranch(prefix, dp)
 }
 
 // maxBranchLen keeps proposal branches well within what Git hosts accept.
