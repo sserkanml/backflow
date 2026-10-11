@@ -412,7 +412,7 @@ func (r *DriftProposalReconciler) branchIsOurs(ctx context.Context, dp *backflow
 	}
 	ours := 0
 	for _, e := range log {
-		if !hasProposalTrailer(e.Message, dp.Name) {
+		if !hasProposalTrailer(e.Message, dp) {
 			break
 		}
 		if e.Parents != 1 {

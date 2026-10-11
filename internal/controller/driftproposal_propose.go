@@ -332,7 +332,7 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 	if err != nil {
 		return false, "", err
 	}
-	if !hasProposalTrailer(info.Message, dp.Name) {
+	if !hasProposalTrailer(info.Message, dp) {
 		return false, "its tip does not carry this proposal's trailer", nil
 	}
 	if len(info.Parents) != 1 {
@@ -619,7 +619,7 @@ func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *back
 		return true, res, herr
 	}
 	for _, e := range log {
-		if hasProposalTrailer(e.Message, dp.Name) {
+		if hasProposalTrailer(e.Message, dp) {
 			return true, ctrl.Result{}, r.recordCommitted(ctx, dp, target, e.SHA)
 		}
 	}

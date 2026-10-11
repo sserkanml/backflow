@@ -735,7 +735,9 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		Context("an existing branch of the same name", func() {
-			ourMessage := "backflow: sync ConfigMap demo/demo-config from cluster\n\nProposal: prop-dp\n"
+			ourMessage := func() string {
+				return "backflow: sync ConfigMap demo/demo-config from cluster\n\nProposal: prop-dp\nProposal-UID: " + string(dp.UID) + "\n"
+			}
 			debugMap := strings.Replace(proposeConfigMap, "LOG_LEVEL: info", "LOG_LEVEL: debug", 1)
 
 			// pushedEarlier: the operator pushed the branch, then lost its status.
@@ -785,7 +787,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			It("is not adopted when the file content differs", func() {
 				repo.createBranchAt(branch, initial)
 				tip := repo.commitOnBranch(branch,
-					map[string]string{"apps/demo/configmap.yaml": strings.Replace(proposeConfigMap, "LOG_LEVEL: info", "LOG_LEVEL: trace", 1)}, ourMessage)
+					map[string]string{"apps/demo/configmap.yaml": strings.Replace(proposeConfigMap, "LOG_LEVEL: info", "LOG_LEVEL: trace", 1)}, ourMessage())
 				provider.created = append(provider.created, scm.CreateRequest{}) // keeps expectConflict's count honest
 				expectConflict(tip, "differs from the content")
 			})
@@ -793,7 +795,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			It("is not adopted when it also changes another file", func() {
 				repo.createBranchAt(branch, initial)
 				tip := repo.commitOnBranch(branch,
-					map[string]string{"apps/demo/configmap.yaml": debugMap, "README.md": "sneaked in\n"}, ourMessage)
+					map[string]string{"apps/demo/configmap.yaml": debugMap, "README.md": "sneaked in\n"}, ourMessage())
 				provider.created = append(provider.created, scm.CreateRequest{})
 				expectConflict(tip, "not only apps/demo/configmap.yaml")
 			})
@@ -802,9 +804,18 @@ var _ = Describe("DriftProposal proposing", func() {
 				repo.createBranchAt("side", initial)
 				side := repo.commitOnBranch("side", map[string]string{"README.md": "side work\n"}, "side")
 				repo.createBranchAt(branch, side)
-				tip := repo.commitOnBranch(branch, map[string]string{"apps/demo/configmap.yaml": debugMap}, ourMessage)
+				tip := repo.commitOnBranch(branch, map[string]string{"apps/demo/configmap.yaml": debugMap}, ourMessage())
 				provider.created = append(provider.created, scm.CreateRequest{})
 				expectConflict(tip, "not part of the target branch history")
+			})
+
+			It("is not adopted when its commit has our name but the UID of an earlier proposal", func() {
+				repo.createBranchAt(branch, initial)
+				tip := repo.commitOnBranch(branch, map[string]string{"apps/demo/configmap.yaml": debugMap},
+					"backflow: sync ConfigMap demo/demo-config from cluster\n\nProposal: prop-dp\nProposal-UID: 00000000-old\n")
+				repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change") // so the commit is not simply the same change
+				provider.created = append(provider.created, scm.CreateRequest{})
+				expectConflict(tip, "trailer")
 			})
 
 			It("without our trailer is only reused while it is exactly the change we would push", func() {
@@ -1808,6 +1819,26 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+		})
+
+		It("does not take the commit of an earlier proposal with the same name as its own", func() {
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			old := latest()
+			Expect(old.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			oldCommit := repo.branch("main")
+			Expect(repo.commitAt(oldCommit).Message).To(ContainSubstring("Proposal-UID: " + string(old.UID) + "\n"))
+
+			By("the user deletes it and the same drift is proposed again under the same name")
+			recreate(func(*backflowv1alpha1.DriftProposalSpec) {})
+			Expect(dp.UID).NotTo(Equal(old.UID))
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+
+			got := latest()
+			Expect(got.Status.CommitSHA).NotTo(Equal(oldCommit), "the old commit is not this proposal's")
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded), "Git already holds the live value; no second commit")
+			Expect(repo.branch("main")).To(Equal(oldCommit))
 		})
 
 		It("does not mistake another proposal's commit for its own", func() {

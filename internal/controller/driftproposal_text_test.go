@@ -14,7 +14,7 @@ import (
 
 func textProposal() *backflowv1alpha1.DriftProposal {
 	return &backflowv1alpha1.DriftProposal{
-		ObjectMeta: metav1.ObjectMeta{Name: "dp-abc", Namespace: "backflow-system"},
+		ObjectMeta: metav1.ObjectMeta{Name: "dp-abc", Namespace: "backflow-system", UID: "uid-1"},
 		Spec: backflowv1alpha1.DriftProposalSpec{
 			Application: backflowv1alpha1.ObjectRef{Name: "demo-app", Namespace: "argocd"},
 			Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
@@ -43,7 +43,7 @@ func TestCommitSubject(t *testing.T) {
 func TestCommitMessage(t *testing.T) {
 	want := "backflow: sync ConfigMap demo/demo-config from cluster\n\n" +
 		"Changed paths:\n- /data/LOG_LEVEL\n- /data/NEW\n- /data/OLD\n\n" +
-		"Proposal: dp-abc\nChanged-by: alice\n"
+		"Proposal: dp-abc\nProposal-UID: uid-1\nChanged-by: alice\n"
 	if got := textProposal(); commitMessage(got) != want {
 		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got), want)
 	}
@@ -59,27 +59,46 @@ func TestCommitMessage(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor.Username = "mallory\nProposal: other\nSigned-off-by: root"
 		got := commitMessage(dp)
-		if strings.Contains(got, "\nSigned-off-by") || hasProposalTrailer(got, "other") {
+		forged := textProposal()
+		forged.Name = "other"
+		if strings.Contains(got, "\nSigned-off-by") || hasProposalTrailer(got, forged) {
 			t.Errorf("injection through the username: %q", got)
 		}
 	})
 }
 
 func TestHasProposalTrailer(t *testing.T) {
-	msg := commitMessage(textProposal())
-	if !hasProposalTrailer(msg, "dp-abc") {
+	dp := textProposal()
+	msg := commitMessage(dp)
+	if !hasProposalTrailer(msg, dp) {
 		t.Error("own trailer not found")
 	}
-	for _, other := range []string{"dp-ab", "dp-abcd", "dp-abc "} {
+	with := func(mutate func(d *backflowv1alpha1.DriftProposal)) *backflowv1alpha1.DriftProposal {
+		d := textProposal()
+		mutate(d)
+		return d
+	}
+	for name, other := range map[string]*backflowv1alpha1.DriftProposal{
+		"a name that is a prefix":    with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-ab" }),
+		"a name that extends it":     with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-abcd" }),
+		"a name with a space":        with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-abc " }),
+		"the same name, another UID": with(func(d *backflowv1alpha1.DriftProposal) { d.UID = "uid-2" }),
+		"another name, the same UID": with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-xyz" }),
+		"a UID that is a prefix":     with(func(d *backflowv1alpha1.DriftProposal) { d.UID = "uid-" }),
+		"an object without a UID":    with(func(d *backflowv1alpha1.DriftProposal) { d.UID = "" }),
+	} {
 		if hasProposalTrailer(msg, other) {
-			t.Errorf("%q matched", other)
+			t.Errorf("%s matched", name)
 		}
 	}
-	if !hasProposalTrailer("subject\r\n\r\nProposal: dp-abc\r\n", "dp-abc") {
+	if !hasProposalTrailer("subject\r\n\r\nProposal: dp-abc\r\nProposal-UID: uid-1\r\n", dp) {
 		t.Error("CRLF message not matched")
 	}
-	if hasProposalTrailer("subject only", "dp-abc") {
+	if hasProposalTrailer("subject only", dp) {
 		t.Error("matched a message without trailer")
+	}
+	if hasProposalTrailer("subject\n\nProposal: dp-abc\n", dp) {
+		t.Error("a commit of an older version, without the UID, must not match")
 	}
 }
 

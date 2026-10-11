@@ -19,6 +19,9 @@ const (
 	// restarted operator recognises its own direct commit.
 	trailerProposal  = "Proposal"
 	trailerChangedBy = "Changed-by"
+	// trailerProposalUID names the object a commit was built for. Proposal
+	// names are content hashes and are reused, the UID never is.
+	trailerProposalUID = "Proposal-UID"
 
 	// maxCellRunes bounds a value shown in the merge request table.
 	maxCellRunes = 200
@@ -61,21 +64,30 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal) string {
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposal, dp.Name)
+	fmt.Fprintf(&b, "%s: %s\n", trailerProposalUID, dp.UID)
 	if a := dp.Spec.Actor; a != nil && singleLine(a.Username) != "" {
 		fmt.Fprintf(&b, "%s: %s\n", trailerChangedBy, singleLine(a.Username))
 	}
 	return b.String()
 }
 
-// hasProposalTrailer reports whether a commit message was built for the proposal.
-func hasProposalTrailer(message, proposal string) bool {
-	want := trailerProposal + ": " + proposal
+// hasProposalTrailer reports whether a commit message was built for this
+// proposal object: it carries both the name and the UID of the proposal. The
+// name alone is not enough, since an earlier proposal for the same drift (the
+// user deleted it to retry) has the same name.
+func hasProposalTrailer(message string, dp *backflowv1alpha1.DriftProposal) bool {
+	wantName := trailerProposal + ": " + dp.Name
+	wantUID := trailerProposalUID + ": " + string(dp.UID)
+	var name, uid bool
 	for line := range strings.SplitSeq(message, "\n") {
-		if strings.TrimRight(line, "\r") == want {
-			return true
+		switch strings.TrimRight(line, "\r") {
+		case wantName:
+			name = true
+		case wantUID:
+			uid = true
 		}
 	}
-	return false
+	return name && uid && dp.UID != ""
 }
 
 // cell renders a JSON value for a Markdown table cell.
