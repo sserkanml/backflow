@@ -2,12 +2,12 @@ name: Release Please
 
 # Opens (and keeps up to date) a release pull request from the Conventional
 # Commits on main. Merging it creates the v<version> tag and the GitHub
-# release; the tag triggers release.yml, which publishes the image and chart.
+# release, and the second job then calls release.yml to publish the image and
+# the chart. A tag that release-please creates with the default GITHUB_TOKEN does
+# not trigger other workflows, which is why release.yml is called from here.
 #
-# The token must not be the default GITHUB_TOKEN: a tag created with it does not
-# trigger other workflows. Use a fine-grained personal access token (or a GitHub
-# App token) with contents and pull requests write access, stored as the
-# repository secret RELEASE_PLEASE_TOKEN.
+# The repository setting "Allow GitHub Actions to create and approve pull
+# requests" (Settings > Actions > General) must be on.
 on:
   push:
     branches:
@@ -22,9 +22,23 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Publish
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
