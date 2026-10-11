@@ -327,6 +327,15 @@ branch_of() {
     "$(dp_field "$1" .status.branch)" >>"$WORKDIR/branches"
   printf '%s' "$branch"
 }
+
+# expect_cleaned_and_closed <proposal>: a retired proposal is cleaned up
+# (CleanedUp=True) and its merge request is closed.
+expect_cleaned_and_closed() {
+  local state
+  wait_for "cleanup finished (CleanedUp)" cleaned_up "$1"
+  IFS='|' read -r _ state _ _ <<<"$(mr_info "$(branch_of "$1")")"
+  expect_eq "merge request state" "closed" "$state"
+}
 condition()  { dp_field "$1" ".status.conditions[?(@.type==\"$2\")].$3"; }
 
 expect_eq() {
@@ -741,7 +750,7 @@ if [[ -n "$P_D" ]]; then
   wait_for "cleanup finished (CleanedUp)" cleaned_up "$P_D"
   IFS='|' read -r _ STATE_D2 _ _ <<<"$(mr_info "$BRANCH_D")"
   expect_eq "merge request state" "closed" "$STATE_D2"
-  expect_eq "the branch is deleted" "false" "$(branch_exists "$BRANCH_D" && echo true || echo false)"
+  expect_eq "the branch exists" "false" "$(branch_exists "$BRANCH_D" && echo true || echo false)"
   NOTES="$(gl GET "$(project_path "/merge_requests/$IID_D/notes?per_page=50")" | jx '" ".join(n["body"] for n in d if not n.get("system"))')"
   expect_contains "closing comment" "Backflow is closing this merge request" "$NOTES"
   expect_contains "closing comment (reason)" "back in sync with Git" "$NOTES"
@@ -836,7 +845,10 @@ PY
   P_F1="$(proposal_with 'Detected|Mapping|Proposed' '>"debug"' | head -n 1)"
   expect_eq "no pause Event for a commit outside the directory" "$EVENTS_BEFORE" "$(git_ahead_events)"
   set_log_level error
-  if [[ -n "$P_F1" ]]; then wait_for "and retired when the live value goes back" phase_is "$P_F1" Reverted; fi
+  if [[ -n "$P_F1" ]]; then
+    wait_for "and retired when the live value goes back" phase_is "$P_F1" Reverted
+    expect_cleaned_and_closed "$P_F1"
+  fi
 
   echo "  a commit under apps/demo..."
   BEFORE_F="$(proposal_count)"
@@ -874,7 +886,10 @@ PY
   remember_proposals
   P_F="$(proposal_with 'Detected|Mapping|Proposed' '>"debug"' | head -n 1)"
   set_log_level trace
-  if [[ -n "$P_F" ]]; then wait_for "and retired when the live value goes back" phase_is "$P_F" Reverted; fi
+  if [[ -n "$P_F" ]]; then
+    wait_for "and retired when the live value goes back" phase_is "$P_F" Reverted
+    expect_cleaned_and_closed "$P_F"
+  fi
 
   if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on"; fi
   if autosync_enabled; then pass "$APP has automated sync again"; else fail "$APP has no automated sync"; fi
