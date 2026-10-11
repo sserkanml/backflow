@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -270,15 +271,69 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should set Ready conditions on the samples without Argo CD installed, and keep running", func() {
+			By("making sure the cluster has no Argo CD Application CRD")
+			cmd := exec.Command("kubectl", "get", "crd", "applications.argoproj.io")
+			out, err := cmd.CombinedOutput()
+			Expect(err).To(HaveOccurred(), "this check is about a cluster without Argo CD: %s", out)
+
+			By("creating the Secrets the samples refer to, with dummy tokens")
+			for _, name := range []string{"gitlab-token", "argocd-token"} {
+				cmd = exec.Command("kubectl", "create", "secret", "generic", name, "-n", namespace,
+					"--from-literal=token=dummy")
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to create Secret "+name)
+			}
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "-k", "config/samples", "--ignore-not-found"))
+				for _, name := range []string{"gitlab-token", "argocd-token"} {
+					_, _ = utils.Run(exec.Command("kubectl", "delete", "secret", name, "-n", namespace, "--ignore-not-found"))
+				}
+			})
+
+			By("applying config/samples: an ScmConnection and a BackflowPolicy")
+			cmd = exec.Command("kubectl", "apply", "-k", "config/samples")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply config/samples")
+
+			readyOf := func(kind, name string) (status, reason string) {
+				cmd := exec.Command("kubectl", "get", kind, name, "-n", namespace, "-o",
+					"jsonpath={.status.conditions[?(@.type=='Ready')].status}/{.status.conditions[?(@.type=='Ready')].reason}")
+				output, err := utils.Run(cmd)
+				if err != nil {
+					return "", ""
+				}
+				status, reason, _ = strings.Cut(strings.TrimSpace(output), "/")
+				return status, reason
+			}
+
+			By("expecting the ScmConnection to be judged: a dummy token is not Ready")
+			Eventually(func(g Gomega) {
+				status, reason := readyOf("scmconnection", "gitlab")
+				g.Expect(status).To(Equal("False"))
+				g.Expect(reason).NotTo(BeEmpty())
+			}).Should(Succeed())
+
+			By("expecting the BackflowPolicy to say that Argo CD is not installed")
+			Eventually(func(g Gomega) {
+				status, reason := readyOf("backflowpolicy", "test-apps")
+				g.Expect(status).To(Equal("False"))
+				g.Expect(reason).To(Equal("ArgoCDNotFound"))
+			}).Should(Succeed())
+
+			By("expecting the operator to be running, and not to have crashed")
+			cmd = exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace, "-o",
+				"jsonpath={.status.phase}/{.status.containerStatuses[0].restartCount}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(output)).To(Equal("Running/0"))
+			cmd = exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+			logs, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(logs).To(ContainSubstring("Argo CD Application CRD not found"),
+				"the operator notices that there is no Argo CD and goes on without watching Applications")
+			Expect(logs).NotTo(ContainSubstring("panic"))
+		})
 	})
 })
 
