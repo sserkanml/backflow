@@ -59,8 +59,8 @@ func TestProposalName(t *testing.T) {
 
 func TestGitAheadSettling(t *testing.T) {
 	at := func(h, m, sec int) string { return time.Date(2026, 3, 4, h, m, sec, 0, time.UTC).Format(time.RFC3339) }
-	app := func(mutate func(o map[string]interface{})) *unstructured.Unstructured {
-		o := map[string]interface{}{}
+	app := func(mutate func(o map[string]any)) *unstructured.Unstructured {
+		o := map[string]any{}
 		_ = unstructured.SetNestedField(o, "bbb", "status", "sync", "revision")
 		_ = unstructured.SetNestedField(o, "bbb", "status", "operationState", "syncResult", "revision")
 		if mutate != nil {
@@ -70,34 +70,34 @@ func TestGitAheadSettling(t *testing.T) {
 	}
 	tests := []struct {
 		name     string
-		mutate   func(o map[string]interface{})
+		mutate   func(o map[string]any)
 		settling bool
 	}{
 		{"idle", nil, false},
-		{"a sync is running", func(o map[string]interface{}) {
+		{"a sync is running", func(o map[string]any) {
 			_ = unstructured.SetNestedField(o, "Running", "status", "operationState", "phase")
 		}, true},
-		{"a sync is being cancelled", func(o map[string]interface{}) {
+		{"a sync is being cancelled", func(o map[string]any) {
 			_ = unstructured.SetNestedField(o, "Terminating", "status", "operationState", "phase")
 		}, true},
-		{"a sync is requested", func(o map[string]interface{}) {
-			_ = unstructured.SetNestedField(o, map[string]interface{}{"sync": map[string]interface{}{}}, "operation")
+		{"a sync is requested", func(o map[string]any) {
+			_ = unstructured.SetNestedField(o, map[string]any{"sync": map[string]any{}}, "operation")
 		}, true},
-		{"finished sync, not compared again yet", func(o map[string]interface{}) {
+		{"finished sync, not compared again yet", func(o map[string]any) {
 			_ = unstructured.SetNestedField(o, "Succeeded", "status", "operationState", "phase")
 			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
 			_ = unstructured.SetNestedField(o, at(10, 0, 3), "status", "reconciledAt")
 		}, true},
-		{"compared after the sync", func(o map[string]interface{}) {
+		{"compared after the sync", func(o map[string]any) {
 			_ = unstructured.SetNestedField(o, "Succeeded", "status", "operationState", "phase")
 			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
 			_ = unstructured.SetNestedField(o, at(10, 0, 6), "status", "reconciledAt")
 		}, false},
-		{"compared in the same second", func(o map[string]interface{}) {
+		{"compared in the same second", func(o map[string]any) {
 			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "operationState", "finishedAt")
 			_ = unstructured.SetNestedField(o, at(10, 0, 5), "status", "reconciledAt")
 		}, false},
-		{"times missing or unreadable: nothing to judge", func(o map[string]interface{}) {
+		{"times missing or unreadable: nothing to judge", func(o map[string]any) {
 			_ = unstructured.SetNestedField(o, "yesterday", "status", "operationState", "finishedAt")
 			_ = unstructured.SetNestedField(o, at(10, 0, 3), "status", "reconciledAt")
 		}, false},
@@ -157,7 +157,7 @@ func TestIsFullSHA(t *testing.T) {
 
 func TestGitAhead(t *testing.T) {
 	app := func(compared, synced string, multi bool) *unstructured.Unstructured {
-		o := &unstructured.Unstructured{Object: map[string]interface{}{}}
+		o := &unstructured.Unstructured{Object: map[string]any{}}
 		set := func(v string, path ...string) {
 			if v == "" {
 				return
@@ -200,14 +200,14 @@ func TestGitAhead(t *testing.T) {
 
 func TestGitAheadUnfinishedSync(t *testing.T) {
 	app := func(phase string, selective bool) *unstructured.Unstructured {
-		o := map[string]interface{}{}
+		o := map[string]any{}
 		_ = unstructured.SetNestedField(o, "bbb", "status", "sync", "revision")
 		_ = unstructured.SetNestedField(o, "bbb", "status", "operationState", "syncResult", "revision")
 		if phase != "" {
 			_ = unstructured.SetNestedField(o, phase, "status", "operationState", "phase")
 		}
 		if selective {
-			_ = unstructured.SetNestedSlice(o, []interface{}{map[string]interface{}{"kind": "ConfigMap", "name": "c"}},
+			_ = unstructured.SetNestedSlice(o, []any{map[string]any{"kind": "ConfigMap", "name": "c"}},
 				"status", "operationState", "operation", "sync", "resources")
 		}
 		return &unstructured.Unstructured{Object: o}
@@ -241,7 +241,7 @@ func TestGitAheadUnfinishedSync(t *testing.T) {
 	}
 
 	t.Run("nothing compared: nothing to judge", func(t *testing.T) {
-		o := &unstructured.Unstructured{Object: map[string]interface{}{}}
+		o := &unstructured.Unstructured{Object: map[string]any{}}
 		if got := gitAhead(o); got.unfinished != "" {
 			t.Errorf("unfinished = %q", got.unfinished)
 		}
@@ -249,14 +249,14 @@ func TestGitAheadUnfinishedSync(t *testing.T) {
 }
 
 func TestSourceChange(t *testing.T) {
-	base := func() map[string]interface{} {
-		return map[string]interface{}{
+	base := func() map[string]any {
+		return map[string]any{
 			"repoURL": "https://git.example/r.git", "path": "apps/demo", "targetRevision": "main",
-			"directory": map[string]interface{}{"recurse": true, "include": "*.yaml"},
+			"directory": map[string]any{"recurse": true, "include": "*.yaml"},
 		}
 	}
-	app := func(spec, synced map[string]interface{}) *unstructured.Unstructured {
-		o := map[string]interface{}{}
+	app := func(spec, synced map[string]any) *unstructured.Unstructured {
+		o := map[string]any{}
 		if spec != nil {
 			_ = unstructured.SetNestedMap(o, spec, "spec", "source")
 		}
@@ -265,33 +265,33 @@ func TestSourceChange(t *testing.T) {
 		}
 		return &unstructured.Unstructured{Object: o}
 	}
-	with := func(mut func(m map[string]interface{})) map[string]interface{} {
+	with := func(mut func(m map[string]any)) map[string]any {
 		m := base()
 		mut(m)
 		return m
 	}
 	tests := []struct {
 		name         string
-		spec, synced map[string]interface{}
+		spec, synced map[string]any
 		want         string // substring of the reason, "" for no change
 	}{
 		{"identical", base(), base(), ""},
-		{"changed path", with(func(m map[string]interface{}) { m["path"] = "apps/other" }), base(), "path"},
-		{"changed directory.include", with(func(m map[string]interface{}) {
-			m["directory"] = map[string]interface{}{"recurse": true, "include": "*.json"}
+		{"changed path", with(func(m map[string]any) { m["path"] = "apps/other" }), base(), "path"},
+		{"changed directory.include", with(func(m map[string]any) {
+			m["directory"] = map[string]any{"recurse": true, "include": "*.json"}
 		}), base(), "directory"},
-		{"changed directory.recurse", with(func(m map[string]interface{}) {
-			m["directory"] = map[string]interface{}{"recurse": false, "include": "*.yaml"}
+		{"changed directory.recurse", with(func(m map[string]any) {
+			m["directory"] = map[string]any{"recurse": false, "include": "*.yaml"}
 		}), base(), "directory"},
-		{"changed target revision", with(func(m map[string]interface{}) { m["targetRevision"] = "v2" }), base(), "targetRevision"},
-		{"changed repository", with(func(m map[string]interface{}) { m["repoURL"] = "https://git.example/other.git" }), base(), "repoURL"},
-		{"helm values added", with(func(m map[string]interface{}) {
-			m["helm"] = map[string]interface{}{"valueFiles": []interface{}{"values.yaml"}}
+		{"changed target revision", with(func(m map[string]any) { m["targetRevision"] = "v2" }), base(), "targetRevision"},
+		{"changed repository", with(func(m map[string]any) { m["repoURL"] = "https://git.example/other.git" }), base(), "repoURL"},
+		{"helm values added", with(func(m map[string]any) {
+			m["helm"] = map[string]any{"valueFiles": []any{"values.yaml"}}
 		}), base(), "helm"},
-		{"path spelled differently", with(func(m map[string]interface{}) { m["path"] = "./apps/demo/" }), base(), ""},
-		{"defaults spelled out", with(func(m map[string]interface{}) {
-			m["directory"] = map[string]interface{}{"recurse": true, "include": "*.yaml", "jsonnet": map[string]interface{}{}}
-			m["plugin"] = map[string]interface{}{}
+		{"path spelled differently", with(func(m map[string]any) { m["path"] = "./apps/demo/" }), base(), ""},
+		{"defaults spelled out", with(func(m map[string]any) {
+			m["directory"] = map[string]any{"recurse": true, "include": "*.yaml", "jsonnet": map[string]any{}}
+			m["plugin"] = map[string]any{}
 		}), base(), ""},
 		{"never synced: nothing to compare", base(), nil, ""},
 		{"no source: nothing to compare", nil, base(), ""},
@@ -306,9 +306,9 @@ func TestSourceChange(t *testing.T) {
 	}
 
 	t.Run("several sources", func(t *testing.T) {
-		o := map[string]interface{}{}
-		_ = unstructured.SetNestedSlice(o, []interface{}{base(), base()}, "spec", "sources")
-		_ = unstructured.SetNestedSlice(o, []interface{}{base(), with(func(m map[string]interface{}) { m["path"] = "x" })},
+		o := map[string]any{}
+		_ = unstructured.SetNestedSlice(o, []any{base(), base()}, "spec", "sources")
+		_ = unstructured.SetNestedSlice(o, []any{base(), with(func(m map[string]any) { m["path"] = "x" })},
 			"status", "operationState", "syncResult", "sources")
 		if got := sourceChange(&unstructured.Unstructured{Object: o}); !strings.Contains(got, "path") {
 			t.Errorf("sourceChange = %q", got)
@@ -399,10 +399,10 @@ func TestSafeLabel(t *testing.T) {
 
 func TestApplicationSyncChanged(t *testing.T) {
 	newApp := func(status, reconciledAt string) *unstructured.Unstructured {
-		return &unstructured.Unstructured{Object: map[string]interface{}{
-			"status": map[string]interface{}{
+		return &unstructured.Unstructured{Object: map[string]any{
+			"status": map[string]any{
 				"reconciledAt": reconciledAt,
-				"resources": []interface{}{map[string]interface{}{
+				"resources": []any{map[string]any{
 					"version": "v1", "kind": "ConfigMap", "namespace": "demo", "name": "c", "status": status,
 				}},
 			},
@@ -470,11 +470,11 @@ func (f *fakeArgo) GetManagedResources(context.Context, string, string) ([]argoc
 	return f.items, f.err
 }
 
-func configMapState(level string) map[string]interface{} {
-	return map[string]interface{}{
+func configMapState(level string) map[string]any {
+	return map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
-		"metadata": map[string]interface{}{"name": "demo-config", "resourceVersion": level},
-		"data":     map[string]interface{}{"LOG_LEVEL": level},
+		"metadata": map[string]any{"name": "demo-config", "resourceVersion": level},
+		"data":     map[string]any{"LOG_LEVEL": level},
 	}
 }
 
@@ -489,7 +489,7 @@ var _ = Describe("Drift detection", func() {
 		r        *DriftReconciler
 	)
 
-	setResources := func(resources ...interface{}) {
+	setResources := func(resources ...any) {
 		Expect(unstructured.SetNestedSlice(app.Object, resources, "status", "resources")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
 	}
@@ -509,8 +509,8 @@ var _ = Describe("Drift detection", func() {
 		}
 		ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 	}
-	configMapRes := func(status string) map[string]interface{} {
-		return map[string]interface{}{
+	configMapRes := func(status string) map[string]any {
+		return map[string]any{
 			"version": "v1", "kind": "ConfigMap", "namespace": "demo", "name": "demo-config", "status": status,
 		}
 	}
@@ -951,7 +951,7 @@ var _ = Describe("Drift detection", func() {
 				ExpectWithOffset(1, unstructured.SetNestedField(app.Object, phase, "status", "operationState", "phase")).To(Succeed())
 				if selective {
 					ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object,
-						[]interface{}{map[string]interface{}{"kind": "ConfigMap", "name": "demo-config"}},
+						[]any{map[string]any{"kind": "ConfigMap", "name": "demo-config"}},
 						"status", "operationState", "operation", "sync", "resources")).To(Succeed())
 				}
 				ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
@@ -974,9 +974,9 @@ var _ = Describe("Drift detection", func() {
 
 		It("pauses when the source changed without a new revision, and resumes once a sync applies it", func() {
 			setRevisions(sha1, sha1)
-			synced := map[string]interface{}{"repoURL": "https://git.example/r.git", "path": "apps/demo", "targetRevision": "main"}
+			synced := map[string]any{"repoURL": "https://git.example/r.git", "path": "apps/demo", "targetRevision": "main"}
 			Expect(unstructured.SetNestedMap(app.Object, synced, "status", "operationState", "syncResult", "source")).To(Succeed())
-			changed := map[string]interface{}{"repoURL": "https://git.example/r.git", "path": "apps/other", "targetRevision": "main"}
+			changed := map[string]any{"repoURL": "https://git.example/r.git", "path": "apps/other", "targetRevision": "main"}
 			Expect(unstructured.SetNestedMap(app.Object, changed, "spec", "source")).To(Succeed())
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 			reconcileOnce()
@@ -1166,7 +1166,7 @@ var _ = Describe("Drift detection", func() {
 
 		It("does not use the path shortcut for Jsonnet: option set on the source", func() {
 			differ.paths = []string{"README.md"} // outside the directory, so a check would let it through
-			Expect(unstructured.SetNestedMap(app.Object, map[string]interface{}{"extVars": []interface{}{}, "tlas": []interface{}{map[string]interface{}{"name": "a", "value": "b"}}},
+			Expect(unstructured.SetNestedMap(app.Object, map[string]any{"extVars": []any{}, "tlas": []any{map[string]any{"name": "a", "value": "b"}}},
 				"spec", "source", "directory", "jsonnet")).To(Succeed())
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 			reconcileOnce()
@@ -1314,11 +1314,11 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("defaults the window for a manifest that leaves it out", func() {
-			raw := &unstructured.Unstructured{Object: map[string]interface{}{
+			raw := &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "backflow.io/v1alpha1", "kind": "BackflowPolicy",
-				"metadata": map[string]interface{}{"name": "window-default", "namespace": ns},
-				"spec": map[string]interface{}{
-					"applications": map[string]interface{}{"names": []interface{}{"x"}},
+				"metadata": map[string]any{"name": "window-default", "namespace": ns},
+				"spec": map[string]any{
+					"applications": map[string]any{"names": []any{"x"}},
 				},
 			}}
 			Expect(k8sClient.Create(ctx, raw)).To(Succeed())
@@ -1474,12 +1474,12 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("forgets a resource that stopped drifting while another one still does", func() {
-			svc := map[string]interface{}{"version": "v1", "kind": "Service", "namespace": "demo", "name": "demo", "status": "OutOfSync"}
+			svc := map[string]any{"version": "v1", "kind": "Service", "namespace": "demo", "name": "demo", "status": "OutOfSync"}
 			setResources(configMapRes("OutOfSync"), svc)
 			argo.items = append(argo.items, argocd.ManagedResource{
 				Kind: "Service", Namespace: "demo", Name: "demo",
-				PredictedLiveState:  map[string]interface{}{"spec": map[string]interface{}{"port": "80"}},
-				NormalizedLiveState: map[string]interface{}{"spec": map[string]interface{}{"port": "81"}},
+				PredictedLiveState:  map[string]any{"spec": map[string]any{"port": "80"}},
+				NormalizedLiveState: map[string]any{"spec": map[string]any{"port": "81"}},
 			})
 			reconcileDrift()
 			Expect(r.pending).To(HaveLen(2))
@@ -1494,7 +1494,7 @@ var _ = Describe("Drift detection", func() {
 			reconcileDrift()
 			Expect(r.pending).To(HaveLen(1))
 			// The ConfigMap left the Application; only a Service is left, and it is in sync.
-			setResources(map[string]interface{}{"version": "v1", "kind": "Service", "namespace": "demo", "name": "demo", "status": "Synced"})
+			setResources(map[string]any{"version": "v1", "kind": "Service", "namespace": "demo", "name": "demo", "status": "Synced"})
 			reconcileDrift()
 			Expect(r.pending).To(BeEmpty())
 		})
@@ -1637,7 +1637,7 @@ var _ = Describe("Drift detection", func() {
 		policy.Spec.IgnoreFields = nil
 		policy.Spec.Exclude = []backflowv1alpha1.KindSelector{{Kind: "ConfigMap"}}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
-		setResources(configMapRes("OutOfSync"), map[string]interface{}{
+		setResources(configMapRes("OutOfSync"), map[string]any{
 			"version": "v1", "kind": "Secret", "namespace": "demo", "name": "s", "status": "OutOfSync",
 		})
 		reconcileOnce()
@@ -1690,8 +1690,8 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	It("rejects an Application with several sources once, and makes no proposals", func() {
-		Expect(unstructured.SetNestedSlice(app.Object, []interface{}{
-			map[string]interface{}{"path": "apps/demo"}, map[string]interface{}{"path": "apps/other"},
+		Expect(unstructured.SetNestedSlice(app.Object, []any{
+			map[string]any{"path": "apps/demo"}, map[string]any{"path": "apps/other"},
 		}, "spec", "sources")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
 		for range 3 {
@@ -1814,7 +1814,7 @@ var _ = Describe("Drift detection", func() {
 		Expect(unstructured.SetNestedField(second.Object, "abc123", "status", "sync", "revision")).To(Succeed())
 		Expect(unstructured.SetNestedField(second.Object, "abc123", "status", "operationState", "syncResult", "revision")).To(Succeed())
 		Expect(unstructured.SetNestedField(second.Object, "Succeeded", "status", "operationState", "phase")).To(Succeed())
-		Expect(unstructured.SetNestedSlice(second.Object, []interface{}{configMapRes("OutOfSync")}, "status", "resources")).To(Succeed())
+		Expect(unstructured.SetNestedSlice(second.Object, []any{configMapRes("OutOfSync")}, "status", "resources")).To(Succeed())
 		Expect(k8sClient.Update(ctx, second)).To(Succeed())
 
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())

@@ -7,8 +7,8 @@ import (
 	"github.com/sserkanml/backflow/api/v1alpha1"
 )
 
-type obj = map[string]interface{}
-type arr = []interface{}
+type obj = map[string]any
+type arr = []any
 
 func TestDiff(t *testing.T) {
 	tests := []struct {

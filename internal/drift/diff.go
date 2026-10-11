@@ -27,7 +27,7 @@ var builtinIgnores = []string{
 // Diff returns the changes needed to turn desired into live, ordered by path.
 // Add means the field only exists live, Remove that it only exists in desired.
 // extraIgnores are additional JSON pointers to skip, including their subtrees.
-func Diff(desired, live map[string]interface{}, extraIgnores ...string) []v1alpha1.FieldChange {
+func Diff(desired, live map[string]any, extraIgnores ...string) []v1alpha1.FieldChange {
 	d := differ{ignores: append(append([]string{}, builtinIgnores...), extraIgnores...)}
 	d.diffMaps("", desired, live)
 	return d.changes
@@ -48,7 +48,7 @@ func (d *differ) ignored(path string) bool {
 	return false
 }
 
-func (d *differ) diffMaps(path string, desired, live map[string]interface{}) {
+func (d *differ) diffMaps(path string, desired, live map[string]any) {
 	keys := make([]string, 0, len(desired)+len(live))
 	for k := range desired {
 		keys = append(keys, k)
@@ -78,15 +78,15 @@ func (d *differ) diffMaps(path string, desired, live map[string]interface{}) {
 	}
 }
 
-func (d *differ) diffValues(path string, desired, live interface{}) {
+func (d *differ) diffValues(path string, desired, live any) {
 	switch dv := desired.(type) {
-	case map[string]interface{}:
-		if lv, ok := live.(map[string]interface{}); ok {
+	case map[string]any:
+		if lv, ok := live.(map[string]any); ok {
 			d.diffMaps(path, dv, lv)
 			return
 		}
-	case []interface{}:
-		if lv, ok := live.([]interface{}); ok && len(dv) == len(lv) {
+	case []any:
+		if lv, ok := live.([]any); ok && len(dv) == len(lv) {
 			for i := range dv {
 				p := path + "/" + itoa(i)
 				if d.ignored(p) {
@@ -110,7 +110,7 @@ func escape(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1")
 }
 
-func encode(v interface{}) string {
+func encode(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "null"

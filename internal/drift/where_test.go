@@ -7,9 +7,9 @@ import (
 	"github.com/sserkanml/backflow/api/v1alpha1"
 )
 
-func decode(t *testing.T, s string) map[string]interface{} {
+func decode(t *testing.T, s string) map[string]any {
 	t.Helper()
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
 		t.Fatal(err)
 	}
@@ -20,7 +20,7 @@ func TestLookup(t *testing.T) {
 	state := decode(t, `{"data":{"LOG_LEVEL":"warn","a/b":"x","n":0},"spec":{"ports":[{"port":80},{"port":443}]},"empty":null}`)
 	tests := []struct {
 		pointer string
-		want    interface{}
+		want    any
 		ok      bool
 	}{
 		{"/data/LOG_LEVEL", "warn", true},

@@ -321,7 +321,7 @@ func (r *DriftProposalReconciler) directorySource(ctx context.Context, dp *backf
 	src, found, _ := unstructured.NestedMap(app.Object, "spec", "source")
 	if !found {
 		if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
-			src, _ = sources[0].(map[string]interface{})
+			src, _ = sources[0].(map[string]any)
 		}
 	}
 	var info directorySourceInfo

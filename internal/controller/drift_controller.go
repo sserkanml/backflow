@@ -169,7 +169,7 @@ func appResources(app *unstructured.Unstructured) (res []appResource, known bool
 		return nil, false
 	}
 	for _, it := range items {
-		m, ok := it.(map[string]interface{})
+		m, ok := it.(map[string]any)
 		if !ok {
 			continue
 		}

@@ -155,44 +155,44 @@ func TestMapReproducesLiveState(t *testing.T) {
 		name   string
 		file   string
 		res    ResourceID
-		mutate func(m map[string]interface{})
+		mutate func(m map[string]any)
 	}{
 		{"changed config value", "apps/demo/configmap.yaml", ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
-			func(m map[string]interface{}) { m["data"].(map[string]interface{})["LOG_LEVEL"] = "trace" }},
+			func(m map[string]any) { m["data"].(map[string]any)["LOG_LEVEL"] = "trace" }},
 		{"new config key", "apps/demo/configmap.yaml", ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
-			func(m map[string]interface{}) { m["data"].(map[string]interface{})["EXTRA"] = "1" }},
+			func(m map[string]any) { m["data"].(map[string]any)["EXTRA"] = "1" }},
 		{"removed config key", "apps/demo/configmap.yaml", ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
-			func(m map[string]interface{}) { delete(m["data"].(map[string]interface{}), "GREETING") }},
+			func(m map[string]any) { delete(m["data"].(map[string]any), "GREETING") }},
 		{"new label map", "apps/demo/configmap.yaml", ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
-			func(m map[string]interface{}) {
-				m["metadata"].(map[string]interface{})["labels"] = map[string]interface{}{"app.kubernetes.io/name": "demo", "team": "x"}
+			func(m map[string]any) {
+				m["metadata"].(map[string]any)["labels"] = map[string]any{"app.kubernetes.io/name": "demo", "team": "x"}
 			}},
 		{"replicas", "apps/demo/deployment.yaml", ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"},
-			func(m map[string]interface{}) { m["spec"].(map[string]interface{})["replicas"] = float64(3) }},
+			func(m map[string]any) { m["spec"].(map[string]any)["replicas"] = float64(3) }},
 		{"container image", "apps/demo/deployment.yaml", ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"},
-			func(m map[string]interface{}) {
-				c := m["spec"].(map[string]interface{})["template"].(map[string]interface{})["spec"].(map[string]interface{})["containers"].([]interface{})
-				c[0].(map[string]interface{})["image"] = "nginx:1.28"
+			func(m map[string]any) {
+				c := m["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)
+				c[0].(map[string]any)["image"] = "nginx:1.28"
 			}},
 		{"container added (list length change)", "apps/demo/deployment.yaml", ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"},
-			func(m map[string]interface{}) {
-				sp := m["spec"].(map[string]interface{})["template"].(map[string]interface{})["spec"].(map[string]interface{})
-				sp["containers"] = append(sp["containers"].([]interface{}), map[string]interface{}{"name": "side", "image": "busybox"})
+			func(m map[string]any) {
+				sp := m["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+				sp["containers"] = append(sp["containers"].([]any), map[string]any{"name": "side", "image": "busybox"})
 			}},
 		{"container env added", "apps/demo/deployment.yaml", ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"},
-			func(m map[string]interface{}) {
-				c := m["spec"].(map[string]interface{})["template"].(map[string]interface{})["spec"].(map[string]interface{})["containers"].([]interface{})
-				c[0].(map[string]interface{})["env"] = []interface{}{map[string]interface{}{"name": "A", "value": "1"}}
+			func(m map[string]any) {
+				c := m["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)
+				c[0].(map[string]any)["env"] = []any{map[string]any{"name": "A", "value": "1"}}
 			}},
 		{"selector label changed", "apps/demo/deployment.yaml", ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"},
-			func(m map[string]interface{}) {
-				m["spec"].(map[string]interface{})["selector"].(map[string]interface{})["matchLabels"].(map[string]interface{})["app"] = "other"
+			func(m map[string]any) {
+				m["spec"].(map[string]any)["selector"].(map[string]any)["matchLabels"].(map[string]any)["app"] = "other"
 			}},
 	}
 	repo := demoRepo()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var desired map[string]interface{}
+			var desired map[string]any
 			doc, _ := Locate(files(repo), "apps/demo", DirectoryOptions{}, "demo", tt.res)
 			if doc == nil || doc.File != tt.file {
 				t.Fatalf("location = %v", doc)
@@ -213,7 +213,7 @@ func TestMapReproducesLiveState(t *testing.T) {
 				t.Fatalf("%v\nchanges: %+v", err, changes)
 			}
 			// The edited file, parsed, is the live state (nothing else drifted).
-			var edited map[string]interface{}
+			var edited map[string]any
 			if err := yaml.Unmarshal(res.Edited, &edited); err != nil {
 				t.Fatal(err)
 			}
@@ -227,7 +227,7 @@ func TestMapReproducesLiveState(t *testing.T) {
 	}
 }
 
-func mustMap(t *testing.T, data []byte) map[string]interface{} {
+func mustMap(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	m, err := documentMap(string(data), segment{0, len(data)})
 	if err != nil {
@@ -241,56 +241,56 @@ func mustMap(t *testing.T, data []byte) map[string]interface{} {
 // field, and the edit verifies.
 func TestMapDefaultedFields(t *testing.T) {
 	deploy := ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"}
-	spec := func(m map[string]interface{}) map[string]interface{} { return m["spec"].(map[string]interface{}) }
-	container := func(m map[string]interface{}) map[string]interface{} {
-		return spec(m)["template"].(map[string]interface{})["spec"].(map[string]interface{})["containers"].([]interface{})[0].(map[string]interface{})
+	spec := func(m map[string]any) map[string]any { return m["spec"].(map[string]any) }
+	container := func(m map[string]any) map[string]any {
+		return spec(m)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
 	}
 	noReplicas := strings.Replace(demoDeployment, "  # Keep it small.\n  replicas: 1\n", "", 1)
 
 	tests := []struct {
 		name      string
 		manifest  string
-		defaults  func(m map[string]interface{}) // what Argo CD's predicted state adds
-		mutate    func(m map[string]interface{}) // what changed live
+		defaults  func(m map[string]any) // what Argo CD's predicted state adds
+		mutate    func(m map[string]any) // what changed live
 		wantPath  string
 		wantEdit  string // text the edited file must contain
 		wantAbsOK string // text that must not appear (the edit stays minimal)
 	}{
 		{
 			name: "revisionHistoryLimit", manifest: demoDeployment,
-			defaults: func(m map[string]interface{}) { spec(m)["revisionHistoryLimit"] = float64(10) },
-			mutate:   func(m map[string]interface{}) { spec(m)["revisionHistoryLimit"] = float64(5) },
+			defaults: func(m map[string]any) { spec(m)["revisionHistoryLimit"] = float64(10) },
+			mutate:   func(m map[string]any) { spec(m)["revisionHistoryLimit"] = float64(5) },
 			wantPath: "/spec/revisionHistoryLimit", wantEdit: "  revisionHistoryLimit: 5\n",
 		},
 		{
 			name: "replicas missing from the manifest", manifest: noReplicas,
-			defaults: func(m map[string]interface{}) { spec(m)["replicas"] = float64(1) },
-			mutate:   func(m map[string]interface{}) { spec(m)["replicas"] = float64(3) },
+			defaults: func(m map[string]any) { spec(m)["replicas"] = float64(1) },
+			mutate:   func(m map[string]any) { spec(m)["replicas"] = float64(3) },
 			wantPath: "/spec/replicas", wantEdit: "  replicas: 3\n",
 		},
 		{
 			name: "imagePullPolicy of a container", manifest: demoDeployment,
-			defaults: func(m map[string]interface{}) { container(m)["imagePullPolicy"] = "IfNotPresent" },
-			mutate:   func(m map[string]interface{}) { container(m)["imagePullPolicy"] = "Always" },
+			defaults: func(m map[string]any) { container(m)["imagePullPolicy"] = "IfNotPresent" },
+			mutate:   func(m map[string]any) { container(m)["imagePullPolicy"] = "Always" },
 			wantPath: "/spec/template/spec/containers/0/imagePullPolicy", wantEdit: "          imagePullPolicy: Always\n",
 		},
 		{
 			name: "a nested default below a missing parent", manifest: demoDeployment,
-			defaults: func(m map[string]interface{}) {
-				spec(m)["strategy"] = map[string]interface{}{
+			defaults: func(m map[string]any) {
+				spec(m)["strategy"] = map[string]any{
 					"type":          "RollingUpdate",
-					"rollingUpdate": map[string]interface{}{"maxSurge": "25%", "maxUnavailable": "25%"},
+					"rollingUpdate": map[string]any{"maxSurge": "25%", "maxUnavailable": "25%"},
 				}
 			},
-			mutate: func(m map[string]interface{}) {
-				spec(m)["strategy"].(map[string]interface{})["rollingUpdate"].(map[string]interface{})["maxSurge"] = "50%"
+			mutate: func(m map[string]any) {
+				spec(m)["strategy"].(map[string]any)["rollingUpdate"].(map[string]any)["maxSurge"] = "50%"
 			},
 			wantPath: "/spec/strategy/rollingUpdate/maxSurge", wantEdit: "  strategy:\n    rollingUpdate:\n      maxSurge: 50%\n",
 		},
 		{
 			name: "a default and a real change together", manifest: demoDeployment,
-			defaults: func(m map[string]interface{}) { spec(m)["revisionHistoryLimit"] = float64(10) },
-			mutate: func(m map[string]interface{}) {
+			defaults: func(m map[string]any) { spec(m)["revisionHistoryLimit"] = float64(10) },
+			mutate: func(m map[string]any) {
 				spec(m)["revisionHistoryLimit"] = float64(5)
 				spec(m)["replicas"] = float64(3)
 			},
@@ -332,7 +332,7 @@ func TestMapDefaultedFields(t *testing.T) {
 			editedMap := mustMap(t, res.Edited)
 			for _, c := range changes {
 				segs, _ := parsePointer(c.Path)
-				var want interface{}
+				var want any
 				if err := json.Unmarshal([]byte(c.Live), &want); err != nil {
 					t.Fatal(err)
 				}

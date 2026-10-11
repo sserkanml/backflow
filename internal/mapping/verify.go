@@ -25,7 +25,7 @@ import (
 // document holds exactly the live value at the proposal's path and the Add
 // contains nothing else.
 func Verify(original, edited []byte, document int, changes []v1alpha1.FieldChange) error {
-	fail := func(format string, args ...interface{}) error {
+	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, fmt.Sprintf(format, args...))
 	}
 	oText, eText := string(original), string(edited)
@@ -65,7 +65,7 @@ func Verify(original, edited []byte, document int, changes []v1alpha1.FieldChang
 // acceptDefaulted pairs each proposal Replace on a path that is absent in the
 // original with the Add in got that created it, checks the value, and returns
 // the proposal changes and the edit's changes that are left to compare.
-func acceptDefaulted(orig, edited map[string]interface{}, got, want []v1alpha1.FieldChange) (restWant, restGot []v1alpha1.FieldChange, err error) {
+func acceptDefaulted(orig, edited map[string]any, got, want []v1alpha1.FieldChange) (restWant, restGot []v1alpha1.FieldChange, err error) {
 	claimed := map[int][]string{} // index in got -> proposal paths it covers
 	for _, c := range want {
 		if c.Op != v1alpha1.OpReplace {
@@ -91,7 +91,7 @@ func acceptDefaulted(orig, edited map[string]interface{}, got, want []v1alpha1.F
 		if idx < 0 {
 			return nil, nil, fmt.Errorf("%s is not in the file and the edit does not add it", c.Path)
 		}
-		var live interface{}
+		var live any
 		if jerr := json.Unmarshal([]byte(c.Live), &live); jerr != nil {
 			return nil, nil, fmt.Errorf("the live value of %s is not valid JSON: %v", c.Path, jerr)
 		}
@@ -107,7 +107,7 @@ func acceptDefaulted(orig, edited map[string]interface{}, got, want []v1alpha1.F
 			restGot = append(restGot, g)
 			continue
 		}
-		var added interface{}
+		var added any
 		if jerr := json.Unmarshal([]byte(g.Live), &added); jerr != nil {
 			return nil, nil, fmt.Errorf("the edit's value at %s is not valid JSON: %v", g.Path, jerr)
 		}
@@ -131,8 +131,8 @@ func coveredBy(path string, claimed []string) bool {
 
 // leafPaths lists the JSON pointers of everything under value that is not a
 // non-empty object.
-func leafPaths(base string, value interface{}) []string {
-	m, ok := value.(map[string]interface{})
+func leafPaths(base string, value any) []string {
+	m, ok := value.(map[string]any)
 	if !ok || len(m) == 0 {
 		return []string{base}
 	}
@@ -148,17 +148,17 @@ func escapeSegment(s string) string {
 }
 
 // lookup follows a JSON pointer in decoded JSON.
-func lookup(doc interface{}, segs []string) (interface{}, bool) {
+func lookup(doc any, segs []string) (any, bool) {
 	cur := doc
 	for _, s := range segs {
 		switch t := cur.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			v, ok := t[s]
 			if !ok {
 				return nil, false
 			}
 			cur = v
-		case []interface{}:
+		case []any:
 			i, err := strconv.Atoi(s)
 			if err != nil || i < 0 || i >= len(t) {
 				return nil, false
@@ -173,8 +173,8 @@ func lookup(doc interface{}, segs []string) (interface{}, bool) {
 
 // documentMap parses a document into the same shape drift.Diff gets from
 // Argo CD: JSON types only.
-func documentMap(text string, seg segment) (map[string]interface{}, error) {
-	var v interface{}
+func documentMap(text string, seg segment) (map[string]any, error) {
+	var v any
 	if err := yaml.Unmarshal([]byte(parseText(text, seg)), &v); err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func documentMap(text string, seg segment) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return nil, err
 	}

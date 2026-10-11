@@ -48,7 +48,7 @@ func TestGetManagedResources(t *testing.T) {
 	if got[0].Kind != "ConfigMap" || got[0].Name != "demo-config" || got[0].Namespace != "demo" {
 		t.Errorf("unexpected resource: %+v", got[0])
 	}
-	data := got[0].NormalizedLiveState["data"].(map[string]interface{})
+	data := got[0].NormalizedLiveState["data"].(map[string]any)
 	if data["LOG_LEVEL"] != "debug" {
 		t.Errorf("normalized = %v", got[0].NormalizedLiveState)
 	}

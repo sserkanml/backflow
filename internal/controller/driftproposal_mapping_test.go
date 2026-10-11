@@ -130,7 +130,7 @@ var _ = Describe("DriftProposal mapping", func() {
 	logLevelChange := backflowv1alpha1.FieldChange{
 		Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`,
 	}
-	setDirectory := func(dir map[string]interface{}) {
+	setDirectory := func(dir map[string]any) {
 		ExpectWithOffset(1, unstructured.SetNestedField(app.Object, dir, "spec", "source", "directory")).To(Succeed())
 		ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 	}
@@ -262,7 +262,7 @@ var _ = Describe("DriftProposal mapping", func() {
 			"apps/demo/sub/configmap.yaml":  mappingConfigMap,
 			"apps/demo/skip/configmap.yaml": mappingConfigMap,
 		})
-		setDirectory(map[string]interface{}{"recurse": true, "exclude": "{skip/*}"})
+		setDirectory(map[string]any{"recurse": true, "exclude": "{skip/*}"})
 		_, err := reconcileDP()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
@@ -334,7 +334,7 @@ var _ = Describe("DriftProposal mapping", func() {
 			nil, reasonUnsupportedFileFormat),
 		Entry("an include pattern does not compile",
 			map[string]string{"apps/demo/configmap.yaml": mappingConfigMap},
-			func() { setDirectory(map[string]interface{}{"include": "["}) }, reasonInvalidSourceOptions),
+			func() { setDirectory(map[string]any{"include": "["}) }, reasonInvalidSourceOptions),
 	)
 
 	DescribeTable("does not map sources other than Directory",

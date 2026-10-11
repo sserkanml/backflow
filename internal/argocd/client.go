@@ -59,9 +59,9 @@ type ManagedResource struct {
 	Namespace string
 	Name      string
 	// PredictedLiveState is what Git wants, rendered and defaulted.
-	PredictedLiveState map[string]interface{}
+	PredictedLiveState map[string]any
 	// NormalizedLiveState is what is live, normalised.
-	NormalizedLiveState map[string]interface{}
+	NormalizedLiveState map[string]any
 }
 
 // New builds a Client from cfg.
@@ -170,11 +170,11 @@ func (c *Client) GetManagedResources(ctx context.Context, appName, appNamespace 
 }
 
 // decodeState decodes a JSON-encoded object. Empty and "null" yield nil.
-func decodeState(s string) (map[string]interface{}, error) {
+func decodeState(s string) (map[string]any, error) {
 	if s == "" || s == "null" {
 		return nil, nil
 	}
-	var m map[string]interface{}
+	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
 		return nil, err
 	}

@@ -51,7 +51,7 @@ func Apply(file string, original []byte, document int, changes []v1alpha1.FieldC
 	return []byte(text), nil
 }
 
-func cannot(format string, args ...interface{}) error {
+func cannot(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrCannotApply, fmt.Sprintf(format, args...))
 }
 
