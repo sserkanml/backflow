@@ -1927,12 +1927,64 @@ var _ = Describe("Drift detection", func() {
 			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 		})
 
-		It("forgets a policy that is not Ready", func() {
-			fill()
+		notReady := func() {
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 			policy.Status.Conditions[0].Status = metav1.ConditionFalse
+			policy.Status.Conditions[0].LastTransitionTime = metav1.NewTime(clock())
 			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		}
+		ready := func() {
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Conditions[0].Status = metav1.ConditionTrue
+			policy.Status.Conditions[0].LastTransitionTime = metav1.NewTime(clock())
+			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		}
+		reconcileResult := func() reconcile.Result {
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: policy.Name}})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			return res
+		}
+
+		It("keeps what it knows across a short Ready flap", func() {
+			fill()
+			notReady()
+			res := reconcileResult()
+			p, rep, c := sizes()
+			Expect([]int{p, rep, c}).To(Equal([]int{1, 1, 1}), "kept while not Ready")
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0), "it looks again when the grace is over")
+			Expect(res.RequeueAfter).To(BeNumerically("<=", 2*policy.Spec.EffectiveBatchWindow()+time.Second))
+			Expect(argo.closed).To(BeZero(), "the client is still in use")
+
+			By("still kept just before twice the batch window is over")
+			advance(2*policy.Spec.EffectiveBatchWindow() - time.Second)
+			reconcileResult()
+			p, rep, c = sizes()
+			Expect([]int{p, rep, c}).To(Equal([]int{1, 1, 1}))
+
+			By("back to Ready: the window that was running goes on, no new observation window is needed")
+			ready()
 			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1), "the drift was seen long enough already")
+			Expect(builds).To(Equal(1), "the same client")
+		})
+
+		It("forgets a policy that stays not Ready for longer than twice its batch window", func() {
+			fill()
+			notReady()
+			reconcileResult()
+			advance(2*policy.Spec.EffectiveBatchWindow() + time.Second)
+			Expect(reconcileResult().RequeueAfter).To(BeZero())
+			p, rep, c := sizes()
+			Expect([]int{p, rep, c}).To(Equal([]int{0, 0, 0}))
+			Expect(argo.closed).To(Equal(1))
+		})
+
+		It("forgets a policy without argoCD settings at once", func() {
+			fill()
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Spec.ArgoCD = nil
+			Expect(k8sClient.Update(ctx, policy)).To(Succeed())
+			reconcileResult()
 			p, rep, c := sizes()
 			Expect([]int{p, rep, c}).To(Equal([]int{0, 0, 0}))
 		})

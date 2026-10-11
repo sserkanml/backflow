@@ -115,9 +115,12 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if policy.Spec.ArgoCD == nil || !meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready") {
+	if policy.Spec.ArgoCD == nil {
 		r.forgetPolicy(policy.Namespace + "/" + policy.Name)
 		return ctrl.Result{}, nil
+	}
+	if ready := meta.FindStatusCondition(policy.Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionTrue {
+		return r.notReady(&policy, ready), nil
 	}
 
 	argo, err := r.argoClient(ctx, &policy)
@@ -183,6 +186,28 @@ func appResources(app *unstructured.Unstructured) (res []appResource, known bool
 		})
 	}
 	return res, true
+}
+
+// notReady handles a policy that is not Ready. Ready flaps (a connection is
+// briefly not verified, a policy controller restarts), and what was seen of
+// drifts, what was reported and the Argo CD client are worth keeping across a
+// short one: dropping them restarts every stability window and reports
+// everything again. They are dropped once the policy has been not Ready for
+// longer than twice its batch window. It asks to be called again then, so a
+// policy that stays not Ready is cleared without waiting for an event.
+func (r *DriftReconciler) notReady(policy *backflowv1alpha1.BackflowPolicy, ready *metav1.Condition) ctrl.Result {
+	pol := policy.Namespace + "/" + policy.Name
+	if ready == nil {
+		r.forgetPolicy(pol) // never resolved: nothing was kept
+		return ctrl.Result{}
+	}
+	grace := 2 * policy.Spec.EffectiveBatchWindow()
+	elapsed := r.now().Sub(ready.LastTransitionTime.Time)
+	if elapsed > grace {
+		r.forgetPolicy(pol)
+		return ctrl.Result{}
+	}
+	return ctrl.Result{RequeueAfter: grace - elapsed + time.Second}
 }
 
 // appRun is what one reconcile of an Application works with.
