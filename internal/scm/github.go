@@ -32,6 +32,7 @@ type githubPR struct {
 	MergeCommitSHA string `json:"merge_commit_sha"`
 	Head           struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -41,7 +42,7 @@ type githubPR struct {
 func (p githubPR) convert() *MergeRequest {
 	out := &MergeRequest{
 		Number: p.Number, URL: p.HTMLURL,
-		SourceBranch: p.Head.Ref, TargetBranch: p.Base.Ref,
+		SourceBranch: p.Head.Ref, TargetBranch: p.Base.Ref, HeadSHA: p.Head.SHA,
 	}
 	switch {
 	case p.Merged:

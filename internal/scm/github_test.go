@@ -8,7 +8,7 @@ import (
 )
 
 const ghPR = `{"number":12,"html_url":"https://github.example.com/o/r/pull/12","state":"open","merged":false,
-"head":{"ref":"backflow/dp-1"},"base":{"ref":"main"}}`
+"head":{"ref":"backflow/dp-1","sha":"headsha"},"base":{"ref":"main"}}`
 
 // GitHub Enterprise layout: any base URL other than github.com uses /api/v3.
 func newGitHubTest(t *testing.T, replies map[string]reply) (Provider, *fakeServer) {
@@ -44,7 +44,7 @@ func TestGitHubFindOpenMergeRequest(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := &MergeRequest{Number: 12, URL: "https://github.example.com/o/r/pull/12",
-			State: StateOpen, SourceBranch: "backflow/dp-1", TargetBranch: "main"}
+			State: StateOpen, SourceBranch: "backflow/dp-1", TargetBranch: "main", HeadSHA: "headsha"}
 		if !reflect.DeepEqual(mr, want) {
 			t.Errorf("got %+v, want %+v", mr, want)
 		}

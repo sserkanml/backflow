@@ -3,7 +3,7 @@
 # Backflow - merge request end-to-end test
 #
 # Runs the full path against the real demo repository on gitlab.com:
-#   a. A LOG_LEVEL drift becomes a merge request from backflow/<proposal> into
+#   a. A LOG_LEVEL drift becomes a merge request from backflow/<proposal>-<uid8> into
 #      main. The file on the branch has the live value and keeps its comment
 #      line; the proposal is Proposed with the merge request URL; main is not
 #      touched.
@@ -315,6 +315,9 @@ app_synced_at() {
 }
 
 dp_field() { k -n "$NS" get driftproposal "$1" -o jsonpath="{$2}" 2>/dev/null; }
+
+# branch_of <proposal>: the branch Backflow pushes for a proposal, backflow/<name>-<first 8 of its UID>.
+branch_of() { printf 'backflow/%s-%s' "$1" "$(dp_field "$1" .metadata.uid | cut -c1-8)"; }
 condition()  { dp_field "$1" ".status.conditions[?(@.type==\"$2\")].$3"; }
 
 expect_eq() {
@@ -608,7 +611,7 @@ wait_for "proposal is Proposed (info -> debug)" has_proposal Proposed '/data/LOG
 remember_proposals
 P_A="$(proposal_with Proposed '"debug"' | head -n 1)"
 if [[ -n "$P_A" ]]; then
-  BRANCH_A="backflow/$P_A"
+  BRANCH_A="$(branch_of "$P_A")"
   IFS='|' read -r IID_A STATE_A URL_A _ <<<"$(mr_info "$BRANCH_A")"
   expect_nonempty "merge request from $BRANCH_A" "$IID_A"
   expect_eq "merge request state" "opened" "$STATE_A"
@@ -676,7 +679,7 @@ wait_for "proposal is Proposed (info -> warn)" has_proposal Proposed '/data/LOG_
 remember_proposals
 P_C="$(proposal_with Proposed '"warn"' | head -n 1)"
 if [[ -n "$P_C" ]]; then
-  BRANCH_C="backflow/$P_C"
+  BRANCH_C="$(branch_of "$P_C")"
   IFS='|' read -r IID_C STATE_C URL_C _ <<<"$(mr_info "$BRANCH_C")"
   expect_nonempty "merge request from $BRANCH_C" "$IID_C"
   expect_eq "merge request state" "opened" "$STATE_C"
@@ -719,7 +722,7 @@ wait_for "proposal is Proposed (warn -> debug)" has_proposal Proposed '/data/LOG
 remember_proposals
 P_D="$(proposal_with Proposed '>"debug"' | head -n 1)"
 if [[ -n "$P_D" ]]; then
-  BRANCH_D="backflow/$P_D"
+  BRANCH_D="$(branch_of "$P_D")"
   IFS='|' read -r IID_D STATE_D _ _ <<<"$(mr_info "$BRANCH_D")"
   expect_eq "merge request state" "opened" "$STATE_D"
   expect_eq "the branch exists" "true" "$(branch_exists "$BRANCH_D" && echo true || echo false)"
@@ -743,7 +746,7 @@ wait_for "proposal is Proposed (warn -> error)" has_proposal Proposed '/data/LOG
 remember_proposals
 P_E="$(proposal_with Proposed '>"error"' | head -n 1)"
 if [[ -n "$P_E" ]]; then
-  BRANCH_E="backflow/$P_E"
+  BRANCH_E="$(branch_of "$P_E")"
   IFS='|' read -r IID_E STATE_E _ _ <<<"$(mr_info "$BRANCH_E")"
   expect_eq "merge request state" "opened" "$STATE_E"
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"time"
 
@@ -389,7 +390,7 @@ func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal,
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	policy *backflowv1alpha1.BackflowPolicy, access *scmAccess, project, target string) (ctrl.Result, error) {
 	opts := mergeRequestOptions(policy)
-	branch := opts.BranchPrefix + dp.Name
+	branch := proposalBranch(opts.BranchPrefix, dp)
 	if branch == target {
 		// Never push to the target branch in MergeRequest mode.
 		return r.fail(ctx, dp, reasonBranchConflict, fmt.Sprintf("The proposal branch %q is the target branch.", branch))
@@ -410,7 +411,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		if err != nil {
 			return r.scmFailure(ctx, dp, err)
 		}
-		if mr != nil {
+		if mr != nil && r.carriesOurWork(ctx, dp, access, mr, branch) {
 			return r.adoptMergeRequest(ctx, dp, mr, branch, target)
 		}
 	}
@@ -453,7 +454,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	if err != nil {
 		return r.scmFailure(ctx, dp, err)
 	}
-	if mr != nil {
+	if mr != nil && r.carriesOurWork(ctx, dp, access, mr, branch, change.sha) {
 		return r.adoptMergeRequest(ctx, dp, mr, branch, target)
 	}
 	assignee := ""
@@ -476,6 +477,50 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		logf.FromContext(ctx).Info("Merge request created with a warning", "proposal", dp.Name, "warning", w)
 	}
 	return r.adoptMergeRequest(ctx, dp, mr, branch, target)
+}
+
+// maxBranchLen keeps proposal branches well within what Git hosts accept.
+const maxBranchLen = 200
+
+// proposalBranch names the branch of a proposal: <prefix><name>-<uid8>. The UID
+// of the proposal object is stable across restarts, so a crashed run finds its
+// own branch again, but an object created later (the user deleted a Rejected
+// proposal to retry, or a policy was recreated) has the same content hash as
+// its name and never shares a branch, or a merge request, with an old one.
+func proposalBranch(prefix string, dp *backflowv1alpha1.DriftProposal) string {
+	uid := string(dp.UID)
+	if len(uid) > 8 {
+		uid = uid[:8]
+	}
+	name := dp.Name
+	if room := maxBranchLen - len(prefix) - len(uid) - 1; room < len(name) && room > 0 {
+		name = strings.Trim(name[:room], "-")
+	}
+	return prefix + name + "-" + uid
+}
+
+// carriesOurWork reports whether a merge request found by the proposal's
+// branch is the proposal's own. An open one is adopted. A closed or merged one
+// only when its head is a commit of ours: the tip of the recorded branch, or a
+// commit just built (known). A request of an earlier proposal that happened to
+// use the same branch name is not ours.
+func (r *DriftProposalReconciler) carriesOurWork(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	access *scmAccess, mr *scm.MergeRequest, branch string, known ...string) bool {
+	if mr.State == scm.StateOpen {
+		return true
+	}
+	if mr.HeadSHA == "" {
+		return false
+	}
+	if slices.Contains(known, mr.HeadSHA) {
+		return true
+	}
+	if tip, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, branch, access.auth); err == nil && tip == mr.HeadSHA {
+		return true
+	}
+	logf.FromContext(ctx).Info("Ignoring a closed or merged merge request that does not carry this proposal's work",
+		"proposal", dp.Name, "url", mr.URL, "head", mr.HeadSHA)
+	return false
 }
 
 // adoptMergeRequest records the merge request of the proposal's branch in the

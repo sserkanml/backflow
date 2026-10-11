@@ -29,7 +29,7 @@ func TestGitLabFindOpenMergeRequest(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := &MergeRequest{Number: 7, URL: "https://gitlab.example.com/g/p/-/merge_requests/7",
-			State: StateOpen, SourceBranch: "backflow/dp-1", TargetBranch: "main"}
+			State: StateOpen, SourceBranch: "backflow/dp-1", TargetBranch: "main", HeadSHA: "headsha"}
 		if !reflect.DeepEqual(mr, want) {
 			t.Errorf("got %+v, want %+v", mr, want)
 		}

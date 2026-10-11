@@ -34,7 +34,7 @@ type gitlabMR struct {
 func (m gitlabMR) convert() *MergeRequest {
 	out := &MergeRequest{
 		Number: m.IID, URL: m.WebURL,
-		SourceBranch: m.SourceBranch, TargetBranch: m.TargetBranch,
+		SourceBranch: m.SourceBranch, TargetBranch: m.TargetBranch, HeadSHA: m.SHA,
 	}
 	switch m.State {
 	case "opened", "locked":

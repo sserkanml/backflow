@@ -76,6 +76,10 @@ type MergeRequest struct {
 	State        State
 	SourceBranch string
 	TargetBranch string
+	// HeadSHA is the commit the source branch pointed at, as the provider
+	// reports it (GitLab "sha", GitHub "head.sha"). It stays after the branch is
+	// gone, which tells whose commits a merged or closed request carried.
+	HeadSHA string
 	// MergeCommitSHA is the commit that contains the change on the target
 	// branch. Set only when State is StateMerged and the provider reports it.
 	MergeCommitSHA string

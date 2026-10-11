@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"k8s.io/apimachinery/pkg/types"
 	"strings"
 	"testing"
 	"time"
@@ -166,5 +167,31 @@ func TestClosingCommentMentionsAKeptBranch(t *testing.T) {
 	got := closingComment(dp, "backflow/dp", "someone else pushed to it")
 	if !strings.Contains(got, "The branch `backflow/dp` was not deleted: someone else pushed to it.") {
 		t.Errorf("comment = %q", got)
+	}
+}
+
+func TestProposalBranch(t *testing.T) {
+	dp := func(name, uid string) *backflowv1alpha1.DriftProposal {
+		d := &backflowv1alpha1.DriftProposal{}
+		d.Name, d.UID = name, types.UID(uid)
+		return d
+	}
+	const uid = "3f2a9c1e-7b44-4d55-a0aa-0123456789ab"
+	if got := proposalBranch("backflow/", dp("demo-app-configmap-x-1a2b3c4d", uid)); got != "backflow/demo-app-configmap-x-1a2b3c4d-3f2a9c1e" {
+		t.Errorf("branch = %q", got)
+	}
+	if proposalBranch("backflow/", dp("n", uid)) == proposalBranch("backflow/", dp("n", "99999999-7b44-4d55-a0aa-0123456789ab")) {
+		t.Error("two objects with the same name must not share a branch")
+	}
+	if proposalBranch("backflow/", dp("n", uid)) != proposalBranch("backflow/", dp("n", uid)) {
+		t.Error("the branch of one object must be stable")
+	}
+	if got := proposalBranch("x/", dp("n", "abc")); got != "x/n-abc" {
+		t.Errorf("a short UID is used whole: %q", got)
+	}
+	long := strings.Repeat("a", 300)
+	got := proposalBranch("backflow/", dp(long, uid))
+	if len(got) > maxBranchLen || !strings.HasSuffix(got, "-3f2a9c1e") || !strings.HasPrefix(got, "backflow/a") {
+		t.Errorf("a long name is cut, the UID is kept: %q (%d)", got, len(got))
 	}
 }
