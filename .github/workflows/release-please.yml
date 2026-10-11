@@ -1,0 +1,30 @@
+name: Release Please
+
+# Opens (and keeps up to date) a release pull request from the Conventional
+# Commits on main. Merging it creates the v<version> tag and the GitHub
+# release; the tag triggers release.yml, which publishes the image and chart.
+#
+# The token must not be the default GITHUB_TOKEN: a tag created with it does not
+# trigger other workflows. Use a fine-grained personal access token (or a GitHub
+# App token) with contents and pull requests write access, stored as the
+# repository secret RELEASE_PLEASE_TOKEN.
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  release-please:
+    name: Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
