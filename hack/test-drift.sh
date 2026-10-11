@@ -13,7 +13,13 @@
 #   - going back to the Git value reverts the open proposal
 #   - a replica change is detected, and ignored with spec.ignoreFields
 #
-# The demo resources are always restored to their Git state on exit.
+# The demo resources are always restored to their Git state on exit. The script
+# does not depend on what ran before it: it starts from a full, successful sync
+# of the current revision that Argo CD has compared after (it triggers one when
+# needed), and leaves the Application in that state.
+#
+# When a step fails, the state of the Application and the operator's pause
+# related log lines are written to tmp/test-drift-dump.txt.
 #
 # With IN_CLUSTER=true the operator is the one deployed by 'make deploy'
 # (see "In-cluster" in the README); the script then starts no local operator
@@ -50,6 +56,7 @@ QUIET="${QUIET:-10}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
 LOG_FILE="$LOG_DIR/test-drift-manager.log"
+DUMP_FILE="$LOG_DIR/test-drift-dump.txt"
 MANAGER_PID=""
 PF_PID=""
 RESTORE=false
@@ -66,7 +73,7 @@ fi
 
 step() { echo; echo "${BOLD}▶ $*${NC}"; }
 pass() { echo "  ${GREEN}✔${NC} $*"; PASS=$((PASS + 1)); }
-fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); }
+fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); dump_state "$*"; }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
 
 k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
@@ -79,6 +86,43 @@ refresh_log() {
     k -n "$MANAGER_NS" logs "deploy/$MANAGER_DEPLOY" >"$LOG_FILE" 2>&1 || true
   fi
 }
+
+# dump_state <what failed>: append the state of the Application and the
+# operator's log lines about pausing to $DUMP_FILE, to see why nothing happened.
+dump_state() (
+  set +e
+  mkdir -p "$LOG_DIR"
+  refresh_log
+  {
+    echo "=== $(date '+%Y-%m-%d %H:%M:%S') failed: $1"
+    k -n "$ARGOCD_NS" get application "$APP" -o json 2>/dev/null | python3 -c '
+import json, sys
+a = json.load(sys.stdin)
+s = a.get("status") or {}
+o = s.get("operationState") or {}
+r = o.get("syncResult") or {}
+print(json.dumps({
+    "operationState": {
+        "phase": o.get("phase"),
+        "finishedAt": o.get("finishedAt"),
+        "operation.sync": (o.get("operation") or {}).get("sync"),
+        "syncResult": {
+            "revision": r.get("revision"),
+            "source": r.get("source"),
+            "resources": [{"kind": x.get("kind"), "name": x.get("name"), "status": x.get("status")}
+                          for x in (r.get("resources") or [])],
+        },
+    },
+    "status.sync.revision": (s.get("sync") or {}).get("revision"),
+    "status.reconciledAt": s.get("reconciledAt"),
+    "spec.source": (a.get("spec") or {}).get("source"),
+    "operation (requested)": a.get("operation"),
+}, indent=2))' 2>&1
+    echo "--- last 200 operator log lines about pause, ahead, settling or stable:"
+    grep -iE 'pause|ahead|settling|stable' "$LOG_FILE" 2>/dev/null | tail -n 200
+    echo
+  } >>"$DUMP_FILE" 2>&1
+)
 
 # wait_for <description> <command...>: poll until the command succeeds.
 # A timeout is recorded as a failure; the script carries on.
@@ -103,18 +147,52 @@ refresh_app() {
 
 app_sync_status() { k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.status}' 2>/dev/null; }
 
-# Put the demo resources back to their Git state by syncing the Application,
-# then wait until Argo CD reports it Synced.
+app_field() { k -n "$ARGOCD_NS" get application "$APP" -o jsonpath="$1" 2>/dev/null; }
+
+# last_sync_is_full: the last operation was a full (not selective) sync that
+# succeeded at the revision Argo CD compares against.
+last_sync_is_full() {
+  local phase selective compared synced
+  phase="$(app_field '{.status.operationState.phase}')"
+  selective="$(app_field '{.status.operationState.operation.sync.resources}')"
+  compared="$(app_field '{.status.sync.revision}')"
+  synced="$(app_field '{.status.operationState.syncResult.revision}')"
+  [[ "$phase" == "Succeeded" && -z "$selective" && -n "$compared" && "$compared" == "$synced" ]]
+}
+
+# app_settled: no operation is pending and Argo CD compared again after the
+# last one finished (reconciledAt >= finishedAt; RFC 3339 times in UTC compare as text).
+app_settled() {
+  local finished reconciled
+  finished="$(app_field '{.status.operationState.finishedAt}')"
+  reconciled="$(app_field '{.status.reconciledAt}')"
+  [[ -z "$(app_field '{.operation}')" && -n "$finished" && -n "$reconciled" && ! "$reconciled" < "$finished" ]]
+}
+
+# app_ready: Synced, after a full successful sync, and compared since.
+app_ready() { [[ "$(app_sync_status)" == "Synced" ]] && last_sync_is_full && app_settled; }
+
+# full_sync: ask for a sync of the current revision with no list of resources.
+full_sync() {
+  local revision sync
+  revision="$(app_field '{.status.sync.revision}')"
+  sync='{}'
+  [[ -n "$revision" ]] && sync="{\"revision\":\"$revision\"}"
+  k -n "$ARGOCD_NS" patch application "$APP" --type merge \
+    -p "{\"operation\":{\"initiatedBy\":{\"username\":\"backflow-test\"},\"sync\":$sync}}" >/dev/null 2>&1 || true
+}
+
+# Put the demo resources back to their Git state by syncing the Application
+# fully, then wait until it is ready (see app_ready).
 restore_demo() {
   k -n "$DEMO_NS" patch configmap demo-config --type merge \
     -p "{\"data\":{\"LOG_LEVEL\":\"$ORIG_LOG_LEVEL\"}}" >/dev/null 2>&1 || true
   k -n "$DEMO_NS" scale deployment demo --replicas="$ORIG_REPLICAS" >/dev/null 2>&1 || true
-  k -n "$ARGOCD_NS" patch application "$APP" --type merge \
-    -p '{"operation":{"initiatedBy":{"username":"backflow-test"},"sync":{}}}' >/dev/null 2>&1 || true
+  full_sync
   local i
   for i in $(seq 1 45); do
     refresh_app
-    [[ "$(app_sync_status)" == "Synced" ]] && return 0
+    app_ready && return 0
     sleep 2
   done
   return 1
@@ -207,6 +285,8 @@ set_replicas() {
 }
 
 cd "$ROOT"
+mkdir -p "$LOG_DIR"
+: >"$DUMP_FILE"
 
 # ---------------------------------------------------------------------------
 step "Prerequisites"
@@ -229,8 +309,8 @@ ORIG_LOG_LEVEL="$(k -n "$DEMO_NS" get configmap demo-config -o jsonpath='{.data.
 DETECTED="Detected|Mapping"
 ORIG_REPLICAS="$(k -n "$DEMO_NS" get deployment demo -o jsonpath='{.spec.replicas}')"
 RESTORE=true
-if [[ "$(app_sync_status)" != "Synced" ]]; then
-  echo "  $APP is not Synced; syncing it first..."
+if ! app_ready; then
+  echo "  $APP is not Synced after a full successful sync that Argo CD compared since; syncing it first..."
   restore_demo || die "$APP did not become Synced"
   ORIG_LOG_LEVEL="$(k -n "$DEMO_NS" get configmap demo-config -o jsonpath='{.data.LOG_LEVEL}')"
   ORIG_REPLICAS="$(k -n "$DEMO_NS" get deployment demo -o jsonpath='{.spec.replicas}')"
@@ -423,5 +503,6 @@ if [[ "$KEEP" == "true" ]]; then
 fi
 if (( FAIL > 0 )); then
   echo "Operator log: tmp/test-drift-manager.log"
+  echo "State dump:   tmp/test-drift-dump.txt"
   exit 1
 fi
