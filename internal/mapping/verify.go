@@ -51,7 +51,7 @@ func Verify(original, edited []byte, document int, changes []v1alpha1.FieldChang
 		return fail("the edited document: %v", err)
 	}
 	got := drift.Diff(o, e)
-	want := changes
+	var want []v1alpha1.FieldChange
 	want, got, err = acceptDefaulted(o, e, got, changes)
 	if err != nil {
 		return fail("%v", err)

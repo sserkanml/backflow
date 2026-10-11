@@ -67,7 +67,7 @@ type RepositoryWriter interface {
 	BranchTip(ctx context.Context, repoURL, branch string, auth *gitrepo.Auth) (string, error)
 	DefaultBranch(ctx context.Context, repoURL string, auth *gitrepo.Auth) (string, error)
 	CommitInfo(ctx context.Context, repoURL, sha string, auth *gitrepo.Auth) (*gitrepo.CommitInfo, error)
-	CommitFile(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, filePath string, content []byte, meta gitrepo.CommitMeta) (string, error)
+	CommitFile(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, filePath string, content []byte, commit gitrepo.CommitMeta) (string, error)
 	CreateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
 	IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *gitrepo.Auth) (bool, error)
 	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
@@ -221,19 +221,17 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 
 	res, err := r.mapAt(ctx, dp, access, head)
 	if err != nil {
-		var held *heldError
-		if errors.As(err, &held) {
+		if held, ok := errors.AsType[*heldError](err); ok {
 			return stop(r.holdProposal(ctx, dp, held.reason, held.cause, 0))
 		}
-		var verdict *verdictError
-		if errors.As(err, &verdict) {
+		if verdict, ok := errors.AsType[*verdictError](err); ok {
 			if head == dp.Spec.Source.Revision {
 				// Same tree that mapped before: nothing changed in Git, so this
 				// is not "the source moved on".
 				reason, _ := mappingReason(verdict.err)
 				return stop(ctrl.Result{}, r.unmapped(ctx, dp, reason, verdict.err.Error()))
 			}
-			return stop(r.supersededByGit(ctx, dp, sourceChangedMessage+" "+verdict.err.Error()))
+			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" "+verdict.err.Error()))
 		}
 		if isGitError(err) {
 			return stop(r.gitFailure(ctx, dp, err))
@@ -244,10 +242,10 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 	sha, err := r.Writer.CommitFile(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.File, res.Edited, r.commitMeta(dp, access))
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrNoChange) {
-			return stop(r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
+			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
 		}
 		if errors.Is(err, gitrepo.ErrFileNotFound) || errors.Is(err, gitrepo.ErrNotRegularFile) {
-			return stop(r.supersededByGit(ctx, dp, sourceChangedMessage+" "+err.Error()))
+			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" "+err.Error()))
 		}
 		return stop(r.gitFailure(ctx, dp, err))
 	}
@@ -289,7 +287,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &heldError{reason: reasonApplicationNotFound, cause: fmt.Errorf(
-				"Argo CD Application %s/%s not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name)}
+				"the Argo CD Application %s/%s was not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name)}
 		}
 		return nil, err
 	}
@@ -349,8 +347,7 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 
 	res, err := r.mapAt(ctx, dp, access, parent)
 	if err != nil {
-		var verdict *verdictError
-		if errors.As(err, &verdict) {
+		if verdict, ok := errors.AsType[*verdictError](err); ok {
 			return false, "the change cannot be reproduced from its base: " + verdict.err.Error(), nil
 		}
 		return false, "", err
@@ -386,7 +383,7 @@ func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal,
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp), When: dp.Spec.DetectedAt.Time.UTC()}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp), When: dp.Spec.DetectedAt.UTC()}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -528,8 +525,8 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 	access *scmAccess, target string) (ctrl.Result, error) {
 	for attempt := 1; attempt <= directCommitAttempts; attempt++ {
 		// After a restart the commit may already be on the branch.
-		if done, res, err := r.alreadyCommitted(ctx, dp, access, target); done {
-			return res, err
+		if done, err := r.alreadyCommitted(ctx, dp, access, target); done {
+			return ctrl.Result{}, err
 		}
 		change, out := r.prepare(ctx, dp, access, target)
 		if out != nil {
@@ -560,21 +557,21 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 // have pushed on top since, so the first-parent history is searched from the
 // head back to the revision the proposal was made at, not just the tip.
 func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	access *scmAccess, target string) (bool, ctrl.Result, error) {
+	access *scmAccess, target string) (bool, error) {
 	tip, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, target, access.auth)
 	if err != nil {
-		return false, ctrl.Result{}, nil // prepare reports it
+		return false, nil // prepare reports it
 	}
 	log, _, err := r.Writer.FirstParentLog(ctx, dp.Spec.Source.RepoURL, tip, dp.Spec.Source.Revision, commitScanLimit, access.auth)
 	if err != nil {
-		return false, ctrl.Result{}, nil
+		return false, nil
 	}
 	for _, e := range log {
 		if hasProposalTrailer(e.Message, dp.Name) {
-			return true, ctrl.Result{}, r.recordCommitted(ctx, dp, target, e.SHA)
+			return true, r.recordCommitted(ctx, dp, target, e.SHA)
 		}
 	}
-	return false, ctrl.Result{}, nil
+	return false, nil
 }
 
 func (r *DriftProposalReconciler) recordCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal, target, sha string) error {
@@ -648,7 +645,7 @@ func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1
 }
 
 // supersededByGit ends the proposal because Git changed under it. Git always wins.
-func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1alpha1.DriftProposal, message string) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1alpha1.DriftProposal, message string) error {
 	message = redactText(message)
 	orig := dp.DeepCopy()
 	dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
@@ -657,7 +654,7 @@ func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backf
 		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reasonSourceChanged, Message: message, ObservedGeneration: dp.Generation,
 	})
 	logf.FromContext(ctx).Info("Proposal superseded by a change in Git", "proposal", dp.Name, "message", message)
-	return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
+	return r.patchStatus(ctx, dp, orig)
 }
 
 // gitFailure turns an error from the Git side into a held or failed proposal.

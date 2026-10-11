@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -118,7 +119,7 @@ func diffLines(a, b []string) []diffOp {
 	}
 	am, bm := a[prefix:len(a)-suffix], b[prefix:len(b)-suffix]
 
-	var ops []diffOp
+	ops := make([]diffOp, 0, len(a)+len(b))
 	for _, l := range a[:prefix] {
 		ops = append(ops, diffOp{' ', l})
 	}
@@ -147,8 +148,8 @@ func diffMiddle(a, b []string) []diffOp {
 	for i := range lcs {
 		lcs[i] = make([]int32, len(b)+1)
 	}
-	for i := len(a) - 1; i >= 0; i-- {
-		for j := len(b) - 1; j >= 0; j-- {
+	for i := range slices.Backward(a) {
+		for j := range slices.Backward(b) {
 			if a[i] == b[j] {
 				lcs[i][j] = lcs[i+1][j+1] + 1
 			} else {

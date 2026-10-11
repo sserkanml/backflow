@@ -184,7 +184,7 @@ func getJSON(ctx context.Context, c *http.Client, url string, headers map[string
 	if err != nil {
 		return &checkError{reason: "Unreachable", msg: err.Error()}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
@@ -208,8 +208,7 @@ type checkError struct {
 func (e *checkError) Error() string { return e.msg }
 
 func reasonOf(err error) string {
-	var ce *checkError
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*checkError](err); ok {
 		return ce.reason
 	}
 	return "CheckFailed"

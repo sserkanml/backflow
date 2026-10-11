@@ -5,7 +5,7 @@ package drift
 import (
 	"encoding/json"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
@@ -58,7 +58,7 @@ func (d *differ) diffMaps(path string, desired, live map[string]any) {
 			keys = append(keys, k)
 		}
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	for _, k := range keys {
 		p := path + "/" + escape(k)

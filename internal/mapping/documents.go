@@ -52,10 +52,8 @@ func parseText(text string, seg segment) string {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }
 
 // parseDocument parses a segment. root is nil for an empty document.

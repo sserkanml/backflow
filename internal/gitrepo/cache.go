@@ -171,6 +171,9 @@ func (c *Cache) openCommit(ctx context.Context, repoURL, sha string, auth *Auth)
 	return repo, commit, nil
 }
 
+// remoteName is the name of the remote every cached repository has.
+const remoteName = "origin"
+
 func openOrInit(dir, repoURL string) (*git.Repository, error) {
 	repo, err := git.PlainOpen(dir)
 	if err == nil {
@@ -186,7 +189,7 @@ func openOrInit(dir, repoURL string) (*git.Repository, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := repo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{repoURL}}); err != nil {
+	if _, err := repo.CreateRemote(&config.RemoteConfig{Name: remoteName, URLs: []string{repoURL}}); err != nil {
 		return nil, err
 	}
 	return repo, nil
@@ -245,7 +248,7 @@ func refusesObject(text string) bool {
 
 // fetchOptions builds the go-git fetch options for the given access.
 func fetchOptions(auth *Auth, refSpecs []config.RefSpec) *git.FetchOptions {
-	opts := &git.FetchOptions{RemoteName: "origin", RefSpecs: refSpecs, Tags: git.NoTags}
+	opts := &git.FetchOptions{RemoteName: remoteName, RefSpecs: refSpecs, Tags: git.NoTags}
 	if auth != nil {
 		if auth.Token != "" {
 			opts.Auth = &http.BasicAuth{Username: auth.Username, Password: auth.Token}

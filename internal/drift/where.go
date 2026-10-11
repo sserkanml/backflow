@@ -19,7 +19,7 @@ func Lookup(state map[string]any, pointer string) (value any, ok bool) {
 	if !strings.HasPrefix(pointer, "/") {
 		return nil, false
 	}
-	for _, seg := range strings.Split(pointer[1:], "/") {
+	for seg := range strings.SplitSeq(pointer[1:], "/") {
 		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
 		switch node := cur.(type) {
 		case map[string]any:

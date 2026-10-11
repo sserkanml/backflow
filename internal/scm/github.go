@@ -68,7 +68,7 @@ func (g *github) issuePath(project string, number int64) string {
 func (g *github) FindOpenMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {
 	owner, _, _ := strings.Cut(project, "/")
 	var list []githubPR
-	q := url.Values{"state": {"open"}, "head": {owner + ":" + sourceBranch}, "per_page": {"100"}}
+	q := url.Values{paramState: {"open"}, keyHead: {owner + ":" + sourceBranch}, paramPerPage: {"100"}}
 	if err := g.do(ctx, http.MethodGet, githubRepo(project)+"/pulls", q, nil, &list); err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (g *github) FindOpenMergeRequest(ctx context.Context, project, sourceBranch
 func (g *github) FindMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {
 	owner, _, _ := strings.Cut(project, "/")
 	var list []githubPR
-	q := url.Values{"state": {"all"}, "head": {owner + ":" + sourceBranch}, "sort": {"created"}, "direction": {"desc"}, "per_page": {"100"}}
+	q := url.Values{paramState: {"all"}, keyHead: {owner + ":" + sourceBranch}, "sort": {"created"}, "direction": {"desc"}, paramPerPage: {"100"}}
 	if err := g.do(ctx, http.MethodGet, githubRepo(project)+"/pulls", q, nil, &list); err != nil {
 		return nil, err
 	}
@@ -98,8 +98,8 @@ func (g *github) FindMergeRequest(ctx context.Context, project, sourceBranch str
 
 func (g *github) CreateMergeRequest(ctx context.Context, project string, req CreateRequest) (*MergeRequest, error) {
 	body := map[string]any{
-		"title": req.Title, "body": req.Body,
-		"head": req.SourceBranch, "base": req.TargetBranch,
+		"title": req.Title, keyBody: req.Body,
+		keyHead: req.SourceBranch, "base": req.TargetBranch,
 	}
 	var created githubPR
 	if err := g.do(ctx, http.MethodPost, githubRepo(project)+"/pulls", nil, body, &created); err != nil {
@@ -150,7 +150,7 @@ func (g *github) CloseMergeRequest(ctx context.Context, project string, number i
 }
 
 func (g *github) CommentOnMergeRequest(ctx context.Context, project string, number int64, body string) error {
-	return g.do(ctx, http.MethodPost, g.issuePath(project, number)+"/comments", nil, map[string]string{"body": body}, nil)
+	return g.do(ctx, http.MethodPost, g.issuePath(project, number)+"/comments", nil, map[string]string{keyBody: body}, nil)
 }
 
 func (g *github) DeleteBranch(ctx context.Context, project, branch string) error {

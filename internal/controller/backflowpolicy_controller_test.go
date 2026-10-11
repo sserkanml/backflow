@@ -158,7 +158,7 @@ var _ = Describe("BackflowPolicy application conflicts", func() {
 	)
 
 	BeforeEach(func() {
-		created, apps = nil, nil
+		created, apps = nil, make([]*unstructured.Unstructured, 0, 3)
 		err := k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: otherPolicy}})
 		if err != nil {
 			Expect(errors.IsAlreadyExists(err)).To(BeTrue())

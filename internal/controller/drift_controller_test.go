@@ -46,7 +46,7 @@ func TestProposalName(t *testing.T) {
 	}
 
 	long := appResource{Kind: "ClusterRoleBinding", Name: strings.Repeat("Very_Long.Name", 10)}
-	for attempt := 0; attempt < 12; attempt++ {
+	for attempt := range 12 {
 		n := proposalName("argocd", strings.Repeat("app", 30), long, changes, attempt)
 		if len(n) > 63 {
 			t.Errorf("len(%q) = %d", n, len(n))
@@ -327,7 +327,7 @@ func TestResourceHold(t *testing.T) {
 		if selective != nil {
 			_ = unstructured.SetNestedSlice(o, selective, "status", "operationState", "operation", "sync", "resources")
 		}
-		var rs []any
+		rs := make([]any, 0, len(results))
 		for _, r := range results {
 			rs = append(rs, r)
 		}
@@ -709,10 +709,10 @@ var _ = Describe("Drift detection", func() {
 				}
 			}
 		}
-		count := func(events []string, reason string) int {
+		rejections := func(events []string) int {
 			n := 0
 			for _, e := range events {
-				if strings.Contains(e, reason) {
+				if strings.Contains(e, "ChangeRejected") {
 					n++
 				}
 			}
@@ -734,13 +734,13 @@ var _ = Describe("Drift detection", func() {
 			retire(backflowv1alpha1.PhaseRejected, rejected)
 			drainEvents()
 
-			var seen []string
-			for i := 0; i < 4; i++ {
+			seen := make([]string, 0, 8)
+			for range 4 {
 				reconcileOnce()
 				seen = append(seen, drainEvents()...)
 			}
 			Expect(proposals()).To(HaveLen(1), "no new proposal and no new merge request")
-			Expect(count(seen, "ChangeRejected")).To(Equal(1), "reported once, not on every cycle")
+			Expect(rejections(seen)).To(Equal(1), "reported once, not on every cycle")
 			Expect(seen).To(ContainElement(And(
 				ContainSubstring("Normal"), ContainSubstring("ChangeRejected"),
 				ContainSubstring("merge_requests/7"), ContainSubstring("Sync Application drift-app in Argo CD"))))
@@ -756,7 +756,7 @@ var _ = Describe("Drift detection", func() {
 				reconcileOnce()
 			}
 			Expect(proposals()).To(HaveLen(1))
-			Expect(count(drainEvents(), "ChangeRejected")).To(BeZero())
+			Expect(rejections(drainEvents())).To(BeZero())
 		})
 
 		It("does not reopen a proposal superseded because Git changed", func() {
@@ -803,7 +803,7 @@ var _ = Describe("Drift detection", func() {
 		It("reports a second rejection of a different drift again", func() {
 			retire(backflowv1alpha1.PhaseRejected, rejected)
 			reconcileOnce()
-			Expect(count(drainEvents(), "ChangeRejected")).To(Equal(1))
+			Expect(rejections(drainEvents())).To(Equal(1))
 
 			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileOnce()
@@ -814,9 +814,9 @@ var _ = Describe("Drift detection", func() {
 			drainEvents()
 
 			reconcileOnce()
-			Expect(count(drainEvents(), "ChangeRejected")).To(Equal(1), "once for the new proposal, none for the old")
+			Expect(rejections(drainEvents())).To(Equal(1), "once for the new proposal, none for the old")
 			reconcileOnce()
-			Expect(count(drainEvents(), "ChangeRejected")).To(BeZero())
+			Expect(rejections(drainEvents())).To(BeZero())
 		})
 
 		It("does not let a Merged proposal block the same drift coming back", func() {
@@ -1726,8 +1726,9 @@ var _ = Describe("Drift detection", func() {
 		}
 		// kinds returns the kinds that have an open proposal.
 		kinds := func() []string {
-			var out []string
-			for _, p := range proposals() {
+			list := proposals()
+			out := make([]string, 0, len(list))
+			for _, p := range list {
 				out = append(out, p.Spec.Resource.Kind)
 			}
 			return out
@@ -1843,8 +1844,9 @@ var _ = Describe("Drift detection", func() {
 			}
 		}
 		reconcileOnce()
-		var again []string
-		for _, p := range proposals() {
+		list := proposals()
+		again := make([]string, 0, len(list))
+		for _, p := range list {
 			again = append(again, p.Spec.Application.Name)
 		}
 		Expect(again).To(ConsistOf("drift-app", "drift-app-2"), "drift-app-2 is proposed again; drift-app stays blocked")

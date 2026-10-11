@@ -81,7 +81,7 @@ func TestMapLogLevel(t *testing.T) {
 	if !strings.Contains(res.Diff, "-  LOG_LEVEL: info\n+  LOG_LEVEL: debug\n") {
 		t.Errorf("diff =\n%s", res.Diff)
 	}
-	for _, l := range strings.Split(res.Diff, "\n") {
+	for l := range strings.SplitSeq(res.Diff, "\n") {
 		if (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-")) && strings.Contains(l, "# Log level") {
 			t.Errorf("the comment line is part of the change: %q", l)
 		}

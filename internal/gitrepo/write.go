@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -102,7 +102,7 @@ func (c *Cache) branchTipLocked(ctx context.Context, repoURL, branch string, aut
 // listRemote lists the refs the remote advertises. An empty repository
 // advertises none.
 func listRemote(ctx context.Context, repo *git.Repository, auth *Auth) ([]*plumbing.Reference, error) {
-	remote, err := repo.Remote("origin")
+	remote, err := repo.Remote(remoteName)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
@@ -384,7 +384,7 @@ func (c *Cache) ChangedPaths(ctx context.Context, repoURL, from, to string, auth
 	for p := range seen {
 		paths = append(paths, p)
 	}
-	sort.Strings(paths)
+	slices.Sort(paths)
 	return paths, nil
 }
 
@@ -625,7 +625,7 @@ func (c *Cache) requireCommit(repoURL, sha string) (*git.Repository, error) {
 
 func push(ctx context.Context, repo *git.Repository, sha, branch string, auth *Auth) error {
 	spec := config.RefSpec(fmt.Sprintf("%s:%s", sha, plumbing.NewBranchReferenceName(branch)))
-	opts := &git.PushOptions{RemoteName: "origin", RefSpecs: []config.RefSpec{spec}}
+	opts := &git.PushOptions{RemoteName: remoteName, RefSpecs: []config.RefSpec{spec}}
 	if fo := fetchOptions(auth, nil); fo != nil {
 		opts.Auth, opts.CABundle = fo.Auth, fo.CABundle
 	}

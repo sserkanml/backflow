@@ -70,7 +70,7 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal) string {
 // hasProposalTrailer reports whether a commit message was built for the proposal.
 func hasProposalTrailer(message, proposal string) bool {
 	want := trailerProposal + ": " + proposal
-	for _, line := range strings.Split(message, "\n") {
+	for line := range strings.SplitSeq(message, "\n") {
 		if strings.TrimRight(line, "\r") == want {
 			return true
 		}

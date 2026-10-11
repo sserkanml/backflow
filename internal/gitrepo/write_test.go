@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -397,10 +398,8 @@ func TestWritesAreSerialisedPerRepository(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 24)
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range 8 {
+		wg.Go(func() {
 			sha, err := cache.CommitFile(ctx, src.url(), base, nil, "README.md", []byte(fmt.Sprintf("v%d\n", i)), meta)
 			if err != nil {
 				errs <- err
@@ -412,7 +411,7 @@ func TestWritesAreSerialisedPerRepository(t *testing.T) {
 			} else {
 				_ = view.Close()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -421,7 +420,7 @@ func TestWritesAreSerialisedPerRepository(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		sha := src.branchSHA(fmt.Sprintf("backflow/dp-%d", i))
 		if sha == "" || src.fileAt(sha, "README.md") != fmt.Sprintf("v%d\n", i) {
 			t.Errorf("branch %d missing or wrong", i)
@@ -620,7 +619,7 @@ func TestFirstParentLog(t *testing.T) {
 	cache := NewCache(t.TempDir())
 	ctx := t.Context()
 	shas := func(es []LogEntry) []string {
-		var out []string
+		out := make([]string, 0, len(es))
 		for _, e := range es {
 			out = append(out, e.SHA)
 		}
@@ -648,7 +647,7 @@ func TestFirstParentLog(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(shas(got), tt.want) || found != tt.wantFound {
+			if !slices.Equal(shas(got), tt.want) || found != tt.wantFound {
 				t.Errorf("FirstParentLog = %v, %v; want %v, %v", shas(got), found, tt.want, tt.wantFound)
 			}
 			if len(got) > 0 && got[0].Message != "test" || len(got) > 0 && got[0].Parents != tt.wantParents {

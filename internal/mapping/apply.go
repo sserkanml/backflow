@@ -14,6 +14,9 @@ import (
 	"github.com/sserkanml/backflow/api/v1alpha1"
 )
 
+// mapTag is the YAML tag of a mapping.
+const mapTag = "!!map"
+
 // Apply applies the proposal's changes to one document of a file and returns
 // the edited file. The new values are the live values of the changes, because
 // the goal is to make Git match the cluster. Everything outside the edited
@@ -210,7 +213,7 @@ func addEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (edit, 
 	// Missing intermediate maps: rest[0] is the new key, the others nest.
 	value := nw
 	for i := len(rest) - 1; i >= 1; i-- {
-		value = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{strNode(rest[i]), value}}
+		value = &yaml.Node{Kind: yaml.MappingNode, Tag: mapTag, Content: []*yaml.Node{strNode(rest[i]), value}}
 	}
 	key := strNode(rest[0])
 
@@ -223,7 +226,7 @@ func addEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (edit, 
 	}
 
 	if parent.Kind == yaml.ScalarNode && parent.Tag == "!!null" {
-		*parent = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", LineComment: parent.LineComment, Line: parent.Line, Column: parent.Column}
+		*parent = yaml.Node{Kind: yaml.MappingNode, Tag: mapTag, LineComment: parent.LineComment, Line: parent.Line, Column: parent.Column}
 	}
 	if parent.Kind != yaml.MappingNode {
 		return edit{}, cannot("the parent of the new field is not a mapping")
@@ -404,7 +407,7 @@ func blockScalarLastLine(li *lineIndex, scalar *yaml.Node, indent, limit int) in
 func renderEntry(key, value *yaml.Node, indent int, indentFirst bool) (string, error) {
 	k := *key
 	k.HeadComment, k.FootComment = "", ""
-	m := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{&k, cloneStripped(value)}}
+	m := &yaml.Node{Kind: yaml.MappingNode, Tag: mapTag, Content: []*yaml.Node{&k, cloneStripped(value)}}
 
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
@@ -491,7 +494,7 @@ func jsonValue(dec *json.Decoder) (*yaml.Node, error) {
 	switch t := tok.(type) {
 	case json.Delim:
 		if t == '{' {
-			m := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			m := &yaml.Node{Kind: yaml.MappingNode, Tag: mapTag}
 			for dec.More() {
 				kt, err := dec.Token()
 				if err != nil {

@@ -78,7 +78,7 @@ func (g *gitlab) FindOpenMergeRequest(ctx context.Context, project, sourceBranch
 
 func (g *gitlab) FindMergeRequest(ctx context.Context, project, sourceBranch string) (*MergeRequest, error) {
 	var list []gitlabMR
-	q := url.Values{"state": {"all"}, "source_branch": {sourceBranch}, "order_by": {"created_at"}, "sort": {"desc"}, "per_page": {"100"}}
+	q := url.Values{paramState: {"all"}, "source_branch": {sourceBranch}, "order_by": {"created_at"}, "sort": {"desc"}, paramPerPage: {"100"}}
 	if err := g.do(ctx, http.MethodGet, gitlabProject(project)+"/merge_requests", q, nil, &list); err != nil {
 		return nil, err
 	}
@@ -151,7 +151,7 @@ func (g *gitlab) CloseMergeRequest(ctx context.Context, project string, number i
 }
 
 func (g *gitlab) CommentOnMergeRequest(ctx context.Context, project string, number int64, body string) error {
-	return g.do(ctx, http.MethodPost, g.mrPath(project, number)+"/notes", nil, map[string]string{"body": body}, nil)
+	return g.do(ctx, http.MethodPost, g.mrPath(project, number)+"/notes", nil, map[string]string{keyBody: body}, nil)
 }
 
 func (g *gitlab) DeleteBranch(ctx context.Context, project, branch string) error {

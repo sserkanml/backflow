@@ -182,11 +182,16 @@ func newFakeProvider() *fakeProvider {
 
 func (f *fakeProvider) record(c string) { f.calls = append(f.calls, c) }
 
-// setState changes a merge request behind the operator's back, as a person would.
-func (f *fakeProvider) setState(number int64, state scm.State, mergeSHA string) {
+// setState changes the newest merge request behind the operator's back, as a person would.
+func (f *fakeProvider) setState(state scm.State, mergeSHA string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	mr := f.byNumber[number]
+	var mr *scm.MergeRequest
+	for _, candidate := range f.byNumber {
+		if mr == nil || candidate.Number > mr.Number {
+			mr = candidate
+		}
+	}
 	mr.State, mr.MergeCommitSHA = state, mergeSHA
 	if state != scm.StateOpen {
 		delete(f.open, mr.SourceBranch)
@@ -864,7 +869,7 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		It("records a merge as Merged with the merge commit", func() {
-			provider.setState(7, scm.StateMerged, "abc123def")
+			provider.setState(scm.StateMerged, "abc123def")
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.IsZero()).To(BeTrue())
@@ -881,7 +886,7 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		It("records a close without merge as Rejected and leaves the branch alone", func() {
-			provider.setState(7, scm.StateClosed, "")
+			provider.setState(scm.StateClosed, "")
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
@@ -925,7 +930,7 @@ var _ = Describe("DriftProposal proposing", func() {
 
 		It("prefers what happened to the merge request over a pending revert", func() {
 			By("merged: Argo CD saw the merged Git state, the drift is gone, the drift controller says reverted")
-			provider.setState(7, scm.StateMerged, "abc123")
+			provider.setState(scm.StateMerged, "abc123")
 			annotate(annotationReverted, "The live resource is back in sync with Git.")
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
@@ -938,7 +943,7 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		It("calls a closed merge request Rejected even when the cluster already reverted", func() {
-			provider.setState(7, scm.StateClosed, "")
+			provider.setState(scm.StateClosed, "")
 			annotate(annotationReverted, "The live resource is back in sync with Git.")
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
@@ -1120,7 +1125,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(condition(conditionCleanedUp)).To(BeNil())
 
 				By("one comment, however often it is polled")
-				for i := 0; i < 3; i++ {
+				for range 3 {
 					_, err = reconcileDP()
 					Expect(err).NotTo(HaveOccurred())
 				}
@@ -1133,7 +1138,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 
-				provider.setState(7, scm.StateMerged, "abc123")
+				provider.setState(scm.StateMerged, "abc123")
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
@@ -1147,7 +1152,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 
-				provider.setState(7, scm.StateClosed, "")
+				provider.setState(scm.StateClosed, "")
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
@@ -1306,7 +1311,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			got.Status.Phase = backflowv1alpha1.PhaseSuperseded
 			got.Status.Message = "replaced"
 			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
-			provider.setState(7, scm.StateMerged, "abc")
+			provider.setState(scm.StateMerged, "abc")
 
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
@@ -1406,7 +1411,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			})
 
 			It("records a merge request closed meanwhile as Rejected, and opens no second one", func() {
-				provider.setState(7, scm.StateClosed, "")
+				provider.setState(scm.StateClosed, "")
 				res, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res.IsZero()).To(BeTrue())
@@ -1420,7 +1425,7 @@ var _ = Describe("DriftProposal proposing", func() {
 
 			It("records a merge request merged meanwhile as Merged, and opens no second one", func() {
 				merged := repo.commit(map[string]string{"README.md": "merged\n"}, "merge")
-				provider.setState(7, scm.StateMerged, merged)
+				provider.setState(scm.StateMerged, merged)
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
@@ -1431,7 +1436,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			})
 
 			It("looks the merge request up in any state even if only the pushed branch is known", func() {
-				provider.setState(7, scm.StateClosed, "")
+				provider.setState(scm.StateClosed, "")
 				// The status is gone entirely; the branch is found by its tip.
 				forgetStatus()
 				_, err := reconcileDP()
@@ -1456,7 +1461,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			})
 
 			It("leaves a merge request merged meanwhile alone when the proposal is retired", func() {
-				provider.setState(7, scm.StateMerged, repo.commit(map[string]string{"README.md": "merged\n"}, "merge"))
+				provider.setState(scm.StateMerged, repo.commit(map[string]string{"README.md": "merged\n"}, "merge"))
 				annotate(annotationReverted, "back in sync")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
@@ -1557,7 +1562,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			ours := repo.branch("main")
 			Expect(repo.commitAt(ours).Message).To(ContainSubstring("Proposal: prop-dp\n"))
 			var top string
-			for i := 0; i < 3; i++ {
+			for i := range 3 {
 				top = repo.commit(map[string]string{"README.md": fmt.Sprintf("change %d\n", i)}, fmt.Sprintf("later change %d", i))
 			}
 

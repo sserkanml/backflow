@@ -228,10 +228,8 @@ func TestOpenConcurrently(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 12)
-	for i := 0; i < cap(errs); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range cap(errs) {
+		wg.Go(func() {
 			v, err := cache.Open(context.Background(), src.url(), sha, nil)
 			if err != nil {
 				errs <- err
@@ -241,7 +239,7 @@ func TestOpenConcurrently(t *testing.T) {
 			if _, err := fs.ReadFile(v, "a.yaml"); err != nil {
 				errs <- err
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -272,9 +270,7 @@ func TestViewIsReadableWhileAnotherOpenFetches(t *testing.T) {
 	stop := make(chan struct{})
 	readerErr := make(chan error, 1)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -290,9 +286,9 @@ func TestViewIsReadableWhileAnotherOpenFetches(t *testing.T) {
 				return
 			}
 		}
-	}()
+	})
 
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		sha := src.commit(map[string]string{"apps/c.yaml": fmt.Sprintf("c: %d\n", i)})
 		v, err := cache.Open(ctx, src.url(), sha, nil)
 		if err != nil {

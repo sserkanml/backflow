@@ -164,7 +164,7 @@ func (a appResource) hash() string { return resourceHash(a.Group, a.Kind, a.Name
 // appResources reads status.resources. known is false when Argo CD has not
 // reported resources yet, so an empty list can be told from "not reconciled".
 func appResources(app *unstructured.Unstructured) (res []appResource, known bool) {
-	items, found, _ := unstructured.NestedSlice(app.Object, "status", "resources")
+	items, found, _ := unstructured.NestedSlice(app.Object, fieldStatus, "resources")
 	if !found {
 		return nil, false
 	}
@@ -180,6 +180,28 @@ func appResources(app *unstructured.Unstructured) (res []appResource, known bool
 		})
 	}
 	return res, true
+}
+
+// appRun is what one reconcile of an Application works with.
+type appRun struct {
+	policy  *backflowv1alpha1.BackflowPolicy
+	summary backflowv1alpha1.ApplicationSummary
+	app     *unstructured.Unstructured
+	argo    ManagedResourcesGetter
+	all     []backflowv1alpha1.DriftProposal
+
+	st aheadState
+	// paused is true while the whole Application is held back (see detectionPaused).
+	paused     bool
+	outOfSync  map[string]bool
+	candidates []appResource
+
+	drifting map[string][]backflowv1alpha1.FieldChange
+	// deleted marks OutOfSync resources that exist only in Git: they were
+	// removed from the cluster, which is not a revert.
+	deleted map[string]appResource
+	// apiOK is false when managed resources could not be read from Argo CD.
+	apiOK bool
 }
 
 func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
@@ -201,8 +223,47 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		return nil
 	}
 
-	outOfSync := map[string]bool{}
-	var candidates []appResource
+	run := &appRun{policy: policy, summary: summary, app: app, argo: argo, all: all, st: gitAhead(app),
+		drifting: map[string][]backflowv1alpha1.FieldChange{}, deleted: map[string]appResource{}, apiOK: true}
+	run.outOfSync, run.candidates = splitResources(policy, resources)
+
+	// While Git is ahead of the last sync, an OutOfSync resource may differ
+	// from the cluster only because a commit has not been applied yet. A
+	// proposal made now could undo that commit, so no new one is made.
+	run.paused = len(run.candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
+	if len(run.candidates) == 0 {
+		r.forgetStable(policy, summary.Name, nil)
+	}
+
+	// The Argo CD API is only worth calling for an application that has
+	// something to compare (an OutOfSync resource) or something to follow up
+	// on (an open proposal). Everything else is settled by the Application
+	// status alone, which keeps the periodic and reconciledAt-triggered
+	// reconciles of healthy applications free of API traffic.
+	if len(run.outOfSync) == 0 && !hasOpenProposal(all, summary.Name) {
+		return nil
+	}
+
+	if err := r.detectDrift(ctx, run); err != nil {
+		return err
+	}
+
+	// What was seen of resources that no longer drift is forgotten: a drift
+	// that comes back starts its window again.
+	if run.apiOK {
+		keep := make(map[string]bool, len(run.drifting))
+		for rh := range run.drifting {
+			keep[rh] = true
+		}
+		r.forgetStable(policy, summary.Name, keep)
+	}
+	return r.retireProposals(ctx, run)
+}
+
+// splitResources returns the hashes of the OutOfSync resources, and those of
+// them the policy allows to be proposed.
+func splitResources(policy *backflowv1alpha1.BackflowPolicy, resources []appResource) (outOfSync map[string]bool, candidates []appResource) {
+	outOfSync = map[string]bool{}
 	for _, res := range resources {
 		if res.Status != syncOutOfSync {
 			continue
@@ -212,114 +273,91 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 			candidates = append(candidates, res)
 		}
 	}
+	return outOfSync, candidates
+}
 
-	// While Git is ahead of the last sync, an OutOfSync resource may differ
-	// from the cluster only because a commit has not been applied yet. A
-	// proposal made now could undo that commit, so no new one is made.
-	paused := len(candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
-	st := gitAhead(app)
-	if len(candidates) == 0 {
-		r.forgetStable(policy, summary.Name, nil)
-	}
-
-	// The Argo CD API is only worth calling for an application that has
-	// something to compare (an OutOfSync resource) or something to follow up
-	// on (an open proposal). Everything else is settled by the Application
-	// status alone, which keeps the periodic and reconciledAt-triggered
-	// reconciles of healthy applications free of API traffic.
-	hasOpenProposal := false
+// hasOpenProposal reports whether an Application has a proposal in flight.
+func hasOpenProposal(all []backflowv1alpha1.DriftProposal, application string) bool {
 	for i := range all {
-		p := &all[i]
-		if p.Labels[labelApplication] == safeLabel(summary.Name) && isOpen(p) {
-			hasOpenProposal = true
-			break
+		if all[i].Labels[labelApplication] == safeLabel(application) && isOpen(&all[i]) {
+			return true
 		}
 	}
-	if len(outOfSync) == 0 && !hasOpenProposal {
+	return false
+}
+
+// detectDrift reads the managed resources of the Application from Argo CD,
+// diffs the candidates and makes sure each drift has a proposal.
+func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
+	if len(run.candidates) == 0 {
 		return nil
 	}
-
-	drifting := map[string][]backflowv1alpha1.FieldChange{}
-	// deleted marks OutOfSync resources that exist only in Git: they were
-	// removed from the cluster, which is not a revert.
-	deleted := map[string]appResource{}
-	apiOK := true
-	if len(candidates) > 0 {
-		managed, err := argo.GetManagedResources(ctx, summary.Name, policy.Spec.ArgoCDNamespace)
-		if err != nil {
-			apiOK = false
-			log.Error(err, "Cannot read managed resources from Argo CD")
-			r.event(policy, corev1.EventTypeWarning, argoReason(err),
-				fmt.Sprintf("Application %s: %v", summary.Name, err))
-		} else {
-			byKey := map[string]argocd.ManagedResource{}
-			for _, m := range managed {
-				byKey[resourceHash(m.Group, m.Kind, m.Namespace, m.Name)] = m
-			}
-			var firstErr error
-			for _, res := range candidates {
-				m, ok := byKey[res.hash()]
-				if ok && m.PredictedLiveState != nil && m.NormalizedLiveState == nil {
-					deleted[res.hash()] = res
-				}
-				if !ok || m.PredictedLiveState == nil || m.NormalizedLiveState == nil {
-					log.Info("Skipping resource that exists only in Git or only in the cluster",
-						"kind", res.Kind, "name", res.Name)
-					continue
-				}
-				changes := drift.Diff(m.PredictedLiveState, m.NormalizedLiveState,
-					drift.IgnorePointers(policy.Spec.IgnoreFields, res.Group, res.Kind, res.Name)...)
-				if len(changes) == 0 {
-					continue
-				}
-				drifting[res.hash()] = changes
-				if err := r.ensureProposal(ctx, policy, summary, res, changes, all, r.holdResource(policy, summary, res, st, paused), st); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
-			if firstErr != nil {
-				return firstErr
-			}
+	log := logf.FromContext(ctx).WithValues("application", run.summary.Name)
+	managed, err := run.argo.GetManagedResources(ctx, run.summary.Name, run.policy.Spec.ArgoCDNamespace)
+	if err != nil {
+		run.apiOK = false
+		log.Error(err, "Cannot read managed resources from Argo CD")
+		r.event(run.policy, corev1.EventTypeWarning, argoReason(err),
+			fmt.Sprintf("Application %s: %v", run.summary.Name, err))
+		return nil
+	}
+	byKey := map[string]argocd.ManagedResource{}
+	for _, m := range managed {
+		byKey[resourceHash(m.Group, m.Kind, m.Namespace, m.Name)] = m
+	}
+	var firstErr error
+	for _, res := range run.candidates {
+		m, ok := byKey[res.hash()]
+		if ok && m.PredictedLiveState != nil && m.NormalizedLiveState == nil {
+			run.deleted[res.hash()] = res
+		}
+		if !ok || m.PredictedLiveState == nil || m.NormalizedLiveState == nil {
+			log.Info("Skipping resource that exists only in Git or only in the cluster", "kind", res.Kind, "name", res.Name)
+			continue
+		}
+		changes := drift.Diff(m.PredictedLiveState, m.NormalizedLiveState,
+			drift.IgnorePointers(run.policy.Spec.IgnoreFields, res.Group, res.Kind, res.Name)...)
+		if len(changes) == 0 {
+			continue
+		}
+		run.drifting[res.hash()] = changes
+		hold := r.holdResource(run.policy, run.summary, res, run.st, run.paused)
+		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
+	return firstErr
+}
 
-	// What was seen of resources that no longer drift is forgotten: a drift
-	// that comes back starts its window again.
-	if apiOK {
-		keep := make(map[string]bool, len(drifting))
-		for rh := range drifting {
-			keep[rh] = true
-		}
-		r.forgetStable(policy, summary.Name, keep)
-	}
-
-	// Close open proposals whose drift is gone. Without a successful API call
-	// only resources that are in sync (or gone) can be judged.
+// retireProposals closes the open proposals whose drift is gone. Without a
+// successful API call only resources that are in sync (or gone) can be judged.
+func (r *DriftReconciler) retireProposals(ctx context.Context, run *appRun) error {
+	log := logf.FromContext(ctx).WithValues("application", run.summary.Name)
 	var managed managedResourcesCache
-	for i := range all {
-		p := &all[i]
-		if p.Labels[labelApplication] != safeLabel(summary.Name) || !isOpen(p) {
+	for i := range run.all {
+		p := &run.all[i]
+		if p.Labels[labelApplication] != safeLabel(run.summary.Name) || !isOpen(p) {
 			continue
 		}
 		rh := p.Labels[labelResource]
-		if _, still := drifting[rh]; still {
+		if _, still := run.drifting[rh]; still {
 			continue
 		}
-		if res, gone := deleted[rh]; gone {
+		if res, gone := run.deleted[rh]; gone {
 			// Leave the proposal as it is; what to do about a deleted
 			// resource is a human decision.
 			log.Info("Resource of an open proposal was deleted from the cluster", "proposal", p.Name)
-			r.reportDeleted(policy, summary, res, p, st.compared)
+			r.reportDeleted(run.policy, run.summary, res, p, run.st.compared)
 			continue
 		}
 		var msg string
 		switch {
-		case !outOfSync[rh]:
+		case !run.outOfSync[rh]:
 			// Synced again. If a new sync did it while a merge request still
 			// holds the change, the change is not lost: it waits in the merge
 			// request. Otherwise it is a plain revert.
 			if hasOpenMergeRequest(p) {
-				held, err := r.resetBySync(ctx, argo, policy, summary, app, p, &managed)
+				held, err := r.resetBySync(ctx, run.argo, run.policy, run.summary, run.app, p, &managed)
 				if err != nil {
 					log.Info("Cannot tell why the resource is in sync again; will look again", "proposal", p.Name, "cause", err.Error())
 					continue
@@ -329,7 +367,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 				}
 			}
 			msg = "The live resource is back in sync with Git, or no longer part of the Application."
-		case apiOK:
+		case run.apiOK:
 			msg = "The live resource no longer differs from Git after ignored fields and filters."
 		default:
 			continue
@@ -585,9 +623,9 @@ func hasOpenMergeRequest(p *backflowv1alpha1.DriftProposal) bool {
 
 // syncedRevision is the revision Argo CD compared the Application with.
 func syncedRevision(app *unstructured.Unstructured) string {
-	rev, _, _ := unstructured.NestedString(app.Object, "status", "sync", "revision")
+	rev, _, _ := unstructured.NestedString(app.Object, fieldStatus, "sync", "revision")
 	if rev == "" {
-		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, "status", "sync", "revisions"); ok && len(revs) > 0 {
+		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, fieldStatus, "sync", "revisions"); ok && len(revs) > 0 {
 			rev = revs[0]
 		}
 	}
@@ -681,7 +719,7 @@ func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alph
 	spec := policy.Spec.ArgoCD
 	token, err := r.secretValue(ctx, policy.Namespace, spec.TokenSecretRef)
 	if err != nil {
-		return nil, fmt.Errorf("Argo CD token: %w", err)
+		return nil, fmt.Errorf("token for Argo CD: %w", err)
 	}
 	cfg := argocd.Config{
 		URL:                   spec.URL,
@@ -693,7 +731,7 @@ func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alph
 	}
 	if spec.CASecretRef != nil {
 		if cfg.CACert, err = r.secretValue(ctx, policy.Namespace, *spec.CASecretRef); err != nil {
-			return nil, fmt.Errorf("Argo CD CA bundle: %w", err)
+			return nil, fmt.Errorf("CA bundle for Argo CD: %w", err)
 		}
 	}
 	return r.cachedClient(policy.Namespace+"/"+policy.Name, cfg)
@@ -942,7 +980,7 @@ func applicationSyncChanged() predicate.Predicate {
 		if !ok {
 			return ""
 		}
-		s, _, _ := unstructured.NestedString(app.Object, "status", "reconciledAt")
+		s, _, _ := unstructured.NestedString(app.Object, fieldStatus, "reconciledAt")
 		return s
 	}
 	return predicate.Funcs{

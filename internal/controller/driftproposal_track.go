@@ -130,8 +130,7 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 
 	c, err := r.clientFor(ctx, dp)
 	if err != nil {
-		var held *heldError
-		if errors.As(err, &held) {
+		if held, ok := errors.AsType[*heldError](err); ok {
 			return r.trackingFailure(ctx, dp, held.cause, 0)
 		}
 		return ctrl.Result{}, err
@@ -283,8 +282,7 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1alp
 
 	c, err := r.clientFor(ctx, dp)
 	if err != nil {
-		var held *heldError
-		if errors.As(err, &held) {
+		if held, ok := errors.AsType[*heldError](err); ok {
 			return r.cleanupPending(ctx, dp, held.cause, 0)
 		}
 		return ctrl.Result{}, err

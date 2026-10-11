@@ -6,7 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"path"
-	"sort"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -17,6 +18,12 @@ import (
 // View is a read-only file system over the tree of one commit. It implements
 // fs.FS, fs.ReadFileFS and fs.ReadDirFS. Symbolic links appear with
 // fs.ModeSymlink and are never followed; submodules are not listed.
+// Operations named in the *fs.PathError the view returns.
+const (
+	opOpen = "open"
+	opRead = "read"
+)
+
 type View struct {
 	sha  string
 	tree *object.Tree
@@ -42,19 +49,19 @@ func (v *View) Close() error {
 
 func (v *View) Open(name string) (fs.File, error) {
 	if !fs.ValidPath(name) {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
+		return nil, &fs.PathError{Op: opOpen, Path: name, Err: fs.ErrInvalid}
 	}
 	if name == "." {
 		return v.openDir(name, v.tree)
 	}
 	entry, err := v.tree.FindEntry(name)
 	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+		return nil, &fs.PathError{Op: opOpen, Path: name, Err: fs.ErrNotExist}
 	}
 	if entry.Mode == filemode.Dir {
 		sub, err := v.tree.Tree(name)
 		if err != nil {
-			return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+			return nil, &fs.PathError{Op: opOpen, Path: name, Err: fs.ErrNotExist}
 		}
 		return v.openDir(name, sub)
 	}
@@ -67,18 +74,18 @@ func (v *View) Open(name string) (fs.File, error) {
 
 func (v *View) ReadFile(name string) ([]byte, error) {
 	if !fs.ValidPath(name) || name == "." {
-		return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrInvalid}
+		return nil, &fs.PathError{Op: opRead, Path: name, Err: fs.ErrInvalid}
 	}
 	f, err := v.tree.File(name)
 	if err != nil {
 		if errors.Is(err, object.ErrFileNotFound) || errors.Is(err, object.ErrDirectoryNotFound) {
-			return nil, &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
+			return nil, &fs.PathError{Op: opRead, Path: name, Err: fs.ErrNotExist}
 		}
-		return nil, &fs.PathError{Op: "read", Path: name, Err: err}
+		return nil, &fs.PathError{Op: opRead, Path: name, Err: err}
 	}
 	r, err := f.Reader()
 	if err != nil {
-		return nil, &fs.PathError{Op: "read", Path: name, Err: err}
+		return nil, &fs.PathError{Op: opRead, Path: name, Err: err}
 	}
 	defer func() { _ = r.Close() }()
 	return io.ReadAll(r)
@@ -117,7 +124,7 @@ func dirEntries(tree *object.Tree) []fs.DirEntry {
 		}
 		out = append(out, dirEntry{info: info})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
+	slices.SortFunc(out, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	return out
 }
 
@@ -168,7 +175,7 @@ type dirFile struct {
 func (d *dirFile) Stat() (fs.FileInfo, error) { return d.info, nil }
 func (d *dirFile) Close() error               { return nil }
 func (d *dirFile) Read([]byte) (int, error) {
-	return 0, &fs.PathError{Op: "read", Path: d.info.name, Err: errors.New("is a directory")}
+	return 0, &fs.PathError{Op: opRead, Path: d.info.name, Err: errors.New("is a directory")}
 }
 
 func (d *dirFile) ReadDir(n int) ([]fs.DirEntry, error) {

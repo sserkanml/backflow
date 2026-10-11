@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func newTestClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server) {
+func newTestClient(t *testing.T, h http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewTLSServer(h)
 	t.Cleanup(srv.Close)
@@ -17,11 +17,11 @@ func newTestClient(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return c, srv
+	return c
 }
 
 func TestGetManagedResources(t *testing.T) {
-	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/applications/demo-app/managed-resources" {
 			t.Errorf("path = %s", r.URL.Path)
 		}
@@ -73,7 +73,7 @@ func TestGetManagedResourcesErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tt.status)
 				_, _ = w.Write([]byte(tt.body))
 			})

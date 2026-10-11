@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/gobwas/glob"
@@ -119,8 +119,8 @@ func documentDefines(root *yaml.Node, destNamespace string, res ResourceID) bool
 	}
 	apiVersion := scalarOf(mapGet(root, "apiVersion"))
 	group := ""
-	if i := strings.IndexByte(apiVersion, '/'); i >= 0 {
-		group = apiVersion[:i]
+	if g, _, found := strings.Cut(apiVersion, "/"); found {
+		group = g
 	}
 	meta := mapGet(root, "metadata")
 	if scalarOf(mapGet(root, "kind")) != res.Kind || group != res.Group || scalarOf(mapGet(meta, "name")) != res.Name {
@@ -200,7 +200,7 @@ func manifestFiles(fsys fs.FS, root string, opts DirectoryOptions) ([]string, er
 			add(path.Join(root, d.Name()), d)
 		}
 	}
-	sort.Strings(files)
+	slices.Sort(files)
 	return files, nil
 }
 

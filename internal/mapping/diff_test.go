@@ -5,16 +5,6 @@ import (
 	"testing"
 )
 
-func numbered(prefix string, from, to int) string {
-	var b strings.Builder
-	for i := from; i <= to; i++ {
-		b.WriteString(prefix)
-		b.WriteString(string(rune('a' + i - 1)))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 func TestUnifiedDiff(t *testing.T) {
 	tests := []struct {
 		name string
@@ -84,7 +74,7 @@ func TestUnifiedDiff(t *testing.T) {
 
 func TestUnifiedDiffLargeMiddleFallsBackToABlock(t *testing.T) {
 	var a, b strings.Builder
-	for i := 0; i < 2500; i++ {
+	for range 2500 {
 		a.WriteString("old line\n")
 		b.WriteString("new line\n")
 	}

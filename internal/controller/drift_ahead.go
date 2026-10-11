@@ -23,6 +23,13 @@ const (
 	aheadCacheMax = 256
 )
 
+// Fields of an Argo CD Application's status that several controllers read.
+const (
+	fieldStatus         = "status"
+	fieldOperationState = "operationState"
+	fieldSyncResult     = "syncResult"
+)
+
 // recheck collects the earliest time a reconcile wants to look again.
 type recheck struct{ after time.Duration }
 
@@ -131,14 +138,14 @@ func statusTime(app *unstructured.Unstructured, path ...string) time.Time {
 // sync; the stability rule (see stable) covers that without guessing how long.
 func gitAhead(app *unstructured.Unstructured) aheadState {
 	st := aheadState{
-		compared: revisions(app, []string{"status", "sync", "revision"}, []string{"status", "sync", "revisions"}),
-		synced: revisions(app, []string{"status", "operationState", "syncResult", "revision"},
-			[]string{"status", "operationState", "syncResult", "revisions"}),
+		compared: revisions(app, []string{fieldStatus, "sync", "revision"}, []string{fieldStatus, "sync", "revisions"}),
+		synced: revisions(app, []string{fieldStatus, fieldOperationState, fieldSyncResult, "revision"},
+			[]string{fieldStatus, fieldOperationState, fieldSyncResult, "revisions"}),
 	}
 	st.paused = st.compared != "" && st.compared != st.synced
 
 	st.sourceChanged = sourceChange(app)
-	if items, _, _ := unstructured.NestedSlice(app.Object, "status", "operationState", "syncResult", "resources"); len(items) > 0 {
+	if items, _, _ := unstructured.NestedSlice(app.Object, fieldStatus, fieldOperationState, fieldSyncResult, "resources"); len(items) > 0 {
 		st.applied = map[string]bool{}
 		for _, it := range items {
 			m, _ := it.(map[string]any)
@@ -149,9 +156,9 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 		}
 	}
 
-	phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
+	phase, _, _ := unstructured.NestedString(app.Object, fieldStatus, fieldOperationState, "phase")
 	if st.compared != "" && st.synced != "" { // never synced: Git being ahead is the reason given
-		selective, _, _ := unstructured.NestedSlice(app.Object, "status", "operationState", "operation", "sync", "resources")
+		selective, _, _ := unstructured.NestedSlice(app.Object, fieldStatus, fieldOperationState, "operation", "sync", "resources")
 		switch {
 		case phase == "Running" || phase == "Terminating":
 			// Settling covers a sync that is still running.
@@ -168,8 +175,8 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 	if requested || phase == "Running" || phase == "Terminating" {
 		st.settling = true
 	}
-	finished := statusTime(app, "status", "operationState", "finishedAt")
-	reconciled := statusTime(app, "status", "reconciledAt")
+	finished := statusTime(app, fieldStatus, fieldOperationState, "finishedAt")
+	reconciled := statusTime(app, fieldStatus, "reconciledAt")
 	if !finished.IsZero() && !reconciled.IsZero() && reconciled.Before(finished) {
 		st.settling = true
 	}
@@ -265,8 +272,8 @@ func pruneEmpty(v any) any {
 // sync there is nothing to compare, and the revisions speak for themselves.
 func sourceChange(app *unstructured.Unstructured) string {
 	spec, specOK := sourcesOf(app, []string{"spec", "source"}, []string{"spec", "sources"})
-	synced, syncedOK := sourcesOf(app, []string{"status", "operationState", "syncResult", "source"},
-		[]string{"status", "operationState", "syncResult", "sources"})
+	synced, syncedOK := sourcesOf(app, []string{fieldStatus, fieldOperationState, fieldSyncResult, "source"},
+		[]string{fieldStatus, fieldOperationState, fieldSyncResult, "sources"})
 	if !specOK || !syncedOK {
 		return ""
 	}
@@ -304,7 +311,7 @@ func isFullSHA(rev string) bool {
 		return false
 	}
 	for _, c := range rev {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

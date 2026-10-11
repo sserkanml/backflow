@@ -135,7 +135,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return r.retry(ctx, dp, reasonApplicationNotFound,
-				fmt.Errorf("Argo CD Application %s/%s not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name))
+				fmt.Errorf("the Argo CD Application %s/%s was not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name))
 		}
 		return r.retry(ctx, dp, reasonApplicationUnavailable, fmt.Errorf("cannot read the Argo CD Application: %w", err))
 	}

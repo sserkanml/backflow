@@ -1,12 +1,13 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,8 +65,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	apps, matchErr := r.matchApplications(ctx, &policy)
-	var ce *checkError
-	if matchErr != nil && !errors.As(matchErr, &ce) {
+	if _, isCheck := errors.AsType[*checkError](matchErr); matchErr != nil && !isCheck {
 		// Transient API error: retry with backoff, keep the old status.
 		return ctrl.Result{}, matchErr
 	}
@@ -82,7 +82,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.List(ctx, &conns, client.InNamespace(policy.Namespace)); err != nil {
 		return ctrl.Result{}, err
 	}
-	sort.Slice(conns.Items, func(i, j int) bool { return conns.Items[i].Name < conns.Items[j].Name })
+	slices.SortFunc(conns.Items, func(a, b backflowv1alpha1.ScmConnection) int { return cmp.Compare(a.Name, b.Name) })
 
 	names := make([]string, 0, len(apps))
 	summaries := make([]backflowv1alpha1.ApplicationSummary, 0, len(apps))
@@ -188,7 +188,7 @@ func (r *BackflowPolicyReconciler) matchApplications(ctx context.Context, policy
 		}
 		apps = append(apps, app)
 	}
-	sort.Slice(apps, func(i, j int) bool { return apps[i].GetName() < apps[j].GetName() })
+	slices.SortFunc(apps, func(a, b unstructured.Unstructured) int { return cmp.Compare(a.GetName(), b.GetName()) })
 	return apps, nil
 }
 
@@ -229,14 +229,21 @@ func (r *BackflowPolicyReconciler) findConflict(ctx context.Context, policy *bac
 		}
 		older = append(older, p)
 	}
-	sort.Slice(older, func(i, j int) bool { return policyOlder(older[i], older[j]) })
+	slices.SortFunc(older, func(a, b *backflowv1alpha1.BackflowPolicy) int {
+		switch {
+		case policyOlder(a, b):
+			return -1
+		case policyOlder(b, a):
+			return 1
+		}
+		return 0
+	})
 
 	owner := map[string]string{} // Application name -> namespace/name of the policy that manages it
 	for _, p := range older {
 		theirs, err := r.matchApplications(ctx, p)
 		if err != nil {
-			var ce *checkError
-			if errors.As(err, &ce) {
+			if _, ok := errors.AsType[*checkError](err); ok {
 				continue
 			}
 			return nil, err
@@ -309,16 +316,16 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.Appli
 		s.Path = chart
 	}
 
-	s.SyncedRevision, _, _ = unstructured.NestedString(app.Object, "status", "sync", "revision")
+	s.SyncedRevision, _, _ = unstructured.NestedString(app.Object, fieldStatus, "sync", "revision")
 	if s.SyncedRevision == "" {
-		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, "status", "sync", "revisions"); ok && len(revs) > 0 {
+		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, fieldStatus, "sync", "revisions"); ok && len(revs) > 0 {
 			s.SyncedRevision = revs[0]
 		}
 	}
 
 	// Argo CD reports the detected type in status.sourceType. Fall back to
 	// the spec when the Application has not been reconciled yet.
-	s.SourceType, _, _ = unstructured.NestedString(app.Object, "status", "sourceType")
+	s.SourceType, _, _ = unstructured.NestedString(app.Object, fieldStatus, "sourceType")
 	if s.SourceType == "" {
 		switch {
 		case chart != "":
@@ -332,7 +339,7 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.Appli
 		}
 	}
 
-	if resources, ok, _ := unstructured.NestedSlice(app.Object, "status", "resources"); ok {
+	if resources, ok, _ := unstructured.NestedSlice(app.Object, fieldStatus, "resources"); ok {
 		s.ManagedResources = int32(len(resources))
 	}
 	return s
@@ -415,12 +422,12 @@ func applicationChanged() predicate.Predicate {
 				!reflect.DeepEqual(oldApp.GetLabels(), newApp.GetLabels()) {
 				return true
 			}
-			oldRev, _, _ := unstructured.NestedString(oldApp.Object, "status", "sync", "revision")
-			newRev, _, _ := unstructured.NestedString(newApp.Object, "status", "sync", "revision")
-			oldRes, _, _ := unstructured.NestedSlice(oldApp.Object, "status", "resources")
-			newRes, _, _ := unstructured.NestedSlice(newApp.Object, "status", "resources")
-			oldType, _, _ := unstructured.NestedString(oldApp.Object, "status", "sourceType")
-			newType, _, _ := unstructured.NestedString(newApp.Object, "status", "sourceType")
+			oldRev, _, _ := unstructured.NestedString(oldApp.Object, fieldStatus, "sync", "revision")
+			newRev, _, _ := unstructured.NestedString(newApp.Object, fieldStatus, "sync", "revision")
+			oldRes, _, _ := unstructured.NestedSlice(oldApp.Object, fieldStatus, "resources")
+			newRes, _, _ := unstructured.NestedSlice(newApp.Object, fieldStatus, "resources")
+			oldType, _, _ := unstructured.NestedString(oldApp.Object, fieldStatus, "sourceType")
+			newType, _, _ := unstructured.NestedString(newApp.Object, fieldStatus, "sourceType")
 			return oldRev != newRev || len(oldRes) != len(newRes) || oldType != newType
 		},
 	}

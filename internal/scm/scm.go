@@ -50,6 +50,14 @@ const (
 	maxBody        = 16 << 20
 )
 
+// Names that both providers use in queries and request bodies.
+const (
+	paramPerPage = "per_page"
+	paramState   = "state"
+	keyHead      = "head"
+	keyBody      = "body"
+)
+
 // State is the provider-independent state of a merge request.
 type State string
 
@@ -262,8 +270,7 @@ func (e *Error) Unwrap() error { return e.kind }
 // (Retry-After or the rate limit reset time). It returns 0 when err carries
 // no suggestion.
 func RetryAfter(err error) time.Duration {
-	var e *Error
-	if errors.As(err, &e) {
+	if e, ok := errors.AsType[*Error](err); ok {
 		return e.retryIn
 	}
 	return 0
@@ -273,10 +280,10 @@ func RetryAfter(err error) time.Duration {
 func statusError(method, path string, status int, header http.Header, body []byte) error {
 	var kind error
 	var wait time.Duration
-	switch {
-	case status == http.StatusUnauthorized:
+	switch status {
+	case http.StatusUnauthorized:
 		kind = ErrUnauthorized
-	case status == http.StatusForbidden || status == http.StatusTooManyRequests:
+	case http.StatusForbidden, http.StatusTooManyRequests:
 		// GitHub signals rate limits with 403 plus rate limit headers.
 		if w, limited := rateLimitWait(status, header); limited {
 			kind, wait = ErrUnavailable, w
@@ -287,12 +294,11 @@ func statusError(method, path string, status int, header http.Header, body []byt
 		} else {
 			kind = ErrForbidden
 		}
-	case status == http.StatusNotFound:
+	case http.StatusNotFound:
 		kind = ErrNotFound
-	case status == http.StatusConflict:
+	case http.StatusConflict:
 		kind = ErrConflict
-	case status == http.StatusBadRequest || status == http.StatusUnprocessableEntity ||
-		status == http.StatusMethodNotAllowed:
+	case http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusMethodNotAllowed:
 		kind = ErrInvalid
 	default: // 5xx and anything unexpected
 		kind = ErrUnavailable
