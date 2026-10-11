@@ -1,0 +1,62 @@
+Backflow {{ .Chart.AppVersion }} is installed in the namespace {{ .Release.Namespace }}.
+
+The operator reads Argo CD and writes to Git; it never writes to the cluster.
+It needs two credentials, both kept in Secrets of the namespace where you
+create your resources (here: {{ .Release.Namespace }}).
+
+1. A read-only Argo CD account "backflow"
+
+   kubectl -n argocd patch configmap argocd-cm --type merge \
+     -p '{"data":{"accounts.backflow":"apiKey"}}'
+
+   Add these two lines to policy.csv in the ConfigMap argocd-rbac-cm
+   (kubectl -n argocd edit configmap argocd-rbac-cm):
+
+     p, role:backflow, applications, get, */*, allow
+     g, backflow, role:backflow
+
+   Generate a token and store it:
+
+   argocd login <argocd-server> --username admin
+   TOKEN="$(argocd account generate-token --account backflow)"
+   kubectl -n {{ .Release.Namespace }} create secret generic argocd-token --from-literal=token="$TOKEN"
+
+2. A token for your Git host, in an ScmConnection
+
+   GitLab needs the scopes api + write_repository, GitHub contents + pull_requests.
+
+   kubectl -n {{ .Release.Namespace }} create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
+
+   kubectl -n {{ .Release.Namespace }} apply -f - <<YAML
+   apiVersion: backflow.io/v1alpha1
+   kind: ScmConnection
+   metadata:
+     name: gitlab
+   spec:
+     provider: gitlab
+     url: https://gitlab.com
+     tokenSecretRef: {name: gitlab-token, key: token}
+   YAML
+
+3. A policy that says which Applications to watch. Start with mode ReportOnly.
+
+   kubectl -n {{ .Release.Namespace }} apply -f - <<YAML
+   apiVersion: backflow.io/v1alpha1
+   kind: BackflowPolicy
+   metadata:
+     name: my-apps
+   spec:
+     argoCDNamespace: argocd
+     applications:
+       names: [my-app]
+     mode: ReportOnly
+     argoCD:
+       url: https://argocd-server.argocd.svc
+       tokenSecretRef: {name: argocd-token, key: token}
+   YAML
+
+Check on it:
+
+   kubectl -n {{ .Release.Namespace }} get scm,bfp,dp
+
+The CRDs are not removed by "helm uninstall" or changed by "helm upgrade".

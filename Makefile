@@ -94,6 +94,15 @@ test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expect
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
+.PHONY: helm-sync
+helm-sync: manifests ## Copy the CRDs and regenerate the RBAC rules of the Helm chart from config/.
+	./hack/helm-sync.sh
+
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart.
+	helm lint charts/backflow
+	helm lint charts/backflow --set metrics.enabled=true --set serviceMonitor.enabled=true --set networkPolicy.enabled=true
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run

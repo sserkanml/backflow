@@ -1,0 +1,66 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "backflow.managerName" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: https
+  selector:
+    {{- include "backflow.selectorLabels" . | nindent 4 }}
+---
+# The operator checks every scrape against the Kubernetes API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "backflow.managerName" . }}-metrics-auth
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "backflow.managerName" . }}-metrics-auth
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "backflow.managerName" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "backflow.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Bind this role to whatever scrapes the metrics (Prometheus).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "backflow.managerName" . }}-metrics-reader
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+{{- end }}

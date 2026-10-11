@@ -1,0 +1,92 @@
+# Default values of the backflow chart.
+
+image:
+  repository: ghcr.io/sserkanml/backflow
+  # Defaults to the appVersion of the chart.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# More than one replica needs leaderElection.
+replicaCount: 1
+leaderElection: true
+
+# How often the state of an open merge request is polled.
+mergeRequestPollInterval: 2m
+
+# Extra command line arguments of the operator, e.g. ["--zap-log-level=debug"].
+extraArgs: []
+
+# Starting points, not guarantees: memory grows with the number of Secrets and
+# Argo CD Applications held in the informer caches and with the size of the Git
+# repositories being mapped. Tune per cluster.
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+# The root file system is read-only, so Git repositories are cached on an
+# emptyDir mounted at /var/cache/backflow. The cache is disposable: it is
+# fetched again when empty.
+repoCache:
+  sizeLimit: 2Gi
+
+# The defaults meet the "restricted" Pod Security Standard and OpenShift's
+# restricted-v2 SCC. No user or group ID is set: OpenShift assigns them, and
+# any ID works with the image. Add runAsUser, runAsGroup or fsGroup here if
+# your cluster needs fixed ones.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  # Defaults to the full name of the release plus -controller-manager.
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+metrics:
+  # Serve metrics over HTTPS on port 8443, protected by Kubernetes
+  # authentication and authorization (a client needs the metrics-reader role).
+  enabled: false
+  # A Secret with tls.crt and tls.key to serve with. Without one the operator
+  # generates a self-signed certificate.
+  certSecret: ""
+
+serviceMonitor:
+  # Needs metrics.enabled and the Prometheus Operator CRDs.
+  enabled: false
+  interval: ""
+  labels: {}
+  # Scraping verifies nothing by default because of the self-signed certificate.
+  tlsConfig:
+    insecureSkipVerify: true
+
+networkPolicy:
+  # Needs metrics.enabled. Allows ingress to the metrics port from the
+  # namespaces that match metricsNamespaceSelector; nothing else is allowed in.
+  enabled: false
+  metricsNamespaceSelector:
+    matchLabels:
+      metrics: enabled

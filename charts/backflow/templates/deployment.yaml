@@ -1,0 +1,126 @@
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
+{{- fail "replicaCount > 1 needs leaderElection: true" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "backflow.managerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "backflow.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "backflow.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "backflow.serviceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: manager
+          image: {{ include "backflow.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /manager
+          args:
+            {{- if .Values.leaderElection }}
+            - --leader-elect
+            {{- end }}
+            - --health-probe-bind-address=:8081
+            - --repo-cache-dir=/var/cache/backflow
+            - --merge-request-poll-interval={{ .Values.mergeRequestPollInterval }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:8443
+            {{- if .Values.metrics.certSecret }}
+            - --metrics-cert-path=/var/run/metrics-cert
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: repo-cache
+              mountPath: /var/cache/backflow
+            {{- if and .Values.metrics.enabled .Values.metrics.certSecret }}
+            - name: metrics-cert
+              mountPath: /var/run/metrics-cert
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: repo-cache
+          emptyDir:
+            sizeLimit: {{ .Values.repoCache.sizeLimit }}
+        {{- if and .Values.metrics.enabled .Values.metrics.certSecret }}
+        - name: metrics-cert
+          secret:
+            secretName: {{ .Values.metrics.certSecret }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
