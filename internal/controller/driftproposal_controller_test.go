@@ -75,7 +75,6 @@ var _ = Describe("DriftProposal Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &backflowv1alpha1.DriftProposal{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -96,6 +95,21 @@ var _ = Describe("DriftProposal Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
 			resource.Status.Phase = backflowv1alpha1.PhaseDetected
 			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
+		})
+
+		It("reconciles a minimal object without an error and without touching its spec", func() {
+			r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			before := &backflowv1alpha1.DriftProposal{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, before)).To(Succeed())
+
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.IsZero()).To(BeTrue(), "nothing to wait for without a repository reader")
+
+			after := &backflowv1alpha1.DriftProposal{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, after)).To(Succeed())
+			Expect(after.Spec).To(Equal(before.Spec))
+			Expect(after.Status.Phase).To(Equal(backflowv1alpha1.PhaseDetected))
 		})
 
 		Context("phase handling", func() {

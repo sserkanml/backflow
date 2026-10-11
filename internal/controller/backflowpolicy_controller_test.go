@@ -71,7 +71,6 @@ var _ = Describe("BackflowPolicy Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &backflowv1alpha1.BackflowPolicy{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -79,8 +78,8 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			By("Cleanup the specific resource instance BackflowPolicy")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
+		It("is not Ready while no Argo CD Application matches", func() {
+			By("Reconciling a policy that names an Application that does not exist")
 			controllerReconciler := &BackflowPolicyReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -90,8 +89,31 @@ var _ = Describe("BackflowPolicy Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			ready := meta.FindStatusCondition(backflowpolicy.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("NoApplicationsMatched"))
+			Expect(backflowpolicy.Status.Applications).To(BeEmpty())
+			Expect(backflowpolicy.Status.ObservedGeneration).To(Equal(backflowpolicy.Generation))
+		})
+
+		It("is InvalidSpec when it selects Applications neither by name nor by selector", func() {
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			backflowpolicy.Spec.Applications = backflowv1alpha1.ApplicationSelector{}
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+
+			controllerReconciler := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred(), "a problem in the spec is put into status, not returned")
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			ready := meta.FindStatusCondition(backflowpolicy.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("InvalidSpec"))
+			Expect(ready.Message).To(ContainSubstring("names or selector"))
 		})
 	})
 })

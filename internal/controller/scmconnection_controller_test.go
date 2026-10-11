@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -69,7 +70,6 @@ var _ = Describe("ScmConnection Controller", func() {
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
 			resource := &backflowv1alpha1.ScmConnection{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -77,8 +77,8 @@ var _ = Describe("ScmConnection Controller", func() {
 			By("Cleanup the specific resource instance ScmConnection")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
+		It("is not Ready while its token Secret is missing", func() {
+			By("Reconciling a connection whose Secret does not exist")
 			controllerReconciler := &ScmConnectionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -88,8 +88,16 @@ var _ = Describe("ScmConnection Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, scmconnection)).To(Succeed())
+			ready := meta.FindStatusCondition(scmconnection.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("SecretError"))
+			Expect(ready.Message).To(ContainSubstring("scm-token"))
+			Expect(ready.ObservedGeneration).To(Equal(scmconnection.Generation))
+			Expect(scmconnection.Status.AuthenticatedAs).To(BeEmpty())
+			Expect(scmconnection.Status.LastCheckTime).NotTo(BeNil())
 		})
 	})
 })
