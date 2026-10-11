@@ -55,6 +55,9 @@ type DriftProposalReconciler struct {
 	// TrackInterval is how often an open merge request is polled. Defaults to
 	// two minutes.
 	TrackInterval time.Duration
+	// CommitScanLimit bounds the history searched for a proposal's own commit
+	// in DirectCommit mode. Defaults to 500.
+	CommitScanLimit int
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
 }

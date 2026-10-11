@@ -31,10 +31,10 @@ const (
 	defaultBranchPrefix = "backflow/"
 	// directCommitAttempts is the first try plus one retry from the new head.
 	directCommitAttempts = 2
-	// commitScanLimit bounds the first-parent history searched for a commit of
-	// the proposal's own, from the head of the target branch back to the
-	// revision the proposal was made at.
-	commitScanLimit = 500
+	// defaultCommitScanLimit bounds the first-parent history searched for a
+	// commit of the proposal's own, from the head of the target branch back to
+	// the revision the proposal was made at.
+	defaultCommitScanLimit = 500
 )
 
 // Reasons of the Proposed condition. A False condition on a proposal that is
@@ -56,6 +56,7 @@ const (
 	reasonPushRejected         = "PushRejected"
 	reasonNonFastForward       = "NonFastForward"
 	reasonSourceChanged        = "SourceChanged"
+	reasonHistoryTooLong       = "HistoryTooLong"
 	reasonUnsupportedProvider  = "UnsupportedProvider"
 	reasonInvalidRepositoryURL = "InvalidRepositoryURL"
 )
@@ -570,8 +571,8 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 	access *scmAccess, target string) (ctrl.Result, error) {
 	for attempt := 1; attempt <= directCommitAttempts; attempt++ {
 		// After a restart the commit may already be on the branch.
-		if done, err := r.alreadyCommitted(ctx, dp, access, target); done {
-			return ctrl.Result{}, err
+		if done, res, err := r.alreadyCommitted(ctx, dp, access, target); done {
+			return res, err
 		}
 		change, out := r.prepare(ctx, dp, access, target)
 		if out != nil {
@@ -601,22 +602,41 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 // the operator restarted after pushing, before recording it. Other people may
 // have pushed on top since, so the first-parent history is searched from the
 // head back to the revision the proposal was made at, not just the tip.
+//
+// Not being able to look is not "there is none": a failed walk is held and
+// retried, and so is a history longer than the scan limit that does not reach
+// the revision, because a second commit would then be pushed on a guess.
 func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	access *scmAccess, target string) (bool, error) {
+	access *scmAccess, target string) (bool, ctrl.Result, error) {
 	tip, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, target, access.auth)
 	if err != nil {
-		return false, nil // prepare reports it
+		return false, ctrl.Result{}, nil // prepare reports it
 	}
-	log, _, err := r.Writer.FirstParentLog(ctx, dp.Spec.Source.RepoURL, tip, dp.Spec.Source.Revision, commitScanLimit, access.auth)
+	limit := r.scanLimit()
+	log, reached, err := r.Writer.FirstParentLog(ctx, dp.Spec.Source.RepoURL, tip, dp.Spec.Source.Revision, limit, access.auth)
 	if err != nil {
-		return false, nil
+		res, herr := r.gitFailure(ctx, dp, err)
+		return true, res, herr
 	}
 	for _, e := range log {
 		if hasProposalTrailer(e.Message, dp.Name) {
-			return true, r.recordCommitted(ctx, dp, target, e.SHA)
+			return true, ctrl.Result{}, r.recordCommitted(ctx, dp, target, e.SHA)
 		}
 	}
-	return false, nil
+	if !reached && len(log) >= limit {
+		res, herr := r.holdProposal(ctx, dp, reasonHistoryTooLong, fmt.Errorf(
+			"%q has more than %d commits since revision %s, so it cannot be told whether this proposal was already committed",
+			target, limit, shortRevision(dp.Spec.Source.Revision)), 0)
+		return true, res, herr
+	}
+	return false, ctrl.Result{}, nil
+}
+
+func (r *DriftProposalReconciler) scanLimit() int {
+	if r.CommitScanLimit > 0 {
+		return r.CommitScanLimit
+	}
+	return defaultCommitScanLimit
 }
 
 func (r *DriftProposalReconciler) recordCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal, target, sha string) error {

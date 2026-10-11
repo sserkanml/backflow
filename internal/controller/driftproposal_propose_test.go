@@ -355,6 +355,19 @@ func (w *branchWriter) CreateBranch(ctx context.Context, url, branch, sha string
 	return w.RepositoryWriter.CreateBranch(ctx, url, branch, sha, auth)
 }
 
+// logWriter wraps the real cache and fails FirstParentLog while err is set.
+type logWriter struct {
+	RepositoryWriter
+	err error
+}
+
+func (w *logWriter) FirstParentLog(ctx context.Context, url, tip, stop string, limit int, auth *gitrepo.Auth) ([]gitrepo.LogEntry, bool, error) {
+	if w.err != nil {
+		return nil, false, w.err
+	}
+	return w.RepositoryWriter.FirstParentLog(ctx, url, tip, stop, limit, auth)
+}
+
 // tipWriter wraps the real cache and fails BranchTip for one branch while err is set.
 type tipWriter struct {
 	RepositoryWriter
@@ -1746,6 +1759,55 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
 			Expect(got.Status.CommitSHA).To(Equal(ours))
 			Expect(repo.branch("main")).To(Equal(top), "no second commit")
+		})
+
+		It("holds the proposal, and commits nothing, while the history cannot be read", func() {
+			w := &logWriter{RepositoryWriter: writer, err: fmt.Errorf("%w: boom", gitrepo.ErrUnavailable)}
+			r.Writer = w
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping), "not ended on a failed look")
+			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonRepositoryUnavailable))
+			Expect(repo.branch("main")).To(Equal(initial), "nothing was committed on a guess")
+
+			w.err = nil
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+		})
+
+		It("holds the proposal, with a reason, when the history is longer than the scan limit", func() {
+			r.CommitScanLimit = 3
+			var head string
+			for i := range 5 {
+				head = repo.commit(map[string]string{"README.md": fmt.Sprintf("change %d\n", i)}, fmt.Sprintf("later change %d", i))
+			}
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonHistoryTooLong))
+			Expect(condition(conditionProposed).Message).To(ContainSubstring("more than 3 commits"))
+			Expect(repo.branch("main")).To(Equal(head), "no second commit while it cannot be told")
+
+			By("it goes on once the scan reaches the revision")
+			r.CommitScanLimit = 100
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+		})
+
+		It("does not hold when the scan limit is reached exactly at the revision", func() {
+			r.CommitScanLimit = 3
+			for i := range 2 {
+				repo.commit(map[string]string{"README.md": fmt.Sprintf("change %d\n", i)}, fmt.Sprintf("later change %d", i))
+			}
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
 		})
 
 		It("does not mistake another proposal's commit for its own", func() {
