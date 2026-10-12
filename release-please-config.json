@@ -4,7 +4,7 @@
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "bump-minor-pre-major": true,
-  "bump-patch-for-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },
@@ -19,7 +19,6 @@
   "packages": {
     ".": {
       "package-name": "backflow",
-      "release-as": "0.1.0",
       "extra-files": [
         { "type": "yaml", "path": "charts/backflow/Chart.yaml", "jsonpath": "$.version" },
         { "type": "yaml", "path": "charts/backflow/Chart.yaml", "jsonpath": "$.appVersion" },
