@@ -188,12 +188,13 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&backflowv1alpha1.DriftProposal{},
 			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, lifecycleAnnotationsChanged()))).
-		// A proposal that has no access to its repository recovers by itself
-		// once the token Secret or the ScmConnection is fixed.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals)).
+		// A held proposal goes on by itself once what holds it is changed: the
+		// token Secret or the ScmConnection is fixed, or the policy leaves
+		// ReportOnly mode.
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals)).
 		// The policy's status names the ScmConnection that matches a repository.
-		Watches(&backflowv1alpha1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals)).
-		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.authFailedProposals),
+		Watches(&backflowv1alpha1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals)).
+		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("driftproposal").
 		Complete(r)

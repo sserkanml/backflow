@@ -28,6 +28,11 @@
 #      commit) and one Event says why. After a sync the detection works again.
 #      Automated sync is switched back on.
 #
+#   g. A policy in ReportOnly makes a proposal that waits in Mapping
+#      (Proposed=False/ReportOnly, no merge request). Switching the policy to
+#      MergeRequest opens the merge request without any other change; the
+#      proposal is then retired and cleaned up as usual.
+#
 # Requires the environment from ./hack/dev-up.sh and GITLAB_TOKEN with the api
 # and write_repository scopes (owner or maintainer of the demo project). Without
 # GITLAB_TOKEN the test is skipped with a message and exits 0.
@@ -893,6 +898,42 @@ PY
 
   if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on"; fi
   if autosync_enabled; then pass "$APP has automated sync again"; else fail "$APP has no automated sync"; fi
+fi
+
+# ---------------------------------------------------------------------------
+step "g. A proposal made in ReportOnly is proposed when the mode is switched"
+held_by_report_only() { [[ "$(condition "$1" Proposed status)/$(condition "$1" Proposed reason)" == "False/ReportOnly" ]]; }
+set_mode() { k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"mode\":\"$1\"}}" >/dev/null; }
+LEVEL_G="$(live_log_level)"
+if [[ "$LEVEL_G" == "warn" ]]; then TARGET_G="error"; else TARGET_G="warn"; fi
+if set_mode ReportOnly; then pass "policy mode is ReportOnly"; else fail "could not switch the policy to ReportOnly"; fi
+OPEN_G="$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
+
+set_log_level "$TARGET_G"
+wait_for "proposal is held in Mapping ($LEVEL_G -> $TARGET_G)" has_proposal Mapping "/data/LOG_LEVEL:Replace:\"$LEVEL_G\">\"$TARGET_G\""
+remember_proposals
+P_G="$(proposal_with Mapping ">\"$TARGET_G\"" | head -n 1)"
+if [[ -n "$P_G" ]]; then
+  wait_for "Proposed condition is False/ReportOnly" held_by_report_only "$P_G"
+  expect_eq "Mapped condition" "True" "$(condition "$P_G" Mapped status)"
+  expect_eq "status.mergeRequest.url" "" "$(dp_field "$P_G" .status.mergeRequest.url)"
+  expect_eq "open merge requests" "$OPEN_G" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
+
+  if set_mode MergeRequest; then pass "policy mode switched to MergeRequest"; else fail "could not switch the policy to MergeRequest"; fi
+  wait_for "the held proposal is Proposed" phase_is "$P_G" Proposed
+  expect_eq "Proposed condition" "True" "$(condition "$P_G" Proposed status)"
+  BRANCH_G="$(branch_of "$P_G")"
+  IFS='|' read -r IID_G STATE_G _ _ <<<"$(mr_info "$BRANCH_G")"
+  expect_nonempty "merge request from $BRANCH_G" "$IID_G"
+  expect_eq "merge request state" "opened" "$STATE_G"
+  expect_eq "status.mergeRequest.branch" "$BRANCH_G" "$(dp_field "$P_G" .status.mergeRequest.branch)"
+
+  set_log_level "$LEVEL_G"
+  wait_for "proposal is Reverted when the live value goes back" phase_is "$P_G" Reverted
+  expect_cleaned_and_closed "$P_G"
+else
+  set_log_level "$LEVEL_G"
+  set_mode MergeRequest || true
 fi
 
 # ---------------------------------------------------------------------------

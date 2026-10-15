@@ -264,19 +264,24 @@ func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha
 	return ctrl.Result{RequeueAfter: delay}, nil
 }
 
-// heldReasons are the reasons of a False Mapped or Proposed condition that
-// the user fixes by changing a Secret, an ScmConnection or a BackflowPolicy.
+// heldReasons are the reasons of a False Mapped or Proposed condition that the
+// user fixes by changing a Secret, an ScmConnection or a BackflowPolicy: access
+// that is missing or refused, or a policy in ReportOnly mode that is switched to
+// one that writes to Git.
 var heldReasons = map[string]bool{
 	reasonRepositoryAuthFailed: true, reasonRepositoryNotFound: true,
 	reasonMissingScmConnection: true, reasonPolicyNotFound: true,
 	reasonScmAuthFailed: true, reasonScmForbidden: true, reasonScmProjectNotFound: true,
+	reasonReportOnly: true,
 }
 
-// authFailedProposals enqueues the proposals in the namespace of a changed
-// Secret, ScmConnection or BackflowPolicy that are waiting for access to be
-// fixed: the credentials were rejected, the repository is not visible to
-// them, or no ScmConnection matched yet.
-func (r *DriftProposalReconciler) authFailedProposals(ctx context.Context, obj client.Object) []reconcile.Request {
+// heldProposals enqueues the proposals in the namespace of a changed Secret,
+// ScmConnection or BackflowPolicy that are waiting for the user to change
+// something: access to be fixed (the credentials were rejected, the repository
+// is not visible to them, no ScmConnection matched yet), or the policy to leave
+// ReportOnly mode, which writes nothing to Git. A change of a policy only
+// enqueues the proposals of that policy.
+func (r *DriftProposalReconciler) heldProposals(ctx context.Context, obj client.Object) []reconcile.Request {
 	var list backflowv1alpha1.DriftProposalList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil

@@ -447,9 +447,9 @@ var _ = Describe("DriftProposal mapping", func() {
 			Expect(mapped().Reason).To(Equal(reasonRepositoryNotFound))
 
 			By("being picked up when a Secret or ScmConnection in the namespace changes")
-			Expect(r.authFailedProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "any", Namespace: ns}})).
+			Expect(r.heldProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "any", Namespace: ns}})).
 				To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
-			Expect(r.authFailedProposals(ctx, &backflowv1alpha1.ScmConnection{ObjectMeta: metav1.ObjectMeta{Name: "any", Namespace: ns}})).
+			Expect(r.heldProposals(ctx, &backflowv1alpha1.ScmConnection{ObjectMeta: metav1.ObjectMeta{Name: "any", Namespace: ns}})).
 				To(HaveLen(1))
 
 			By("mapping once the repository becomes visible")
@@ -547,9 +547,9 @@ var _ = Describe("DriftProposal mapping", func() {
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
 
 			By("being picked up when a Secret or ScmConnection in the namespace changes")
-			reqs := r.authFailedProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "map-token", Namespace: ns}})
+			reqs := r.heldProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "map-token", Namespace: ns}})
 			Expect(reqs).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
-			Expect(r.authFailedProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "elsewhere"}})).To(BeEmpty())
+			Expect(r.heldProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "elsewhere"}})).To(BeEmpty())
 
 			By("recovering by itself")
 			Expect(k8sClient.Create(ctx, &corev1.Secret{
@@ -560,7 +560,7 @@ var _ = Describe("DriftProposal mapping", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(repos.gotAuth).To(Equal(&gitrepo.Auth{Username: "oauth2", Token: "s3cr3t"}))
 			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
-			Expect(r.authFailedProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "map-token", Namespace: ns}})).To(BeEmpty())
+			Expect(r.heldProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "map-token", Namespace: ns}})).To(BeEmpty())
 		})
 	})
 
@@ -612,7 +612,7 @@ var _ = Describe("DriftProposal mapping", func() {
 			saved.Status = status
 			Expect(k8sClient.Status().Update(ctx, saved)).To(Succeed())
 			policy = saved
-			Expect(r.authFailedProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
+			Expect(r.heldProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))

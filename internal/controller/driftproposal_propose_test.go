@@ -1995,6 +1995,90 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(repo.branch(branch)).To(BeEmpty())
 			Expect(provider.calls).To(BeEmpty())
 		})
+
+		Context("when the policy goes on to a mode that writes to Git", func() {
+			mrOptions := &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "backflow/", Labels: []string{"backflow"}, AssignActor: true}
+
+			BeforeEach(func() {
+				setMode(backflowv1alpha1.ModeReportOnly, nil)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonReportOnly))
+			})
+
+			It("is enqueued by a change of its own policy, and not by another policy's", func() {
+				Expect(r.heldProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
+				other := &backflowv1alpha1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{Name: "another-policy", Namespace: ns}}
+				Expect(r.heldProposals(ctx, other)).To(BeEmpty())
+				Expect(r.heldProposals(ctx, &backflowv1alpha1.BackflowPolicy{
+					ObjectMeta: metav1.ObjectMeta{Name: policy.Name, Namespace: "elsewhere"}})).To(BeEmpty())
+			})
+
+			It("opens a merge request after the mode is switched to MergeRequest", func() {
+				before := repo.branch("main")
+				setMode(backflowv1alpha1.ModeMergeRequest, mrOptions)
+				requests := r.heldProposals(ctx, policy)
+				Expect(requests).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
+
+				res, err := r.Reconcile(ctx, requests[0])
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(Equal(trackInterval), "the merge request is polled from now on")
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(got.Status.MergeRequest.Branch).To(Equal(branch))
+				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestOpened))
+				Expect(repo.branch(branch)).NotTo(BeEmpty())
+				Expect(provider.created).To(HaveLen(1))
+				Expect(repo.branch("main")).To(Equal(before), "the target branch is not written in MergeRequest mode")
+			})
+
+			It("commits after the mode is switched to DirectCommit", func() {
+				setMode(backflowv1alpha1.ModeDirectCommit, nil)
+				requests := r.heldProposals(ctx, policy)
+				Expect(requests).To(HaveLen(1))
+
+				_, err := r.Reconcile(ctx, requests[0])
+				Expect(err).NotTo(HaveOccurred())
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+				Expect(got.Status.CommitSHA).To(Equal(repo.branch("main")))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
+				Expect(provider.calls).To(BeEmpty(), "no merge request in DirectCommit mode")
+			})
+
+			It("stays held while the policy is still in ReportOnly mode", func() {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+				Expect(provider.created).To(BeEmpty())
+			})
+		})
+
+		It("keeps following an open merge request when the policy is switched to ReportOnly, and does not close it", func() {
+			setMode(backflowv1alpha1.ModeMergeRequest, nil)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+
+			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			Expect(r.heldProposals(ctx, policy)).To(BeEmpty(), "a proposed proposal is not held")
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(trackInterval), "still polled")
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(provider.closed).To(BeEmpty())
+			Expect(provider.comments).To(BeEmpty())
+			Expect(provider.deleted).To(BeEmpty())
+
+			By("what happens to the merge request is still recorded")
+			provider.setState(scm.StateMerged, repo.commit(map[string]string{"README.md": "merged\n"}, "merge"))
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+		})
 	})
 
 	Context("credentials", func() {
@@ -2013,7 +2097,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(repo.branch(branch)).To(BeEmpty())
 
 			By("the held proposal is picked up when the policy gains a connection")
-			Expect(r.authFailedProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
+			Expect(r.heldProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
 			setConnection("prop-scm")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
@@ -2046,7 +2130,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonScmAuthFailed))
-			Expect(r.authFailedProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).NotTo(BeEmpty())
+			Expect(r.heldProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).NotTo(BeEmpty())
 		})
 
 		It("holds the proposal when the policy is gone", func() {
