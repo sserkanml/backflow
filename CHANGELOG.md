@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/sserkanml/backflow/compare/v0.1.0...v0.1.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **drift:** propose ReportOnly proposals when the policy mode changes ([2b4e89b](https://github.com/sserkanml/backflow/commit/2b4e89b898f59db10bde1bea3adbe1ab2b292f05))
+
 ## 0.1.0 (2026-10-11)
 
 
