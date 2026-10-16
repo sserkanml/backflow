@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"reflect"
 	"strings"
 	"time"
@@ -58,6 +59,13 @@ type GitDiffer interface {
 	HasSymlink(ctx context.Context, repoURL, sha, dir string, auth *gitrepo.Auth) (bool, error)
 	// HasFileWithSuffix reports whether a file at or below dir at the commit has one of the suffixes.
 	HasFileWithSuffix(ctx context.Context, repoURL, sha, dir string, auth *gitrepo.Auth, suffixes ...string) (bool, error)
+}
+
+// TreeOpener gives access to the files of a commit. *gitrepo.Cache implements
+// it. A Helm source needs it to tell which files its render depends on; a
+// GitDiffer without it cannot answer for Helm and the pause applies.
+type TreeOpener interface {
+	OpenTree(ctx context.Context, repoURL, sha string, auth *gitrepo.Auth) (fs.FS, func(), error)
 }
 
 // jsonnetSuffixes name the files Argo CD evaluates as Jsonnet in a Directory source.
@@ -354,6 +362,9 @@ func countUnderPath(changed []string, path string, recurse bool) int {
 type aheadKey struct {
 	repo, from, to, path string
 	recurse              bool
+	// helm fingerprints what decides the files of a Helm source (value files,
+	// file parameters, the variables they may use); empty for other sources.
+	helm string
 }
 
 type aheadCheck struct {
@@ -377,11 +388,14 @@ func (r *DriftReconciler) now() time.Time {
 // changed between the last synced revision and the revision Argo CD compares
 // against. checked is false when that cannot be told, and the pause then
 // applies: only a Directory source of a single-source Application is looked
-// at (Kustomize and Helm can depend on files elsewhere), both revisions must
-// be commits, and the repository must be readable.
+// at (Kustomize can depend on files elsewhere), both revisions must
+// be commits, and the repository must be readable. A Directory source counts
+// the files below its directory; a Helm source counts the files its render
+// depends on, wherever they are (see lookAtHelm).
 func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured, st aheadState) (changed int, checked bool) {
-	if r.Git == nil || summary.SourceType != string(backflowv1alpha1.SourceDirectory) || summary.RepoURL == "" ||
+	helm := summary.SourceType == string(backflowv1alpha1.SourceHelm)
+	if r.Git == nil || (!helm && summary.SourceType != string(backflowv1alpha1.SourceDirectory)) || summary.RepoURL == "" ||
 		!isFullSHA(st.compared) || !isFullSHA(st.synced) {
 		return 0, false
 	}
@@ -397,6 +411,9 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 	}
 	recurse, _, _ := unstructured.NestedBool(app.Object, "spec", "source", "directory", "recurse")
 	key := aheadKey{repo: summary.RepoURL, from: st.synced, to: st.compared, path: summary.Path, recurse: recurse}
+	if helm {
+		key.helm = helmFingerprint(app, summary)
+	}
 
 	r.aheadMu.Lock()
 	hit, ok := r.aheadChecks[key]
@@ -407,7 +424,9 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		if err == nil && access != nil {
 			auth = access.auth
 		}
-		if err == nil {
+		if err == nil && helm {
+			hit, err = r.lookAtHelm(ctx, summary, app, st, auth)
+		} else if err == nil {
 			hit, err = r.lookAtRepository(ctx, summary, st, recurse, auth)
 		}
 		if err != nil {
@@ -425,7 +444,7 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		if hit.err != nil {
 			cause = redactText(hit.err.Error())
 		}
-		logf.FromContext(ctx).Info("Cannot tell whether Git changed the Application's directory; pausing drift detection",
+		logf.FromContext(ctx).Info("Cannot tell whether Git changed what the Application is made of; pausing drift detection",
 			"application", summary.Name, "cause", cause)
 		return 0, false
 	}
@@ -552,6 +571,12 @@ func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy
 		synced = shortRevision(st.synced)
 	}
 	revs := fmt.Sprintf("%s vs %s", shortRevision(st.compared), synced)
+	if checked && summary.SourceType == string(backflowv1alpha1.SourceHelm) {
+		r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
+			"Git is ahead of the last sync of %s and %d file(s) its Helm chart renders from changed (%s); drift detection for it is paused until Argo CD syncs.",
+			summary.Name, changed, revs))
+		return
+	}
 	if checked {
 		where := summary.Path
 		if strings.Trim(where, "./") == "" {
