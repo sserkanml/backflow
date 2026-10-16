@@ -102,3 +102,14 @@ func TestParseStrvals(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyPathFromPointer(t *testing.T) {
+	for _, p := range []KeyPath{{"a"}, {"podLabels", "app.kubernetes.io/name", "a~b", "0"}, {"x", "y"}} {
+		if got := KeyPathFromPointer(p.pointer()); !reflect.DeepEqual(got, p) {
+			t.Errorf("KeyPathFromPointer(%q) = %q, want %q", p.pointer(), got, p)
+		}
+	}
+	if KeyPathFromPointer("") != nil {
+		t.Error("the empty pointer is not a key")
+	}
+}

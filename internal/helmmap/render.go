@@ -44,6 +44,11 @@ type App struct {
 	// a chart leaves without a namespace get it, as Argo CD does when it
 	// applies them.
 	DestNamespace string
+	// ReleaseName is the Helm release name: helm.releaseName, else the
+	// Application's name. Argo CD renders with the Application's own
+	// settings, so ArgoRenderer does not send it; a renderer that runs Helm
+	// itself needs it.
+	ReleaseName string
 	// Resources are the resources Argo CD lists in the Application's
 	// status.resources. They decide which rendered resources are namespaced.
 	Resources []ListedResource
@@ -74,6 +79,13 @@ type ArgoRenderer struct {
 }
 
 var _ Renderer = (*ArgoRenderer)(nil)
+
+// CloseIdleConnections closes the connections of the client, when it keeps any.
+func (r *ArgoRenderer) CloseIdleConnections() {
+	if c, ok := r.Client.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
+}
 
 // Render implements Renderer. Errors from Argo CD that a retry can fix
 // (argocd.ErrUnauthorized, ErrNotFound, ErrUnreachable) are returned as they

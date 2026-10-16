@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/helmmap"
 )
 
 const (
@@ -63,6 +64,17 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal) string {
 		fmt.Fprintf(&b, "- %s\n", singleLine(ch.Path))
 	}
 	b.WriteString("\n")
+	if rows := helmEditRows(dp); len(rows) > 0 {
+		lastFile := ""
+		for _, row := range rows {
+			if row.file != lastFile {
+				fmt.Fprintf(&b, "Value file: %s\n", singleLine(row.file))
+				lastFile = row.file
+			}
+			fmt.Fprintf(&b, "- %s: %s -> %s\n", singleLine(row.key), singleLine(row.old), singleLine(row.new))
+		}
+		fmt.Fprintf(&b, "\n%s\n\n", helmVerifiedLine(dp))
+	}
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposal, dp.Name)
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposalUID, dp.UID)
 	if a := dp.Spec.Actor; a != nil && singleLine(a.Username) != "" {
@@ -146,6 +158,14 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 		fmt.Fprintf(&b, "| %s | %s | %s |\n", cell(ch.Path, "-"), cell(ch.Desired, "(absent)"), cell(ch.Live, "(removed)"))
 	}
 
+	if rows := helmEditRows(dp); len(rows) > 0 {
+		b.WriteString("\n**Helm values**\n\n| File | Key | Old | New |\n|---|---|---|---|\n")
+		for _, row := range rows {
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(row.file, "-"), cell(row.key, "-"), cell(row.old, "(none)"), cell(row.new, "(none)"))
+		}
+		fmt.Fprintf(&b, "\n%s\n", helmVerifiedLine(dp))
+	}
+
 	if diff != "" {
 		fence := fenceFor(diff)
 		fmt.Fprintf(&b, "\n%sdiff\n%s", fence, diff)
@@ -179,4 +199,43 @@ func closingComment(dp *backflowv1alpha1.DriftProposal, keptBranch, why string) 
 func liveRevertedComment(revision string) string {
 	return fmt.Sprintf("The cluster was reset to Git by an Argo CD sync of %s. "+
 		"Merging this merge request makes the change permanent again.\n", singleLine(revision))
+}
+
+// helmRow is one edit of a value file, as shown to reviewers.
+type helmRow struct{ file, key, old, new string }
+
+// helmEditRows lists the edits of a proposal mapped with the HelmValues
+// strategy: the value file, the key path, and the value before and after. The
+// old value is the one the change expected in Git, which is the value the key
+// held (candidates are found by that value). Empty for other strategies.
+func helmEditRows(dp *backflowv1alpha1.DriftProposal) []helmRow {
+	m := dp.Status.Mapping
+	if m == nil || m.Strategy != backflowv1alpha1.StrategyHelmValues {
+		return nil
+	}
+	rendered := func(raw string) string {
+		if v, ok := scalarOf(raw); ok {
+			return helmmap.RenderValue(v)
+		}
+		return raw
+	}
+	rows := make([]helmRow, 0, len(m.Edits))
+	for _, e := range m.Edits {
+		row := helmRow{file: e.File, key: e.Location, new: rendered(e.Value)}
+		if i := int(e.ChangeIndex); i >= 0 && i < len(dp.Spec.Changes) {
+			row.old = rendered(dp.Spec.Changes[i].Desired)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// helmVerifiedLine says how a Helm edit was checked and what it changes.
+func helmVerifiedLine(dp *backflowv1alpha1.DriftProposal) string {
+	paths := make([]string, len(dp.Spec.Changes))
+	for i, ch := range dp.Spec.Changes {
+		paths[i] = singleLine(ch.Path)
+	}
+	return fmt.Sprintf("Verified by rendering through Argo CD: this edit changes exactly the drifted fields (%s) and nothing else.",
+		strings.Join(paths, ", "))
 }

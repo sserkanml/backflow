@@ -141,3 +141,17 @@ func parseStrvals(name string) (KeyPath, error) {
 	}
 	return path, nil
 }
+
+// KeyPathFromPointer is the inverse of the pointer form the YAML editor uses:
+// it splits an RFC 6901 JSON pointer into a key path.
+func KeyPathFromPointer(p string) KeyPath {
+	if p == "" || p == "/" {
+		return nil
+	}
+	segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	r := strings.NewReplacer("~1", "/", "~0", "~")
+	for i, s := range segs {
+		segs[i] = r.Replace(s)
+	}
+	return segs
+}

@@ -21,7 +21,6 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
-	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -69,7 +68,7 @@ type RepositoryWriter interface {
 	BranchTip(ctx context.Context, repoURL, branch string, auth *gitrepo.Auth) (string, error)
 	DefaultBranch(ctx context.Context, repoURL string, auth *gitrepo.Auth) (string, error)
 	CommitInfo(ctx context.Context, repoURL, sha string, auth *gitrepo.Auth) (*gitrepo.CommitInfo, error)
-	CommitFile(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, filePath string, content []byte, commit gitrepo.CommitMeta) (string, error)
+	CommitFiles(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, files map[string][]byte, commit gitrepo.CommitMeta) (string, error)
 	CreateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
 	IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *gitrepo.Auth) (bool, error)
 	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
@@ -197,7 +196,7 @@ func (r *DriftProposalReconciler) targetBranch(ctx context.Context, dp *backflow
 type preparedChange struct {
 	head   string // tip of the target branch the commit is built on
 	sha    string // the commit
-	result *mapping.Result
+	result *mappedChange
 }
 
 // prepare re-runs Locate/Apply/Verify against the current head of the target
@@ -230,8 +229,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 			if head == dp.Spec.Source.Revision {
 				// Same tree that mapped before: nothing changed in Git, so this
 				// is not "the source moved on".
-				reason, _ := mappingReason(verdict.err)
-				return stop(ctrl.Result{}, r.unmapped(ctx, dp, reason, verdict.err.Error()))
+				return stop(ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error()))
 			}
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" "+verdict.err.Error()))
 		}
@@ -241,7 +239,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(ctrl.Result{}, err)
 	}
 
-	sha, err := r.Writer.CommitFile(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.File, res.Edited, r.commitMeta(dp, access))
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access))
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrNoChange) {
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
@@ -256,7 +254,11 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 
 // verdictError is a mapping error that is a verdict about the source (not
 // found, ambiguous, does not verify) rather than a failure to read it.
-type verdictError struct{ err error }
+type verdictError struct {
+	err error
+	// reason is the machine-readable reason for the Mapped condition.
+	reason string
+}
 
 func (e *verdictError) Error() string { return e.err.Error() }
 func (e *verdictError) Unwrap() error { return e.err }
@@ -280,12 +282,14 @@ func isGitError(err error) bool {
 	return false
 }
 
-// mapAt re-runs Locate/Apply/Verify on the repository at commit sha. A
-// verdict about the source is returned as a *verdictError; other errors are
-// failures to read.
+// mapAt re-runs the mapping on the repository at commit sha: for a Directory
+// source Locate/Apply/Verify, for a Helm source finding the candidates and
+// verifying them by rendering. A verdict about the source is returned as a
+// *verdictError; a problem outside the repository as a *heldError; other
+// errors are failures to read.
 func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	access *scmAccess, sha string) (*mapping.Result, error) {
-	src, err := r.directorySource(ctx, dp)
+	access *scmAccess, sha string) (*mappedChange, error) {
+	app, err := r.application(ctx, dp)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &heldError{reason: reasonApplicationNotFound, cause: fmt.Errorf(
@@ -298,19 +302,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 		return nil, err
 	}
 	defer func() { _ = tree.Close() }()
-
-	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
-		mapping.ResourceID{
-			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
-			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
-		}, dp.Spec.Changes)
-	if err != nil {
-		if _, verdict := mappingReason(err); verdict {
-			return nil, &verdictError{err: err}
-		}
-		return nil, err // reading the repository failed; retried with backoff
-	}
-	return res, nil
+	return r.mapTree(ctx, dp, app, tree, sha)
 }
 
 // ownBranch reports whether an existing branch is this proposal's own work
@@ -320,7 +312,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 //  1. the tip carries this proposal's "Proposal:" trailer;
 //  2. the tip has exactly one parent, and that parent is an ancestor of the
 //     current head of the target branch;
-//  3. relative to its parent the tip changes only the mapped file, and to
+//  3. relative to its parent the tip changes only the mapped files, and to
 //     exactly the content the mapping produces from that parent.
 //
 // Anything else is someone else's work, which is never overwritten. The
@@ -358,20 +350,22 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 	if err != nil {
 		return false, "", err
 	}
-	if len(changed) != 1 || changed[0] != res.File {
-		return false, fmt.Sprintf("it changes %v, not only %s", changed, res.File), nil
+	if want := res.paths(); !slices.Equal(changed, want) {
+		return false, fmt.Sprintf("it changes %v, not only %s", changed, strings.Join(want, ", ")), nil
 	}
 	tree, err := r.Repos.Open(ctx, url, tip, access.auth)
 	if err != nil {
 		return false, "", err
 	}
 	defer func() { _ = tree.Close() }()
-	got, err := fs.ReadFile(tree, res.File)
-	if err != nil {
-		return false, "", fmt.Errorf("%w: reading %s at %s: %v", gitrepo.ErrUnavailable, res.File, tip, err)
-	}
-	if !bytes.Equal(got, res.Edited) {
-		return false, fmt.Sprintf("%s differs from the content this proposal produces", res.File), nil
+	for _, file := range res.paths() {
+		got, err := fs.ReadFile(tree, file)
+		if err != nil {
+			return false, "", fmt.Errorf("%w: reading %s at %s: %v", gitrepo.ErrUnavailable, file, tip, err)
+		}
+		if !bytes.Equal(got, res.files()[file]) {
+			return false, fmt.Sprintf("%s differs from the content this proposal produces", file), nil
+		}
 	}
 	return true, "", nil
 }
@@ -464,7 +458,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.Diff),
+		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {

@@ -18,9 +18,9 @@ import (
 // at one revision. Only what decides which files are read is taken: the chart
 // path, the value files, the file parameters, and the variables the paths may
 // use, of which ARGOCD_APP_REVISION differs per revision.
-func helmSpecAt(app *unstructured.Unstructured, summary backflowv1alpha1.ApplicationSummary, sha string) helmmap.Spec {
+func helmSpecAt(app *unstructured.Unstructured, repoURL, path, sha string) helmmap.Spec {
 	helm, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "helm")
-	spec := helmmap.Spec{Path: summary.Path}
+	spec := helmmap.Spec{Path: path}
 	spec.ValueFiles, _, _ = unstructured.NestedStringSlice(helm, "valueFiles")
 	spec.IgnoreMissingValueFiles, _, _ = unstructured.NestedBool(helm, "ignoreMissingValueFiles")
 	if items, _, _ := unstructured.NestedSlice(helm, "fileParameters"); len(items) > 0 {
@@ -48,8 +48,8 @@ func helmSpecAt(app *unstructured.Unstructured, summary backflowv1alpha1.Applica
 		"ARGOCD_APP_REVISION":               sha,
 		"ARGOCD_APP_REVISION_SHORT":         short(7),
 		"ARGOCD_APP_REVISION_SHORT_8":       short(8),
-		"ARGOCD_APP_SOURCE_REPO_URL":        summary.RepoURL,
-		"ARGOCD_APP_SOURCE_PATH":            summary.Path,
+		"ARGOCD_APP_SOURCE_REPO_URL":        repoURL,
+		"ARGOCD_APP_SOURCE_PATH":            path,
 		"ARGOCD_APP_SOURCE_TARGET_REVISION": str("spec", "source", "targetRevision"),
 	}
 	return spec
@@ -59,7 +59,7 @@ func helmSpecAt(app *unstructured.Unstructured, summary backflowv1alpha1.Applica
 // the repository and the two revisions, so a changed Application is looked at
 // again.
 func helmFingerprint(app *unstructured.Unstructured, summary backflowv1alpha1.ApplicationSummary) string {
-	spec := helmSpecAt(app, summary, "")
+	spec := helmSpecAt(app, summary.RepoURL, summary.Path, "")
 	delete(spec.Env, "ARGOCD_APP_REVISION")
 	delete(spec.Env, "ARGOCD_APP_REVISION_SHORT")
 	delete(spec.Env, "ARGOCD_APP_REVISION_SHORT_8")
@@ -94,7 +94,7 @@ func (r *DriftReconciler) lookAtHelm(ctx context.Context, summary backflowv1alph
 		if err != nil {
 			return aheadCheck{}, err
 		}
-		rel, err := helmmap.RelevantFiles(fsys, helmSpecAt(app, summary, sha))
+		rel, err := helmmap.RelevantFiles(fsys, helmSpecAt(app, summary.RepoURL, summary.Path, sha))
 		release()
 		if err != nil {
 			if helmmap.ReasonOf(err) != "" || errors.Is(err, helmmap.ErrNotAChart) {

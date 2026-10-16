@@ -903,7 +903,8 @@ func applySet(base map[string][]byte, fields []parsedField, set []*tryout) (map[
 			return nil, nil, err
 		}
 		files[t.cand.File] = w.Edited
-		applied = append(applied, appliedEdit{cand: t.cand, w: w, changeIndex: fields[t.covers[0]].Index})
+		// The change that proposed the edit is the one whose value the key held.
+		applied = append(applied, appliedEdit{cand: t.cand, w: w, changeIndex: fields[t.origin[0]].Index})
 	}
 	return files, applied, nil
 }
