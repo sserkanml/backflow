@@ -822,6 +822,24 @@ for a in $APPS; do
 done
 pass "the three Applications are Synced and idle at main ${MAIN_ORIG_SHA:0:8}"
 
+# Settled at main is not enough. Argo CD's automated sync applies a commit once,
+# the first time an Application is OutOfSync at it, unless a sync of that commit
+# already happened. If the last sync of an Application was of an older commit,
+# the first drift of the test is reset by that automated sync within a second and
+# never proposed. One sync of main for each Application spends that.
+for a in $APPS; do
+  SYNCED_AT="$(app_field "$a" '{.status.operationState.syncResult.revision}')"
+  if [[ "$SYNCED_AT" != "$MAIN_ORIG_SHA" ]]; then
+    echo "  the last sync of $a was of ${SYNCED_AT:0:8}, not of main; syncing it once so that its automated sync does not reset the first drift..."
+    sync_app "$a" || die "$a did not become Synced: $(app_state "$a")"
+  fi
+done
+wait_all_settled "$MAIN_ORIG_SHA" || die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} after the syncs within ${WAIT}s: $(app_state "$DEMO_APP")"
+for a in $APPS; do
+  [[ "$(app_field "$a" '{.status.operationState.syncResult.revision}')" == "$MAIN_ORIG_SHA" ]] ||
+    die "the last sync of $a is still not of main: $(app_state "$a")"
+done
+
 # ---------------------------------------------------------------------------
 if [[ "$IN_CLUSTER" == "true" ]]; then
   step "Operator (deployed)"
@@ -1167,6 +1185,12 @@ for a in $APPS; do
 done
 
 echo "  i1. a commit to another service's values file (helm/shared/services/beta/dev.yaml)..."
+# The Events are counted before the commit: the operator reports shared-beta as
+# soon as Argo CD compares it against the commit, which is what the next waits
+# are for, so a count taken after them can already include the Event.
+ALPHA_EVENTS="$(git_ahead_count "$ALPHA_APP")"
+BETA_EVENTS="$(git_ahead_count "$BETA_APP")"
+BETA_PROPOSALS="$(proposal_count "$BETA_APP")"
 GIT_BETA="$(yaml_value "$BETA_VALUES" main logLevel)"
 NEW_BETA="error"
 [[ "$GIT_BETA" != "$NEW_BETA" ]] || NEW_BETA="trace"
@@ -1181,9 +1205,6 @@ LIVE_ALPHA="$(live_cm "$ALPHA_NS" "$ALPHA_CM" LOG_LEVEL)"
 NEW_ALPHA="trace"
 [[ "$GIT_ALPHA" != "$NEW_ALPHA" ]] || NEW_ALPHA="warn"
 require_drift i1 "$GIT_ALPHA" "$LIVE_ALPHA" "$NEW_ALPHA"
-ALPHA_EVENTS="$(git_ahead_count "$ALPHA_APP")"
-BETA_EVENTS="$(git_ahead_count "$BETA_APP")"
-BETA_PROPOSALS="$(proposal_count "$BETA_APP")"
 set_cm "$ALPHA_NS" "$ALPHA_CM" "{\"LOG_LEVEL\":\"$NEW_ALPHA\"}" "$ALPHA_APP"
 refresh_app "$BETA_APP"
 wait_for "a real drift on $ALPHA_APP is proposed although Git is ahead ($GIT_ALPHA -> $NEW_ALPHA)" has_proposal "$ALPHA_APP" "$ALPHA_CM" 'Detected|Mapping|Proposed' "/data/LOG_LEVEL:Replace:\"$GIT_ALPHA\">\"$NEW_ALPHA\""
@@ -1203,6 +1224,7 @@ wait_all_settled "$SHA_I1" || fail "Argo CD did not settle at ${SHA_I1:0:8}: $(a
 fi
 
 echo "  i2. a commit to another environment's values file (helm/demo/values-prod.yaml)..."
+DEMO_EVENTS="$(git_ahead_count "$DEMO_APP")"
 GIT_PROD="$(yaml_value "$VALUES_PROD" main region)"
 NEW_PROD="us-east-2"
 [[ "$GIT_PROD" != "$NEW_PROD" ]] || NEW_PROD="us-east-3"
@@ -1215,7 +1237,6 @@ GIT_REGION="$(yaml_value "$VALUES_DEV" main region)"
 LIVE_REGION="$(live_cm "$DEMO_NS" "$CM" REGION)"
 NEW_REGION="ap-south-1"
 require_drift i2 "$GIT_REGION" "$LIVE_REGION" "$NEW_REGION"
-DEMO_EVENTS="$(git_ahead_count "$DEMO_APP")"
 set_cm "$DEMO_NS" "$CM" "{\"REGION\":\"$NEW_REGION\"}" "$DEMO_APP"
 wait_for "a real drift on $DEMO_APP is proposed although Git is ahead (REGION $GIT_REGION -> $NEW_REGION)" has_proposal "$DEMO_APP" "$CM" 'Detected|Mapping|Proposed' "/data/REGION:Replace:\"$GIT_REGION\">\"$NEW_REGION\""
 remember_proposals
@@ -1231,6 +1252,9 @@ wait_all_settled "$SHA_I2" || fail "Argo CD did not settle at ${SHA_I2:0:8}: $(a
 fi
 
 echo "  i3. a commit to the Application's own values file (helm/demo/values-dev.yaml)..."
+DEMO_EVENTS="$(git_ahead_count "$DEMO_APP")"
+DEMO_PROPOSALS="$(proposal_count "$DEMO_APP")"
+OPEN_I3="$(open_mrs)"
 SHA_I3="$(commit_edit "$VALUES_DEV" "^# Development environment.*" "# Development environment (edited by the Backflow e2e test)." "test: a commit the Application has not synced yet (Backflow e2e)")" || SHA_I3=""
 expect_nonempty "commit to $VALUES_DEV" "$SHA_I3"
 if [[ -n "$SHA_I3" ]]; then
@@ -1240,9 +1264,6 @@ GIT_REGION="$(yaml_value "$VALUES_DEV" main region)"
 LIVE_REGION="$(live_cm "$DEMO_NS" "$CM" REGION)"
 NEW_REGION="ap-south-1"
 require_drift i3 "$GIT_REGION" "$LIVE_REGION" "$NEW_REGION"
-DEMO_EVENTS="$(git_ahead_count "$DEMO_APP")"
-DEMO_PROPOSALS="$(proposal_count "$DEMO_APP")"
-OPEN_I3="$(open_mrs)"
 set_cm "$DEMO_NS" "$CM" "{\"REGION\":\"$NEW_REGION\"}" "$DEMO_APP"
 wait_for "an Event says that detection for $DEMO_APP is paused" git_ahead_exceeds "$DEMO_APP" "$DEMO_EVENTS"
 expect_contains "Event text" "its Helm chart renders from changed" "$(git_ahead_notes | grep -- " $DEMO_APP " | tail -n 1)"

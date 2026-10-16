@@ -603,6 +603,23 @@ if [[ "$(app_sync_status)" != "Synced" || "$(live_log_level)" != "$GIT_LEVEL" ]]
   wait_settled "$MAIN_ORIG_SHA" ||
     die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} after the sync within ${WAIT}s: $(app_state)"
 fi
+# Settled at main is not enough. Argo CD's automated sync applies a commit once,
+# the first time the Application is OutOfSync at it (see sync_app), unless a sync
+# of that commit already happened. If the last sync was of an older commit (main
+# moved by a run of another test or by a restore commit, and the Application only
+# compared against it), the first drift of this test is reset by that automated
+# sync within a second and never proposed: the operator log then shows the
+# Application "ahead of the last sync" and the resource OutOfSync with nothing
+# that differs. One sync of main now spends that.
+SYNCED_AT="$(app_field '{.status.operationState.syncResult.revision}')"
+if [[ "$SYNCED_AT" != "$MAIN_ORIG_SHA" ]]; then
+  echo "  the last sync of $APP was of ${SYNCED_AT:0:8}, not of main; syncing it once so that its automated sync does not reset the first drift..."
+  sync_app || die "$APP did not become Synced: $(app_state)"
+  wait_settled "$MAIN_ORIG_SHA" ||
+    die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} after the sync within ${WAIT}s: $(app_state)"
+  [[ "$(app_field '{.status.operationState.syncResult.revision}')" == "$MAIN_ORIG_SHA" ]] ||
+    die "the last sync of $APP is still not of main: $(app_state)"
+fi
 [[ "$(live_log_level)" == "$GIT_LEVEL" ]] ||
   die "the live LOG_LEVEL is '$(live_log_level)' but Git has '$GIT_LEVEL' although $APP was synced"
 pass "cluster, Argo CD and $APP settled at main ${MAIN_ORIG_SHA:0:8} (LOG_LEVEL=$GIT_LEVEL in Git and live)"
