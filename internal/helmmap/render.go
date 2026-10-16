@@ -225,7 +225,7 @@ func readTree(fsys fs.FS, dir string, out map[string][]byte) error {
 // requirements.yaml (v1). They are already read into files.
 func fileDependencies(files map[string][]byte, dir string) ([]string, error) {
 	var deps []string
-	for _, name := range []string{"Chart.yaml", "requirements.yaml"} {
+	for _, name := range []string{chartYAMLName, requirementsName} {
 		data, ok := files[path.Join(dir, name)]
 		if !ok {
 			continue
