@@ -8,7 +8,8 @@
 #   1. kind cluster (created, or restarted if its container is stopped)
 #   2. Argo CD
 #   3. Backflow CRDs
-#   4. Demo Argo CD Application pointing at the demo repository
+#   4. Demo Argo CD Applications pointing at the demo repository: demo-app
+#      (plain manifests) and the Helm ones demo-helm, shared-alpha, shared-beta
 #   5. Read-only Argo CD account "backflow" and its API token Secret
 #
 # Usage (from the repository root):
@@ -21,7 +22,15 @@ set -euo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
-ARGOCD_MANIFEST="${ARGOCD_MANIFEST:-https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml}"
+# Argo CD is pinned to the version the real installation runs, so the tests do
+# not change under us when "stable" moves. Override with ARGOCD_VERSION, or
+# point ARGOCD_MANIFEST at any install manifest.
+ARGOCD_VERSION="${ARGOCD_VERSION:-v3.5.3}"
+CHECK_ARGOCD_VERSION=false
+if [[ -z "${ARGOCD_MANIFEST:-}" ]]; then
+  ARGOCD_MANIFEST="https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml"
+  CHECK_ARGOCD_VERSION=true
+fi
 DEMO_REPO="${DEMO_REPO:-https://gitlab.com/sserkanml/backflow-demo.git}"
 DEMO_REVISION="${DEMO_REVISION:-main}"
 DEMO_PATH="${DEMO_PATH:-apps/demo}"
@@ -41,6 +50,8 @@ else
 fi
 step() { echo; echo "${BOLD}▶ $*${NC}"; }
 ok()   { echo "  ${GREEN}✔${NC} $*"; }
+warn() { echo "  ${BOLD}!${NC} $*"; }
+bad()  { echo "  ${RED}✘${NC} $*"; }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
 
 k() { kubectl --context "$CONTEXT" "$@"; }
@@ -92,6 +103,15 @@ echo "  waiting for Argo CD deployments (can take a few minutes after a restart)
 k -n "$ARGOCD_NS" wait --for=condition=Available deployment --all --timeout=300s >/dev/null
 k -n "$ARGOCD_NS" rollout status statefulset --timeout=300s >/dev/null 2>&1 || true
 ok "Argo CD ready"
+if [[ "$CHECK_ARGOCD_VERSION" == "true" ]]; then
+  installed="$(k -n "$ARGOCD_NS" get deployment argocd-server -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null | sed 's/.*://')"
+  if [[ "$installed" == "$ARGOCD_VERSION" ]]; then
+    ok "Argo CD $installed (pinned)"
+  else
+    warn "Argo CD $installed is installed, but this script pins $ARGOCD_VERSION."
+    warn "Recreate the cluster to get the pinned version: kind delete cluster --name $CLUSTER_NAME"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 step "Backflow CRDs"
@@ -99,47 +119,104 @@ make install >/dev/null
 ok "installed"
 
 # ---------------------------------------------------------------------------
-step "Demo Application"
-k apply -f - >/dev/null <<EOF
+step "Demo Applications"
+
+# apply_app <name> <path> <destination namespace> <env label> [helm block]
+# All demo Applications sync automatically without selfHeal, so drift stays
+# visible. The Helm ones carry env=helm-test: the tests that select
+# Applications by env=test must not see them.
+apply_app() {
+  local name="$1" path="$2" ns="$3" env="$4" helm="${5:-}"
+  k apply -f - >/dev/null <<EOF
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: demo-app
+  name: $name
   namespace: $ARGOCD_NS
   labels:
-    env: test
+    env: $env
 spec:
   project: default
   source:
     repoURL: $DEMO_REPO
     targetRevision: $DEMO_REVISION
-    path: $DEMO_PATH
+    path: $path
+$helm
   destination:
     server: https://kubernetes.default.svc
-    namespace: demo
+    namespace: $ns
   syncPolicy:
     automated: {}
     syncOptions:
       - CreateNamespace=true
 EOF
-ok "demo-app applied ($DEMO_REPO, $DEMO_PATH)"
+  ok "$name applied ($path -> namespace $ns)"
+}
 
-echo "  waiting for demo-app to become Synced/Healthy..."
-synced=false
-for _ in $(seq 1 60); do
-  sync="$(k -n "$ARGOCD_NS" get application demo-app -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
-  health="$(k -n "$ARGOCD_NS" get application demo-app -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
-  if [[ "$sync" == "Synced" && "$health" == "Healthy" ]]; then
-    synced=true
-    break
-  fi
-  sleep 5
-done
-if [[ "$synced" == "true" ]]; then
-  ok "demo-app Synced/Healthy"
-else
-  echo "  ${RED}✘${NC} demo-app is $sync/$health. Check: kubectl -n $ARGOCD_NS get application demo-app -o jsonpath='{.status.conditions}'"
-fi
+apply_app demo-app "$DEMO_PATH" demo test
+
+# One chart per service, values per environment next to it; the parameter
+# overrides config.feature of values-dev.yaml.
+apply_app demo-helm helm/demo demo-helm helm-test "    helm:
+      valueFiles:
+        - values-dev.yaml
+      parameters:
+        - name: config.feature
+          value: beta"
+
+# One chart shared by several services, one values file per service.
+apply_app shared-alpha helm/shared shared-alpha helm-test "    helm:
+      valueFiles:
+        - services/alpha/dev.yaml"
+apply_app shared-beta helm/shared shared-beta helm-test "    helm:
+      valueFiles:
+        - services/beta/dev.yaml"
+
+# wait_apps <name>...: wait until each Application is Synced/Healthy. An
+# Application whose path is missing in the repository fails at once instead of
+# after the timeout. A failure is reported, not fatal.
+wait_apps() {
+  local pending="$*" next app sync health msg
+  echo "  waiting for $pending to become Synced/Healthy..."
+  for _ in $(seq 1 60); do
+    next=""
+    for app in $pending; do
+      sync="$(k -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+      health="$(k -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+      if [[ "$sync" == "Synced" && "$health" == "Healthy" ]]; then
+        ok "$app Synced/Healthy"
+        continue
+      fi
+      msg="$(k -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.conditions[?(@.type=="ComparisonError")].message}' 2>/dev/null || true)"
+      if [[ "$msg" == *"does not exist"* ]]; then
+        bad "$app: $msg"
+        echo "    The path is missing in $DEMO_REPO ($DEMO_REVISION). Has the demo repository been pushed?"
+        continue
+      fi
+      next="$next $app"
+    done
+    pending="${next# }"
+    [[ -n "$pending" ]] || return 0
+    sleep 5
+  done
+  for app in $pending; do
+    sync="$(k -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+    health="$(k -n "$ARGOCD_NS" get application "$app" -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+    bad "$app is $sync/$health. Check: kubectl -n $ARGOCD_NS get application $app -o jsonpath='{.status.conditions}'"
+  done
+}
+wait_apps demo-app demo-helm shared-alpha shared-beta
+
+# expect_source_type <name> <type>
+expect_source_type() {
+  local got
+  got="$(k -n "$ARGOCD_NS" get application "$1" -o jsonpath='{.status.sourceType}' 2>/dev/null || true)"
+  if [[ "$got" == "$2" ]]; then ok "$1 sourceType $got"; else bad "$1 sourceType is '$got', expected $2"; fi
+}
+expect_source_type demo-app Directory
+expect_source_type demo-helm Helm
+expect_source_type shared-alpha Helm
+expect_source_type shared-beta Helm
 
 # ---------------------------------------------------------------------------
 step "Argo CD account for Backflow"
