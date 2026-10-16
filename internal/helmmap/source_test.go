@@ -325,7 +325,7 @@ func TestNewSourceSymlinks(t *testing.T) {
 			if !errors.Is(err, ErrSymlinkedValueFile) {
 				t.Fatalf("err = %v, want ErrSymlinkedValueFile", err)
 			}
-			if got := SourceReason(err); got != "SymlinkedValueFile" {
+			if got := ReasonOf(err); got != "SymlinkedValueFile" {
 				t.Errorf("reason = %q", got)
 			}
 		})
@@ -338,7 +338,7 @@ func TestNewSourceSymlinks(t *testing.T) {
 	}
 }
 
-func TestSourceReason(t *testing.T) {
+func TestReasonOf(t *testing.T) {
 	tests := map[error]string{
 		ErrMissingValueFile:     ReasonMissingValueFile,
 		ErrOutsideRepository:    ReasonValueFileOutsideRepo,
@@ -347,8 +347,8 @@ func TestSourceReason(t *testing.T) {
 		errors.New("other"):     "",
 	}
 	for err, want := range tests {
-		if got := SourceReason(err); got != want {
-			t.Errorf("SourceReason(%v) = %q, want %q", err, got, want)
+		if got := ReasonOf(err); got != want {
+			t.Errorf("ReasonOf(%v) = %q, want %q", err, got, want)
 		}
 	}
 }

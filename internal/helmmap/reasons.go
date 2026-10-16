@@ -13,9 +13,27 @@ const (
 	ReasonInvalidInlineValues  = "InvalidInlineValues"
 )
 
-// SourceReason returns the reason for an error from NewSource, or "" when the
-// error is not one of the source errors.
-func SourceReason(err error) string {
+// Reasons of verification and rendering.
+const (
+	ReasonRenderMismatch        = "RenderMismatch"
+	ReasonNondeterministicField = "NondeterministicField"
+	ReasonSecretNotVerifiable   = "SecretNotVerifiable"
+	ReasonNoVerifiedCandidate   = "NoVerifiedCandidate"
+	ReasonAmbiguousCandidates   = "AmbiguousCandidates"
+	ReasonEditsInteract         = "EditsInteract"
+	ReasonTooManyCandidates     = "TooManyCandidates"
+	ReasonRenderBudgetExceeded  = "RenderBudgetExceeded"
+	ReasonRenderFailed          = "RenderFailed"
+	ReasonFilesTooLarge         = "FilesTooLarge"
+	ReasonUnsupportedChange     = "UnsupportedChange"
+	ReasonSymlinkInChart        = "SymlinkInChart"
+	ReasonDependencyOutsideRepo = "DependencyOutsideRepository"
+	ReasonArgoSourceOverrides   = "ArgoSourceOverrides"
+)
+
+// ReasonOf returns the reason for an error from NewSource, CollectFiles or a
+// Renderer, or "" when the error is none of those.
+func ReasonOf(err error) string {
 	switch {
 	case errors.Is(err, ErrSymlinkedValueFile):
 		return ReasonSymlinkedValueFile
@@ -27,6 +45,16 @@ func SourceReason(err error) string {
 		return ReasonUnsupportedValueFile
 	case errors.Is(err, ErrInvalidInline):
 		return ReasonInvalidInlineValues
+	case errors.Is(err, ErrSymlinkInChart):
+		return ReasonSymlinkInChart
+	case errors.Is(err, ErrDependencyOutsideRepository):
+		return ReasonDependencyOutsideRepo
+	case errors.Is(err, ErrArgoSourceOverrides):
+		return ReasonArgoSourceOverrides
+	case errors.Is(err, ErrRenderFailed):
+		return ReasonRenderFailed
+	case errors.Is(err, ErrFilesTooLarge):
+		return ReasonFilesTooLarge
 	}
 	return ""
 }
