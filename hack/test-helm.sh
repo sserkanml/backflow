@@ -125,7 +125,8 @@ else
   GREEN=""; RED=""; BOLD=""; NC=""
 fi
 
-step() { echo; echo "${BOLD}▶ $*${NC}"; }
+CURRENT_STEP=""
+step() { CURRENT_STEP="$*"; echo; echo "${BOLD}▶ $*${NC}"; }
 pass() { echo "  ${GREEN}✔${NC} $*"; PASS=$((PASS + 1)); }
 fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
@@ -136,6 +137,14 @@ k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
 # ---------------------------------------------------------------------------
 # GitLab API. The token travels in the environment only: never in an argument
 # list, a log or a file other than the 0600 Secret input.
+#
+# gitlab.com is sometimes slow or down for a minute, so gl.py retries: 4 attempts
+# with a 60s read timeout and a growing delay (GITLAB_ATTEMPTS, GITLAB_TIMEOUT,
+# GITLAB_BACKOFF). Reads and idempotent writes (closing a merge request,
+# deleting a branch) are repeated freely. A write whose outcome is unknown after
+# a timeout or a 5xx is only repeated after checking that it did not happen: a
+# commit is looked for at the head of its branch (same message, on top of the
+# head it was made against), a merge by the state of the merge request.
 # ---------------------------------------------------------------------------
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/backflow-helm-test.XXXXXX")"
@@ -143,29 +152,124 @@ chmod 700 "$WORKDIR"
 mkdir -p "$WORKDIR/orig"
 
 cat >"$WORKDIR/gl.py" <<'PY'
-import json, os, sys, urllib.error, urllib.request
+import http.client, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 base = os.environ.get("GITLAB_API", "https://gitlab.com/api/v4")
 token = os.environ["GITLAB_TOKEN"]
-method, path = sys.argv[1], sys.argv[2]
-body = sys.argv[3].encode() if len(sys.argv) > 3 else None
-status_only = method.startswith("STATUS-")
-if status_only:
-    method = method[len("STATUS-"):]
-req = urllib.request.Request(base + path, data=body, method=method,
-                             headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
-try:
-    resp = urllib.request.urlopen(req, timeout=30)
-    code, data = resp.status, resp.read().decode()
-except urllib.error.HTTPError as e:
-    code, data = e.code, e.read().decode()
-if status_only:
-    print(code)
-    sys.exit(0)
-if code >= 400:
-    sys.stderr.write("HTTP %d: %s\n" % (code, data[:300]))
-    sys.exit(22)
-sys.stdout.write(data)
+# gitlab.com is sometimes slow or unavailable for a minute. Reads and
+# idempotent writes are retried with a growing delay; a write whose outcome is
+# unknown (a commit, a merge) is only repeated after checking that it did not
+# happen. GITLAB_ATTEMPTS, GITLAB_TIMEOUT and GITLAB_BACKOFF tune this.
+ATTEMPTS = int(os.environ.get("GITLAB_ATTEMPTS", "4"))
+TIMEOUT = float(os.environ.get("GITLAB_TIMEOUT", "60"))
+BACKOFF = float(os.environ.get("GITLAB_BACKOFF", "3"))
+RETRIABLE = (0, 429, 500, 502, 503, 504)
+
+
+def log(msg):
+    sys.stderr.write("gitlab: " + msg + "\n")
+
+
+def once(method, path, body=None):
+    """One attempt. Returns (status, text, retry_after); status 0 is a network
+    error or a timeout (text says which)."""
+    req = urllib.request.Request(base + path, data=body.encode() if body else None, method=method,
+                                 headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
+    try:
+        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+        return resp.status, resp.read().decode(), None
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(), e.headers.get("Retry-After")
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
+        return 0, "%s: %s" % (type(e).__name__, e), None
+
+
+def get_json(path):
+    """A GET with retries; None when it cannot be read."""
+    code, text = send("GET", path)
+    if code >= 400 or code == 0:
+        return None
+    return json.loads(text)
+
+
+def commit_check(pid, body):
+    """For POST .../repository/commits: remember the head of the branch, and
+    return a function that says whether this very commit has since landed on it."""
+    spec = json.loads(body)
+    branch, message = spec["branch"], spec["commit_message"].rstrip("\n")
+    head_path = "/projects/%s/repository/branches/%s" % (pid, urllib.parse.quote(branch, safe=""))
+    before = get_json(head_path)
+    pre = before["commit"]["id"] if before else None
+
+    def landed():
+        now = get_json(head_path)
+        if not now or not pre or now["commit"]["id"] == pre:
+            return None
+        info = get_json("/projects/%s/repository/commits/%s" % (pid, now["commit"]["id"]))
+        if info and info.get("message", "").rstrip("\n") == message and pre in info.get("parent_ids", []):
+            return 201, json.dumps(info)
+        return None
+    return landed
+
+
+def merge_check(pid, iid):
+    def merged():
+        mr = get_json("/projects/%s/merge_requests/%s" % (pid, iid))
+        if mr and mr.get("state") == "merged":
+            return 200, json.dumps(mr)
+        return None
+    return merged
+
+
+def send(method, path, body=None):
+    """The request with retries. Returns (status, text)."""
+    check = None
+    if method == "POST" and (m := re.fullmatch(r"/projects/([^/]+)/repository/commits", path)):
+        check = commit_check(m.group(1), body)
+    elif method == "PUT" and (m := re.fullmatch(r"/projects/([^/]+)/merge_requests/(\d+)/merge", path)):
+        check = merge_check(m.group(1), m.group(2))
+    code, text, retry_after = 0, "", None
+    for attempt in range(ATTEMPTS):
+        if attempt:
+            delay = BACKOFF * 2 ** (attempt - 1)
+            if retry_after and retry_after.isdigit():
+                delay = max(delay, min(int(retry_after), 60))
+            time.sleep(delay)
+            if check:  # the previous attempt may have worked although we did not see its answer
+                done = check()
+                if done:
+                    log("%s %s: the earlier attempt had worked" % (method, path.split("?")[0]))
+                    return done
+        code, text, retry_after = once(method, path, body)
+        if code not in RETRIABLE:
+            # A DELETE that finds the thing gone after an unseen first attempt is done.
+            if method == "DELETE" and attempt and code == 404:
+                return 204, ""
+            return code, text
+        log("%s %s: attempt %d of %d failed (%s)" % (method, path.split("?")[0], attempt + 1, ATTEMPTS,
+                                                      "HTTP %d" % code if code else text[:120]))
+    if check:
+        done = check()
+        if done:
+            log("%s %s: the last attempt had worked" % (method, path.split("?")[0]))
+            return done
+    return code, text
+
+
+if __name__ == "__main__":
+    method, path = sys.argv[1], sys.argv[2]
+    body = sys.argv[3] if len(sys.argv) > 3 else None
+    status_only = method.startswith("STATUS-")
+    if status_only:
+        method = method[len("STATUS-"):]
+    code, text = send(method, path, body)
+    if status_only:
+        print(code)
+        sys.exit(0)
+    if code >= 400 or code == 0:
+        sys.stderr.write("HTTP %d: %s\n" % (code, text[:300]))
+        sys.exit(22)
+    sys.stdout.write(text)
 PY
 
 # edit.py <project id> <file> <regex> <replacement> <message>: commit to main
@@ -235,6 +339,19 @@ refresh_log() {
   fi
 }
 
+# show_state: what the policy's proposals are doing, and the last thing the
+# operator said about failing to map or propose. Printed when a wait times out,
+# so the log says why without a second look.
+show_state() {
+  refresh_log
+  echo "    proposals of the policy:"
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}{" phase="}{.status.phase}{" Mapped="}{.status.conditions[?(@.type=="Mapped")].reason}{" Proposed="}{.status.conditions[?(@.type=="Proposed")].reason}{"\n"}{end}' 2>/dev/null | sed 's/^/      /'
+  if [[ -f "$LOG_FILE" ]]; then
+    echo "    last operator messages about mapping or proposing:"
+    grep -E "Cannot (map|propose)|Proposal (failed|unmapped)|Reconciler error" "$LOG_FILE" 2>/dev/null | tail -n 3 | cut -c1-400 | sed 's/^/      /'
+  fi
+}
+
 wait_for() {
   local desc="$1" waited=0
   shift
@@ -242,6 +359,7 @@ wait_for() {
     waited=$((waited + 2))
     if (( waited > WAIT )); then
       fail "$desc (timed out after ${WAIT}s)"
+      show_state
       return 0
     fi
     sleep 2
@@ -521,6 +639,29 @@ print("restored %d file(s) on main with %s" % (len(actions), json.loads(r.stdout
 PY
 }
 
+SUMMARY_PRINTED=false
+# print_summary [aborted]: the result so far. It is also printed when the script
+# stops early, with the failures up to that point.
+print_summary() {
+  local aborted="${1:-}"
+  SUMMARY_PRINTED=true
+  echo
+  if [[ -n "$aborted" ]]; then
+    echo "${RED}${BOLD}The test stopped early${NC} in: ${CURRENT_STEP:-the start}"
+  fi
+  echo "${BOLD}Summary:${NC} ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}${aborted:+ (the run did not finish)}"
+  if [[ "$KEEP" == "true" ]]; then
+    echo "Test namespace '$NS' kept: kubectl -n $NS get bfp,scm,driftproposals"
+  fi
+  if (( FAIL > 0 )) || [[ -n "$aborted" ]]; then
+    if [[ -s "$WORKDIR/branches" ]]; then
+      echo "Branch names read from the proposals (branch_of):"
+      awk '!seen[$0]++' "$WORKDIR/branches" | sed 's/^/  /'
+    fi
+    echo "Operator log: ${LOG_FILE#"$ROOT"/}"
+  fi
+}
+
 cleanup() {
   local status=$?
   set +e
@@ -588,6 +729,13 @@ cleanup() {
   fi
   if [[ "$KEEP" != "true" ]]; then
     k delete namespace "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
+  fi
+  if [[ "$SUMMARY_PRINTED" != "true" ]]; then
+    # The script stopped before its own summary (a die, a failed command): say
+    # what was done up to there, after the cleanup above.
+    FAIL=$((FAIL + 1))
+    print_summary aborted
+    (( status != 0 )) || status=1
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-helm-test.* ]]; then
     rm -f "$WORKDIR/gl.py" "$WORKDIR/edit.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/paths"
@@ -783,7 +931,11 @@ if [[ -n "$P_A" ]]; then
   expect_eq "Proposed condition" "True" "$(condition "$P_A" Proposed status)"
   expect_mapping "$P_A" "$VALUES_DEV" "global.region"
   expect_branch_file "$BRANCH_A" "$VALUES_DEV" "s/^\\( *region:\\) $GIT_REGION/\\1 $NEW_REGION/"
-  expect_eq "other value files on the branch are those of main" "$(raw_file helm/demo/values.yaml main)" "$(raw_file helm/demo/values.yaml "$BRANCH_A")"
+  if [[ "$(raw_file helm/demo/values.yaml main)" == "$(raw_file helm/demo/values.yaml "$BRANCH_A")" ]]; then
+    pass "helm/demo/values.yaml is the same on the branch and on main"
+  else
+    fail "helm/demo/values.yaml differs between the branch and main"
+  fi
   expect_eq "main was not touched" "$MAIN_ORIG_SHA" "$(main_sha)"
   MR_A="$(gl GET "$(project_path "/merge_requests/$IID_A")")"
   BODY_A="$(echo "$MR_A" | jx 'd["description"]')"
@@ -1018,8 +1170,9 @@ echo "  i1. a commit to another service's values file (helm/shared/services/beta
 GIT_BETA="$(yaml_value "$BETA_VALUES" main logLevel)"
 NEW_BETA="error"
 [[ "$GIT_BETA" != "$NEW_BETA" ]] || NEW_BETA="trace"
-SHA_I1="$(commit_edit "$BETA_VALUES" "^logLevel: .*" "logLevel: $NEW_BETA" "test: another service's values file (Backflow e2e)")"
+SHA_I1="$(commit_edit "$BETA_VALUES" "^logLevel: .*" "logLevel: $NEW_BETA" "test: another service's values file (Backflow e2e)")" || SHA_I1=""
 expect_nonempty "commit to $BETA_VALUES" "$SHA_I1"
+if [[ -n "$SHA_I1" ]]; then
 wait_for "$BETA_APP is OutOfSync, comparing against the commit but not synced to it" app_ahead_at "$BETA_APP" "$SHA_I1"
 wait_for "$ALPHA_APP compares against the commit too" app_compared_at "$ALPHA_APP" "$SHA_I1"
 expect_eq "$ALPHA_APP is still Synced (its render did not change)" "Synced" "$(app_sync_status "$ALPHA_APP")"
@@ -1047,13 +1200,15 @@ if [[ -n "$P_I1" ]]; then
 fi
 sync_all || fail "an Application did not become Synced after i1"
 wait_all_settled "$SHA_I1" || fail "Argo CD did not settle at ${SHA_I1:0:8}: $(app_state "$BETA_APP")"
+fi
 
 echo "  i2. a commit to another environment's values file (helm/demo/values-prod.yaml)..."
 GIT_PROD="$(yaml_value "$VALUES_PROD" main region)"
 NEW_PROD="us-east-2"
 [[ "$GIT_PROD" != "$NEW_PROD" ]] || NEW_PROD="us-east-3"
-SHA_I2="$(commit_edit "$VALUES_PROD" "^  region: .*" "  region: $NEW_PROD" "test: another environment's values file (Backflow e2e)")"
+SHA_I2="$(commit_edit "$VALUES_PROD" "^  region: .*" "  region: $NEW_PROD" "test: another environment's values file (Backflow e2e)")" || SHA_I2=""
 expect_nonempty "commit to $VALUES_PROD" "$SHA_I2"
+if [[ -n "$SHA_I2" ]]; then
 wait_for "$DEMO_APP compares against the commit" app_compared_at "$DEMO_APP" "$SHA_I2"
 expect_eq "$DEMO_APP is not synced to it (manual sync)" "true" "$([[ "$(app_field "$DEMO_APP" '{.status.operationState.syncResult.revision}')" != "$SHA_I2" ]] && echo true || echo false)"
 GIT_REGION="$(yaml_value "$VALUES_DEV" main region)"
@@ -1073,10 +1228,12 @@ if [[ -n "$P_I2" ]]; then
 fi
 sync_all || fail "an Application did not become Synced after i2"
 wait_all_settled "$SHA_I2" || fail "Argo CD did not settle at ${SHA_I2:0:8}: $(app_state "$DEMO_APP")"
+fi
 
 echo "  i3. a commit to the Application's own values file (helm/demo/values-dev.yaml)..."
-SHA_I3="$(commit_edit "$VALUES_DEV" "^# Development environment.*" "# Development environment (edited by the Backflow e2e test)." "test: a commit the Application has not synced yet (Backflow e2e)")"
+SHA_I3="$(commit_edit "$VALUES_DEV" "^# Development environment.*" "# Development environment (edited by the Backflow e2e test)." "test: a commit the Application has not synced yet (Backflow e2e)")" || SHA_I3=""
 expect_nonempty "commit to $VALUES_DEV" "$SHA_I3"
+if [[ -n "$SHA_I3" ]]; then
 wait_for "$DEMO_APP compares against the commit" app_compared_at "$DEMO_APP" "$SHA_I3"
 expect_eq "$DEMO_APP is not synced to it (manual sync)" "true" "$([[ "$(app_field "$DEMO_APP" '{.status.operationState.syncResult.revision}')" != "$SHA_I3" ]] && echo true || echo false)"
 GIT_REGION="$(yaml_value "$VALUES_DEV" main region)"
@@ -1110,6 +1267,7 @@ if [[ -n "$P_I3" ]]; then
   expect_cleaned_and_closed "$P_I3"
 fi
 sync_all || fail "an Application did not become Synced after i3"
+fi
 
 if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on for:$AUTOSYNC_OFF"; fi
 for a in $APPS; do
@@ -1131,16 +1289,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-echo
-echo "${BOLD}Summary:${NC} ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}"
-if [[ "$KEEP" == "true" ]]; then
-  echo "Test namespace '$NS' kept: kubectl -n $NS get bfp,scm,driftproposals"
-fi
+print_summary
 if (( FAIL > 0 )); then
-  if [[ -s "$WORKDIR/branches" ]]; then
-    echo "Branch names read from the proposals (branch_of):"
-    awk '!seen[$0]++' "$WORKDIR/branches" | sed 's/^/  /'
-  fi
-  echo "Operator log: ${LOG_FILE#"$ROOT"/}"
   exit 1
 fi
