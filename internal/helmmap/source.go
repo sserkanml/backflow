@@ -27,6 +27,10 @@ var (
 	// ErrUnsupportedValueFile: a value file is a reference to another source
 	// ($name/...) or a URL scheme Argo CD does not allow.
 	ErrUnsupportedValueFile = errors.New("unsupported value file")
+	// ErrSymlinkedValueFile: a value file is a symbolic link or lies under
+	// one. Argo CD follows it; this package does not, so the file cannot be
+	// told apart from a missing one without saying so.
+	ErrSymlinkedValueFile = errors.New("value file is a symbolic link or under one")
 	// ErrInvalidInline: helm.values, helm.valuesObject or a parameter name
 	// cannot be parsed.
 	ErrInvalidInline = errors.New("invalid inline Helm values")
@@ -224,6 +228,9 @@ func (s *Source) resolveValueFiles(fsys fs.FS, spec Spec, env map[string]string)
 		case r.remote:
 			s.RemoteValueFiles = append(s.RemoteValueFiles, r.path)
 		case isGlob(r.path):
+			if err := checkGlobSymlinks(fsys, r.path); err != nil {
+				return fmt.Errorf("value file glob %q: %w", raw, err)
+			}
 			matches, err := doublestar.Glob(fsys, r.path, doublestar.WithFilesOnly())
 			if err != nil {
 				return fmt.Errorf("value file glob %q: %w", raw, err)
@@ -241,6 +248,9 @@ func (s *Source) resolveValueFiles(fsys fs.FS, spec Spec, env map[string]string)
 				}
 			}
 		default:
+			if err := checkNoSymlink(fsys, r.path); err != nil {
+				return fmt.Errorf("value file %q: %w", raw, err)
+			}
 			if _, err := fs.Stat(fsys, r.path); err != nil {
 				if !errors.Is(err, fs.ErrNotExist) {
 					return fmt.Errorf("value file %q: %w", raw, err)
@@ -332,4 +342,51 @@ func dropListItems(in []InlineValue) []InlineValue {
 		out = append(out, v)
 	}
 	return out
+}
+
+// lstat describes a path without following a symbolic link where the file
+// system can tell. A file system without symbolic links of its own, such as
+// the view of a Git commit, reports a link as a file with the symlink mode.
+func lstat(fsys fs.FS, name string) (fs.FileInfo, error) {
+	if _, ok := fsys.(fs.ReadLinkFS); ok {
+		return fs.Lstat(fsys, name)
+	}
+	return fs.Stat(fsys, name)
+}
+
+// checkNoSymlink fails when name, or a directory above it, is a symbolic
+// link. A part that does not exist ends the check: the caller reports a
+// missing file.
+func checkNoSymlink(fsys fs.FS, name string) error {
+	parts := strings.Split(name, "/")
+	for i := range parts {
+		prefix := path.Join(parts[:i+1]...)
+		info, err := lstat(fsys, prefix)
+		if err != nil {
+			return nil //nolint:nilerr // missing is reported by the caller
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%w: %s", ErrSymlinkedValueFile, prefix)
+		}
+	}
+	return nil
+}
+
+// checkGlobSymlinks fails when the glob walks through, or ends at, a symbolic
+// link. Each leading part of the pattern is matched on its own, so a linked
+// directory the full pattern would not enter is still found.
+func checkGlobSymlinks(fsys fs.FS, pattern string) error {
+	parts := strings.Split(pattern, "/")
+	for i := range parts {
+		matches, err := doublestar.Glob(fsys, path.Join(parts[:i+1]...))
+		if err != nil {
+			return err
+		}
+		for _, m := range matches {
+			if info, err := lstat(fsys, m); err == nil && info.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("%w: %s", ErrSymlinkedValueFile, m)
+			}
+		}
+	}
+	return nil
 }

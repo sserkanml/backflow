@@ -294,3 +294,61 @@ func TestNewSourceInline(t *testing.T) {
 		})
 	}
 }
+
+func TestNewSourceSymlinks(t *testing.T) {
+	link := func(target string) *fstest.MapFile {
+		return &fstest.MapFile{Data: []byte(target), Mode: fs.ModeSymlink}
+	}
+	file := func() *fstest.MapFile { return &fstest.MapFile{Data: []byte("x: 1\n")} }
+	fsys := fstest.MapFS{
+		"c/real.yaml":       file(),
+		"c/link.yaml":       link("real.yaml"),
+		"c/dir-link":        link("real-dir"),
+		"c/real-dir/a.yaml": file(),
+		"c/envs/a/v.yaml":   file(),
+		"c/envs/b":          link("a"),
+	}
+	tests := []struct {
+		name       string
+		valueFiles []string
+		ignore     bool
+	}{
+		{name: "the file is a symlink", valueFiles: []string{"link.yaml"}},
+		{name: "a directory above the file is a symlink", valueFiles: []string{"dir-link/a.yaml"}},
+		{name: "a glob ends at a symlink", valueFiles: []string{"*.yaml"}},
+		{name: "a glob walks through a symlinked directory", valueFiles: []string{"envs/*/v.yaml"}},
+		{name: "ignoreMissingValueFiles does not hide it", valueFiles: []string{"link.yaml"}, ignore: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewSource(fsys, Spec{Path: "c", ValueFiles: tt.valueFiles, IgnoreMissingValueFiles: tt.ignore})
+			if !errors.Is(err, ErrSymlinkedValueFile) {
+				t.Fatalf("err = %v, want ErrSymlinkedValueFile", err)
+			}
+			if got := SourceReason(err); got != "SymlinkedValueFile" {
+				t.Errorf("reason = %q", got)
+			}
+		})
+	}
+
+	// A regular file next to the links still resolves.
+	src, err := NewSource(fsys, Spec{Path: "c", ValueFiles: []string{"real.yaml"}})
+	if err != nil || len(src.ValueFiles) != 1 {
+		t.Fatalf("regular file: %v %v", src, err)
+	}
+}
+
+func TestSourceReason(t *testing.T) {
+	tests := map[error]string{
+		ErrMissingValueFile:     ReasonMissingValueFile,
+		ErrOutsideRepository:    ReasonValueFileOutsideRepo,
+		ErrUnsupportedValueFile: ReasonUnsupportedValueFile,
+		ErrInvalidInline:        ReasonInvalidInlineValues,
+		errors.New("other"):     "",
+	}
+	for err, want := range tests {
+		if got := SourceReason(err); got != want {
+			t.Errorf("SourceReason(%v) = %q, want %q", err, got, want)
+		}
+	}
+}
