@@ -3,6 +3,7 @@
 package argocd
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -43,6 +44,15 @@ type Config struct {
 	InsecureSkipTLSVerify bool
 	// Request timeout. Defaults to 30s.
 	Timeout time.Duration
+	// RenderTimeout bounds one GetManifestsWithFiles call, which renders a
+	// chart and can take a while. Defaults to 2m.
+	RenderTimeout time.Duration
+	// MaxArchiveBytes and MaxExtractedBytes are the limits of Argo CD's repo
+	// server for the files sent to render with (its flags
+	// --streamed-manifest-max-tar-size and --streamed-manifest-max-extracted-size).
+	// They default to the Argo CD defaults, 100M and 1G.
+	MaxArchiveBytes   int64
+	MaxExtractedBytes int64
 }
 
 // Client talks to the Argo CD API.
@@ -50,6 +60,12 @@ type Client struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// grpc speaks HTTP/2, which the gRPC calls need. It has no overall
+	// timeout; each call sets its own through its context.
+	grpc          *http.Client
+	renderTimeout time.Duration
+	maxArchive    int64
+	maxExtracted  int64
 }
 
 // ManagedResource is one entry of an Application's managed resources.
@@ -87,7 +103,7 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	return &Client{
+	c := &Client{
 		baseURL: strings.TrimRight(cfg.URL, "/"),
 		token:   cfg.Token,
 		http: &http.Client{
@@ -98,12 +114,32 @@ func New(cfg Config) (*Client, error) {
 				IdleConnTimeout: idleConnTimeout,
 			},
 		},
-	}, nil
+		renderTimeout: cmp.Or(cfg.RenderTimeout, defaultRenderTimeout),
+		maxArchive:    cmp.Or(cfg.MaxArchiveBytes, DefaultMaxArchiveBytes),
+		maxExtracted:  cmp.Or(cfg.MaxExtractedBytes, DefaultMaxExtractedBytes),
+	}
+	// A transport with its own TLS configuration only speaks HTTP/2 when it
+	// is asked to. A plain http:// URL gets HTTP/2 without TLS (h2c).
+	h2 := &http.Transport{
+		TLSClientConfig:   tlsCfg.Clone(),
+		Proxy:             http.ProxyFromEnvironment,
+		IdleConnTimeout:   idleConnTimeout,
+		ForceAttemptHTTP2: true,
+	}
+	var protocols http.Protocols
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+	h2.Protocols = &protocols
+	c.grpc = &http.Client{Transport: h2}
+	return c, nil
 }
 
 // CloseIdleConnections closes the connections the client keeps open. Call it
 // when the client is replaced, so they do not outlive it.
-func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
+func (c *Client) CloseIdleConnections() {
+	c.http.CloseIdleConnections()
+	c.grpc.CloseIdleConnections()
+}
 
 type managedResourcesResponse struct {
 	Items []struct {
