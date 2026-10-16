@@ -264,7 +264,7 @@ func TestFindSynthetic(t *testing.T) {
 		},
 		{
 			name:           "a file parameter controls the key",
-			files:          map[string]string{"c/a.yaml": "tls: old\n"},
+			files:          map[string]string{"c/a.yaml": "tls: old\n", "c/tls.pem": "pem"},
 			spec:           Spec{Path: "c", ValueFiles: []string{"a.yaml"}, FileParameters: []FileParameter{{Name: "tls", Path: "tls.pem"}}},
 			old:            "old",
 			wantControlled: []string{"helm.fileParameters tls"},

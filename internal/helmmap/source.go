@@ -106,6 +106,9 @@ type Source struct {
 	// RemoteValueFiles are http(s) value files. They cannot be edited, and
 	// they are not read, so a value may come from one of them.
 	RemoteValueFiles []string
+	// FileParameterFiles are the files helm.fileParameters read (--set-file),
+	// as repository paths. They are inputs of the render and are never edited.
+	FileParameterFiles []string
 	// Inline lists, in precedence order (a later entry wins), what
 	// helm.values, helm.valuesObject, helm.parameters and
 	// helm.fileParameters set.
@@ -138,6 +141,9 @@ func NewSource(fsys fs.FS, spec Spec) (*Source, error) {
 	env := map[string]string{"ARGOCD_APP_SOURCE_PATH": spec.Path}
 	maps.Copy(env, spec.Env)
 	if err := src.resolveValueFiles(fsys, spec, env); err != nil {
+		return nil, err
+	}
+	if err := src.resolveFileParameters(fsys, spec, env); err != nil {
 		return nil, err
 	}
 	if err := src.parseInline(spec); err != nil {
@@ -261,6 +267,30 @@ func (s *Source) resolveValueFiles(fsys fs.FS, spec Spec, env map[string]string)
 				return fmt.Errorf("%w: %s", ErrMissingValueFile, r.path)
 			}
 			add(r.path)
+		}
+	}
+	return nil
+}
+
+// resolveFileParameters finds the files of helm.fileParameters. They must
+// exist: Helm fails without them.
+func (s *Source) resolveFileParameters(fsys fs.FS, spec Spec, env map[string]string) error {
+	for _, fp := range spec.FileParameters {
+		r, err := s.resolve(fp.Path, env)
+		if err != nil {
+			return fmt.Errorf("file parameter %q: %w", fp.Name, err)
+		}
+		if r.remote {
+			return fmt.Errorf("%w: file parameter %q is a URL", ErrUnsupportedValueFile, fp.Name)
+		}
+		if err := checkNoSymlink(fsys, r.path); err != nil {
+			return fmt.Errorf("file parameter %q: %w", fp.Name, err)
+		}
+		if _, err := fs.Stat(fsys, r.path); err != nil {
+			return fmt.Errorf("%w: file parameter %q: %s", ErrMissingValueFile, fp.Name, r.path)
+		}
+		if !slices.Contains(s.FileParameterFiles, r.path) {
+			s.FileParameterFiles = append(s.FileParameterFiles, r.path)
 		}
 	}
 	return nil

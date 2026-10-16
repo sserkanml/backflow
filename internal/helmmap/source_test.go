@@ -278,7 +278,7 @@ func TestNewSourceInline(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src, err := NewSource(files("c/a.yaml"), tt.spec)
+			src, err := NewSource(files("c/a.yaml", "c/f.txt"), tt.spec)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tt.wantErr)
@@ -349,6 +349,26 @@ func TestSourceReason(t *testing.T) {
 	for err, want := range tests {
 		if got := SourceReason(err); got != want {
 			t.Errorf("SourceReason(%v) = %q, want %q", err, got, want)
+		}
+	}
+}
+
+func TestNewSourceFileParameters(t *testing.T) {
+	fsys := files("c/tls.pem", "c/real.yaml")
+	src, err := NewSource(fsys, Spec{Path: "c", FileParameters: []FileParameter{{Name: "tls", Path: "tls.pem"}, {Name: "tls2", Path: "tls.pem"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(src.FileParameterFiles, []string{"c/tls.pem"}) {
+		t.Errorf("FileParameterFiles = %v", src.FileParameterFiles)
+	}
+	for name, fp := range map[string]FileParameter{
+		"missing": {Name: "x", Path: "nope.pem"},
+		"outside": {Name: "x", Path: "../../x"},
+		"url":     {Name: "x", Path: "https://example.com/x"},
+	} {
+		if _, err := NewSource(fsys, Spec{Path: "c", FileParameters: []FileParameter{fp}}); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }
