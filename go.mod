@@ -3,6 +3,7 @@ module github.com/sserkanml/backflow
 go 1.26.0
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.10.3
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/gobwas/glob v0.2.3

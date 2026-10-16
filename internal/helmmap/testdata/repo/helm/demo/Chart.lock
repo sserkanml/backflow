@@ -1,0 +1,6 @@
+dependencies:
+- name: demo-sidecar
+  repository: file://../demo-sidecar
+  version: 0.1.0
+digest: sha256:5b13fca13c569b595a367fd99b36279df4e963124e479db835ed413af93873e0
+generated: "2026-10-16T16:57:20.060031+03:00"

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: demo
+description: Demo service. One chart per service, values per environment next to it.
+type: application
+version: 0.1.0
+appVersion: "1.0"
+dependencies:
+  - name: demo-sidecar
+    version: 0.1.0
+    repository: file://../demo-sidecar

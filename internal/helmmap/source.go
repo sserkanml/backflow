@@ -1,0 +1,335 @@
+package helmmap
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"net/url"
+	"os"
+	"path"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
+)
+
+// Errors a Source can be rejected with. Each means the value files cannot be
+// determined with certainty, so the drift stays unmapped.
+var (
+	// ErrOutsideRepository: a path leaves the repository, or is the root.
+	ErrOutsideRepository = errors.New("path is outside the repository")
+	// ErrMissingValueFile: a value file does not exist and the Application
+	// does not set ignoreMissingValueFiles.
+	ErrMissingValueFile = errors.New("value file does not exist")
+	// ErrUnsupportedValueFile: a value file is a reference to another source
+	// ($name/...) or a URL scheme Argo CD does not allow.
+	ErrUnsupportedValueFile = errors.New("unsupported value file")
+	// ErrInvalidInline: helm.values, helm.valuesObject or a parameter name
+	// cannot be parsed.
+	ErrInvalidInline = errors.New("invalid inline Helm values")
+)
+
+// Layer names of the settings on an Application that sit on top of the value
+// files, in the order Argo CD passes them to Helm: values or valuesObject (one
+// extra --values file, last), then parameters (--set, --set-string) and
+// fileParameters (--set-file).
+const (
+	LayerValues         = "helm.values"
+	LayerValuesObject   = "helm.valuesObject"
+	LayerParameters     = "helm.parameters"
+	LayerFileParameters = "helm.fileParameters"
+)
+
+// Parameter is one entry of helm.parameters.
+type Parameter struct {
+	Name  string
+	Value string
+	// ForceString is set for --set-string.
+	ForceString bool
+}
+
+// FileParameter is one entry of helm.fileParameters (--set-file). The file's
+// content is the value.
+type FileParameter struct {
+	Name string
+	Path string
+}
+
+// Spec is the Helm part of an Application source.
+type Spec struct {
+	// Path is spec.source.path: the chart directory in the repository.
+	Path string
+	// ValueFiles is helm.valueFiles, in order.
+	ValueFiles []string
+	// Values is helm.values, a YAML string.
+	Values string
+	// ValuesObject is helm.valuesObject as JSON.
+	ValuesObject []byte
+	Parameters   []Parameter
+	// FileParameters is helm.fileParameters.
+	FileParameters          []FileParameter
+	IgnoreMissingValueFiles bool
+	// Env holds the variables value file paths may use, the $ARGOCD_APP_*
+	// set Argo CD defines. ARGOCD_APP_SOURCE_PATH defaults to Path.
+	Env map[string]string
+}
+
+// InlineValue is what one inline layer sets at a key path.
+type InlineValue struct {
+	Layer string
+	Path  KeyPath
+	// Value is the rendered scalar, when HasValue is set. Lists, nulls and
+	// file parameters have none.
+	Value    string
+	HasValue bool
+}
+
+// Source is the resolved Helm source of an Application: which files feed the
+// chart and which key paths the inline settings control.
+type Source struct {
+	// ChartDir is the chart directory, relative to the repository root.
+	ChartDir string
+	// ChartValues is the chart's own values.yaml. Its defaults are never
+	// edited; an Application overrides them instead.
+	ChartValues string
+	// ValueFiles are the value files in the order Helm merges them (a later
+	// file wins), as repository paths. Missing files that the Application
+	// ignores are left out.
+	ValueFiles []string
+	// RemoteValueFiles are http(s) value files. They cannot be edited, and
+	// they are not read, so a value may come from one of them.
+	RemoteValueFiles []string
+	// Inline lists, in precedence order (a later entry wins), what
+	// helm.values, helm.valuesObject, helm.parameters and
+	// helm.fileParameters set.
+	Inline []InlineValue
+}
+
+// NewSource resolves the Helm source of an Application against the
+// repository at fsys.
+//
+// Value files follow Argo CD 3.5.3, reposerver/repository/repository.go
+// getResolvedValueFiles and util/io/path/resolved.go ResolveValueFilePathOrUrl:
+//   - $ARGOCD_APP_* variables are expanded (Env.Envsubst, os.Expand with $$
+//     for a literal $; an undefined variable is empty);
+//   - a URL with a scheme is a remote file, allowed for http and https;
+//   - a path starting with "/" is relative to the repository root, any other
+//     is relative to the chart directory, and the result must stay inside the
+//     repository and not be the root itself;
+//   - a path with *, ? or [ is a glob (doublestar, ** included) whose matches
+//     keep lexical order; a file that is also listed without a glob keeps the
+//     position of that explicit entry; duplicates are dropped;
+//   - a missing file or a glob without a match is an error unless
+//     ignoreMissingValueFiles is set, in which case it is skipped.
+func NewSource(fsys fs.FS, spec Spec) (*Source, error) {
+	chart, err := cleanRepoPath(spec.Path, true)
+	if err != nil {
+		return nil, fmt.Errorf("chart path %q: %w", spec.Path, err)
+	}
+	src := &Source{ChartDir: chart, ChartValues: path.Join(chart, "values.yaml")}
+
+	env := map[string]string{"ARGOCD_APP_SOURCE_PATH": spec.Path}
+	maps.Copy(env, spec.Env)
+	if err := src.resolveValueFiles(fsys, spec, env); err != nil {
+		return nil, err
+	}
+	if err := src.parseInline(spec); err != nil {
+		return nil, err
+	}
+	return src, nil
+}
+
+// cleanRepoPath makes p a clean path relative to the repository root. The root
+// itself is only allowed when allowRoot is set.
+func cleanRepoPath(p string, allowRoot bool) (string, error) {
+	c := path.Clean(strings.TrimPrefix(p, "/"))
+	if c == ".." || strings.HasPrefix(c, "../") {
+		return "", ErrOutsideRepository
+	}
+	if c == "." && !allowRoot {
+		return "", ErrOutsideRepository
+	}
+	return c, nil
+}
+
+func isGlob(p string) bool { return strings.ContainsAny(p, "*?[") }
+
+// refPrefix matches a leading $name, which Argo CD reads as a reference to a
+// source with that ref when the Application has one.
+var refPrefix = regexp.MustCompile(`^\$\{?([A-Za-z_][A-Za-z0-9_]*)`)
+
+// resolvedFile is one value file entry after expansion of variables and URL
+// and path resolution.
+type resolvedFile struct {
+	path   string // repository path, or URL when remote
+	remote bool
+}
+
+func (s *Source) resolve(raw string, env map[string]string) (resolvedFile, error) {
+	if m := refPrefix.FindStringSubmatch(raw); m != nil {
+		if _, ok := env[m[1]]; !ok {
+			return resolvedFile{}, fmt.Errorf("%w: %q refers to another source", ErrUnsupportedValueFile, raw)
+		}
+	}
+	expanded := os.Expand(raw, func(name string) string {
+		if name == "$" {
+			return "$"
+		}
+		return env[name]
+	})
+	if u, err := url.Parse(expanded); err == nil && u.Scheme != "" {
+		switch u.Scheme {
+		case "http", "https":
+			return resolvedFile{path: expanded, remote: true}, nil
+		}
+		return resolvedFile{}, fmt.Errorf("%w: the URL scheme %q of %q is not allowed", ErrUnsupportedValueFile, u.Scheme, raw)
+	}
+	var rel string
+	if strings.HasPrefix(expanded, "/") {
+		rel = expanded
+	} else {
+		rel = path.Join(s.ChartDir, expanded)
+	}
+	p, err := cleanRepoPath(rel, false)
+	if err != nil {
+		return resolvedFile{}, fmt.Errorf("value file %q: %w", raw, err)
+	}
+	return resolvedFile{path: p}, nil
+}
+
+func (s *Source) resolveValueFiles(fsys fs.FS, spec Spec, env map[string]string) error {
+	// Explicit entries claim their own position; a glob leaves them out.
+	explicit := map[string]bool{}
+	for _, raw := range spec.ValueFiles {
+		if r, err := s.resolve(raw, env); err == nil && !r.remote && !isGlob(r.path) {
+			explicit[r.path] = true
+		}
+	}
+	seen := map[string]bool{}
+	add := func(p string) {
+		if !seen[p] {
+			seen[p] = true
+			s.ValueFiles = append(s.ValueFiles, p)
+		}
+	}
+	for _, raw := range spec.ValueFiles {
+		r, err := s.resolve(raw, env)
+		if err != nil {
+			return err
+		}
+		switch {
+		case r.remote:
+			s.RemoteValueFiles = append(s.RemoteValueFiles, r.path)
+		case isGlob(r.path):
+			matches, err := doublestar.Glob(fsys, r.path, doublestar.WithFilesOnly())
+			if err != nil {
+				return fmt.Errorf("value file glob %q: %w", raw, err)
+			}
+			if len(matches) == 0 {
+				if spec.IgnoreMissingValueFiles {
+					continue
+				}
+				return fmt.Errorf("%w: the glob %q matches no file", ErrMissingValueFile, raw)
+			}
+			slices.Sort(matches)
+			for _, m := range matches {
+				if !explicit[m] {
+					add(m)
+				}
+			}
+		default:
+			if _, err := fs.Stat(fsys, r.path); err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					return fmt.Errorf("value file %q: %w", raw, err)
+				}
+				if spec.IgnoreMissingValueFiles {
+					continue
+				}
+				return fmt.Errorf("%w: %s", ErrMissingValueFile, r.path)
+			}
+			add(r.path)
+		}
+	}
+	return nil
+}
+
+// parseInline records which key paths the inline layers set. Only the paths
+// (and scalar values) are needed, never to rebuild the values.
+func (s *Source) parseInline(spec Spec) error {
+	// Argo CD passes valuesObject when it is set, and values otherwise.
+	var layer string
+	var doc []byte
+	switch {
+	case len(spec.ValuesObject) > 0 && string(spec.ValuesObject) != "null":
+		layer, doc = LayerValuesObject, spec.ValuesObject
+	case strings.TrimSpace(spec.Values) != "":
+		layer, doc = LayerValues, []byte(spec.Values)
+	}
+	if doc != nil {
+		if layer == LayerValuesObject && !json.Valid(doc) {
+			return fmt.Errorf("%w: %s is not JSON", ErrInvalidInline, layer)
+		}
+		defs, err := parseValues(doc)
+		if err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrInvalidInline, layer, err)
+		}
+		for _, d := range defs {
+			if d.kind == defList {
+				// A list is one unit; its items add nothing.
+				s.Inline = append(s.Inline, InlineValue{Layer: layer, Path: d.path})
+				continue
+			}
+			s.Inline = append(s.Inline, InlineValue{Layer: layer, Path: d.path, Value: d.value, HasValue: d.kind == defScalar})
+		}
+		s.Inline = dropListItems(s.Inline)
+	}
+
+	// Helm applies --set, then --set-string, then --set-file.
+	for _, forceString := range []bool{false, true} {
+		for _, p := range spec.Parameters {
+			if p.ForceString != forceString {
+				continue
+			}
+			kp, err := parseStrvals(p.Name)
+			if err != nil {
+				return fmt.Errorf("%w: %v", ErrInvalidInline, err)
+			}
+			s.Inline = append(s.Inline, InlineValue{Layer: LayerParameters, Path: kp, Value: p.Value, HasValue: true})
+		}
+	}
+	for _, p := range spec.FileParameters {
+		kp, err := parseStrvals(p.Name)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidInline, err)
+		}
+		s.Inline = append(s.Inline, InlineValue{Layer: LayerFileParameters, Path: kp})
+	}
+	return nil
+}
+
+// dropListItems removes the entries below a list entry of the same layer: the
+// list is replaced as a whole, so only its own path matters.
+func dropListItems(in []InlineValue) []InlineValue {
+	var lists []InlineValue
+	out := in[:0:0]
+	for _, v := range in {
+		below := false
+		for _, l := range lists {
+			if l.Layer == v.Layer && v.Path.HasPrefix(l.Path) && !v.Path.Equal(l.Path) {
+				below = true
+				break
+			}
+		}
+		if below {
+			continue
+		}
+		if !v.HasValue {
+			lists = append(lists, v)
+		}
+		out = append(out, v)
+	}
+	return out
+}

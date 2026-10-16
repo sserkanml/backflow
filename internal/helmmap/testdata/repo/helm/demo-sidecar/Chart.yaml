@@ -1,0 +1,6 @@
+apiVersion: v2
+name: demo-sidecar
+description: Application subchart of helm/demo. It renders its own ConfigMap.
+type: application
+version: 0.1.0
+appVersion: "1.0"
