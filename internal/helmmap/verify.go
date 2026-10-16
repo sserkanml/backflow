@@ -78,6 +78,61 @@ type FieldFailure struct {
 	Pointer string
 	Reason  string
 	Detail  string
+	// NearMiss is the best edit that reproduces the drifted field but also
+	// changes other fields. Set only with NoVerifiedCandidate.
+	NearMiss *NearMiss
+}
+
+// Collateral is a field an edit changes although it did not drift.
+type Collateral struct {
+	Resource ResourceKey
+	// Pointer is the JSON pointer of the field; empty when a whole resource
+	// appears or disappears.
+	Pointer string
+	// Live is the value now: not drifted, so the value of the unmodified
+	// render. After is the value once the edit is made. Both are JSON, or
+	// "(absent)" for a field that does not exist on that side.
+	Live, After string
+}
+
+func (c Collateral) String() string {
+	if c.Pointer == "" {
+		return fmt.Sprintf("%s (%s before the edit, %s after)", c.Resource, c.Live, c.After)
+	}
+	return fmt.Sprintf("%s%s (live %s, after the edit %s)", c.Resource, c.Pointer, c.Live, c.After)
+}
+
+// NearMiss is an edit that came close: it reproduces drifted fields, but
+// changes other fields too, so the merge request would move more than the
+// cluster did. The proposal stays unmapped; this is for the person who reads
+// why.
+type NearMiss struct {
+	File string
+	Path KeyPath
+	// Value is the value the key would be set to, as rendered text.
+	Value string
+	// Covers are the pointers of the drifted fields the edit reproduces.
+	Covers []string
+	// Collateral lists the other changes, at most MaxCollateralShown.
+	Collateral []Collateral
+	// CollateralTotal is how many other changes there are.
+	CollateralTotal int
+}
+
+// MaxCollateralShown bounds NearMiss.Collateral.
+const MaxCollateralShown = 3
+
+func (n *NearMiss) String() string {
+	parts := make([]string, len(n.Collateral))
+	for i, c := range n.Collateral {
+		parts[i] = c.String()
+	}
+	more := ""
+	if n.CollateralTotal > len(n.Collateral) {
+		more = fmt.Sprintf(", and %d more", n.CollateralTotal-len(n.Collateral))
+	}
+	return fmt.Sprintf("setting %s in %s to %s would reproduce %s but also changes %s%s",
+		n.Path, n.File, n.Value, strings.Join(n.Covers, ", "), strings.Join(parts, ", "), more)
 }
 
 // Unmapped is the answer when a proposal cannot be traced back with
@@ -389,34 +444,65 @@ func (v *run) verify(opts Options) (*Outcome, error) {
 		return out, err
 	}
 
-	accepted, rejected, err := v.tryCandidates(base, nd, fields)
+	tries, err := v.tryEdits(base, nd, fields)
 	if err != nil {
 		return v.renderErr(err)
 	}
-	var bad []FieldFailure
-	for i, f := range fields {
-		switch len(accepted[i]) {
-		case 1:
-		case 0:
-			bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonNoVerifiedCandidate, Detail: noCandidateDetail(f, rejected[i])})
-		default:
-			names := make([]string, len(accepted[i]))
-			for j, c := range accepted[i] {
-				names[j] = c.File + " " + c.Path.String()
-			}
-			bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonAmbiguousCandidates,
-				Detail: "each of these gives the live value and changes nothing else: " + strings.Join(names, "; ")})
+	var accepted []*tryout
+	for _, t := range tries {
+		if t.accepted() {
+			accepted = append(accepted, t)
 		}
 	}
-	if len(bad) > 0 {
+	if bad := uncovered(fields, tries, accepted); len(bad) > 0 {
 		return failure(bad), nil
 	}
 
-	chosen := make([]Candidate, len(fields))
-	for i := range fields {
-		chosen[i] = accepted[i][0]
+	sets, tooMany := coverSets(len(fields), accepted)
+	if tooMany {
+		return unmapped(ReasonAmbiguousCandidates, "more than %d different sets of edits reproduce the drift", maxEditSets), nil
 	}
-	return v.combine(base, nd, fields, chosen)
+	type verifiedSet struct {
+		set     []*tryout
+		final   map[string][]byte
+		applied []appliedEdit
+	}
+	var verified []verifiedSet
+	var interacted []string
+	for _, set := range sets {
+		files, applied, err := applySet(v.in.Files, fields, set)
+		if err != nil {
+			interacted = append(interacted, fmt.Sprintf("%s: %v", describeSet(set), err))
+			continue
+		}
+		if len(set) > 1 {
+			snap, err := v.render(files)
+			switch {
+			case errors.Is(err, ErrRenderFailed):
+				interacted = append(interacted, describeSet(set)+": the chart does not render with all the edits together")
+				continue
+			case err != nil:
+				return v.renderErr(err)
+			}
+			if why := judgeChanges(diff(base, snap, nd), snap, v.in.Resource, fields); why != "" {
+				interacted = append(interacted, describeSet(set)+": "+why)
+				continue
+			}
+		}
+		verified = append(verified, verifiedSet{set, files, applied})
+	}
+	switch {
+	case len(verified) == 0:
+		return unmapped(ReasonEditsInteract, "the edits verified one by one do not work together: %s", strings.Join(interacted, "; ")), nil
+	case len(verified) > 1:
+		names := make([]string, len(verified))
+		for i, vs := range verified {
+			names[i] = describeSet(vs.set)
+		}
+		return failure([]FieldFailure{{Pointer: pointers(fields), Reason: ReasonAmbiguousCandidates,
+			Detail: "each of these reproduces the drift and changes nothing else: " + strings.Join(names, "; ")}}), nil
+	}
+	return &Outcome{Results: buildResults(v.in.Files, verified[0].final, verified[0].applied)}, nil
 }
 
 // preflight parses the fields and applies the limits that need no render.
@@ -481,60 +567,237 @@ func (v *run) baseline(fields []parsedField) (snapshot, nondeterminism, *Outcome
 	return base, nd, nil, nil
 }
 
-// tryCandidates renders every candidate of every field on its own and sorts
-// them into accepted and rejected (with the reason).
-func (v *run) tryCandidates(base snapshot, nd nondeterminism, fields []parsedField) (accepted [][]Candidate, rejected [][]string, err error) {
-	accepted = make([][]Candidate, len(fields))
-	rejected = make([][]string, len(fields))
-	for i, f := range fields {
-		for _, c := range f.Found.Candidates {
-			files, why := tryEdit(v.in.Files, c, f.newValue)
-			if why == "" {
-				snap, err := v.render(files)
-				switch {
-				case errors.Is(err, ErrRenderFailed):
-					why = "the chart does not render with it"
-				case err != nil:
-					return nil, nil, err
-				default:
-					why = judge(base, snap, nd, v.in.Resource, f)
-				}
-			}
-			if why != "" {
-				rejected[i] = append(rejected[i], fmt.Sprintf("%s %s: %s", c.File, c.Path, why))
-				continue
-			}
-			accepted[i] = append(accepted[i], c)
-		}
-	}
-	return accepted, rejected, nil
+// editKey is one key of a value file set to one value.
+type editKey struct{ File, Path, Value string }
+
+// tryout is one edit and what a render with only that edit showed.
+type tryout struct {
+	cand  Candidate
+	value string // the live value as a template renders it
+	// origin lists the fields whose candidates proposed this edit.
+	origin []int
+	// why is set when the edit could not be tried: it cannot be written, or
+	// the chart does not render with it.
+	why string
+	// covers are the drifted fields the edit changed to their live value.
+	covers []int
+	// collateral are all other changes the edit made.
+	collateral []Collateral
 }
 
-// combine puts the chosen edits together. Each was verified on its own; with
-// several fields they are rendered once more, all together.
-func (v *run) combine(base snapshot, nd nondeterminism, fields []parsedField, chosen []Candidate) (*Outcome, error) {
-	if len(fields) > 1 {
-		if why := conflicts(fields, chosen); why != "" {
-			return unmapped(ReasonEditsInteract, "%s", why), nil
+// accepted: the edit reproduces drifted fields and changes nothing else.
+func (t *tryout) accepted() bool {
+	return t.why == "" && len(t.covers) > 0 && len(t.collateral) == 0
+}
+
+func (t *tryout) key() string { return t.cand.File + " " + t.cand.Path.String() }
+
+// conflicts reports two edits that set the same key to different values.
+func conflicts(a, b *tryout) bool {
+	return a.cand.File == b.cand.File && a.cand.Path.Equal(b.cand.Path) && a.value != b.value
+}
+
+// tryEdits renders every candidate edit of every field on its own. An edit
+// proposed for several fields is tried once.
+func (v *run) tryEdits(base snapshot, nd nondeterminism, fields []parsedField) ([]*tryout, error) {
+	var tries []*tryout
+	index := map[editKey]*tryout{}
+	for i, f := range fields {
+		for _, c := range f.Found.Candidates {
+			k := editKey{c.File, c.Path.String(), f.newValue}
+			if t, ok := index[k]; ok {
+				t.origin = append(t.origin, i)
+				continue
+			}
+			t := &tryout{cand: c, value: f.newValue, origin: []int{i}}
+			index[k] = t
+			tries = append(tries, t)
 		}
 	}
-	files, edits, err := applyAll(v.in.Files, fields, chosen)
-	if err != nil {
-		return unmapped(ReasonEditsInteract, "the edits cannot be applied together: %v", err), nil
+	byPointer := map[string]int{}
+	for i, f := range fields {
+		byPointer[f.Change.Path] = i
 	}
-	if len(fields) > 1 {
+	for _, t := range tries {
+		files, why := tryEdit(v.in.Files, t.cand, t.value)
+		if why != "" {
+			t.why = why
+			continue
+		}
 		snap, err := v.render(files)
 		switch {
 		case errors.Is(err, ErrRenderFailed):
-			return unmapped(ReasonEditsInteract, "the chart does not render with all the edits together"), nil
+			t.why = "the chart does not render with it"
+			continue
 		case err != nil:
-			return v.renderErr(err)
+			return nil, err
 		}
-		if why := judgeChanges(diff(base, snap, nd), snap, v.in.Resource, fields); why != "" {
-			return unmapped(ReasonEditsInteract, "the edits verified one by one do not work together: %s", why), nil
+		for _, ch := range diff(base, snap, nd) {
+			if i, ok := byPointer[ch.Pointer]; ok && ch.Key == v.in.Resource && snap[ch.Key][ch.Pointer] == fields[i].live {
+				t.covers = append(t.covers, i)
+				continue
+			}
+			t.collateral = append(t.collateral, collateralOf(base, snap, ch))
 		}
 	}
-	return &Outcome{Results: buildResults(v.in.Files, files, edits)}, nil
+	return tries, nil
+}
+
+func collateralOf(base, edited snapshot, ch change) Collateral {
+	const absent = "(absent)"
+	if ch.Pointer == "" {
+		c := Collateral{Resource: ch.Key, Live: absent, After: absent}
+		if _, ok := base[ch.Key]; ok {
+			c.Live = "(resource exists)"
+		}
+		if _, ok := edited[ch.Key]; ok {
+			c.After = "(resource exists)"
+		}
+		return c
+	}
+	val := func(s snapshot) string {
+		if v, ok := s[ch.Key][ch.Pointer]; ok {
+			return v
+		}
+		return absent
+	}
+	return Collateral{Resource: ch.Key, Pointer: ch.Pointer, Live: val(base), After: val(edited)}
+}
+
+// uncovered returns a failure for each drifted field that no accepted edit
+// reproduces, with the reasons and the nearest miss.
+func uncovered(fields []parsedField, tries, accepted []*tryout) []FieldFailure {
+	covered := make([]bool, len(fields))
+	for _, t := range accepted {
+		for _, i := range t.covers {
+			covered[i] = true
+		}
+	}
+	var bad []FieldFailure
+	for i, f := range fields {
+		if covered[i] {
+			continue
+		}
+		var near *tryout
+		var others []string
+		for _, t := range tries {
+			if !slices.Contains(t.origin, i) && !slices.Contains(t.covers, i) {
+				continue
+			}
+			switch {
+			case t.why != "":
+				others = append(others, t.key()+": "+t.why)
+			case slices.Contains(t.covers, i) && len(t.collateral) > 0:
+				if near == nil || len(t.collateral) < len(near.collateral) ||
+					(len(t.collateral) == len(near.collateral) && len(t.covers) > len(near.covers)) {
+					near = t
+				}
+			case len(t.covers) == 0:
+				others = append(others, t.key()+": it does not reproduce the drift")
+			}
+		}
+		ff := FieldFailure{Pointer: f.Change.Path, Reason: ReasonNoVerifiedCandidate}
+		if near != nil {
+			nm := &NearMiss{File: near.cand.File, Path: near.cand.Path, Value: near.value, CollateralTotal: len(near.collateral)}
+			for _, c := range near.covers {
+				nm.Covers = append(nm.Covers, fields[c].Change.Path)
+			}
+			nm.Collateral = near.collateral[:min(len(near.collateral), MaxCollateralShown)]
+			ff.NearMiss = nm
+			others = append(others, nm.String())
+		}
+		ff.Detail = noCandidateDetail(f, others)
+		bad = append(bad, ff)
+	}
+	return bad
+}
+
+// maxEditSets bounds the sets of edits that are tried together.
+const maxEditSets = 32
+
+// coverSets returns the minimal sets of accepted edits that together
+// reproduce all n drifted fields, without two edits of the same key to
+// different values. tooMany is set when there are more than maxEditSets.
+func coverSets(n int, accepted []*tryout) (sets [][]*tryout, tooMany bool) {
+	seen := map[string]bool{}
+	var all [][]int
+	var walk func(chosen []int, covered []bool)
+	walk = func(chosen []int, covered []bool) {
+		if len(all) > 4*maxEditSets {
+			return
+		}
+		first := slices.Index(covered, false)
+		if first < 0 {
+			sorted := slices.Sorted(slices.Values(chosen))
+			if k := fmt.Sprint(sorted); !seen[k] {
+				seen[k] = true
+				all = append(all, sorted)
+			}
+			return
+		}
+		for j, t := range accepted {
+			if !slices.Contains(t.covers, first) || slices.Contains(chosen, j) {
+				continue
+			}
+			clash := false
+			for _, c := range chosen {
+				clash = clash || conflicts(accepted[c], t)
+			}
+			if clash {
+				continue
+			}
+			next := slices.Clone(covered)
+			for _, c := range t.covers {
+				next[c] = true
+			}
+			walk(append(slices.Clone(chosen), j), next)
+		}
+	}
+	walk(nil, make([]bool, n))
+
+	// Keep the minimal ones: no other set is a proper subset.
+	for _, a := range all {
+		minimal := true
+		for _, b := range all {
+			if len(b) < len(a) && isSubset(b, a) {
+				minimal = false
+				break
+			}
+		}
+		if minimal {
+			set := make([]*tryout, len(a))
+			for i, j := range a {
+				set[i] = accepted[j]
+			}
+			sets = append(sets, set)
+		}
+	}
+	return sets, len(sets) > maxEditSets
+}
+
+func isSubset(sub, of []int) bool {
+	for _, x := range sub {
+		if !slices.Contains(of, x) {
+			return false
+		}
+	}
+	return true
+}
+
+func describeSet(set []*tryout) string {
+	names := make([]string, len(set))
+	for i, t := range set {
+		names[i] = t.key()
+	}
+	return strings.Join(names, " + ")
+}
+
+func pointers(fields []parsedField) string {
+	p := make([]string, len(fields))
+	for i, f := range fields {
+		p[i] = f.Change.Path
+	}
+	return strings.Join(p, ", ")
 }
 
 // baseFailure turns an error of a render of the unmodified files into an
@@ -586,13 +849,6 @@ func tryEdit(base map[string][]byte, c Candidate, value string) (files map[strin
 	return files, ""
 }
 
-// judge decides whether a render with one candidate's edit is exactly the
-// base plus the drifted field at its live value. It returns the reason when
-// not.
-func judge(base, edited snapshot, nd nondeterminism, res ResourceKey, f parsedField) string {
-	return judgeChanges(diff(base, edited, nd), edited, res, []parsedField{f})
-}
-
 func judgeChanges(changes []change, edited snapshot, res ResourceKey, fields []parsedField) string {
 	want := map[string]parsedField{}
 	for _, f := range fields {
@@ -627,55 +883,30 @@ func judgeChanges(changes []change, edited snapshot, res ResourceKey, fields []p
 	return ""
 }
 
-// conflicts reports edits that cannot both be right: the same key set to two
-// different values.
-func conflicts(fields []parsedField, chosen []Candidate) string {
-	for i := range chosen {
-		for j := i + 1; j < len(chosen); j++ {
-			if chosen[i].File == chosen[j].File && chosen[i].Path.Equal(chosen[j].Path) && fields[i].newValue != fields[j].newValue {
-				return fmt.Sprintf("%s and %s are fed by the same key (%s in %s) but are live with different values",
-					fields[i].Change.Path, fields[j].Change.Path, chosen[i].Path, chosen[i].File)
-			}
-		}
-	}
-	return ""
+// appliedEdit is a written edit, kept for the result.
+type appliedEdit struct {
+	cand        Candidate
+	w           *Written
+	changeIndex int
 }
 
-// edit is one applied change, kept for the result.
-type edit struct {
-	field parsedField
-	cand  Candidate
-	w     *Written
-}
-
-// applyAll applies the chosen edits one after the other. Two fields that
-// chose the same key are one edit.
-func applyAll(base map[string][]byte, fields []parsedField, chosen []Candidate) (map[string][]byte, []edit, error) {
+// applySet applies the edits of a set one after the other to a copy of the
+// files.
+func applySet(base map[string][]byte, fields []parsedField, set []*tryout) (map[string][]byte, []appliedEdit, error) {
 	files := maps.Clone(base)
-	var edits []edit
-	for i, c := range chosen {
-		done := false
-		for _, e := range edits {
-			if e.cand.File == c.File && e.cand.Path.Equal(c.Path) {
-				edits = append(edits, edit{field: fields[i], cand: c, w: e.w})
-				done = true
-				break
-			}
-		}
-		if done {
-			continue
-		}
-		w, err := SetValue(c.File, files[c.File], c.Path, fields[i].newValue)
+	var applied []appliedEdit
+	for _, t := range set {
+		w, err := SetValue(t.cand.File, files[t.cand.File], t.cand.Path, t.value)
 		if err != nil {
 			return nil, nil, err
 		}
-		files[c.File] = w.Edited
-		edits = append(edits, edit{field: fields[i], cand: c, w: w})
+		files[t.cand.File] = w.Edited
+		applied = append(applied, appliedEdit{cand: t.cand, w: w, changeIndex: fields[t.covers[0]].Index})
 	}
-	return files, edits, nil
+	return files, applied, nil
 }
 
-func buildResults(base, final map[string][]byte, edits []edit) []mapping.Result {
+func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.Result {
 	byFile := map[string]*mapping.Result{}
 	var order []string
 	for _, e := range edits {
@@ -687,7 +918,7 @@ func buildResults(base, final map[string][]byte, edits []edit) []mapping.Result 
 			order = append(order, e.cand.File)
 		}
 		r.Edits = append(r.Edits, mapping.Edit{
-			File: e.cand.File, Location: e.cand.Path.pointer(), Value: e.w.Edits[0].Value, ChangeIndex: e.field.Index,
+			File: e.cand.File, Location: e.cand.Path.pointer(), Value: e.w.Edits[0].Value, ChangeIndex: e.changeIndex,
 		})
 	}
 	out := make([]mapping.Result, 0, len(order))

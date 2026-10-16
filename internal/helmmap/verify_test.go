@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ type demoRenderer struct {
 
 	// Behaviours of the chart that the real demo chart does not have, to
 	// build the cases a verifier must catch.
+	tagLabel  bool // data.IMAGE_TAG and the label app.kubernetes.io/version both follow image.tag
 	noDerived bool // data.LOG_LEVEL_UP, which derives from config.logLevel, is left out
 	alsoOther bool // a second ConfigMap that also follows global.region
 	random    bool // data.RANDOM changes on every render
@@ -134,6 +136,9 @@ func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]b
 	if d.noDerived {
 		delete(data, "LOG_LEVEL_UP")
 	}
+	if d.tagLabel {
+		data["IMAGE_TAG"] = str(get(values, "image", "tag"))
+	}
 	minA, _ := strconv.Atoi(str(get(values, "config", "minA")))
 	minB, _ := strconv.Atoi(str(get(values, "config", "minB")))
 	data["AMBIGUOUS"] = strconv.Itoa(max(minA, minB))
@@ -151,6 +156,9 @@ func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]b
 		configMap(app.DestNamespace, "demo-helm-sidecar", map[string]any{
 			"TIMEOUT_SECONDS": str(get(values, "demo-sidecar", "timeoutSeconds")),
 		}),
+	}
+	if d.tagLabel {
+		objs[0].SetLabels(map[string]string{"app.kubernetes.io/version": str(get(values, "image", "tag"))})
 	}
 	if d.alsoOther {
 		objs = append(objs, configMap(app.DestNamespace, "demo-helm-other", map[string]any{"REGION": region}))
@@ -280,6 +288,12 @@ func TestVerifyDemoCases(t *testing.T) {
 		{
 			name: "LOG_LEVEL_UP is derived, no value matches", res: keyConfig, fields: [][3]string{{"LOG_LEVEL_UP", "DEBUG", "TRACE"}},
 			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"derived"},
+		},
+		{
+			// Both fields come from config.logLevel, so one edit reproduces them.
+			name: "LOG_LEVEL and LOG_LEVEL_UP drifted together", res: keyConfig,
+			fields:   [][3]string{{"LOG_LEVEL", "debug", "trace"}, {"LOG_LEVEL_UP", "DEBUG", "TRACE"}},
+			wantKeys: []string{dev + " config.logLevel"}, renders: 3,
 		},
 		{
 			name: "a candidate that also changes another resource is rejected", res: keyConfig,
@@ -567,19 +581,138 @@ func TestVerifyRenderErrors(t *testing.T) {
 }
 
 func TestConflicts(t *testing.T) {
-	a := parsedField{Field: Field{Change: v1alpha1.FieldChange{Path: "/data/A"}}, newValue: "x"}
-	b := parsedField{Field: Field{Change: v1alpha1.FieldChange{Path: "/data/B"}}, newValue: "y"}
-	same := Candidate{File: "f.yaml", Path: KeyPath{"k"}}
-	other := Candidate{File: "f.yaml", Path: KeyPath{"j"}}
-	if got := conflicts([]parsedField{a, b}, []Candidate{same, same}); got == "" {
+	mk := func(file, key, value string) *tryout {
+		return &tryout{cand: Candidate{File: file, Path: KeyPath{key}}, value: value}
+	}
+	if !conflicts(mk("f.yaml", "k", "x"), mk("f.yaml", "k", "y")) {
 		t.Error("one key set to two values was not reported")
 	}
-	b.newValue = "x"
-	if got := conflicts([]parsedField{a, b}, []Candidate{same, same}); got != "" {
-		t.Errorf("one key set to the same value twice: %s", got)
+	for name, pair := range map[string][2]*tryout{
+		"the same value": {mk("f.yaml", "k", "x"), mk("f.yaml", "k", "x")},
+		"two keys":       {mk("f.yaml", "k", "x"), mk("f.yaml", "j", "y")},
+		"two files":      {mk("f.yaml", "k", "x"), mk("g.yaml", "k", "y")},
+	} {
+		if conflicts(pair[0], pair[1]) {
+			t.Errorf("%s reported as a conflict", name)
+		}
 	}
-	b.newValue = "y"
-	if got := conflicts([]parsedField{a, b}, []Candidate{same, other}); got != "" {
-		t.Errorf("two keys: %s", got)
+}
+
+func TestCoverSets(t *testing.T) {
+	mk := func(key string, covers ...int) *tryout {
+		return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, value: key, covers: covers}
 	}
+	tests := []struct {
+		name     string
+		n        int
+		accepted []*tryout
+		want     []string
+	}{
+		{"one edit", 1, []*tryout{mk("a", 0)}, []string{"f.yaml a"}},
+		{"two edits for one field are two sets", 1, []*tryout{mk("a", 0), mk("b", 0)}, []string{"f.yaml a", "f.yaml b"}},
+		{"one edit covers both fields", 2, []*tryout{mk("a", 0, 1)}, []string{"f.yaml a"}},
+		{"a smaller set wins over a bigger one", 2, []*tryout{mk("a", 0, 1), mk("b", 0), mk("c", 1)}, []string{"f.yaml a", "f.yaml b + f.yaml c"}},
+		{"a field nothing covers", 2, []*tryout{mk("a", 0)}, nil},
+		{"the same key with two values never go together", 2,
+			[]*tryout{{cand: Candidate{File: "f.yaml", Path: KeyPath{"k"}}, value: "x", covers: []int{0}},
+				{cand: Candidate{File: "f.yaml", Path: KeyPath{"k"}}, value: "y", covers: []int{1}}}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sets, tooMany := coverSets(tt.n, tt.accepted)
+			if tooMany {
+				t.Fatal("too many")
+			}
+			var got []string
+			for _, s := range sets {
+				got = append(got, describeSet(s))
+			}
+			slices.Sort(got)
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Errorf("sets = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVerifyNearMiss(t *testing.T) {
+	t.Run("a derived field moves with the edit", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), Options{})
+		if err != nil || out.Mapped() {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+		if out.Unmapped.Reason != ReasonNoVerifiedCandidate || len(out.Unmapped.Fields) != 1 {
+			t.Fatalf("unmapped = %+v", out.Unmapped)
+		}
+		nm := out.Unmapped.Fields[0].NearMiss
+		if nm == nil {
+			t.Fatal("no near miss")
+		}
+		if nm.File != "helm/demo/values-dev.yaml" || nm.Path.String() != "config.logLevel" || nm.Value != "trace" ||
+			len(nm.Covers) != 1 || nm.Covers[0] != "/data/LOG_LEVEL" || nm.CollateralTotal != 1 || len(nm.Collateral) != 1 {
+			t.Fatalf("near miss = %+v", nm)
+		}
+		c := nm.Collateral[0]
+		if c.Resource != keyConfig || c.Pointer != "/data/LOG_LEVEL_UP" || c.Live != `"DEBUG"` || c.After != `"TRACE"` {
+			t.Errorf("collateral = %+v", c)
+		}
+		for _, want := range []string{"config.logLevel", "/data/LOG_LEVEL_UP", `live "DEBUG"`, `after the edit "TRACE"`} {
+			if !strings.Contains(out.Unmapped.Message, want) {
+				t.Errorf("message %q does not contain %q", out.Unmapped.Message, want)
+			}
+		}
+	})
+
+	t.Run("image.tag also feeds the version label", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		f := drift(t, env.src, env.files, 0, "IMAGE_TAG", "1.27-alpine", "1.28-alpine")
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src, tagLabel: true}, env.input(keyConfig, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+		nm := out.Unmapped.Fields[0].NearMiss
+		if nm == nil || nm.Path.String() != "image.tag" || len(nm.Collateral) != 1 {
+			t.Fatalf("near miss = %+v", nm)
+		}
+		if c := nm.Collateral[0]; c.Pointer != "/metadata/labels/app.kubernetes.io~1version" ||
+			c.Live != `"1.27-alpine"` || c.After != `"1.28-alpine"` {
+			t.Errorf("collateral = %+v", c)
+		}
+	})
+
+	t.Run("no near miss when nothing reproduces the field", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		f := drift(t, env.src, env.files, 0, "TIMEOUT", "30", "45")
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), Options{})
+		if out.Unmapped.Fields[0].NearMiss != nil {
+			t.Errorf("near miss = %+v", out.Unmapped.Fields[0].NearMiss)
+		}
+	})
+
+}
+
+func TestNearMissReporting(t *testing.T) {
+	t.Run("only three collateral changes are listed", func(t *testing.T) {
+		nm := &NearMiss{File: "f.yaml", Path: KeyPath{"k"}, Value: "v", Covers: []string{"/data/A"}, CollateralTotal: 5}
+		for i := range 3 {
+			nm.Collateral = append(nm.Collateral, Collateral{Resource: keyConfig, Pointer: "/data/X" + strconv.Itoa(i), Live: "1", After: "2"})
+		}
+		got := nm.String()
+		if !strings.Contains(got, "/data/X2") || !strings.Contains(got, "and 2 more") {
+			t.Errorf("String() = %s", got)
+		}
+	})
+
+	t.Run("the best near miss has the fewest other changes", func(t *testing.T) {
+		fields := []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/data/A"}, Found: &Result{}}}}
+		cand := func(key string, n int) *tryout {
+			return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
+		}
+		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil)
+		if len(bad) != 1 || bad[0].NearMiss == nil || bad[0].NearMiss.Path.String() != "few" {
+			t.Errorf("bad = %+v", bad)
+		}
+	})
 }
