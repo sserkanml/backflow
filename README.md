@@ -143,6 +143,24 @@ kubectl delete crd scmconnections.backflow.io backflowpolicies.backflow.io drift
 
 Helm installs the files in `crds/` once and never upgrades or removes them, so
 the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
+
+### Upgrading from 0.1.x to 0.2.0
+
+Version 0.2.0 adds fields to the `DriftProposal` status (`pushRejections` and
+`lastPushRejectedAt`, which count the pushes a Git server declined) and the
+Helm mapping. **Apply the new CRDs before you upgrade the chart:**
+
+```bash
+helm show crds oci://ghcr.io/sserkanml/charts/backflow --version 0.2.0 | kubectl apply --server-side -f -
+helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version 0.2.0 -n backflow-system
+```
+
+`helm upgrade` leaves the CRDs of the old version in place, and an API server
+with the old `driftproposals` CRD silently drops fields it does not know. The
+operator notices: when it records a declined push and the count does not come
+back, it emits a Warning Event `CRDsOutdated` and fails that proposal with
+`PushRejected` instead of retrying for ever. Applying the CRDs fixes it for new
+proposals; a failed one is not retried.
 Branches and merge requests that Backflow opened stay in Git.
 
 ### Running in a cluster

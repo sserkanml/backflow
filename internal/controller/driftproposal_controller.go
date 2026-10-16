@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,6 +63,8 @@ type DriftProposalReconciler struct {
 	CommitScanLimit int
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
+	// Recorder emits Events about proposals. Optional.
+	Recorder events.EventRecorder
 	// NewRenderer builds the renderer of Helm sources from the Argo CD
 	// connection of a policy. Defaults to a helmmap.ArgoRenderer over argocd.New.
 	NewRenderer func(argocd.Config) (helmmap.Renderer, error)

@@ -225,6 +225,7 @@ func main() {
 		Scheme:        mgr.GetScheme(),
 		Repos:         controller.CacheReader{Cache: repoCache},
 		Writer:        repoCache,
+		Recorder:      mgr.GetEventRecorder("backflow-driftproposal"),
 		TrackInterval: mrPollInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")

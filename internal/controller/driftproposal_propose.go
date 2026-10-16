@@ -746,6 +746,10 @@ func (r *DriftProposalReconciler) pushBackoff(dp *backflowv1alpha1.DriftProposal
 	return max(dp.Status.LastPushRejectedAt.Add(pushRetryDelays[n-1]).Sub(r.now()), 0)
 }
 
+// crdsOutdatedMessage is said when the API server drops a field of the status.
+const crdsOutdatedMessage = "CRDs are outdated: the driftproposals CRD does not keep status.pushRejections. " +
+	"Apply the CRDs of this version: helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <version> | kubectl apply --server-side -f -"
+
 // pushDeclined handles a push the Git server declined. The first declines are
 // held and tried again later (the count is in the status, so a restart does not
 // reset it); the last one fails the proposal with PushRejected.
@@ -768,6 +772,16 @@ func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflow
 	})
 	if perr := r.patchStatus(ctx, dp, orig); perr != nil {
 		return ctrl.Result{}, perr
+	}
+	if int(dp.Status.PushRejections) != declines {
+		// The API server answered without the count: the CRD is from before the
+		// field existed (helm upgrade does not update CRDs) and pruned it. The count
+		// would stay at zero and the push would be retried for ever, so stop.
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dp, nil, corev1.EventTypeWarning, "CRDsOutdated", "PushRejected", "%s", crdsOutdatedMessage)
+		}
+		return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
+			"The server declined %s, and the retries cannot be counted. %s Cause: %v", what, crdsOutdatedMessage, err))
 	}
 	logf.FromContext(ctx).Info("The Git server declined the push; will try again",
 		"proposal", dp.Name, "declines", declines, "retryAfter", delay.String(), "cause", message)

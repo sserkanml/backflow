@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -367,6 +368,22 @@ func (w *declineWriter) CreateBranch(ctx context.Context, url, branch, sha strin
 		return fmt.Errorf("%w: command error on refs/heads/%s: pre-receive hook declined", gitrepo.ErrPushRejected, branch)
 	}
 	return w.RepositoryWriter.CreateBranch(ctx, url, branch, sha, auth)
+}
+
+// pruningClient behaves like an API server with an outdated CRD: the answer to a
+// status patch lacks the fields that CRD does not know.
+type pruningClient struct{ client.Client }
+
+func (c pruningClient) Status() client.SubResourceWriter { return pruningStatus{c.Client.Status()} }
+
+type pruningStatus struct{ client.SubResourceWriter }
+
+func (w pruningStatus) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	err := w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+	if dp, ok := obj.(*backflowv1alpha1.DriftProposal); ok {
+		dp.Status.PushRejections, dp.Status.LastPushRejectedAt = 0, nil
+	}
+	return err
 }
 
 // logWriter wraps the real cache and fails FirstParentLog while err is set.
@@ -2071,6 +2088,29 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
 				Expect(repo.branch("main")).NotTo(Equal(initial))
+			})
+
+			It("fails at once, with a Warning Event, when the CRD is outdated and drops the count", func() {
+				recorder := events.NewFakeRecorder(5)
+				r.Client = pruningClient{k8sClient}
+				r.Recorder = recorder
+				pushes := 0
+				w := &racingWriter{RepositoryWriter: writer}
+				w.hook = declined(&pushes)
+				r.Writer = w
+
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(BeZero(), "not retried: the count would never reach the limit")
+				Expect(pushes).To(Equal(1))
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
+				Expect(got.Status.Message).To(ContainSubstring("CRDs are outdated"))
+				Expect(got.Status.Message).To(ContainSubstring("pre-receive hook declined"))
+
+				Expect(recorder.Events).To(Receive(And(ContainSubstring("Warning"), ContainSubstring("CRDsOutdated"), ContainSubstring("CRDs are outdated"))))
+				Expect(recorder.Events).NotTo(Receive(), "said once")
 			})
 
 			It("fails with PushRejected after the third decline, over about ten minutes", func() {
