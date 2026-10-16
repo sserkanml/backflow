@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/sserkanml/backflow/compare/v0.1.1...v0.1.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **drift:** do not propose a change again while its merge is not synced yet ([7ce197c](https://github.com/sserkanml/backflow/commit/7ce197cb82fe9b4552f3041b4002f588e0515e36))
+
 ## [0.1.1](https://github.com/sserkanml/backflow/compare/v0.1.0...v0.1.1) (2026-10-15)
 
 
