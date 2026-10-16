@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/sserkanml/backflow/compare/v0.1.2...v0.2.0) (2026-10-16)
+
+
+### Features
+
+* **helm:** map drift on Helm Applications to values files ([ccd144d](https://github.com/sserkanml/backflow/commit/ccd144d17786e4236a8cc03d53521599afb5534a))
+
+
+### Bug Fixes
+
+* **drift:** keep asking for the recheck of a drift that is waiting to become stable ([ccd144d](https://github.com/sserkanml/backflow/commit/ccd144d17786e4236a8cc03d53521599afb5534a))
+* **drift:** retry a push the Git server declines before failing the proposal ([ccd144d](https://github.com/sserkanml/backflow/commit/ccd144d17786e4236a8cc03d53521599afb5534a))
+
 ## [0.1.2](https://github.com/sserkanml/backflow/compare/v0.1.1...v0.1.2) (2026-10-16)
 
 
