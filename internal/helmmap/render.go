@@ -44,6 +44,15 @@ type App struct {
 	// a chart leaves without a namespace get it, as Argo CD does when it
 	// applies them.
 	DestNamespace string
+	// Resources are the resources Argo CD lists in the Application's
+	// status.resources. They decide which rendered resources are namespaced.
+	Resources []ListedResource
+}
+
+// ListedResource is an entry of an Application's status.resources. Namespace
+// is empty for a cluster-scoped resource.
+type ListedResource struct {
+	Group, Kind, Namespace, Name string
 }
 
 // Renderer renders an Application's source from the given files, which are
@@ -95,38 +104,45 @@ func (r *ArgoRenderer) Render(ctx context.Context, app App, files map[string][]b
 		if u.GetKind() == "" || u.GetName() == "" {
 			return nil, fmt.Errorf("manifest %d has no kind or name", i)
 		}
-		if u.GetNamespace() == "" && app.DestNamespace != "" && !clusterScoped(u.GroupVersionKind().Group, u.GetKind()) {
-			u.SetNamespace(app.DestNamespace)
-		}
+		u.SetNamespace(namespaceFor(app, u))
 		out = append(out, u)
 	}
 	return out, nil
 }
 
-// clusterScopedKinds are well-known kinds ("group/Kind") that have no
-// namespace. The renderer has no discovery, so any other kind, a custom
-// resource included, is taken to be namespaced.
-var clusterScopedKinds = map[string]bool{
-	"/Namespace": true, "/Node": true, "/PersistentVolume": true,
-	"rbac.authorization.k8s.io/ClusterRole":                         true,
-	"rbac.authorization.k8s.io/ClusterRoleBinding":                  true,
-	"apiextensions.k8s.io/CustomResourceDefinition":                 true,
-	"storage.k8s.io/StorageClass":                                   true,
-	"storage.k8s.io/CSIDriver":                                      true,
-	"storage.k8s.io/CSINode":                                        true,
-	"storage.k8s.io/VolumeAttachment":                               true,
-	"scheduling.k8s.io/PriorityClass":                               true,
-	"networking.k8s.io/IngressClass":                                true,
-	"node.k8s.io/RuntimeClass":                                      true,
-	"apiregistration.k8s.io/APIService":                             true,
-	"admissionregistration.k8s.io/ValidatingWebhookConfiguration":   true,
-	"admissionregistration.k8s.io/MutatingWebhookConfiguration":     true,
-	"admissionregistration.k8s.io/ValidatingAdmissionPolicy":        true,
-	"admissionregistration.k8s.io/ValidatingAdmissionPolicyBinding": true,
-	"cert-manager.io/ClusterIssuer":                                 true,
+// namespaceFor returns the namespace a rendered resource has in the cluster.
+// Whether it is namespaced is read from the Application's status.resources,
+// which lists every resource Argo CD manages with its namespace (empty for a
+// cluster-scoped one): the render itself leaves a namespaced resource without
+// a namespace when the chart does not set one, and Argo CD adds the
+// destination namespace when it applies it.
+//
+// A resource that Argo CD does not list yet, because only the candidate
+// render has it, cannot be looked up. For it the manifest's own namespace
+// stands, and without one the destination namespace is used. That is right
+// for namespaced kinds, which are nearly all of them; a new cluster-scoped
+// resource would be given a namespace it does not have, which at worst makes
+// it look like a different resource and so a change, never a match.
+func namespaceFor(app App, u *unstructured.Unstructured) string {
+	group := u.GroupVersionKind().Group
+	var listed []string
+	for _, r := range app.Resources {
+		if r.Group == group && r.Kind == u.GetKind() && r.Name == u.GetName() {
+			if !slices.Contains(listed, r.Namespace) {
+				listed = append(listed, r.Namespace)
+			}
+		}
+	}
+	switch {
+	case len(listed) == 1:
+		return listed[0]
+	case len(listed) > 1 && slices.Contains(listed, u.GetNamespace()):
+		return u.GetNamespace()
+	case u.GetNamespace() != "":
+		return u.GetNamespace()
+	}
+	return app.DestNamespace
 }
-
-func clusterScoped(group, kind string) bool { return clusterScopedKinds[group+"/"+kind] }
 
 // CollectFiles reads what a render of src needs from the repository at fsys,
 // as a map from repository path to content: the whole chart directory, every

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
@@ -31,10 +33,25 @@ func TestArgoRendererRender(t *testing.T) {
 		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"n"}}`,
 		`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"r"}}`,
 		`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":{"name":"r"}}`,
+		`{"apiVersion":"example.com/v1","kind":"Widget","metadata":{"name":"w"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"new"}}`,
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"new-in-ns","namespace":"x"}}`,
 		`{}`,
 	}}}
 	r := &ArgoRenderer{Client: f}
-	app := App{Name: "demo-helm", Namespace: "argocd", Project: "default", DestNamespace: "demo"}
+	app := App{
+		Name: "demo-helm", Namespace: "argocd", Project: "default", DestNamespace: "demo",
+		Resources: []ListedResource{
+			{Kind: "ConfigMap", Namespace: "demo", Name: "a"},
+			{Kind: "ConfigMap", Namespace: "other", Name: "b"},
+			{Kind: "Namespace", Name: "n"},
+			{Group: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "r"},
+			{Group: "rbac.authorization.k8s.io", Kind: "Role", Namespace: "demo", Name: "r"},
+			// A custom resource that is cluster-scoped: the list says so, a
+			// built-in table of kinds could not.
+			{Group: "example.com", Kind: "Widget", Name: "w"},
+		},
+	}
 	objs, err := r.Render(context.Background(), app, map[string][]byte{"x": []byte("y")})
 	if err != nil {
 		t.Fatal(err)
@@ -47,14 +64,36 @@ func TestArgoRendererRender(t *testing.T) {
 		got = append(got, o.GetKind()+"/"+o.GetName()+" ns="+o.GetNamespace())
 	}
 	want := []string{
-		"ConfigMap/a ns=demo",  // no namespace: the destination namespace
-		"ConfigMap/b ns=other", // its own namespace stays
-		"Namespace/n ns=",      // cluster scoped
-		"ClusterRole/r ns=",    // cluster scoped
-		"Role/r ns=demo",       // same name, but namespaced
+		"ConfigMap/a ns=demo",      // listed as namespaced: the chart left the namespace out
+		"ConfigMap/b ns=other",     // its own namespace
+		"Namespace/n ns=",          // listed without a namespace
+		"ClusterRole/r ns=",        // listed without a namespace
+		"Role/r ns=demo",           // same name as the ClusterRole, a different kind
+		"Widget/w ns=",             // a cluster-scoped custom resource, known from the list
+		"ConfigMap/new ns=demo",    // not listed, no namespace: the destination namespace
+		"ConfigMap/new-in-ns ns=x", // not listed, has a namespace: that one
 	}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("rendered\n%v\nwant\n%v", got, want)
+	}
+}
+
+func TestNamespaceForSeveralListed(t *testing.T) {
+	app := App{DestNamespace: "d", Resources: []ListedResource{
+		{Kind: "ConfigMap", Namespace: "one", Name: "a"}, {Kind: "ConfigMap", Namespace: "two", Name: "a"},
+	}}
+	mk := func(ns string) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "a"}}}
+		if ns != "" {
+			u.SetNamespace(ns)
+		}
+		return u
+	}
+	if got := namespaceFor(app, mk("two")); got != "two" {
+		t.Errorf("own namespace among the listed = %q", got)
+	}
+	if got := namespaceFor(app, mk("")); got != "d" {
+		t.Errorf("listed in several namespaces, none in the manifest = %q, want the destination namespace", got)
 	}
 }
 
