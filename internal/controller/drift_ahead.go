@@ -490,6 +490,8 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 		return true
 	}
 	if st.hold() != "" {
+		logf.FromContext(ctx).V(1).Info("Detection is paused: the Application's source changed since the last sync",
+			"application", summary.Name, "why", st.hold(), "compared", shortRevision(st.compared))
 		r.reportHeld(policy, summary, st)
 		return true
 	}
@@ -499,8 +501,13 @@ func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv
 	changed, checked := r.changedUnderPath(ctx, policy, summary, app, st)
 	if checked && changed == 0 {
 		// A commit elsewhere in the repository: nothing the Application is made of changed.
+		logf.FromContext(ctx).V(1).Info("Git is ahead of the last sync, but nothing the Application is made of changed",
+			"application", summary.Name, "compared", shortRevision(st.compared), "synced", shortRevision(st.synced))
 		return false
 	}
+	logf.FromContext(ctx).V(1).Info("Detection is paused: Git is ahead of the last sync",
+		"application", summary.Name, "compared", shortRevision(st.compared), "synced", shortRevision(st.synced),
+		"changedFiles", changed, "checked", checked)
 	r.reportGitAhead(policy, summary, st, changed, checked)
 	return true
 }

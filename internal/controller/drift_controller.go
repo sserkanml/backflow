@@ -97,21 +97,38 @@ type DriftReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 
+// Reconcile runs one pass over the policy. Whatever it returns is logged at
+// V(1): when the next pass happens depends on it (see nextStableCheck), and a
+// pass that returned early used to leave no trace.
 func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	log := logf.FromContext(ctx).V(1)
+	if err != nil {
+		log.Info("Reconcile failed; it is retried with a backoff", "error", err.Error())
+	} else {
+		log.Info("Reconcile done", "requeueAfter", res.RequeueAfter.String())
+	}
+	return res, err
+}
+
+func (r *DriftReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetPolicy(req.Namespace + "/" + req.Name)
+			log.V(1).Info("The policy does not exist; nothing to do")
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if policy.Spec.ArgoCD == nil {
 		r.forgetPolicy(policy.Namespace + "/" + policy.Name)
+		log.V(1).Info("The policy has no spec.argoCD; drift detection is off for it")
 		return ctrl.Result{}, nil
 	}
 	if ready := meta.FindStatusCondition(policy.Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionTrue {
+		log.V(1).Info("The policy is not Ready; drift detection waits for it", "ready", readyState(ready))
 		return r.notReady(&policy, ready), nil
 	}
 
@@ -138,7 +155,9 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	tracked := make(map[string]bool, len(policy.Status.Applications))
 	for _, summary := range policy.Status.Applications {
 		if summary.Reason != "" {
-			continue // not tracked (see the Reason of the summary); nothing of it is read or stored
+			// Not tracked (see the Reason of the summary); nothing of it is read or stored.
+			log.V(1).Info("The Application is not tracked by the policy", "application", summary.Name, "reason", summary.Reason)
+			continue
 		}
 		tracked[summary.Name] = true
 		if err := r.reconcileApplication(ctx, &policy, argo, summary, proposals.Items); err != nil && firstErr == nil {
@@ -149,7 +168,22 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if firstErr != nil {
 		return ctrl.Result{}, firstErr
 	}
+	// A drift that was seen but is not stable yet must be looked at again when
+	// its window is over, whatever this pass did with it. Only asking where a
+	// pass happened to see the drift loses the recheck: an event that starts
+	// another pass finds the timer already used up, and a pass that returns
+	// early (paused, held, settling, nothing to read) would then leave the
+	// periodic resync as the next look.
+	again.ask(r.nextStableCheck(&policy))
 	return ctrl.Result{RequeueAfter: again.within(driftResyncInterval)}, nil
+}
+
+// readyState describes a Ready condition for a log line.
+func readyState(c *metav1.Condition) string {
+	if c == nil {
+		return "no condition yet"
+	}
+	return string(c.Status) + "/" + c.Reason
 }
 
 // appResource is one entry of an Application's status.resources.
@@ -240,6 +274,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	}
 	resources, ok := r.trackedResources(policy, summary, app)
 	if !ok {
+		log.V(1).Info("Nothing to judge: Argo CD has not reported the resources, or the Application has several sources")
 		return nil
 	}
 
@@ -252,6 +287,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// proposal made now could undo that commit, so no new one is made.
 	run.paused = len(run.candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
 	if len(run.candidates) == 0 {
+		log.V(1).Info("No resource of the Application is OutOfSync and allowed by the policy", "outOfSync", len(run.outOfSync))
 		r.forgetStable(ctx, policy, summary.Name, nil, run.outOfSync)
 	}
 
@@ -261,6 +297,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// status alone, which keeps the periodic and reconciledAt-triggered
 	// reconciles of healthy applications free of API traffic.
 	if len(run.outOfSync) == 0 && !hasOpenProposal(all, summary.Name) {
+		log.V(1).Info("Nothing OutOfSync and no open proposal; Argo CD is not asked")
 		return nil
 	}
 
@@ -338,10 +375,15 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 		changes := drift.Diff(m.PredictedLiveState, m.NormalizedLiveState,
 			drift.IgnorePointers(run.policy.Spec.IgnoreFields, res.Group, res.Kind, res.Name)...)
 		if len(changes) == 0 {
+			log.V(1).Info("OutOfSync, but nothing differs after the ignored fields and filters", "kind", res.Kind, "name", res.Name)
 			continue
 		}
 		run.drifting[res.hash()] = changes
 		hold := r.holdResource(run.policy, run.summary, res, run.st, run.paused)
+		if hold {
+			log.V(1).Info("Drift seen, but no proposal is made now", "kind", res.Kind, "name", res.Name,
+				"applicationPaused", run.paused, "resourceHold", run.st.resourceHold(res))
+		}
 		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -447,6 +489,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 
 	srcType, ok := proposalSourceType(summary.SourceType)
 	if !ok {
+		log.V(1).Info("Drift seen, but its source type is not supported", "application", summary.Name, "sourceType", summary.SourceType)
 		if r.reportOnce(policy, summary.Name, "unsupportedSource", "", st.compared) {
 			r.event(policy, corev1.EventTypeWarning, "UnsupportedSource",
 				fmt.Sprintf("Application %s uses source type %q, which is not supported yet", summary.Name, summary.SourceType))
@@ -483,6 +526,8 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	switch {
 	case current == nil && paused:
 		// Git is ahead of the last sync: nothing is created or superseded.
+		log.V(1).Info("Not proposing now: detection is paused for the Application or held for the resource",
+			"application", summary.Name, "kind", res.Kind, "resource", res.Name)
 		return nil
 	case current == nil:
 		if blocker := blockingProposal(all, summary.Name, rh, changes, revision); blocker != nil {
