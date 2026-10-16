@@ -11,8 +11,10 @@
 #      not proposed again (nor a new merge request opened), the rejection is
 #      reported once as an Event, and Argo CD can then revert the cluster.
 #   c. A different drift opens a merge request; merging it through the API makes
-#      the proposal Merged with the merge commit. After Argo CD syncs the new
-#      commit the resource is Synced and no new proposal appears.
+#      the proposal Merged with the merge commit. Right after the merge, while
+#      Argo CD has not seen the commit yet, no second proposal appears for the
+#      same change. After Argo CD syncs the new commit the resource is Synced and
+#      no new proposal appears.
 #   d. A drift whose merge request is open and whose live value then goes back to
 #      Git (same revision) makes the proposal Reverted; its merge request is
 #      closed with a comment and its branch deleted.
@@ -727,6 +729,19 @@ if [[ -n "$P_C" ]]; then
   else
     fail "the file on main is not the original with LOG_LEVEL: warn"
   fi
+
+  # Argo CD polls Git (about every three minutes) and has not seen the merge
+  # commit yet: it still compares against the old revision, where demo-config is
+  # OutOfSync with the very same changes. No second proposal may appear for it.
+  # Nothing refreshes or syncs the Application until this check is over.
+  WINDOW_S="${WINDOW%s}"
+  if ! [[ "$WINDOW_S" =~ ^[0-9]+$ ]]; then WINDOW_S=30; fi
+  HOLD_C=$((2 * WINDOW_S + QUIET))
+  BEFORE_C="$(proposal_count)"
+  echo "  waiting ${HOLD_C}s: no new proposal for the change that was just merged..."
+  sleep "$HOLD_C"
+  expect_eq "proposals for demo-config (no duplicate right after the merge)" "$BEFORE_C" "$(proposal_count)"
+  expect_eq "proposal stays Merged" "Merged" "$(dp_field "$P_C" .status.phase)"
 
   echo "  Argo CD picks up the merged commit..."
   wait_for "$APP is Synced at the merge commit" app_synced_at "$MERGE_SHA"

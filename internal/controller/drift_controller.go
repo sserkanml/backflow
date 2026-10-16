@@ -586,11 +586,18 @@ const annotationRejectionReported = "backflow.io/rejection-reported"
 // the same drift pointless, or nil. Without selfHeal a closed merge request
 // leaves the live value in place and the resource OutOfSync, so the next
 // cycle would see the same drift again and reopen what a person just closed.
-// A proposal blocks when it ended in Rejected, Failed, or Superseded because
-// Git changed, had identical changes, and was made at the same synced
+// A proposal blocks when it ended in Rejected, Failed, Merged, or Superseded
+// because Git changed, had identical changes, and was made at the same synced
 // revision. Other changes or a new synced revision are new information.
-// Reverted, Merged and Superseded by a newer drift never block: the drift
-// went away or was handled, and when it comes back it is a new event.
+//
+// Merged blocks because Argo CD polls Git (about every three minutes) and has
+// not seen the merge commit yet: it still compares against the old revision,
+// where the resource is still OutOfSync with the very same changes. Once it
+// compares against a newer revision the block is lifted. It covers
+// MergeRequest and DirectCommit, which both end in Merged.
+//
+// Reverted and Superseded by a newer drift never block: the drift went away or
+// was handled, and when it comes back it is a new event.
 func blockingProposal(all []backflowv1alpha1.DriftProposal, application, resourceHash string,
 	changes []backflowv1alpha1.FieldChange, revision string) *backflowv1alpha1.DriftProposal {
 	for i := range all {
@@ -601,7 +608,7 @@ func blockingProposal(all []backflowv1alpha1.DriftProposal, application, resourc
 			continue
 		}
 		switch p.Status.Phase {
-		case backflowv1alpha1.PhaseRejected, backflowv1alpha1.PhaseFailed:
+		case backflowv1alpha1.PhaseRejected, backflowv1alpha1.PhaseFailed, backflowv1alpha1.PhaseMerged:
 			return p
 		case backflowv1alpha1.PhaseSuperseded:
 			if p.Status.SupersededBy == "" && p.Annotations[annotationSupersededBy] == "" {
@@ -617,6 +624,12 @@ func blockingProposal(all []backflowv1alpha1.DriftProposal, application, resourc
 // user can resolve that.
 func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, blocker *backflowv1alpha1.DriftProposal) error {
+	if blocker.Status.Phase == backflowv1alpha1.PhaseMerged {
+		// Expected and short-lived, so only a log line, no Event.
+		logf.FromContext(ctx).V(1).Info("Change already merged; waiting for Argo CD to see the commit",
+			"proposal", blocker.Name, "revision", blocker.Spec.Source.Revision)
+		return nil
+	}
 	logf.FromContext(ctx).V(1).Info("Not proposing the same drift again",
 		"proposal", blocker.Name, "phase", blocker.Status.Phase)
 	if blocker.Status.Phase != backflowv1alpha1.PhaseRejected || blocker.Annotations[annotationRejectionReported] != "" {

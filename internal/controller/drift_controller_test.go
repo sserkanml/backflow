@@ -372,6 +372,54 @@ func TestResourceHold(t *testing.T) {
 	}
 }
 
+func TestBlockingProposal(t *testing.T) {
+	changes := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpReplace, Desired: `"1"`, Live: `"2"`}}
+	other := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpReplace, Desired: `"1"`, Live: `"3"`}}
+	proposal := func(phase backflowv1alpha1.ProposalPhase, revision string, ch []backflowv1alpha1.FieldChange) backflowv1alpha1.DriftProposal {
+		p := backflowv1alpha1.DriftProposal{}
+		p.Name = "p"
+		p.Labels = map[string]string{labelApplication: "app", labelResource: "res"}
+		p.Spec.Source.Revision = revision
+		p.Spec.Changes = ch
+		p.Status.Phase = phase
+		return p
+	}
+	tests := []struct {
+		name  string
+		p     backflowv1alpha1.DriftProposal
+		app   string
+		block bool
+	}{
+		{"merged, same changes, same revision", proposal(backflowv1alpha1.PhaseMerged, "r1", changes), "app", true},
+		{"merged, same changes, new revision", proposal(backflowv1alpha1.PhaseMerged, "r0", changes), "app", false},
+		{"merged, different changes", proposal(backflowv1alpha1.PhaseMerged, "r1", other), "app", false},
+		{"merged, another application", proposal(backflowv1alpha1.PhaseMerged, "r1", changes), "other-app", false},
+		{"rejected, same changes, same revision", proposal(backflowv1alpha1.PhaseRejected, "r1", changes), "app", true},
+		{"failed, same changes, same revision", proposal(backflowv1alpha1.PhaseFailed, "r1", changes), "app", true},
+		{"reverted never blocks", proposal(backflowv1alpha1.PhaseReverted, "r1", changes), "app", false},
+		{"proposed is open, not a blocker", proposal(backflowv1alpha1.PhaseProposed, "r1", changes), "app", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := blockingProposal([]backflowv1alpha1.DriftProposal{tt.p}, tt.app, "res", changes, "r1")
+			if (got != nil) != tt.block {
+				t.Errorf("blocked = %v, want %v", got != nil, tt.block)
+			}
+		})
+	}
+	t.Run("superseded by Git blocks, by a newer drift does not", func(t *testing.T) {
+		byGit := proposal(backflowv1alpha1.PhaseSuperseded, "r1", changes)
+		if blockingProposal([]backflowv1alpha1.DriftProposal{byGit}, "app", "res", changes, "r1") == nil {
+			t.Error("a proposal replaced because the source changed must block")
+		}
+		byDrift := proposal(backflowv1alpha1.PhaseSuperseded, "r1", changes)
+		byDrift.Status.SupersededBy = "newer"
+		if blockingProposal([]backflowv1alpha1.DriftProposal{byDrift}, "app", "res", changes, "r1") != nil {
+			t.Error("a proposal replaced by a newer drift must not block")
+		}
+	})
+}
+
 func TestShortRevision(t *testing.T) {
 	sha := "0123456789abcdef0123456789abcdef01234567"
 	for in, want := range map[string]string{
@@ -819,8 +867,30 @@ var _ = Describe("Drift detection", func() {
 			Expect(rejections(drainEvents())).To(BeZero())
 		})
 
-		It("does not let a Merged proposal block the same drift coming back", func() {
+		It("does not propose a change again while its merge is not synced yet", func() {
 			retire(backflowv1alpha1.PhaseMerged, nil)
+			drainEvents()
+			for range 3 {
+				reconcileOnce() // each looks twice, a batch window apart
+			}
+			Expect(proposals()).To(HaveLen(1), "the same changes at the same revision after a merge")
+			Expect(drainEvents()).To(BeEmpty(), "expected and short-lived: no Event")
+		})
+
+		It("proposes again once Argo CD compares against a newer revision", func() {
+			retire(backflowv1alpha1.PhaseMerged, nil)
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+
+			setRevision("def456") // Argo CD has seen the merge commit, or anything else changed
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(2))
+			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		})
+
+		It("proposes a different drift after a merge, at the same revision", func() {
+			retire(backflowv1alpha1.PhaseMerged, nil)
+			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
 			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))

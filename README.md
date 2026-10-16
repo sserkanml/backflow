@@ -268,3 +268,8 @@ the chart.
   the moment after a sync, when Argo CD can still show a resource as OutOfSync.
   What was seen is kept in memory; after a restart the window starts again,
   which only delays a proposal.
+- **A merged change is not proposed again until Argo CD sees the merge.** Argo CD
+  polls Git (about every three minutes) and until it compares against the merge
+  commit the resource still looks OutOfSync with the same changes at the same
+  revision. A `Merged` proposal blocks an identical one at that revision, as a
+  `Rejected` one does; a new revision lifts the block.
