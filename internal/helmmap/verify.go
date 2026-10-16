@@ -89,17 +89,19 @@ type Collateral struct {
 	// Pointer is the JSON pointer of the field; empty when a whole resource
 	// appears or disappears.
 	Pointer string
-	// Live is the value now: not drifted, so the value of the unmodified
-	// render. After is the value once the edit is made. Both are JSON, or
-	// "(absent)" for a field that does not exist on that side.
-	Live, After string
+	// Current is the value of the field in the unmodified render. The field
+	// did not drift, so this is also what the cluster is assumed to have; it
+	// is not read from the cluster. After is the value once the edit is made.
+	// Both are JSON, or "(absent)" for a field that does not exist on that
+	// side.
+	Current, After string
 }
 
 func (c Collateral) String() string {
 	if c.Pointer == "" {
-		return fmt.Sprintf("%s (%s before the edit, %s after)", c.Resource, c.Live, c.After)
+		return fmt.Sprintf("%s (%s before the edit, %s after)", c.Resource, c.Current, c.After)
 	}
-	return fmt.Sprintf("%s%s (live %s, after the edit %s)", c.Resource, c.Pointer, c.Live, c.After)
+	return fmt.Sprintf("%s%s (current %s, after the edit %s)", c.Resource, c.Pointer, c.Current, c.After)
 }
 
 // NearMiss is an edit that came close: it reproduces drifted fields, but
@@ -646,9 +648,9 @@ func (v *run) tryEdits(base snapshot, nd nondeterminism, fields []parsedField) (
 func collateralOf(base, edited snapshot, ch change) Collateral {
 	const absent = "(absent)"
 	if ch.Pointer == "" {
-		c := Collateral{Resource: ch.Key, Live: absent, After: absent}
+		c := Collateral{Resource: ch.Key, Current: absent, After: absent}
 		if _, ok := base[ch.Key]; ok {
-			c.Live = "(resource exists)"
+			c.Current = "(resource exists)"
 		}
 		if _, ok := edited[ch.Key]; ok {
 			c.After = "(resource exists)"
@@ -661,7 +663,7 @@ func collateralOf(base, edited snapshot, ch change) Collateral {
 		}
 		return absent
 	}
-	return Collateral{Resource: ch.Key, Pointer: ch.Pointer, Live: val(base), After: val(edited)}
+	return Collateral{Resource: ch.Key, Pointer: ch.Pointer, Current: val(base), After: val(edited)}
 }
 
 // uncovered returns a failure for each drifted field that no accepted edit

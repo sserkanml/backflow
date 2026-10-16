@@ -655,10 +655,10 @@ func TestVerifyNearMiss(t *testing.T) {
 			t.Fatalf("near miss = %+v", nm)
 		}
 		c := nm.Collateral[0]
-		if c.Resource != keyConfig || c.Pointer != "/data/LOG_LEVEL_UP" || c.Live != `"DEBUG"` || c.After != `"TRACE"` {
+		if c.Resource != keyConfig || c.Pointer != "/data/LOG_LEVEL_UP" || c.Current != `"DEBUG"` || c.After != `"TRACE"` {
 			t.Errorf("collateral = %+v", c)
 		}
-		for _, want := range []string{"config.logLevel", "/data/LOG_LEVEL_UP", `live "DEBUG"`, `after the edit "TRACE"`} {
+		for _, want := range []string{"config.logLevel", "/data/LOG_LEVEL_UP", `current "DEBUG"`, `after the edit "TRACE"`} {
 			if !strings.Contains(out.Unmapped.Message, want) {
 				t.Errorf("message %q does not contain %q", out.Unmapped.Message, want)
 			}
@@ -677,7 +677,7 @@ func TestVerifyNearMiss(t *testing.T) {
 			t.Fatalf("near miss = %+v", nm)
 		}
 		if c := nm.Collateral[0]; c.Pointer != "/metadata/labels/app.kubernetes.io~1version" ||
-			c.Live != `"1.27-alpine"` || c.After != `"1.28-alpine"` {
+			c.Current != `"1.27-alpine"` || c.After != `"1.28-alpine"` {
 			t.Errorf("collateral = %+v", c)
 		}
 	})
@@ -697,7 +697,7 @@ func TestNearMissReporting(t *testing.T) {
 	t.Run("only three collateral changes are listed", func(t *testing.T) {
 		nm := &NearMiss{File: "f.yaml", Path: KeyPath{"k"}, Value: "v", Covers: []string{"/data/A"}, CollateralTotal: 5}
 		for i := range 3 {
-			nm.Collateral = append(nm.Collateral, Collateral{Resource: keyConfig, Pointer: "/data/X" + strconv.Itoa(i), Live: "1", After: "2"})
+			nm.Collateral = append(nm.Collateral, Collateral{Resource: keyConfig, Pointer: "/data/X" + strconv.Itoa(i), Current: "1", After: "2"})
 		}
 		got := nm.String()
 		if !strings.Contains(got, "/data/X2") || !strings.Contains(got, "and 2 more") {
