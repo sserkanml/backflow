@@ -260,7 +260,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// proposal made now could undo that commit, so no new one is made.
 	run.paused = len(run.candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
 	if len(run.candidates) == 0 {
-		r.forgetStable(policy, summary.Name, nil)
+		r.forgetStable(ctx, policy, summary.Name, nil, run.outOfSync)
 	}
 
 	// The Argo CD API is only worth calling for an application that has
@@ -283,7 +283,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 		for rh := range run.drifting {
 			keep[rh] = true
 		}
-		r.forgetStable(policy, summary.Name, keep)
+		r.forgetStable(ctx, policy, summary.Name, keep, run.outOfSync)
 	}
 	return r.retireProposals(ctx, run)
 }
@@ -496,7 +496,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		if blocker := blockingProposal(all, summary.Name, rh, changes, revision); blocker != nil {
 			return r.noteBlocked(ctx, policy, summary, blocker)
 		}
-		if ready, wait := r.stable(policy, summary.Name, rh, changes, st); !ready {
+		if ready, wait := r.stable(policy, summary.Name, rh, res.Kind+" "+res.Name, changes, st); !ready {
 			logf.FromContext(ctx).V(1).Info("Drift seen; waiting for it to stay the same before proposing",
 				"application", summary.Name, "resource", res.Name, "recheckIn", wait.String())
 			if again, ok := ctx.Value(recheckKey{}).(*recheck); ok {

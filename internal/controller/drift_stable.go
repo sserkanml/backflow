@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"time"
+
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
@@ -14,6 +17,7 @@ type pendingKey struct {
 
 // pendingDrift is what has been seen of a drift that is not yet a proposal.
 type pendingDrift struct {
+	label            string // kind and name of the resource, for logs
 	changes          string // the changes, encoded
 	synced, compared string // the revisions they were seen at
 	firstSeen        time.Time
@@ -29,7 +33,7 @@ type pendingDrift struct {
 // the final state gets one. When it is not ready, wait says when to look again.
 //
 // The state is kept in memory. Losing it on a restart only delays a proposal.
-func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, resource string,
+func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, resource, label string,
 	changes []backflowv1alpha1.FieldChange, st aheadState) (ready bool, wait time.Duration) {
 	enc, _ := json.Marshal(changes)
 	key := pendingKey{policy: policy.Namespace + "/" + policy.Name, app: app, resource: resource}
@@ -43,7 +47,7 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 	}
 	p := r.pending[key]
 	if p == nil || p.changes != string(enc) || p.synced != st.synced || p.compared != st.compared {
-		p = &pendingDrift{changes: string(enc), synced: st.synced, compared: st.compared, firstSeen: now}
+		p = &pendingDrift{label: label, changes: string(enc), synced: st.synced, compared: st.compared, firstSeen: now}
 		r.pending[key] = p
 	}
 	p.observations++
@@ -59,14 +63,37 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 
 // forgetStable drops what was seen of the resources of an Application that
 // are no longer drifting (they are Synced again, or gone). keep lists the
-// resources that still drift.
-func (r *DriftReconciler) forgetStable(policy *backflowv1alpha1.BackflowPolicy, app string, keep map[string]bool) {
+// resources that still drift; outOfSync those Argo CD still reports OutOfSync,
+// which tells why a resource was dropped. Each drop is logged at V(1): a drift
+// that appears and goes away is never proposed, and without the line there is
+// nothing to tell why.
+func (r *DriftReconciler) forgetStable(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy, app string,
+	keep, outOfSync map[string]bool) {
 	pol := policy.Namespace + "/" + policy.Name
+	type dropped struct {
+		label, reason string
+		observations  int
+		seen          time.Duration
+	}
+	var drops []dropped
+	now := r.now()
 	r.stableMu.Lock()
-	defer r.stableMu.Unlock()
-	for k := range r.pending {
-		if k.policy == pol && k.app == app && !keep[k.resource] {
-			delete(r.pending, k)
+	for k, p := range r.pending {
+		if k.policy != pol || k.app != app || keep[k.resource] {
+			continue
 		}
+		reason := "the resource is no longer OutOfSync"
+		if outOfSync[k.resource] {
+			reason = "the resource no longer differs from Git after ignored fields and filters"
+		}
+		drops = append(drops, dropped{label: p.label, reason: reason, observations: p.observations, seen: now.Sub(p.firstSeen)})
+		delete(r.pending, k)
+	}
+	r.stableMu.Unlock()
+	log := logf.FromContext(ctx)
+	for _, d := range drops {
+		log.V(1).Info("Dropping a drift that was waiting to become stable",
+			"application", app, "resource", d.label, "reason", d.reason,
+			"observations", d.observations, "seenFor", d.seen.String())
 	}
 }
