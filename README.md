@@ -377,6 +377,19 @@ Limits of Helm mapping:
   per resource and revision. Proposals that are already open are left as they are.
   Detection is also held back while a sync is running and until Argo CD has
   compared again after it.
+- **Argo CD's automated sync can reset a drift before Backflow sees it.** With
+  automated sync on and `selfHeal` off, Argo CD syncs each new revision once, the
+  first time the Application is OutOfSync at it. After a commit that does not
+  change an Application (a file elsewhere in the repository, or another
+  environment's values file), the Application stays Synced, but its last sync
+  is still of an older revision. The next live change then makes it OutOfSync,
+  and Argo CD's automated sync applies the new revision, which also resets that
+  live change, usually within a second. Backflow sees the drift disappear and
+  makes no proposal, by design: there is nothing left to propose. In the
+  operator log (V(1)) this looks like the Application "ahead of the last sync"
+  and a resource OutOfSync with nothing that differs. The Application's
+  `status.history` shows the automated sync at that moment. A manual sync of the
+  current revision (or the next drift) is what makes later drifts stay.
 - **A drift becomes a proposal only after it has been stable.** It must be
   seen with the same changes at the same synced and compared revision for the
   policy's `spec.batchWindow` (default 30s), across at least two observations.
