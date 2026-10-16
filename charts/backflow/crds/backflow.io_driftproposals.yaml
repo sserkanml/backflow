@@ -262,6 +262,11 @@ spec:
                   - type
                   type: object
                 type: array
+              lastPushRejectedAt:
+                description: When the push was last declined; the next attempt waits
+                  from here.
+                format: date-time
+                type: string
               mapping:
                 description: Mapping records where each change lands in the source.
                 properties:
@@ -353,6 +358,14 @@ spec:
                 - Superseded
                 - Failed
                 type: string
+              pushRejections:
+                description: |-
+                  How many times the Git server declined the push of this proposal. A
+                  decline during an outage of the Git host looks like one of a protected
+                  branch, so a few declines are retried with a growing delay before the
+                  proposal fails. Kept here so the count survives an operator restart.
+                format: int32
+                type: integer
               supersededBy:
                 description: Proposal that replaced this one.
                 type: string

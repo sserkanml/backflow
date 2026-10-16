@@ -60,6 +60,19 @@ const (
 	reasonInvalidRepositoryURL = "InvalidRepositoryURL"
 )
 
+const (
+	// maxPushRejections is how many times the Git server may decline the push
+	// of a proposal before it fails. The decline of a pre-receive hook is the
+	// same error for a protected branch, which no retry fixes, and for a Git
+	// host that is having an outage, which one does. Go-git does not pass on the
+	// remote's explanation, so the two cannot be told apart, and every decline is
+	// treated alike: tried again after pushRetryDelays, in all about ten minutes.
+	maxPushRejections = 3
+)
+
+// pushRetryDelays are the waits after the first and the second decline.
+var pushRetryDelays = []time.Duration{3 * time.Minute, 7 * time.Minute}
+
 const sourceChangedMessage = "The source changed in Git after the drift was detected."
 
 // RepositoryWriter is the Git side of proposing a change. *gitrepo.Cache
@@ -115,6 +128,12 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 	if mode == backflowv1alpha1.ModeReportOnly {
 		return ctrl.Result{}, r.setProposedCondition(ctx, dp, metav1.ConditionFalse, reasonReportOnly,
 			"The policy mode is ReportOnly; nothing is written to Git.")
+	}
+
+	if wait := r.pushBackoff(dp); wait > 0 {
+		logf.FromContext(ctx).V(1).Info("The Git server declined the last push; waiting before the next one",
+			"proposal", dp.Name, "declines", dp.Status.PushRejections, "retryIn", wait.String())
+		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
 	access, err := r.accessFor(ctx, dp, &policy)
@@ -598,8 +617,7 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 			}
 			logf.FromContext(ctx).Info("Target branch moved; retrying from its new head", "proposal", dp.Name, "branch", target)
 		case errors.Is(err, gitrepo.ErrPushRejected):
-			return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
-				"The server rejected the push to %q (a protected branch or a hook?): %v", target, err))
+			return r.pushDeclined(ctx, dp, fmt.Sprintf("the push to %q", target), err)
 		default:
 			return r.gitFailure(ctx, dp, err)
 		}
@@ -718,6 +736,44 @@ func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1
 	return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
 }
 
+// pushBackoff is how much longer to wait before pushing again after a decline,
+// or 0.
+func (r *DriftProposalReconciler) pushBackoff(dp *backflowv1alpha1.DriftProposal) time.Duration {
+	n := int(dp.Status.PushRejections)
+	if n < 1 || n > len(pushRetryDelays) || dp.Status.LastPushRejectedAt == nil {
+		return 0
+	}
+	return max(dp.Status.LastPushRejectedAt.Add(pushRetryDelays[n-1]).Sub(r.now()), 0)
+}
+
+// pushDeclined handles a push the Git server declined. The first declines are
+// held and tried again later (the count is in the status, so a restart does not
+// reset it); the last one fails the proposal with PushRejected.
+func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	what string, err error) (ctrl.Result, error) {
+	declines := int(dp.Status.PushRejections) + 1
+	if declines >= maxPushRejections {
+		return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
+			"The server declined %s %d times (a protected branch, a hook, or the Git host having trouble): %v", what, declines, err))
+	}
+	delay := pushRetryDelays[declines-1]
+	message := redactText(fmt.Sprintf("The server declined %s (attempt %d of %d); trying again in %s: %v",
+		what, declines, maxPushRejections, delay, err))
+	orig := dp.DeepCopy()
+	now := metav1.NewTime(r.now())
+	dp.Status.PushRejections = int32(declines) //nolint:gosec // at most maxPushRejections
+	dp.Status.LastPushRejectedAt = &now
+	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reasonPushRejected, Message: message, ObservedGeneration: dp.Generation,
+	})
+	if perr := r.patchStatus(ctx, dp, orig); perr != nil {
+		return ctrl.Result{}, perr
+	}
+	logf.FromContext(ctx).Info("The Git server declined the push; will try again",
+		"proposal", dp.Name, "declines", declines, "retryAfter", delay.String(), "cause", message)
+	return ctrl.Result{RequeueAfter: delay}, nil
+}
+
 // supersededByGit ends the proposal because Git changed under it. Git always wins.
 func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1alpha1.DriftProposal, message string) error {
 	message = redactText(message)
@@ -739,7 +795,7 @@ func (r *DriftProposalReconciler) gitFailure(ctx context.Context, dp *backflowv1
 	case errors.Is(err, gitrepo.ErrRepositoryNotFound):
 		return r.holdProposal(ctx, dp, reasonRepositoryNotFound, err, 0)
 	case errors.Is(err, gitrepo.ErrPushRejected):
-		return r.fail(ctx, dp, reasonPushRejected, err.Error())
+		return r.pushDeclined(ctx, dp, "the push", err)
 	}
 	return r.holdProposal(ctx, dp, reasonRepositoryUnavailable, err, 0)
 }

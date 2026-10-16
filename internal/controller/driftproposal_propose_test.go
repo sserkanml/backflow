@@ -355,6 +355,20 @@ func (w *branchWriter) CreateBranch(ctx context.Context, url, branch, sha string
 	return w.RepositoryWriter.CreateBranch(ctx, url, branch, sha, auth)
 }
 
+// declineWriter wraps the real cache and declines the first n pushes of a branch.
+type declineWriter struct {
+	RepositoryWriter
+	n, calls int
+}
+
+func (w *declineWriter) CreateBranch(ctx context.Context, url, branch, sha string, auth *gitrepo.Auth) error {
+	w.calls++
+	if w.calls <= w.n {
+		return fmt.Errorf("%w: command error on refs/heads/%s: pre-receive hook declined", gitrepo.ErrPushRejected, branch)
+	}
+	return w.RepositoryWriter.CreateBranch(ctx, url, branch, sha, auth)
+}
+
 // logWriter wraps the real cache and fails FirstParentLog while err is set.
 type logWriter struct {
 	RepositoryWriter
@@ -592,6 +606,45 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(req.Reviewers).To(Equal([]string{"bob"}))
 			Expect(req.Assignee).To(Equal("alice"))
 			Expect(provider.calls).To(ContainElement("find-any group/proj " + branch))
+		})
+
+		It("holds a branch push the server declines and opens the merge request after the backoff", func() {
+			now, later := time.Now(), time.Duration(0)
+			r.Now = func() time.Time { return now.Add(later) }
+			w := &declineWriter{RepositoryWriter: writer, n: 1}
+			r.Writer = w
+
+			res, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(3 * time.Minute))
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(got.Status.PushRejections).To(Equal(int32(1)))
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
+			Expect(provider.created).To(BeEmpty())
+
+			later = 3*time.Minute + time.Second
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(w.calls).To(Equal(2))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(provider.created).To(HaveLen(1))
+		})
+
+		It("fails a branch push the server keeps declining", func() {
+			now, later := time.Now(), time.Duration(0)
+			r.Now = func() time.Time { return now.Add(later) }
+			w := &declineWriter{RepositoryWriter: writer, n: 10}
+			r.Writer = w
+			for _, d := range []time.Duration{0, 3*time.Minute + time.Second, 7*time.Minute + time.Second} {
+				later += d
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(w.calls).To(Equal(3))
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
+			Expect(provider.created).To(BeEmpty())
 		})
 
 		It("uses the committer of the ScmConnection and a custom branch prefix", func() {
@@ -1954,20 +2007,107 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(got.Status.CommitSHA).To(BeEmpty())
 		})
 
-		It("fails with PushRejected when the server refuses the push", func() {
-			w := &racingWriter{RepositoryWriter: writer}
-			w.hook = func(int) error {
-				return fmt.Errorf("%w: pre-receive hook declined: protected branch", gitrepo.ErrPushRejected)
+		Context("when the server declines the push", func() {
+			var (
+				now   time.Time
+				later time.Duration
+			)
+			advance := func(d time.Duration) { later += d }
+			declined := func(n *int) func(int) error {
+				return func(int) error {
+					*n++
+					return fmt.Errorf("%w: command error on refs/heads/main: pre-receive hook declined", gitrepo.ErrPushRejected)
+				}
 			}
-			r.Writer = w
+			BeforeEach(func() {
+				now, later = time.Now(), 0
+				r.Now = func() time.Time { return now.Add(later) }
+			})
 
-			_, err := reconcileDP()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(w.updates).To(Equal(1), "a refusal is not retried")
-			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
-			Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
-			Expect(got.Status.Message).To(ContainSubstring("protected branch"))
+			It("holds it, tries again after the backoff and then pushes", func() {
+				pushes := 0
+				w := &racingWriter{RepositoryWriter: writer}
+				w.hook = func(n int) error {
+					if n == 1 {
+						return declined(&pushes)(n)
+					}
+					return nil
+				}
+				r.Writer = w
+
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(Equal(3 * time.Minute))
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping), "not failed for good")
+				Expect(got.Status.PushRejections).To(Equal(int32(1)))
+				Expect(got.Status.LastPushRejectedAt).NotTo(BeNil())
+				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
+				Expect(condition(conditionProposed).Message).To(ContainSubstring("attempt 1 of 3"))
+				Expect(condition(conditionProposed).Message).To(ContainSubstring("pre-receive hook declined"))
+
+				By("not pushing before the backoff is over, even when something wakes the proposal up")
+				advance(time.Minute)
+				res, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(w.updates).To(Equal(1))
+				Expect(res.RequeueAfter).To(BeNumerically("~", 2*time.Minute, time.Second))
+
+				By("the count is in the status, so an operator that restarted waits as well")
+				restarted := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Repos: r.Repos, Writer: w,
+					NewProvider: r.NewProvider, Now: r.Now}
+				res, err = restarted.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(w.updates).To(Equal(1))
+				Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+
+				By("pushing again afterwards")
+				advance(2*time.Minute + time.Second)
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(w.updates).To(Equal(2))
+				got = latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
+				Expect(repo.branch("main")).NotTo(Equal(initial))
+			})
+
+			It("fails with PushRejected after the third decline, over about ten minutes", func() {
+				pushes := 0
+				w := &racingWriter{RepositoryWriter: writer}
+				w.hook = declined(&pushes)
+				r.Writer = w
+
+				res, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(Equal(3 * time.Minute))
+				advance(3*time.Minute + time.Second)
+				res, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(Equal(7 * time.Minute))
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+				Expect(latest().Status.PushRejections).To(Equal(int32(2)))
+				advance(7*time.Minute + time.Second)
+				res, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.RequeueAfter).To(BeZero())
+
+				Expect(pushes).To(Equal(3))
+				got := latest()
+				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
+				Expect(got.Status.Message).To(ContainSubstring("declined"))
+				Expect(got.Status.Message).To(ContainSubstring("3 times"))
+				Expect(got.Status.Message).To(ContainSubstring("pre-receive hook declined"))
+				Expect(repo.branch("main")).To(Equal(initial))
+
+				By("a failed proposal is not pushed again")
+				advance(time.Hour)
+				_, err = reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pushes).To(Equal(3))
+			})
 		})
 
 		It("supersedes the proposal when Git changed the line meanwhile", func() {

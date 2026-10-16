@@ -352,6 +352,10 @@ func (in *DriftProposalStatus) DeepCopyInto(out *DriftProposalStatus) {
 		*out = new(MergeRequestRef)
 		**out = **in
 	}
+	if in.LastPushRejectedAt != nil {
+		in, out := &in.LastPushRejectedAt, &out.LastPushRejectedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))
