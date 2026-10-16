@@ -39,6 +39,9 @@ p, role:backflow, applications, get, */*, allow
 g, backflow, role:backflow
 ```
 
+`applications, get` is also the permission Backflow needs to render Helm charts
+through Argo CD (see Helm sources below); nothing more is required.
+
 ```bash
 argocd login <argocd-server> --username admin
 TOKEN="$(argocd account generate-token --account backflow)"
@@ -140,6 +143,24 @@ kubectl delete crd scmconnections.backflow.io backflowpolicies.backflow.io drift
 
 Helm installs the files in `crds/` once and never upgrades or removes them, so
 the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
+
+### Upgrading from 0.1.x to 0.2.0
+
+Version 0.2.0 adds fields to the `DriftProposal` status (`pushRejections` and
+`lastPushRejectedAt`, which count the pushes a Git server declined) and the
+Helm mapping. **Apply the new CRDs before you upgrade the chart:**
+
+```bash
+helm show crds oci://ghcr.io/sserkanml/charts/backflow --version 0.2.0 | kubectl apply --server-side -f -
+helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version 0.2.0 -n backflow-system
+```
+
+`helm upgrade` leaves the CRDs of the old version in place, and an API server
+with the old `driftproposals` CRD silently drops fields it does not know. The
+operator notices: when it records a declined push and the count does not come
+back, it emits a Warning Event `CRDsOutdated` and fails that proposal with
+`PushRejected` instead of retrying for ever. Applying the CRDs fixes it for new
+proposals; a failed one is not retried.
 Branches and merge requests that Backflow opened stay in Git.
 
 ### Running in a cluster
@@ -211,13 +232,101 @@ Releases are made by [release-please](https://github.com/googleapis/release-plea
 from Conventional Commits on `main`; the tag it creates publishes the image and
 the chart.
 
+## Helm sources
+
+For an Application with a Helm source (a chart in the Git repository), Backflow
+traces a drifted value back to the **value file** that feeds it and proposes
+the change to that file. It does not guess: a candidate key is only used after
+Argo CD itself has rendered the chart with the edit.
+
+How a proposal is made:
+
+1. Backflow finds the keys in the Application's value files (`helm.valueFiles`,
+   in Argo CD's order and with its globbing, `$ARGOCD_APP_*` variables and
+   `ignoreMissingValueFiles`) whose effective value equals the value Git had
+   for the drifted field. A key that a later file overrides is not a candidate.
+2. It renders the chart through Argo CD (`GetManifestsWithFiles`) with the files
+   of the proposal's revision, once for the unmodified files (twice, to find
+   fields that change on every render) and once for each candidate edit.
+3. An edit is accepted only when every field it changes, in **all** rendered
+   resources, is one of the drifted fields and now has its live value. When
+   several drifted fields are fed by the same key, one edit covers all of them;
+   when the fields need different keys, the edits are combined and rendered once
+   more, and the result must differ from the unmodified render by exactly the
+   drifted fields. Edits in several value files go into one commit.
+4. The merge request and the commit message list the value file, each key path
+   with its old and new value, and say that the edit was verified by rendering
+   through Argo CD.
+
+Like Directory proposals, a Helm proposal is made against the head of the target
+branch: the head is rendered again, and when it no longer renders the old values
+the proposal is `Superseded`.
+
+When the change cannot be traced back with certainty the proposal is `Unmapped`,
+and the `Mapped` condition says why (`NoVerifiedCandidate`,
+`AmbiguousCandidates`, `EditsInteract`, `RenderMismatch`,
+`NondeterministicField`, `SecretNotVerifiable`, `TooManyCandidates`,
+`RenderBudgetExceeded`, `RenderFailed`, `SymlinkedValueFile`, `MissingValueFile`
+and others). When an edit reproduces the drifted field but also changes other
+fields, the message names the nearest one with the fields it would move (path,
+current value, value after the edit) so a person can decide.
+
+Argo CD must allow the `applications, get` permission to Backflow's account (the
+read-only account in the install steps has it) and must be reachable over
+**HTTP/2**: the render is a gRPC call on the same port as the API, so a proxy
+that only speaks HTTP/1.1 in front of Argo CD makes mapping wait and retry
+(`ArgoCDUnreachable`). Nothing is applied to the cluster.
+
+Limits of Helm mapping:
+
+- **Single source, chart in Git.** A Helm chart from a Helm repository or an
+  OCI registry, and Applications with `spec.sources` (for example a chart plus
+  `$values` references), are `Unmapped` (`UnsupportedSourceType`). Value files
+  that are URLs are not edited; Backflow reports that a value may come from one.
+- **The chart's own `values.yaml` is never edited.** A value that exists only
+  there is `Unmapped` (`NoVerifiedCandidate`, "chart's own defaults"): the
+  chart's defaults are not an environment's configuration. Put an override in a
+  value file of the Application, then it can be changed.
+- **Inline settings win and are not edited.** A key set by `helm.values`,
+  `helm.valuesObject`, `helm.parameters` or `helm.fileParameters` on the
+  Application overrides any value file, and that setting lives in the Argo CD
+  Application, not in the chart repository. The proposal is `Unmapped` and
+  says which layer sets it.
+- **Derived fields.** Only values that equal the old value are candidates, so a
+  field a template computes (`upper`, `printf`, a sum) has no candidate of its
+  own. An edit of the key it derives from is accepted only when every field it
+  moves is a drifted field; if the template also moves one that did not drift
+  (a version label that follows `image.tag`), the proposal is `Unmapped` with
+  that near miss. The reason is that merging the edit would make Git disagree
+  with the cluster on a field nobody changed.
+- **Secret resources are never proposed.** Argo CD masks the data of Secrets,
+  and a Secret value must not be put into Git (`SecretNotVerifiable`).
+- **Fields that change on every render** (`randAlphaNum`, `now`) cannot be
+  verified (`NondeterministicField`); resources with a random name are ignored
+  when comparing renders.
+- **Values keep their type.** An integer stays an integer, a boolean a boolean,
+  a quoted string stays quoted, when the live value reads as that type;
+  otherwise it is written as a string. YAML anchors and merge keys are read, but
+  a key that exists only through a merge key (`<<: *base`) cannot be edited. A
+  list is replaced by a later file as a whole, as Helm does, and items cannot be
+  added to or removed from lists.
+- **Bounded work.** At most 10 candidate keys per field and two minutes of
+  rendering per proposal. A symbolic link in the chart, a value file or a
+  `file://` dependency makes the Application unmappable and pauses detection
+  while Git is ahead.
+- **Argo CD renders from its own settings.** Backflow sends the files, not the
+  Application: Helm version, `helm.releaseName`, `kubeVersion` and API versions
+  are those of Argo CD. A `.argocd-source*.yaml` file in the chart directory is
+  not modelled (`ArgoSourceOverrides`).
+
 ## Limitations
 
 - **One source per Application.** An Application with `spec.sources` gets one
   `UnsupportedSource` Event and no proposals.
-- **Directory sources only: no Helm or Kustomize mapping yet.** Drift in
-  resources rendered by Kustomize or Helm is detected, but the proposal ends
-  `Unmapped` with a reason; nothing is written to Git for it.
+- **Directory and Helm sources only: no Kustomize mapping yet.** Drift in
+  resources rendered by Kustomize is detected, but the proposal ends `Unmapped`
+  with a reason; nothing is written to Git for it. See Helm sources above for
+  what Helm mapping can and cannot do.
 - **One operator instance is one trust domain.** Policies and connections of an
   instance share the repository cache and the operator can read every Secret;
   run one instance per tenant that must be kept apart (see Trust above).
@@ -247,10 +356,18 @@ the chart.
   never proposes to revert a commit.** For a Directory source, only commits
   that change files under the Application's directory count (respecting
   `directory.recurse`); a commit elsewhere in the repository does not pause
-  anything. For Helm and Kustomize sources, Applications that were never
-  synced, directories that contain a symbolic link or a Jsonnet file (or use
-  `directory.jsonnet`) at either revision, and when the repository cannot be
-  read, every commit pauses detection, because the check cannot be trusted.
+  anything. For a Helm source, only the files the render depends on count,
+  evaluated at both revisions: the chart's files (`Chart.yaml`, `values.yaml`,
+  `templates/`, `charts/`, `crds/`, ...), the Application's value files and
+  `fileParameters` files wherever they are (globs expanded at each revision),
+  `file://` dependency directories, and the other files of a chart directory
+  only when a template uses `.Files` (honouring `.helmignore`). Another
+  service's values file next to a shared chart, another environment's values
+  file or a README does not pause detection. For Kustomize sources, and for
+  Applications that were never synced, directories that contain a symbolic link
+  or a Jsonnet file (or use `directory.jsonnet`) at either revision, a symbolic
+  link in anything a Helm render reads, and when the repository cannot be read,
+  every commit pauses detection, because the check cannot be trusted.
   When the last sync did not succeed or was selective (only some resources),
   only the resources it did not apply are held back: a resource counts as
   caught up when that sync was a full one that succeeded, or reports the
@@ -260,6 +377,19 @@ the chart.
   per resource and revision. Proposals that are already open are left as they are.
   Detection is also held back while a sync is running and until Argo CD has
   compared again after it.
+- **Argo CD's automated sync can reset a drift before Backflow sees it.** With
+  automated sync on and `selfHeal` off, Argo CD syncs each new revision once, the
+  first time the Application is OutOfSync at it. After a commit that does not
+  change an Application (a file elsewhere in the repository, or another
+  environment's values file), the Application stays Synced, but its last sync
+  is still of an older revision. The next live change then makes it OutOfSync,
+  and Argo CD's automated sync applies the new revision, which also resets that
+  live change, usually within a second. Backflow sees the drift disappear and
+  makes no proposal, by design: there is nothing left to propose. In the
+  operator log (V(1)) this looks like the Application "ahead of the last sync"
+  and a resource OutOfSync with nothing that differs. The Application's
+  `status.history` shows the automated sync at that moment. A manual sync of the
+  current revision (or the next drift) is what makes later drifts stay.
 - **A drift becomes a proposal only after it has been stable.** It must be
   seen with the same changes at the same synced and compared revision for the
   policy's `spec.batchWindow` (default 30s), across at least two observations.

@@ -1,0 +1,20 @@
+# Chart defaults. values-dev.yaml and values-prod.yaml override them per environment.
+replicaCount: 1
+
+image:
+  repository: nginxinc/nginx-unprivileged
+  tag: 1.26-alpine
+
+global:
+  region: eu-west-1
+
+config:
+  # Log verbosity: debug, info, warn, error, trace
+  logLevel: info
+  # Only set here: no environment overrides it.
+  timeout: 30
+  feature: "off"
+  colorA: blue
+  colorB: blue
+  minA: 1
+  minB: 1

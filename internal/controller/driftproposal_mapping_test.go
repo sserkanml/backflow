@@ -337,7 +337,7 @@ var _ = Describe("DriftProposal mapping", func() {
 			func() { setDirectory(map[string]any{"include": "["}) }, reasonInvalidSourceOptions),
 	)
 
-	DescribeTable("does not map sources other than Directory",
+	DescribeTable("does not map sources other than Directory and Helm",
 		func(sourceType backflowv1alpha1.SourceType) {
 			recreate(func(spec *backflowv1alpha1.DriftProposalSpec) { spec.Source.Type = sourceType })
 
@@ -347,7 +347,6 @@ var _ = Describe("DriftProposal mapping", func() {
 			Expect(mapped().Reason).To(Equal(reasonUnsupportedSourceType))
 			Expect(repos.calls).To(BeZero())
 		},
-		Entry("Helm", backflowv1alpha1.SourceHelm),
 		Entry("Kustomize", backflowv1alpha1.SourceKustomize),
 	)
 

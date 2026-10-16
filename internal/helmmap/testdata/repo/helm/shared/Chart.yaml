@@ -1,0 +1,6 @@
+apiVersion: v2
+name: shared
+description: One chart shared by several services; each service has its own values file.
+type: application
+version: 0.1.0
+appVersion: "1.0"

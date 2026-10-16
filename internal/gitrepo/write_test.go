@@ -827,3 +827,76 @@ func TestHasSymlink(t *testing.T) {
 		t.Errorf("unknown sha: err = %v", err)
 	}
 }
+
+func TestCommitFilesChangesSeveralFilesInOneCommit(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	files := map[string][]byte{
+		"apps/demo/configmap.yaml": []byte(cmAfter),
+		"apps/demo/deploy.yaml":    []byte("spec:\n  replicas: 2\n"),
+		"README.md":                []byte("hello\n"), // unchanged: left alone
+	}
+	sha, err := cache.CommitFiles(t.Context(), src.url(), base, nil, files, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := cache.Open(t.Context(), src.url(), sha, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = view.Close() }()
+	for name, want := range map[string]string{
+		"apps/demo/configmap.yaml": cmAfter, "apps/demo/deploy.yaml": "spec:\n  replicas: 2\n", "README.md": "hello\n",
+	} {
+		if got, _ := view.ReadFile(name); string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	paths, err := cache.ChangedPaths(t.Context(), src.url(), base, sha, nil)
+	if err != nil || !reflect.DeepEqual(paths, []string{"apps/demo/configmap.yaml", "apps/demo/deploy.yaml"}) {
+		t.Errorf("changed = %v, %v", paths, err)
+	}
+	commit, err := cache.mustCommit(t, src.url(), sha)
+	if err != nil || len(commit.ParentHashes) != 1 || commit.ParentHashes[0].String() != base {
+		t.Errorf("commit = %+v, %v", commit, err)
+	}
+	// The same inputs give the same commit, whatever order the map is read in.
+	for range 5 {
+		again, err := NewCache(t.TempDir()).CommitFiles(t.Context(), src.url(), base, nil, files, meta)
+		if err != nil || again != sha {
+			t.Fatalf("again = %s, %v; want %s", again, err, sha)
+		}
+	}
+	// One file is the same as CommitFile.
+	one, err := cache.CommitFile(t.Context(), src.url(), base, nil, "apps/demo/configmap.yaml", []byte(cmAfter), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alone, err := cache.CommitFiles(t.Context(), src.url(), base, nil, map[string][]byte{"apps/demo/configmap.yaml": []byte(cmAfter)}, meta)
+	if err != nil || alone != one {
+		t.Errorf("CommitFiles with one file = %s, %v; CommitFile = %s", alone, err, one)
+	}
+}
+
+func TestCommitFilesErrors(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	tests := []struct {
+		name  string
+		files map[string][]byte
+		want  error
+	}{
+		{"nothing changes", map[string][]byte{"README.md": []byte("hello\n"), "apps/demo/deploy.yaml": []byte("spec:\n  replicas: 1\n")}, ErrNoChange},
+		{"no files", nil, ErrNoChange},
+		{"one file is missing, so none is committed", map[string][]byte{"README.md": []byte("x\n"), "nope.yaml": []byte("x\n")}, ErrFileNotFound},
+		{"a directory", map[string][]byte{"apps": []byte("x\n")}, ErrNotRegularFile},
+		{"a path outside the repository", map[string][]byte{"../x": []byte("x\n")}, ErrFileNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := cache.CommitFiles(t.Context(), src.url(), base, nil, tt.files, meta); !errors.Is(err, tt.want) {
+				t.Errorf("err = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}

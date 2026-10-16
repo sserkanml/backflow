@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -149,6 +150,16 @@ func (c *Cache) Open(ctx context.Context, repoURL, sha string, auth *Auth) (*Vie
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return &View{sha: sha, tree: tree, repo: repo}, nil
+}
+
+// OpenTree is Open for callers that only need the files: the view as an fs.FS
+// and a function that releases it.
+func (c *Cache) OpenTree(ctx context.Context, repoURL, sha string, auth *Auth) (fs.FS, func(), error) {
+	v, err := c.Open(ctx, repoURL, sha, auth)
+	if err != nil {
+		return nil, nil, err
+	}
+	return v, func() { _ = v.Close() }, nil
 }
 
 // openCommit returns the cache repository of repoURL with commit sha present,

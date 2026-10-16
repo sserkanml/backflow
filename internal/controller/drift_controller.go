@@ -52,8 +52,7 @@ const (
 	// Periodic resync, in case an Application event was missed.
 	driftResyncInterval = 2 * time.Minute
 
-	defaultArgoCDURL = "https://argocd-server.argocd.svc"
-	syncOutOfSync    = "OutOfSync"
+	syncOutOfSync = "OutOfSync"
 )
 
 // ManagedResourcesGetter is the part of the Argo CD client the drift
@@ -88,14 +87,7 @@ type DriftReconciler struct {
 	stableMu sync.Mutex
 	pending  map[pendingKey]*pendingDrift // drifts seen but not yet stable enough to propose
 
-	clientMu sync.Mutex
-	clients  map[string]cachedArgoClient // per policy, so connections are reused
-}
-
-// cachedArgoClient is the Argo CD client of a policy and what it was built from.
-type cachedArgoClient struct {
-	key    string
-	client ManagedResourcesGetter
+	argoClients argoClientCache[ManagedResourcesGetter] // per policy, so connections are reused
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
@@ -105,21 +97,38 @@ type cachedArgoClient struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 
+// Reconcile runs one pass over the policy. Whatever it returns is logged at
+// V(1): when the next pass happens depends on it (see nextStableCheck), and a
+// pass that returned early used to leave no trace.
 func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	res, err := r.reconcile(ctx, req)
+	log := logf.FromContext(ctx).V(1)
+	if err != nil {
+		log.Info("Reconcile failed; it is retried with a backoff", "error", err.Error())
+	} else {
+		log.Info("Reconcile done", "requeueAfter", res.RequeueAfter.String())
+	}
+	return res, err
+}
+
+func (r *DriftReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetPolicy(req.Namespace + "/" + req.Name)
+			log.V(1).Info("The policy does not exist; nothing to do")
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if policy.Spec.ArgoCD == nil {
 		r.forgetPolicy(policy.Namespace + "/" + policy.Name)
+		log.V(1).Info("The policy has no spec.argoCD; drift detection is off for it")
 		return ctrl.Result{}, nil
 	}
 	if ready := meta.FindStatusCondition(policy.Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionTrue {
+		log.V(1).Info("The policy is not Ready; drift detection waits for it", "ready", readyState(ready))
 		return r.notReady(&policy, ready), nil
 	}
 
@@ -146,7 +155,9 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	tracked := make(map[string]bool, len(policy.Status.Applications))
 	for _, summary := range policy.Status.Applications {
 		if summary.Reason != "" {
-			continue // not tracked (see the Reason of the summary); nothing of it is read or stored
+			// Not tracked (see the Reason of the summary); nothing of it is read or stored.
+			log.V(1).Info("The Application is not tracked by the policy", "application", summary.Name, "reason", summary.Reason)
+			continue
 		}
 		tracked[summary.Name] = true
 		if err := r.reconcileApplication(ctx, &policy, argo, summary, proposals.Items); err != nil && firstErr == nil {
@@ -157,7 +168,22 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if firstErr != nil {
 		return ctrl.Result{}, firstErr
 	}
+	// A drift that was seen but is not stable yet must be looked at again when
+	// its window is over, whatever this pass did with it. Only asking where a
+	// pass happened to see the drift loses the recheck: an event that starts
+	// another pass finds the timer already used up, and a pass that returns
+	// early (paused, held, settling, nothing to read) would then leave the
+	// periodic resync as the next look.
+	again.ask(r.nextStableCheck(&policy))
 	return ctrl.Result{RequeueAfter: again.within(driftResyncInterval)}, nil
+}
+
+// readyState describes a Ready condition for a log line.
+func readyState(c *metav1.Condition) string {
+	if c == nil {
+		return "no condition yet"
+	}
+	return string(c.Status) + "/" + c.Reason
 }
 
 // appResource is one entry of an Application's status.resources.
@@ -248,6 +274,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	}
 	resources, ok := r.trackedResources(policy, summary, app)
 	if !ok {
+		log.V(1).Info("Nothing to judge: Argo CD has not reported the resources, or the Application has several sources")
 		return nil
 	}
 
@@ -260,6 +287,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// proposal made now could undo that commit, so no new one is made.
 	run.paused = len(run.candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
 	if len(run.candidates) == 0 {
+		log.V(1).Info("No resource of the Application is OutOfSync and allowed by the policy", "outOfSync", len(run.outOfSync))
 		r.forgetStable(ctx, policy, summary.Name, nil, run.outOfSync)
 	}
 
@@ -269,6 +297,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// status alone, which keeps the periodic and reconciledAt-triggered
 	// reconciles of healthy applications free of API traffic.
 	if len(run.outOfSync) == 0 && !hasOpenProposal(all, summary.Name) {
+		log.V(1).Info("Nothing OutOfSync and no open proposal; Argo CD is not asked")
 		return nil
 	}
 
@@ -346,10 +375,15 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 		changes := drift.Diff(m.PredictedLiveState, m.NormalizedLiveState,
 			drift.IgnorePointers(run.policy.Spec.IgnoreFields, res.Group, res.Kind, res.Name)...)
 		if len(changes) == 0 {
+			log.V(1).Info("OutOfSync, but nothing differs after the ignored fields and filters", "kind", res.Kind, "name", res.Name)
 			continue
 		}
 		run.drifting[res.hash()] = changes
 		hold := r.holdResource(run.policy, run.summary, res, run.st, run.paused)
+		if hold {
+			log.V(1).Info("Drift seen, but no proposal is made now", "kind", res.Kind, "name", res.Name,
+				"applicationPaused", run.paused, "resourceHold", run.st.resourceHold(res))
+		}
 		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -455,6 +489,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 
 	srcType, ok := proposalSourceType(summary.SourceType)
 	if !ok {
+		log.V(1).Info("Drift seen, but its source type is not supported", "application", summary.Name, "sourceType", summary.SourceType)
 		if r.reportOnce(policy, summary.Name, "unsupportedSource", "", st.compared) {
 			r.event(policy, corev1.EventTypeWarning, "UnsupportedSource",
 				fmt.Sprintf("Application %s uses source type %q, which is not supported yet", summary.Name, summary.SourceType))
@@ -491,6 +526,8 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	switch {
 	case current == nil && paused:
 		// Git is ahead of the last sync: nothing is created or superseded.
+		log.V(1).Info("Not proposing now: detection is paused for the Application or held for the resource",
+			"application", summary.Name, "kind", res.Kind, "resource", res.Name)
 		return nil
 	case current == nil:
 		if blocker := blockingProposal(all, summary.Name, rh, changes, revision); blocker != nil {
@@ -757,77 +794,21 @@ func argoReason(err error) string {
 
 // argoClient builds the Argo CD client from spec.argoCD and its Secrets.
 func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (ManagedResourcesGetter, error) {
-	spec := policy.Spec.ArgoCD
-	token, err := r.secretValue(ctx, policy.Namespace, spec.TokenSecretRef)
+	cfg, err := argoCDConfig(ctx, r, policy)
 	if err != nil {
-		return nil, fmt.Errorf("token for Argo CD: %w", err)
-	}
-	cfg := argocd.Config{
-		URL:                   spec.URL,
-		Token:                 strings.TrimSpace(string(token)),
-		InsecureSkipTLSVerify: spec.InsecureSkipTLSVerify,
-	}
-	if cfg.URL == "" {
-		cfg.URL = defaultArgoCDURL
-	}
-	if spec.CASecretRef != nil {
-		if cfg.CACert, err = r.secretValue(ctx, policy.Namespace, *spec.CASecretRef); err != nil {
-			return nil, fmt.Errorf("CA bundle for Argo CD: %w", err)
-		}
-	}
-	return r.cachedClient(policy.Namespace+"/"+policy.Name, cfg)
-}
-
-// cachedClient returns the policy's Argo CD client, built again only when what
-// it is built from changed (URL, CA bundle, TLS option or token), so one policy
-// does not open new connections on every reconcile. A replaced client has its
-// idle connections closed.
-func (r *DriftReconciler) cachedClient(pol string, cfg argocd.Config) (ManagedResourcesGetter, error) {
-	h := sha256.New()
-	for _, part := range [][]byte{[]byte(cfg.URL), cfg.CACert, []byte(strconv.FormatBool(cfg.InsecureSkipTLSVerify)), []byte(cfg.Token)} {
-		_, _ = fmt.Fprintf(h, "%d:", len(part))
-		_, _ = h.Write(part)
-	}
-	key := hex.EncodeToString(h.Sum(nil))
-
-	r.clientMu.Lock()
-	defer r.clientMu.Unlock()
-	if hit, ok := r.clients[pol]; ok && hit.key == key {
-		return hit.client, nil
+		return nil, err
 	}
 	build := r.NewArgoClient
 	if build == nil {
 		build = func(c argocd.Config) (ManagedResourcesGetter, error) { return argocd.New(c) }
 	}
-	c, err := build(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if old, ok := r.clients[pol]; ok {
-		closeIdle(old.client)
-	}
-	if r.clients == nil {
-		r.clients = map[string]cachedArgoClient{}
-	}
-	r.clients[pol] = cachedArgoClient{key: key, client: c}
-	return c, nil
-}
-
-func closeIdle(c ManagedResourcesGetter) {
-	if cl, ok := c.(interface{ CloseIdleConnections() }); ok {
-		cl.CloseIdleConnections()
-	}
+	return r.argoClients.get(policy.Namespace+"/"+policy.Name, cfg, build)
 }
 
 // forgetPolicy drops everything kept in memory for a policy that is gone or not
 // usable: its client, what was seen of drifts and what was reported.
 func (r *DriftReconciler) forgetPolicy(pol string) {
-	r.clientMu.Lock()
-	if old, ok := r.clients[pol]; ok {
-		closeIdle(old.client)
-		delete(r.clients, pol)
-	}
-	r.clientMu.Unlock()
+	r.argoClients.forget(pol)
 	r.forgetApplications(pol, nil)
 }
 
@@ -857,21 +838,6 @@ func (r *DriftReconciler) forgetWhere(pol string, drop func(app string) bool) {
 		}
 	}
 	r.aheadMu.Unlock()
-}
-
-func (r *DriftReconciler) secretValue(ctx context.Context, namespace string, ref corev1.SecretKeySelector) ([]byte, error) {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("secret %q not found", ref.Name)
-		}
-		return nil, err
-	}
-	value, ok := secret.Data[ref.Key]
-	if !ok || len(value) == 0 {
-		return nil, fmt.Errorf("secret %q has no key %q", ref.Name, ref.Key)
-	}
-	return value, nil
 }
 
 // proposalSourceType maps the source type Argo CD reports to the API enum.

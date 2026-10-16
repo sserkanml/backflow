@@ -21,6 +21,7 @@ type pendingDrift struct {
 	changes          string // the changes, encoded
 	synced, compared string // the revisions they were seen at
 	firstSeen        time.Time
+	lastSeen         time.Time
 	observations     int
 }
 
@@ -51,6 +52,7 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 		r.pending[key] = p
 	}
 	p.observations++
+	p.lastSeen = now
 
 	elapsed := now.Sub(p.firstSeen)
 	if p.observations >= 2 && elapsed >= window {
@@ -60,6 +62,44 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 	// a second time.
 	return false, max(window-elapsed, time.Second)
 }
+
+// nextStableCheck says when the policy should be looked at again for the drifts
+// that are waiting to become stable, or 0 when none is. It is derived from what
+// has been seen, not from what the current pass did: the pass that asked for a
+// recheck may be followed by another one (started by an event) that found the
+// recheck already used and, taking an early path, asked for nothing.
+//
+// A drift is waited for until its window is over; one that is ready only needs
+// one more observation, which is asked for soon. A drift that has not been seen
+// for two windows (the Application is paused or held) is left to the periodic
+// resync and to events, so a paused Application does not make the controller
+// spin.
+func (r *DriftReconciler) nextStableCheck(policy *backflowv1alpha1.BackflowPolicy) time.Duration {
+	pol := policy.Namespace + "/" + policy.Name
+	window := policy.Spec.EffectiveBatchWindow()
+	now := r.now()
+	var next time.Duration
+
+	r.stableMu.Lock()
+	defer r.stableMu.Unlock()
+	for k, p := range r.pending {
+		if k.policy != pol || now.Sub(p.lastSeen) > 2*window {
+			continue
+		}
+		wait := max(p.firstSeen.Add(window).Sub(now), time.Second)
+		if p.observations >= 2 && now.Sub(p.firstSeen) >= window {
+			wait = retryStableAfter
+		}
+		if next == 0 || wait < next {
+			next = wait
+		}
+	}
+	return next
+}
+
+// retryStableAfter is how soon a drift that is ready, but was not observed again
+// in the last pass, is looked at.
+const retryStableAfter = 5 * time.Second
 
 // forgetStable drops what was seen of the resources of an Application that
 // are no longer drifting (they are Synced again, or gone). keep lists the

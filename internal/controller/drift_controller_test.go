@@ -1507,6 +1507,26 @@ var _ = Describe("Drift detection", func() {
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 		})
 
+		It("still asks for the recheck when a later pass returns early", func() {
+			const sha1 = "1111111111111111111111111111111111111111"
+			const sha2 = "2222222222222222222222222222222222222222"
+			res := resultOf() // the drift is seen: look again when the window is over
+			Expect(res.RequeueAfter).To(BeNumerically("<=", window()))
+
+			// An event starts another pass, which uses up the timer. This pass
+			// finds Git ahead of the last sync and returns early, without
+			// looking at the drift. Before nextStableCheck it asked for nothing,
+			// and the next look was the periodic resync, two minutes away.
+			advance(10 * time.Second)
+			r.Git = &fakeDiffer{paths: []string{"apps/demo/configmap.yaml"}}
+			setRevisions(sha2, sha1)
+			res = resultOf()
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(res.RequeueAfter).To(BeNumerically("<=", window()-10*time.Second),
+				"the recheck of the drift that is waiting is not lost; the periodic resync is %s", driftResyncInterval)
+			Expect(proposals()).To(BeEmpty(), "nothing is proposed while Git is ahead")
+		})
+
 		It("leaves an open proposal alone while a different drift proves stable, then supersedes it", func() {
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
@@ -1944,9 +1964,7 @@ var _ = Describe("Drift detection", func() {
 			r.aheadMu.Lock()
 			reported = len(r.aheadReported)
 			r.aheadMu.Unlock()
-			r.clientMu.Lock()
-			clients = len(r.clients)
-			r.clientMu.Unlock()
+			clients = r.argoClients.size()
 			return
 		}
 		builds := 0

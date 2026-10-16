@@ -118,9 +118,9 @@ func (r *DriftProposalReconciler) retryDelayFor(dp *backflowv1alpha1.DriftPropos
 func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	if dp.Spec.Source.Type != backflowv1alpha1.SourceDirectory {
+	if t := dp.Spec.Source.Type; t != backflowv1alpha1.SourceDirectory && t != backflowv1alpha1.SourceHelm {
 		return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType,
-			fmt.Sprintf("Mapping %s sources is not supported yet; only Directory sources are mapped.", dp.Spec.Source.Type))
+			fmt.Sprintf("Mapping %s sources is not supported yet; only Directory and Helm sources are mapped.", t))
 	}
 
 	if hasCredentials(dp.Spec.Source.RepoURL) {
@@ -131,13 +131,20 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 				"Remove them from the Application and give Backflow access with an ScmConnection.", redactText(dp.Spec.Source.RepoURL)))
 	}
 
-	src, err := r.directorySource(ctx, dp)
+	app, err := r.application(ctx, dp)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return r.retry(ctx, dp, reasonApplicationNotFound,
 				fmt.Errorf("the Argo CD Application %s/%s was not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name))
 		}
 		return r.retry(ctx, dp, reasonApplicationUnavailable, fmt.Errorf("cannot read the Argo CD Application: %w", err))
+	}
+
+	if dp.Spec.Source.Type == backflowv1alpha1.SourceHelm {
+		// A chart that is not in the Git repository has nothing to read there.
+		if err := helmSourceProblem(app); err != nil {
+			return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType, err.Error())
+		}
 	}
 
 	auth, err := r.repositoryAuth(ctx, dp)
@@ -169,33 +176,31 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	}
 	defer func() { _ = tree.Close() }()
 
-	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
-		mapping.ResourceID{
-			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
-			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
-		}, dp.Spec.Changes)
+	change, err := r.mapTree(ctx, dp, app, tree, dp.Spec.Source.Revision)
 	if err != nil {
-		reason, ok := mappingReason(err)
-		if !ok {
-			// Reading the repository failed: not a verdict, so it is retried
-			// with the same backoff and cap as an unavailable repository.
-			return r.retry(ctx, dp, reasonRepositoryUnavailable, err)
+		if verdict, ok := errors.AsType[*verdictError](err); ok {
+			return ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error())
 		}
-		return ctrl.Result{}, r.unmapped(ctx, dp, reason, err.Error())
+		if held, ok := errors.AsType[*heldError](err); ok {
+			return r.retry(ctx, dp, held.reason, held.cause)
+		}
+		if ctx.Err() != nil {
+			return ctrl.Result{}, ctx.Err()
+		}
+		// Reading the repository failed: not a verdict, so it is retried
+		// with the same backoff and cap as an unavailable repository.
+		return r.retry(ctx, dp, reasonRepositoryUnavailable, err)
 	}
 
 	orig := dp.DeepCopy()
-	edits := make([]backflowv1alpha1.SourceEdit, len(res.Edits))
-	for i, e := range res.Edits {
-		edits[i] = backflowv1alpha1.SourceEdit{File: e.File, Location: e.Location, Value: e.Value, ChangeIndex: int32(e.ChangeIndex)}
-	}
+	edits := change.edits()
 	dp.Status.Mapping = &backflowv1alpha1.Mapping{
-		Strategy: backflowv1alpha1.StrategyDirect,
+		Strategy: change.strategy,
 		Edits:    edits,
 		Verified: true,
-		Diff:     truncateDiff(res.Diff),
+		Diff:     truncateDiff(change.diff()),
 	}
-	dp.Status.Message = fmt.Sprintf("Mapped to %s; the edit reproduces the live state and is verified.", res.File)
+	dp.Status.Message = change.message()
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionMapped, Status: metav1.ConditionTrue, Reason: reasonMapped,
 		Message: dp.Status.Message, ObservedGeneration: dp.Generation,
@@ -203,7 +208,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.Info("Proposal mapped", "proposal", dp.Name, "file", res.File, "edits", len(edits))
+	log.Info("Proposal mapped", "proposal", dp.Name, "strategy", change.strategy, "files", change.paths(), "edits", len(edits))
 	return ctrl.Result{}, nil
 }
 
@@ -309,20 +314,10 @@ type directorySourceInfo struct {
 	destinationNamespace string
 }
 
-// directorySource reads the Directory options and destination namespace from
+// directoryInfoOf reads the Directory options and destination namespace from
 // the Application. Like the policy controller, it uses the first source of a
 // multi-source Application.
-func (r *DriftProposalReconciler) directorySource(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (directorySourceInfo, error) {
-	app := &unstructured.Unstructured{}
-	app.SetGroupVersionKind(applicationGVK)
-	key := types.NamespacedName{Namespace: dp.Spec.Application.Namespace, Name: dp.Spec.Application.Name}
-	if err := r.Get(ctx, key, app); err != nil {
-		if meta.IsNoMatchError(err) {
-			return directorySourceInfo{}, apierrors.NewNotFound(applicationGVK.GroupVersion().WithResource("applications").GroupResource(), key.Name)
-		}
-		return directorySourceInfo{}, err
-	}
-
+func directoryInfoOf(app *unstructured.Unstructured) directorySourceInfo {
 	src, found, _ := unstructured.NestedMap(app.Object, "spec", "source")
 	if !found {
 		if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
@@ -334,7 +329,31 @@ func (r *DriftProposalReconciler) directorySource(ctx context.Context, dp *backf
 	info.options.Include, _, _ = unstructured.NestedString(src, "directory", "include")
 	info.options.Exclude, _, _ = unstructured.NestedString(src, "directory", "exclude")
 	info.destinationNamespace, _, _ = unstructured.NestedString(app.Object, "spec", "destination", "namespace")
-	return info, nil
+	return info
+}
+
+// mapTree maps the proposal onto the files of tree, the repository at sha,
+// with the strategy of the proposal's source type. Errors are a *verdictError
+// (the change cannot be traced back), a *heldError (something outside the
+// repository is not usable now), or a failure to read the repository.
+func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
+	if dp.Spec.Source.Type == backflowv1alpha1.SourceHelm {
+		return r.mapHelm(ctx, dp, app, tree, sha)
+	}
+	src := directoryInfoOf(app)
+	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
+		mapping.ResourceID{
+			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
+			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
+		}, dp.Spec.Changes)
+	if err != nil {
+		if reason, verdict := mappingReason(err); verdict {
+			return nil, &verdictError{err: err, reason: reason}
+		}
+		return nil, err
+	}
+	return &mappedChange{strategy: backflowv1alpha1.StrategyDirect, results: []mapping.Result{*res}}, nil
 }
 
 // repositoryAuth returns the credentials and CA bundle of the ScmConnection

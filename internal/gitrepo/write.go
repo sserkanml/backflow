@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -389,23 +390,41 @@ func (c *Cache) ChangedPaths(ctx context.Context, repoURL, from, to string, auth
 }
 
 // CommitFile creates a commit on top of baseSHA whose tree equals the base
-// tree except that the regular file filePath holds content. File mode is
-// kept. It writes the commit object into the cache only: no branch is moved
-// and nothing is pushed. It returns the new commit SHA, which depends only on
-// the arguments: the same inputs always give the same SHA.
+// tree except that the regular file filePath holds content. It is
+// CommitFiles for one file.
+func (c *Cache) CommitFile(ctx context.Context, repoURL, baseSHA string, auth *Auth, filePath string, content []byte, meta CommitMeta) (string, error) {
+	return c.CommitFiles(ctx, repoURL, baseSHA, auth, map[string][]byte{filePath: content}, meta)
+}
+
+// CommitFiles creates a commit on top of baseSHA whose tree equals the base
+// tree except that each regular file in files holds its content. File modes
+// are kept. It writes the commit object into the cache only: no branch is
+// moved and nothing is pushed. It returns the new commit SHA, which depends
+// only on the arguments: the same inputs always give the same SHA, whatever
+// the order of the map.
+//
+// A file whose content is already in the base is left as it is; when that is
+// true of all of them, the call fails with ErrNoChange.
 //
 // Errors: ErrFileNotFound, ErrNotRegularFile, ErrNoChange, ErrNoTimestamp,
 // ErrRevisionNotFound.
-func (c *Cache) CommitFile(ctx context.Context, repoURL, baseSHA string, auth *Auth, filePath string, content []byte, meta CommitMeta) (string, error) {
+func (c *Cache) CommitFiles(ctx context.Context, repoURL, baseSHA string, auth *Auth, files map[string][]byte, meta CommitMeta) (string, error) {
 	if !fullSHA.MatchString(baseSHA) {
 		return "", fmt.Errorf("%w: %q is not a full commit SHA", ErrRevisionNotFound, baseSHA)
 	}
 	if meta.When.IsZero() {
 		return "", ErrNoTimestamp
 	}
-	filePath = path.Clean(filePath)
-	if filePath == "." || strings.HasPrefix(filePath, "/") || filePath == ".." || strings.HasPrefix(filePath, "../") {
-		return "", fmt.Errorf("%w: invalid path %q", ErrFileNotFound, filePath)
+	if len(files) == 0 {
+		return "", ErrNoChange
+	}
+	clean := make(map[string][]byte, len(files))
+	for filePath, content := range files {
+		p := path.Clean(filePath)
+		if p == "." || strings.HasPrefix(p, "/") || p == ".." || strings.HasPrefix(p, "../") {
+			return "", fmt.Errorf("%w: invalid path %q", ErrFileNotFound, p)
+		}
+		clean[p] = content
 	}
 	unlock, err := c.lock(ctx, c.Dir(repoURL))
 	if err != nil {
@@ -421,13 +440,27 @@ func (c *Cache) CommitFile(ctx context.Context, repoURL, baseSHA string, auth *A
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
-	blob, err := storeBlob(repo, content)
-	if err != nil {
-		return "", err
+	newTree, unchanged := rootTree.Hash, 0
+	for _, filePath := range slices.Sorted(maps.Keys(clean)) {
+		blob, err := storeBlob(repo, clean[filePath])
+		if err != nil {
+			return "", err
+		}
+		h, err := replaceFile(repo, rootTree, strings.Split(filePath, "/"), blob)
+		if errors.Is(err, ErrNoChange) {
+			unchanged++
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		newTree = h
+		if rootTree, err = object.GetTree(repo.Storer, h); err != nil {
+			return "", fmt.Errorf("%w: %v", ErrUnavailable, err)
+		}
 	}
-	newTree, err := replaceFile(repo, rootTree, strings.Split(filePath, "/"), blob)
-	if err != nil {
-		return "", err
+	if unchanged == len(clean) {
+		return "", ErrNoChange
 	}
 	when := meta.When
 	committer := object.Signature{Name: meta.Committer.Name, Email: meta.Committer.Email, When: when}

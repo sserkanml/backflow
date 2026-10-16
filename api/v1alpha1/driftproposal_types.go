@@ -214,6 +214,15 @@ type DriftProposalStatus struct {
 	// Human-readable explanation of the current phase.
 	// +optional
 	Message string `json:"message,omitempty"`
+	// How many times the Git server declined the push of this proposal. A
+	// decline during an outage of the Git host looks like one of a protected
+	// branch, so a few declines are retried with a growing delay before the
+	// proposal fails. Kept here so the count survives an operator restart.
+	// +optional
+	PushRejections int32 `json:"pushRejections,omitempty"`
+	// When the push was last declined; the next attempt waits from here.
+	// +optional
+	LastPushRejectedAt *metav1.Time `json:"lastPushRejectedAt,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

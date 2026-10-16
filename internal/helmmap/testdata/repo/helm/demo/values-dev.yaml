@@ -1,0 +1,25 @@
+# Development environment. Used by the Application demo-helm.
+replicaCount: 2
+
+image:
+  tag: 1.27-alpine
+
+global:
+  region: eu-central-1
+
+config:
+  # Log verbosity: debug, info, warn, error, trace
+  logLevel: debug
+  feature: alpha
+  # colorA and colorB are equal on purpose: two candidates for the same old value,
+  # of which only one feeds the key that drifted.
+  colorA: green
+  colorB: green
+  # The key AMBIGUOUS is the larger of the two. Both are 3 on purpose: changing
+  # either one to the same new value gives the same output.
+  minA: 3
+  minB: 3
+
+# Values of the subchart demo-sidecar.
+demo-sidecar:
+  timeoutSeconds: 45

@@ -21,7 +21,6 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
-	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -61,6 +60,19 @@ const (
 	reasonInvalidRepositoryURL = "InvalidRepositoryURL"
 )
 
+const (
+	// maxPushRejections is how many times the Git server may decline the push
+	// of a proposal before it fails. The decline of a pre-receive hook is the
+	// same error for a protected branch, which no retry fixes, and for a Git
+	// host that is having an outage, which one does. Go-git does not pass on the
+	// remote's explanation, so the two cannot be told apart, and every decline is
+	// treated alike: tried again after pushRetryDelays, in all about ten minutes.
+	maxPushRejections = 3
+)
+
+// pushRetryDelays are the waits after the first and the second decline.
+var pushRetryDelays = []time.Duration{3 * time.Minute, 7 * time.Minute}
+
 const sourceChangedMessage = "The source changed in Git after the drift was detected."
 
 // RepositoryWriter is the Git side of proposing a change. *gitrepo.Cache
@@ -69,7 +81,7 @@ type RepositoryWriter interface {
 	BranchTip(ctx context.Context, repoURL, branch string, auth *gitrepo.Auth) (string, error)
 	DefaultBranch(ctx context.Context, repoURL string, auth *gitrepo.Auth) (string, error)
 	CommitInfo(ctx context.Context, repoURL, sha string, auth *gitrepo.Auth) (*gitrepo.CommitInfo, error)
-	CommitFile(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, filePath string, content []byte, commit gitrepo.CommitMeta) (string, error)
+	CommitFiles(ctx context.Context, repoURL, baseSHA string, auth *gitrepo.Auth, files map[string][]byte, commit gitrepo.CommitMeta) (string, error)
 	CreateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
 	IsAncestor(ctx context.Context, repoURL, ancestor, descendant string, auth *gitrepo.Auth) (bool, error)
 	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
@@ -116,6 +128,12 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 	if mode == backflowv1alpha1.ModeReportOnly {
 		return ctrl.Result{}, r.setProposedCondition(ctx, dp, metav1.ConditionFalse, reasonReportOnly,
 			"The policy mode is ReportOnly; nothing is written to Git.")
+	}
+
+	if wait := r.pushBackoff(dp); wait > 0 {
+		logf.FromContext(ctx).V(1).Info("The Git server declined the last push; waiting before the next one",
+			"proposal", dp.Name, "declines", dp.Status.PushRejections, "retryIn", wait.String())
+		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
 	access, err := r.accessFor(ctx, dp, &policy)
@@ -197,7 +215,7 @@ func (r *DriftProposalReconciler) targetBranch(ctx context.Context, dp *backflow
 type preparedChange struct {
 	head   string // tip of the target branch the commit is built on
 	sha    string // the commit
-	result *mapping.Result
+	result *mappedChange
 }
 
 // prepare re-runs Locate/Apply/Verify against the current head of the target
@@ -230,8 +248,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 			if head == dp.Spec.Source.Revision {
 				// Same tree that mapped before: nothing changed in Git, so this
 				// is not "the source moved on".
-				reason, _ := mappingReason(verdict.err)
-				return stop(ctrl.Result{}, r.unmapped(ctx, dp, reason, verdict.err.Error()))
+				return stop(ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error()))
 			}
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" "+verdict.err.Error()))
 		}
@@ -241,7 +258,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(ctrl.Result{}, err)
 	}
 
-	sha, err := r.Writer.CommitFile(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.File, res.Edited, r.commitMeta(dp, access))
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access))
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrNoChange) {
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
@@ -256,7 +273,11 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 
 // verdictError is a mapping error that is a verdict about the source (not
 // found, ambiguous, does not verify) rather than a failure to read it.
-type verdictError struct{ err error }
+type verdictError struct {
+	err error
+	// reason is the machine-readable reason for the Mapped condition.
+	reason string
+}
 
 func (e *verdictError) Error() string { return e.err.Error() }
 func (e *verdictError) Unwrap() error { return e.err }
@@ -280,12 +301,14 @@ func isGitError(err error) bool {
 	return false
 }
 
-// mapAt re-runs Locate/Apply/Verify on the repository at commit sha. A
-// verdict about the source is returned as a *verdictError; other errors are
-// failures to read.
+// mapAt re-runs the mapping on the repository at commit sha: for a Directory
+// source Locate/Apply/Verify, for a Helm source finding the candidates and
+// verifying them by rendering. A verdict about the source is returned as a
+// *verdictError; a problem outside the repository as a *heldError; other
+// errors are failures to read.
 func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	access *scmAccess, sha string) (*mapping.Result, error) {
-	src, err := r.directorySource(ctx, dp)
+	access *scmAccess, sha string) (*mappedChange, error) {
+	app, err := r.application(ctx, dp)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &heldError{reason: reasonApplicationNotFound, cause: fmt.Errorf(
@@ -298,19 +321,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 		return nil, err
 	}
 	defer func() { _ = tree.Close() }()
-
-	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
-		mapping.ResourceID{
-			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
-			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
-		}, dp.Spec.Changes)
-	if err != nil {
-		if _, verdict := mappingReason(err); verdict {
-			return nil, &verdictError{err: err}
-		}
-		return nil, err // reading the repository failed; retried with backoff
-	}
-	return res, nil
+	return r.mapTree(ctx, dp, app, tree, sha)
 }
 
 // ownBranch reports whether an existing branch is this proposal's own work
@@ -320,7 +331,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 //  1. the tip carries this proposal's "Proposal:" trailer;
 //  2. the tip has exactly one parent, and that parent is an ancestor of the
 //     current head of the target branch;
-//  3. relative to its parent the tip changes only the mapped file, and to
+//  3. relative to its parent the tip changes only the mapped files, and to
 //     exactly the content the mapping produces from that parent.
 //
 // Anything else is someone else's work, which is never overwritten. The
@@ -358,20 +369,22 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 	if err != nil {
 		return false, "", err
 	}
-	if len(changed) != 1 || changed[0] != res.File {
-		return false, fmt.Sprintf("it changes %v, not only %s", changed, res.File), nil
+	if want := res.paths(); !slices.Equal(changed, want) {
+		return false, fmt.Sprintf("it changes %v, not only %s", changed, strings.Join(want, ", ")), nil
 	}
 	tree, err := r.Repos.Open(ctx, url, tip, access.auth)
 	if err != nil {
 		return false, "", err
 	}
 	defer func() { _ = tree.Close() }()
-	got, err := fs.ReadFile(tree, res.File)
-	if err != nil {
-		return false, "", fmt.Errorf("%w: reading %s at %s: %v", gitrepo.ErrUnavailable, res.File, tip, err)
-	}
-	if !bytes.Equal(got, res.Edited) {
-		return false, fmt.Sprintf("%s differs from the content this proposal produces", res.File), nil
+	for _, file := range res.paths() {
+		got, err := fs.ReadFile(tree, file)
+		if err != nil {
+			return false, "", fmt.Errorf("%w: reading %s at %s: %v", gitrepo.ErrUnavailable, file, tip, err)
+		}
+		if !bytes.Equal(got, res.files()[file]) {
+			return false, fmt.Sprintf("%s differs from the content this proposal produces", file), nil
+		}
 	}
 	return true, "", nil
 }
@@ -464,7 +477,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.Diff),
+		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {
@@ -604,8 +617,7 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 			}
 			logf.FromContext(ctx).Info("Target branch moved; retrying from its new head", "proposal", dp.Name, "branch", target)
 		case errors.Is(err, gitrepo.ErrPushRejected):
-			return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
-				"The server rejected the push to %q (a protected branch or a hook?): %v", target, err))
+			return r.pushDeclined(ctx, dp, fmt.Sprintf("the push to %q", target), err)
 		default:
 			return r.gitFailure(ctx, dp, err)
 		}
@@ -724,6 +736,58 @@ func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1
 	return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
 }
 
+// pushBackoff is how much longer to wait before pushing again after a decline,
+// or 0.
+func (r *DriftProposalReconciler) pushBackoff(dp *backflowv1alpha1.DriftProposal) time.Duration {
+	n := int(dp.Status.PushRejections)
+	if n < 1 || n > len(pushRetryDelays) || dp.Status.LastPushRejectedAt == nil {
+		return 0
+	}
+	return max(dp.Status.LastPushRejectedAt.Add(pushRetryDelays[n-1]).Sub(r.now()), 0)
+}
+
+// crdsOutdatedMessage is said when the API server drops a field of the status.
+const crdsOutdatedMessage = "CRDs are outdated: the driftproposals CRD does not keep status.pushRejections. " +
+	"Apply the CRDs of this version: helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <version> | kubectl apply --server-side -f -"
+
+// pushDeclined handles a push the Git server declined. The first declines are
+// held and tried again later (the count is in the status, so a restart does not
+// reset it); the last one fails the proposal with PushRejected.
+func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	what string, err error) (ctrl.Result, error) {
+	declines := int(dp.Status.PushRejections) + 1
+	if declines >= maxPushRejections {
+		return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
+			"The server declined %s %d times (a protected branch, a hook, or the Git host having trouble): %v", what, declines, err))
+	}
+	delay := pushRetryDelays[declines-1]
+	message := redactText(fmt.Sprintf("The server declined %s (attempt %d of %d); trying again in %s: %v",
+		what, declines, maxPushRejections, delay, err))
+	orig := dp.DeepCopy()
+	now := metav1.NewTime(r.now())
+	dp.Status.PushRejections = int32(declines) //nolint:gosec // at most maxPushRejections
+	dp.Status.LastPushRejectedAt = &now
+	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reasonPushRejected, Message: message, ObservedGeneration: dp.Generation,
+	})
+	if perr := r.patchStatus(ctx, dp, orig); perr != nil {
+		return ctrl.Result{}, perr
+	}
+	if int(dp.Status.PushRejections) != declines {
+		// The API server answered without the count: the CRD is from before the
+		// field existed (helm upgrade does not update CRDs) and pruned it. The count
+		// would stay at zero and the push would be retried for ever, so stop.
+		if r.Recorder != nil {
+			r.Recorder.Eventf(dp, nil, corev1.EventTypeWarning, "CRDsOutdated", "PushRejected", "%s", crdsOutdatedMessage)
+		}
+		return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
+			"The server declined %s, and the retries cannot be counted. %s Cause: %v", what, crdsOutdatedMessage, err))
+	}
+	logf.FromContext(ctx).Info("The Git server declined the push; will try again",
+		"proposal", dp.Name, "declines", declines, "retryAfter", delay.String(), "cause", message)
+	return ctrl.Result{RequeueAfter: delay}, nil
+}
+
 // supersededByGit ends the proposal because Git changed under it. Git always wins.
 func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1alpha1.DriftProposal, message string) error {
 	message = redactText(message)
@@ -745,7 +809,7 @@ func (r *DriftProposalReconciler) gitFailure(ctx context.Context, dp *backflowv1
 	case errors.Is(err, gitrepo.ErrRepositoryNotFound):
 		return r.holdProposal(ctx, dp, reasonRepositoryNotFound, err, 0)
 	case errors.Is(err, gitrepo.ErrPushRejected):
-		return r.fail(ctx, dp, reasonPushRejected, err.Error())
+		return r.pushDeclined(ctx, dp, "the push", err)
 	}
 	return r.holdProposal(ctx, dp, reasonRepositoryUnavailable, err, 0)
 }
