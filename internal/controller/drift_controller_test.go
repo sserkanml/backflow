@@ -1944,9 +1944,7 @@ var _ = Describe("Drift detection", func() {
 			r.aheadMu.Lock()
 			reported = len(r.aheadReported)
 			r.aheadMu.Unlock()
-			r.clientMu.Lock()
-			clients = len(r.clients)
-			r.clientMu.Unlock()
+			clients = r.argoClients.size()
 			return
 		}
 		builds := 0

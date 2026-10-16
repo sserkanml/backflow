@@ -52,8 +52,7 @@ const (
 	// Periodic resync, in case an Application event was missed.
 	driftResyncInterval = 2 * time.Minute
 
-	defaultArgoCDURL = "https://argocd-server.argocd.svc"
-	syncOutOfSync    = "OutOfSync"
+	syncOutOfSync = "OutOfSync"
 )
 
 // ManagedResourcesGetter is the part of the Argo CD client the drift
@@ -88,14 +87,7 @@ type DriftReconciler struct {
 	stableMu sync.Mutex
 	pending  map[pendingKey]*pendingDrift // drifts seen but not yet stable enough to propose
 
-	clientMu sync.Mutex
-	clients  map[string]cachedArgoClient // per policy, so connections are reused
-}
-
-// cachedArgoClient is the Argo CD client of a policy and what it was built from.
-type cachedArgoClient struct {
-	key    string
-	client ManagedResourcesGetter
+	argoClients argoClientCache[ManagedResourcesGetter] // per policy, so connections are reused
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
@@ -757,77 +749,21 @@ func argoReason(err error) string {
 
 // argoClient builds the Argo CD client from spec.argoCD and its Secrets.
 func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (ManagedResourcesGetter, error) {
-	spec := policy.Spec.ArgoCD
-	token, err := r.secretValue(ctx, policy.Namespace, spec.TokenSecretRef)
+	cfg, err := argoCDConfig(ctx, r, policy)
 	if err != nil {
-		return nil, fmt.Errorf("token for Argo CD: %w", err)
-	}
-	cfg := argocd.Config{
-		URL:                   spec.URL,
-		Token:                 strings.TrimSpace(string(token)),
-		InsecureSkipTLSVerify: spec.InsecureSkipTLSVerify,
-	}
-	if cfg.URL == "" {
-		cfg.URL = defaultArgoCDURL
-	}
-	if spec.CASecretRef != nil {
-		if cfg.CACert, err = r.secretValue(ctx, policy.Namespace, *spec.CASecretRef); err != nil {
-			return nil, fmt.Errorf("CA bundle for Argo CD: %w", err)
-		}
-	}
-	return r.cachedClient(policy.Namespace+"/"+policy.Name, cfg)
-}
-
-// cachedClient returns the policy's Argo CD client, built again only when what
-// it is built from changed (URL, CA bundle, TLS option or token), so one policy
-// does not open new connections on every reconcile. A replaced client has its
-// idle connections closed.
-func (r *DriftReconciler) cachedClient(pol string, cfg argocd.Config) (ManagedResourcesGetter, error) {
-	h := sha256.New()
-	for _, part := range [][]byte{[]byte(cfg.URL), cfg.CACert, []byte(strconv.FormatBool(cfg.InsecureSkipTLSVerify)), []byte(cfg.Token)} {
-		_, _ = fmt.Fprintf(h, "%d:", len(part))
-		_, _ = h.Write(part)
-	}
-	key := hex.EncodeToString(h.Sum(nil))
-
-	r.clientMu.Lock()
-	defer r.clientMu.Unlock()
-	if hit, ok := r.clients[pol]; ok && hit.key == key {
-		return hit.client, nil
+		return nil, err
 	}
 	build := r.NewArgoClient
 	if build == nil {
 		build = func(c argocd.Config) (ManagedResourcesGetter, error) { return argocd.New(c) }
 	}
-	c, err := build(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if old, ok := r.clients[pol]; ok {
-		closeIdle(old.client)
-	}
-	if r.clients == nil {
-		r.clients = map[string]cachedArgoClient{}
-	}
-	r.clients[pol] = cachedArgoClient{key: key, client: c}
-	return c, nil
-}
-
-func closeIdle(c ManagedResourcesGetter) {
-	if cl, ok := c.(interface{ CloseIdleConnections() }); ok {
-		cl.CloseIdleConnections()
-	}
+	return r.argoClients.get(policy.Namespace+"/"+policy.Name, cfg, build)
 }
 
 // forgetPolicy drops everything kept in memory for a policy that is gone or not
 // usable: its client, what was seen of drifts and what was reported.
 func (r *DriftReconciler) forgetPolicy(pol string) {
-	r.clientMu.Lock()
-	if old, ok := r.clients[pol]; ok {
-		closeIdle(old.client)
-		delete(r.clients, pol)
-	}
-	r.clientMu.Unlock()
+	r.argoClients.forget(pol)
 	r.forgetApplications(pol, nil)
 }
 
@@ -857,21 +793,6 @@ func (r *DriftReconciler) forgetWhere(pol string, drop func(app string) bool) {
 		}
 	}
 	r.aheadMu.Unlock()
-}
-
-func (r *DriftReconciler) secretValue(ctx context.Context, namespace string, ref corev1.SecretKeySelector) ([]byte, error) {
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("secret %q not found", ref.Name)
-		}
-		return nil, err
-	}
-	value, ok := secret.Data[ref.Key]
-	if !ok || len(value) == 0 {
-		return nil, fmt.Errorf("secret %q has no key %q", ref.Name, ref.Key)
-	}
-	return value, nil
 }
 
 // proposalSourceType maps the source type Argo CD reports to the API enum.
