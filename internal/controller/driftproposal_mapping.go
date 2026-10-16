@@ -140,6 +140,13 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		return r.retry(ctx, dp, reasonApplicationUnavailable, fmt.Errorf("cannot read the Argo CD Application: %w", err))
 	}
 
+	if dp.Spec.Source.Type == backflowv1alpha1.SourceHelm {
+		// A chart that is not in the Git repository has nothing to read there.
+		if err := helmSourceProblem(app); err != nil {
+			return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType, err.Error())
+		}
+	}
+
 	auth, err := r.repositoryAuth(ctx, dp)
 	if err != nil {
 		switch {

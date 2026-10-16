@@ -419,6 +419,10 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			helmmap.ReasonMissingValueFile, "values-gone.yaml"),
 		Entry("a value file leaves the repository", func() { setHelm(map[string]any{"valueFiles": []any{"../../../x.yaml"}}) },
 			helmmap.ReasonValueFileOutsideRepo),
+		Entry("the chart comes from a Helm repository", func() {
+			Expect(unstructured.SetNestedField(app.Object, "nginx", "spec", "source", "chart")).To(Succeed())
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+		}, reasonUnsupportedSourceType, "Helm repository or registry"),
 		Entry("the Application has several sources", func() {
 			Expect(unstructured.SetNestedSlice(app.Object, []any{map[string]any{"repoURL": "x"}, map[string]any{"repoURL": "y"}}, "spec", "sources")).To(Succeed())
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())

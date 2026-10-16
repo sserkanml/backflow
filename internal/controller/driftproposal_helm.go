@@ -28,7 +28,6 @@ const (
 	reasonArgoCDUnreachable       = "ArgoCDUnreachable"
 	reasonArgoCDNotConfigured     = "ArgoCDNotConfigured"
 	reasonArgoCDCredentials       = "ArgoCDCredentials"
-	reasonMultipleSources         = "UnsupportedSourceType"
 )
 
 // mappedChange is a verified mapping onto one or more files.
@@ -208,6 +207,21 @@ func scalarOf(raw string) (any, bool) {
 	return nil, false
 }
 
+// helmSourceProblem returns a *verdictError for a Helm Application whose
+// source cannot be mapped at all: several sources, or a chart that comes from a
+// Helm repository or an OCI registry instead of the Git repository.
+func helmSourceProblem(app *unstructured.Unstructured) error {
+	if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
+		return &verdictError{reason: reasonUnsupportedSourceType,
+			err: errors.New("the Application has several sources; only single-source Helm Applications are mapped")}
+	}
+	if chart, _, _ := unstructured.NestedString(app.Object, "spec", "source", "chart"); chart != "" {
+		return &verdictError{reason: reasonUnsupportedSourceType,
+			err: fmt.Errorf("the chart %q comes from a Helm repository or registry, not from the Git repository; only charts in Git are mapped", chart)}
+	}
+	return nil
+}
+
 // mapHelm traces the proposal back to the value files of a Helm source at the
 // revision of tree. Candidates are the keys that hold the old values; an edit
 // is only accepted when rendering through Argo CD shows it changes exactly the
@@ -217,9 +231,8 @@ func scalarOf(raw string) (any, bool) {
 //   - other errors: the repository could not be read.
 func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
-	if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
-		return nil, &verdictError{reason: reasonMultipleSources,
-			err: errors.New("the Application has several sources; only single-source Helm Applications are mapped")}
+	if err := helmSourceProblem(app); err != nil {
+		return nil, err
 	}
 	spec := fullHelmSpec(app, dp.Spec.Source.RepoURL, dp.Spec.Source.Path, sha)
 	src, err := helmmap.NewSource(tree, spec)
