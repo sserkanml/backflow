@@ -4,8 +4,8 @@ description: >-
   Reverse GitOps for Kubernetes and OpenShift. Proposes changes made directly in
   the cluster to Argo CD managed resources back to Git as merge requests.
 type: application
-version: 0.1.1
-appVersion: 0.1.1
+version: 0.1.2
+appVersion: 0.1.2
 kubeVersion: '>=1.27.0-0'
 home: https://github.com/sserkanml/backflow
 sources:
