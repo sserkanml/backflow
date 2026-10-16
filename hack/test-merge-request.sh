@@ -210,6 +210,52 @@ refresh_app() {
 app_sync_status() { k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.status}' 2>/dev/null; }
 app_is_synced()   { refresh_app; [[ "$(app_sync_status)" == "Synced" ]]; }
 live_log_level()  { k -n "$DEMO_NS" get configmap demo-config -o jsonpath='{.data.LOG_LEVEL}'; }
+# git_level: the LOG_LEVEL that apps/demo/configmap.yaml has on main now.
+git_level() { raw_file apps/demo/configmap.yaml main | sed -n 's/^ *LOG_LEVEL: *\([A-Za-z0-9_-]*\).*/\1/p' | head -n 1; }
+
+# require_drift <section> <value>: the value a section drifts to must differ from
+# the Git value and from the live value, or there is no drift to see.
+require_drift() {
+  local git live
+  git="$(git_level)"
+  live="$(live_log_level)"
+  if [[ -z "$2" || "$2" == "$git" || "$2" == "$live" ]]; then
+    die "section $1: the drift value '$2' equals the Git value '$git' or the live value '$live', so there would be no drift to see. Is Argo CD still syncing, or is main not in the state this test expects?"
+  fi
+}
+
+# app_field <jsonpath>: a field of the Application.
+app_field() { k -n "$ARGOCD_NS" get application "$APP" -o jsonpath="$1" 2>/dev/null; }
+
+# app_settled_at <sha>: Argo CD compares against the commit, no operation is
+# requested or running, and it has compared again since the last one finished
+# (reconciledAt >= finishedAt; UTC RFC 3339 times compare as text).
+app_settled_at() {
+  local phase finished reconciled
+  refresh_app
+  [[ "$(app_field '{.status.sync.revision}')" == "$1" ]] || return 1
+  [[ -z "$(app_field '{.operation}')" ]] || return 1
+  phase="$(app_field '{.status.operationState.phase}')"
+  [[ "$phase" != "Running" && "$phase" != "Terminating" ]] || return 1
+  finished="$(app_field '{.status.operationState.finishedAt}')"
+  reconciled="$(app_field '{.status.reconciledAt}')"
+  [[ -z "$finished" ]] || { [[ -n "$reconciled" && ! "$reconciled" < "$finished" ]]; }
+}
+
+# wait_settled <sha>: wait up to WAIT seconds for app_settled_at.
+wait_settled() {
+  local waited=0
+  while ! app_settled_at "$1"; do
+    waited=$((waited + 2))
+    (( waited > WAIT )) && return 1
+    sleep 2
+  done
+}
+
+# app_state: what Argo CD says, for a message.
+app_state() {
+  echo "revision=$(app_field '{.status.sync.revision}') sync=$(app_sync_status) phase=$(app_field '{.status.operationState.phase}') operation=$(app_field '{.operation}') finishedAt=$(app_field '{.status.operationState.finishedAt}') reconciledAt=$(app_field '{.status.reconciledAt}')"
+}
 set_log_level() {
   k -n "$DEMO_NS" patch configmap demo-config --type merge -p "{\"data\":{\"LOG_LEVEL\":\"$1\"}}" >/dev/null
   refresh_app
@@ -529,22 +575,37 @@ done <"$WORKDIR/paths"
 rm -f "$WORKDIR/paths"
 ORIG_CONFIGMAP="$WORKDIR/orig/apps/demo/configmap.yaml"
 [[ -s "$ORIG_CONFIGMAP" ]] || die "apps/demo/configmap.yaml not found on main"
-grep -q 'LOG_LEVEL: info' "$ORIG_CONFIGMAP" || die "the demo ConfigMap does not have LOG_LEVEL: info on main; this test expects the original demo content"
+grep -q 'LOG_LEVEL: ' "$ORIG_CONFIGMAP" || die "the demo ConfigMap has no LOG_LEVEL on main; this test expects the original demo content"
 pass "main is at ${MAIN_ORIG_SHA:0:8}; $(find "$WORKDIR/orig" -type f | wc -l | tr -d ' ') file(s) saved for restoring"
 
 # expected_configmap <value>: the original file with only LOG_LEVEL changed.
-expected_configmap() { sed "s/LOG_LEVEL: info/LOG_LEVEL: $1/" "$ORIG_CONFIGMAP"; }
+# GIT_LEVEL, the value on main, is read below.
+expected_configmap() { sed "s/LOG_LEVEL: $GIT_LEVEL/LOG_LEVEL: $1/" "$ORIG_CONFIGMAP"; }
+
+# Start from a settled Argo CD. The demo Application syncs a new commit of main
+# by itself: a test that begins while that sync runs would see its first edit
+# overwritten, and a drift that comes and goes is (rightly) never proposed.
+echo "  waiting for Argo CD to compare against main (${MAIN_ORIG_SHA:0:8}) and to be idle..."
+refresh_app hard
+wait_settled "$MAIN_ORIG_SHA" ||
+  die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} within ${WAIT}s: $(app_state)"
+[[ "$(main_sha)" == "$MAIN_ORIG_SHA" ]] || die "main moved while this test was starting; run it again"
+GIT_LEVEL="$(sed -n 's/^ *LOG_LEVEL: *\([A-Za-z0-9_-]*\).*/\1/p' "$ORIG_CONFIGMAP" | head -n 1)"
+[[ -n "$GIT_LEVEL" ]] || die "could not read LOG_LEVEL from apps/demo/configmap.yaml on main"
 
 # Everything below assumes the demo resources match Git.
-ORIG_LOG_LEVEL="$(live_log_level)"
+ORIG_LOG_LEVEL="$GIT_LEVEL"
 ORIG_REPLICAS="$(k -n "$DEMO_NS" get deployment demo -o jsonpath='{.spec.replicas}')"
 RESTORE_CLUSTER=true
-if [[ "$(app_sync_status)" != "Synced" ]]; then
-  echo "  $APP is not Synced; syncing it first..."
-  restore_demo || die "$APP did not become Synced"
-  ORIG_LOG_LEVEL="$(live_log_level)"
+if [[ "$(app_sync_status)" != "Synced" || "$(live_log_level)" != "$GIT_LEVEL" ]]; then
+  echo "  $APP is not Synced at main, or the live LOG_LEVEL ($(live_log_level)) differs from Git ($GIT_LEVEL); syncing it first..."
+  restore_demo || die "$APP did not become Synced: $(app_state)"
+  wait_settled "$MAIN_ORIG_SHA" ||
+    die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} after the sync within ${WAIT}s: $(app_state)"
 fi
-pass "cluster, Argo CD and $APP found (LOG_LEVEL=$ORIG_LOG_LEVEL)"
+[[ "$(live_log_level)" == "$GIT_LEVEL" ]] ||
+  die "the live LOG_LEVEL is '$(live_log_level)' but Git has '$GIT_LEVEL' although $APP was synced"
+pass "cluster, Argo CD and $APP settled at main ${MAIN_ORIG_SHA:0:8} (LOG_LEVEL=$GIT_LEVEL in Git and live)"
 
 # ---------------------------------------------------------------------------
 if [[ "$IN_CLUSTER" == "true" ]]; then
@@ -631,8 +692,9 @@ wait_for "policy matched the repository to the ScmConnection" policy_has_connect
 
 # ---------------------------------------------------------------------------
 step "a. A drift becomes a merge request"
+require_drift a debug
 set_log_level debug
-wait_for "proposal is Proposed (info -> debug)" has_proposal Proposed '/data/LOG_LEVEL:Replace:"info">"debug"'
+wait_for "proposal is Proposed ($GIT_LEVEL -> debug)" has_proposal Proposed "/data/LOG_LEVEL:Replace:\"$GIT_LEVEL\">\"debug\""
 remember_proposals
 P_A="$(proposal_with Proposed '"debug"' | head -n 1)"
 if [[ -n "$P_A" ]]; then
@@ -675,9 +737,10 @@ if [[ -n "${P_A:-}" ]]; then
   expect_contains "message" "Argo CD can revert" "$(dp_field "$P_A" .status.message)"
   expect_eq "the branch is left for the reviewer" "true" "$(branch_exists "$BRANCH_A" && echo true || echo false)"
 
+  BEFORE_B="$(proposal_count)"
   echo "  waiting ${QUIET}s to see that nothing is reopened..."
   sleep "$QUIET"
-  expect_eq "proposals for demo-config" "1" "$(proposal_count)"
+  expect_eq "proposals for demo-config (none new)" "$BEFORE_B" "$(proposal_count)"
   expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
   refresh_app
   wait_for "the rejection is reported as an Event on the policy" rejection_reported
@@ -690,7 +753,7 @@ if [[ -n "${P_A:-}" ]]; then
   echo "  the same drift again must not be proposed (same changes, same revision)..."
   set_log_level debug
   sleep "$QUIET"
-  expect_eq "proposals for demo-config" "1" "$(proposal_count)"
+  expect_eq "proposals for demo-config (none new)" "$BEFORE_B" "$(proposal_count)"
   expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
   if branch_exists "$BRANCH_A"; then
     gl DELETE "$(project_path "/repository/branches/$(enc "$BRANCH_A")")" >/dev/null && note "deleted $BRANCH_A"
@@ -699,8 +762,9 @@ fi
 
 # ---------------------------------------------------------------------------
 step "c. A different drift is merged"
+require_drift c warn
 set_log_level warn
-wait_for "proposal is Proposed (info -> warn)" has_proposal Proposed '/data/LOG_LEVEL:Replace:"info">"warn"'
+wait_for "proposal is Proposed ($GIT_LEVEL -> warn)" has_proposal Proposed "/data/LOG_LEVEL:Replace:\"$GIT_LEVEL\">\"warn\""
 remember_proposals
 P_C="$(proposal_with Proposed '"warn"' | head -n 1)"
 if [[ -n "$P_C" ]]; then
@@ -749,12 +813,13 @@ if [[ -n "$P_C" ]]; then
   if sync_app; then pass "one sync at the merge commit (so Argo CD's automated sync will not revert the next drift)"; else fail "$APP did not stay Synced"; fi
   sleep "$QUIET"
   expect_eq "proposal stays Merged" "Merged" "$(dp_field "$P_C" .status.phase)"
-  expect_eq "proposals for demo-config (no new one)" "2" "$(proposal_count)"
+  expect_eq "proposals for demo-config (no new one)" "$BEFORE_C" "$(proposal_count)"
   expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
 fi
 
 # ---------------------------------------------------------------------------
 step "d. The live value goes back to Git while the merge request is open"
+require_drift d debug
 set_log_level debug
 wait_for "proposal is Proposed (warn -> debug)" has_proposal Proposed '/data/LOG_LEVEL:Replace:"warn">"debug"'
 remember_proposals
@@ -779,6 +844,7 @@ fi
 
 # ---------------------------------------------------------------------------
 step "e. A new sync resets the cluster while the merge request is open"
+require_drift e error
 set_log_level error
 wait_for "proposal is Proposed (warn -> error)" has_proposal Proposed '/data/LOG_LEVEL:Replace:"warn">"error"'
 remember_proposals
@@ -830,12 +896,13 @@ PY
   if [[ "$merged" == "true" ]]; then pass "merged !$IID_E through the API"; else fail "could not merge !$IID_E"; fi
   MERGE_E="$(gl GET "$(project_path "/merge_requests/$IID_E")" | jx 'd.get("merge_commit_sha") or d["sha"]')"
   wait_for "proposal is Merged" phase_is "$P_E" Merged
+  BEFORE_E="$(proposal_count)"
   expect_eq "status.commitSHA is the merge commit" "$MERGE_E" "$(dp_field "$P_E" .status.commitSHA)"
   wait_for "$APP is Synced at the merge commit" app_synced_at "$MERGE_E"
   level_is_error() { [[ "$(live_log_level)" == "error" ]]; }
   wait_for "the change is back in the cluster after the sync" level_is_error
   sleep "$QUIET"
-  expect_eq "proposals for demo-config (no new one)" "4" "$(proposal_count)"
+  expect_eq "proposals for demo-config (no new one)" "$BEFORE_E" "$(proposal_count)"
   expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
 fi
 
@@ -859,6 +926,7 @@ PY
   wait_for "Argo CD compares against it" app_compared_at "$OUTSIDE_SHA"
   expect_eq "it is not synced (manual sync)" "true" "$([[ "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.operationState.syncResult.revision}')" != "$OUTSIDE_SHA" ]] && echo true || echo false)"
   EVENTS_BEFORE="$(git_ahead_events)"
+  require_drift f debug
   set_log_level debug
   wait_for "a real drift is proposed although Git is ahead (error -> debug)" has_proposal 'Detected|Mapping|Proposed' '/data/LOG_LEVEL:Replace:"error">"debug"'
   remember_proposals
@@ -920,7 +988,12 @@ step "g. A proposal made in ReportOnly is proposed when the mode is switched"
 held_by_report_only() { [[ "$(condition "$1" Proposed status)/$(condition "$1" Proposed reason)" == "False/ReportOnly" ]]; }
 set_mode() { k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"mode\":\"$1\"}}" >/dev/null; }
 LEVEL_G="$(live_log_level)"
-if [[ "$LEVEL_G" == "warn" ]]; then TARGET_G="error"; else TARGET_G="warn"; fi
+GIT_G="$(git_level)"
+TARGET_G=""
+for candidate in warn error debug trace; do
+  if [[ "$candidate" != "$LEVEL_G" && "$candidate" != "$GIT_G" ]]; then TARGET_G="$candidate"; break; fi
+done
+require_drift g "$TARGET_G"
 if set_mode ReportOnly; then pass "policy mode is ReportOnly"; else fail "could not switch the policy to ReportOnly"; fi
 OPEN_G="$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
 
@@ -975,7 +1048,7 @@ fi
 if (( FAIL > 0 )); then
   if [[ -s "$WORKDIR/branches" ]]; then
     echo "Branch names read from the proposals (branch_of):"
-    sed 's/^/  /' "$WORKDIR/branches"
+    awk '!seen[$0]++' "$WORKDIR/branches" | sed 's/^/  /'
   fi
   echo "Operator log: ${LOG_FILE#"$ROOT"/}"
   exit 1
