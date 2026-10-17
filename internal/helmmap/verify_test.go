@@ -35,6 +35,12 @@ type demoRenderer struct {
 
 	// Behaviours of the chart that the real demo chart does not have, to
 	// build the cases a verifier must catch.
+	// deployment adds the Deployment demo-helm, whose image is "repository:tag".
+	deployment bool
+	// Where else image.tag goes in that Deployment.
+	tagLabel2 bool // metadata.labels and spec.template.metadata.labels app.kubernetes.io/version
+	tagSelect bool // spec.selector.matchLabels and the pod template labels: the selector
+	tagAnnot  bool // metadata.annotations example.com/version
 	tagLabel  bool // data.IMAGE_TAG and the label app.kubernetes.io/version both follow image.tag
 	noDerived bool // data.LOG_LEVEL_UP, which derives from config.logLevel, is left out
 	alsoOther bool // a second ConfigMap that also follows global.region
@@ -159,6 +165,9 @@ func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]b
 	}
 	if d.tagLabel {
 		objs[0].SetLabels(map[string]string{"app.kubernetes.io/version": str(get(values, "image", "tag"))})
+	}
+	if d.deployment {
+		objs = append(objs, d.deploymentObject(app, values))
 	}
 	if d.alsoOther {
 		objs = append(objs, configMap(app.DestNamespace, "demo-helm-other", map[string]any{"REGION": region}))
@@ -710,9 +719,156 @@ func TestNearMissReporting(t *testing.T) {
 		cand := func(key string, n int) *tryout {
 			return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
 		}
-		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil)
+		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil, collateralRule{})
 		if len(bad) != 1 || bad[0].NearMiss == nil || bad[0].NearMiss.Path.String() != "few" {
 			t.Errorf("bad = %+v", bad)
+		}
+	})
+}
+
+// deploymentObject renders the Deployment of the chart: its image is
+// "repository:tag", and the tag goes to other places by the flags.
+func (d *demoRenderer) deploymentObject(app App, values map[string]any) *unstructured.Unstructured {
+	tag := str(get(values, "image", "tag"))
+	podLabels := map[string]any{"app": "demo-helm"}
+	obj := map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "demo-helm", "namespace": app.DestNamespace},
+		"spec": map[string]any{
+			"replicas": int64(2),
+			"selector": map[string]any{"matchLabels": map[string]any{"app": "demo-helm"}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": podLabels},
+				"spec": map[string]any{"containers": []any{map[string]any{
+					"name": "web", "image": str(get(values, "image", "repository")) + ":" + tag,
+				}}},
+			},
+		},
+	}
+	meta := obj["metadata"].(map[string]any)
+	spec := obj["spec"].(map[string]any)
+	if d.tagLabel2 {
+		meta["labels"] = map[string]any{"app.kubernetes.io/version": tag}
+		podLabels["app.kubernetes.io/version"] = tag
+	}
+	if d.tagSelect {
+		spec["selector"] = map[string]any{"matchLabels": map[string]any{"app": "demo-helm", "app.kubernetes.io/version": tag}}
+		podLabels["app.kubernetes.io/version"] = tag
+	}
+	if d.tagAnnot {
+		meta["annotations"] = map[string]any{"example.com/version": tag}
+	}
+	return &unstructured.Unstructured{Object: obj}
+}
+
+var keyDeploy = ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo-helm"}
+
+const (
+	imagePointer = "/spec/template/spec/containers/0/image"
+	oldImage     = "nginxinc/nginx-unprivileged:1.27-alpine"
+	newImage     = "nginxinc/nginx-unprivileged:1.28-alpine"
+)
+
+// imageDrift is the Field of a changed image: the keys that hold the whole
+// value, and those that hold a part of it.
+func imageDrift(t *testing.T, env demoEnv, pointer, desired, live string) Field {
+	t.Helper()
+	f := drift(t, env.src, env.files, 0, "X", desired, live)
+	f.Change.Path = pointer
+	frag, err := env.src.FindFragments(env.files, desired, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Fragments = frag
+	return f
+}
+
+func TestVerifyFragments(t *testing.T) {
+	const dev = "helm/demo/values-dev.yaml"
+
+	t.Run("an image tag change maps to image.tag through the fragment", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true}
+		f := imageDrift(t, env, imagePointer, oldImage, newImage)
+		if len(f.Found.Candidates) != 0 {
+			t.Fatalf("no key holds the whole image, found %+v", f.Found.Candidates)
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		if err != nil || !out.Mapped() {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		r := out.Results[0]
+		if r.File != dev || len(r.Edits) != 1 || decodePointer(r.Edits[0].Location) != "image.tag" || r.Edits[0].Value != `"1.28-alpine"` {
+			t.Errorf("result = %+v", r)
+		}
+		if !strings.Contains(r.Diff, "-  tag: 1.27-alpine") || !strings.Contains(r.Diff, "+  tag: 1.28-alpine") {
+			t.Errorf("diff = %s", r.Diff)
+		}
+		if out.Renders != 3 {
+			t.Errorf("renders = %d: the unmodified files twice and the one fragment", out.Renders)
+		}
+	})
+
+	t.Run("a registry or repository that only the chart's defaults hold is reported", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true}
+		f := imageDrift(t, env, imagePointer, oldImage, "other/nginx-unprivileged:1.27-alpine")
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate ||
+			!strings.Contains(out.Unmapped.Message, "chart's own defaults") || !strings.Contains(out.Unmapped.Message, "image.repository") {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+	})
+
+	t.Run("a key that holds the whole value is preferred: fragments are not even rendered", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src}
+		f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
+		// A fragment candidate that would be rendered if it were tried.
+		f.Fragments = &Result{Candidates: []Candidate{{File: dev, Path: KeyPath{"replicaCount"}, Fragment: true, NewValue: "x"}}}
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		if err != nil || !out.Mapped() {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		if decodePointer(out.Results[0].Edits[0].Location) != "global.region" {
+			t.Errorf("edit = %+v", out.Results[0].Edits)
+		}
+		if out.Renders != 3 {
+			t.Errorf("renders = %d, want the unmodified files twice and the one whole-value edit", out.Renders)
+		}
+	})
+
+	t.Run("fragments follow when the whole-value edits do not verify", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src}
+		// LOG_LEVEL: config.logLevel also moves LOG_LEVEL_UP, so it never verifies;
+		// the fragment stage tries the same field with parts and fails the same way.
+		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+		frag, _ := env.src.FindFragments(env.files, "debug", "trace")
+		f.Fragments = frag
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+	})
+
+	t.Run("the bound counts fragments too", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true}
+		f := imageDrift(t, env, imagePointer, oldImage, newImage)
+		f.Found = &Result{}
+		for i := range 8 {
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: dev, Path: KeyPath{"k", strconv.Itoa(i)}})
+		}
+		for i := range 3 {
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: dev, Path: KeyPath{"f", strconv.Itoa(i)}, Fragment: true, NewValue: "x"})
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		if rend.calls > 2+8 {
+			t.Errorf("%d renders: fragments were rendered although the bound was exceeded", rend.calls)
 		}
 	})
 }

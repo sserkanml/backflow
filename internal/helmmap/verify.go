@@ -61,6 +61,10 @@ type Field struct {
 	Change v1alpha1.FieldChange
 	// Found is Source.Find for Desired.
 	Found *Result
+	// Fragments is Source.FindFragments for Desired and Live, when both are
+	// strings; nil otherwise. Its candidates are tried only when no edit of
+	// the keys in Found, alone or together with the others, verifies.
+	Fragments *Result
 }
 
 // Input is a proposal to verify: some fields of one resource.
@@ -356,6 +360,10 @@ type run struct {
 	renders int
 	// budget is set once the time budget ran out.
 	budget bool
+
+	// The edits tried so far, and the key of each. A later stage adds to them.
+	tries []*tryout
+	index map[editKey]*tryout
 }
 
 var (
@@ -446,23 +454,79 @@ func (v *run) verify(opts Options) (*Outcome, error) {
 		return out, err
 	}
 
-	tries, err := v.tryEdits(base, nd, fields)
-	if err != nil {
-		return v.renderErr(err)
+	return v.stages(base, nd, fields, opts)
+}
+
+// A stage is one way of looking for an edit: with the keys that hold the whole
+// value or with those that hold a part of it, and with the changes beyond the
+// drifted fields that are allowed. The strictest comes first, and the next is
+// only tried when the one before verifies no edit set.
+type stage struct {
+	fragments bool
+	rule      collateralRule
+}
+
+func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opts Options) (*Outcome, error) {
+	hasFragments := false
+	for _, f := range fields {
+		hasFragments = hasFragments || (f.Fragments != nil && len(f.Fragments.Candidates) > 0)
 	}
+	stages := []stage{{}}
+	if hasFragments {
+		stages = append(stages, stage{fragments: true})
+	}
+
+	var last *Outcome
+	for _, st := range stages {
+		if st.fragments {
+			if bad := tooManyWithFragments(fields, opts); bad != nil {
+				return failure(bad), nil
+			}
+		}
+		if err := v.addTries(base, nd, fields, st.fragments); err != nil {
+			return v.renderErr(err)
+		}
+		out, escalate, err := v.evaluate(base, nd, fields, st.rule)
+		if err != nil || !escalate {
+			return out, err
+		}
+		last = out
+	}
+	return last, nil
+}
+
+// tooManyWithFragments applies the bound on candidates to whole-value and
+// fragment candidates together, before any fragment is rendered.
+func tooManyWithFragments(fields []parsedField, opts Options) []FieldFailure {
+	var bad []FieldFailure
+	for _, f := range fields {
+		if f.Fragments == nil {
+			continue
+		}
+		if n := len(f.Found.Candidates) + len(f.Fragments.Candidates); n > opts.MaxCandidates {
+			bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonTooManyCandidates,
+				Detail: fmt.Sprintf("%d value file keys hold %s or a part of it, at most %d are tried", n, f.desired, opts.MaxCandidates)})
+		}
+	}
+	return bad
+}
+
+// evaluate decides on the edits tried so far. escalate is set when no edit set
+// verifies, which is when a more permissive stage is worth a try.
+func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, rule collateralRule) (out *Outcome, escalate bool, err error) {
 	var accepted []*tryout
-	for _, t := range tries {
-		if t.accepted() {
+	for _, t := range v.tries {
+		if t.accepted(rule) {
 			accepted = append(accepted, t)
 		}
 	}
-	if bad := uncovered(fields, tries, accepted); len(bad) > 0 {
-		return failure(bad), nil
+	if bad := uncovered(fields, v.tries, accepted, rule); len(bad) > 0 {
+		return failure(bad), true, nil
 	}
 
 	sets, tooMany := coverSets(len(fields), accepted)
 	if tooMany {
-		return unmapped(ReasonAmbiguousCandidates, "more than %d different sets of edits reproduce the drift", maxEditSets), nil
+		return unmapped(ReasonAmbiguousCandidates, "more than %d different sets of edits reproduce the drift", maxEditSets), false, nil
 	}
 	type verifiedSet struct {
 		set     []*tryout
@@ -484,7 +548,8 @@ func (v *run) verify(opts Options) (*Outcome, error) {
 				interacted = append(interacted, describeSet(set)+": the chart does not render with all the edits together")
 				continue
 			case err != nil:
-				return v.renderErr(err)
+				o, e := v.renderErr(err)
+				return o, false, e
 			}
 			if why := judgeChanges(diff(base, snap, nd), snap, v.in.Resource, fields); why != "" {
 				interacted = append(interacted, describeSet(set)+": "+why)
@@ -495,16 +560,16 @@ func (v *run) verify(opts Options) (*Outcome, error) {
 	}
 	switch {
 	case len(verified) == 0:
-		return unmapped(ReasonEditsInteract, "the edits verified one by one do not work together: %s", strings.Join(interacted, "; ")), nil
+		return unmapped(ReasonEditsInteract, "the edits verified one by one do not work together: %s", strings.Join(interacted, "; ")), true, nil
 	case len(verified) > 1:
 		names := make([]string, len(verified))
 		for i, vs := range verified {
 			names[i] = describeSet(vs.set)
 		}
 		return failure([]FieldFailure{{Pointer: pointers(fields), Reason: ReasonAmbiguousCandidates,
-			Detail: "each of these reproduces the drift and changes nothing else: " + strings.Join(names, "; ")}}), nil
+			Detail: "each of these reproduces the drift and changes nothing else: " + strings.Join(names, "; ")}}), false, nil
 	}
-	return &Outcome{Results: buildResults(v.in.Files, verified[0].final, verified[0].applied)}, nil
+	return &Outcome{Results: buildResults(v.in.Files, verified[0].final, verified[0].applied)}, false, nil
 }
 
 // preflight parses the fields and applies the limits that need no render.
@@ -576,6 +641,8 @@ type editKey struct{ File, Path, Value string }
 type tryout struct {
 	cand  Candidate
 	value string // the live value as a template renders it
+	// fragment is set when the key holds only a part of the drifted value.
+	fragment bool
 	// origin lists the fields whose candidates proposed this edit.
 	origin []int
 	// why is set when the edit could not be tried: it cannot be written, or
@@ -587,10 +654,28 @@ type tryout struct {
 	collateral []Collateral
 }
 
-// accepted: the edit reproduces drifted fields and changes nothing else.
-func (t *tryout) accepted() bool {
-	return t.why == "" && len(t.covers) > 0 && len(t.collateral) == 0
+// accepted: the edit reproduces drifted fields and changes nothing else that
+// the rule does not allow.
+func (t *tryout) accepted(rule collateralRule) bool {
+	return t.why == "" && len(t.covers) > 0 && len(t.disallowed(rule)) == 0
 }
+
+// disallowed are the changes of the edit that the rule does not allow.
+func (t *tryout) disallowed(rule collateralRule) []Collateral {
+	var out []Collateral
+	for _, c := range t.collateral {
+		if !rule.allows(c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// collateralRule says which changes beyond the drifted fields an accepted edit
+// may make. The zero value allows none.
+type collateralRule struct{}
+
+func (collateralRule) allows(Collateral) bool { return false }
 
 func (t *tryout) key() string { return t.cand.File + " " + t.cand.Path.String() }
 
@@ -599,28 +684,46 @@ func conflicts(a, b *tryout) bool {
 	return a.cand.File == b.cand.File && a.cand.Path.Equal(b.cand.Path) && a.value != b.value
 }
 
-// tryEdits renders every candidate edit of every field on its own. An edit
-// proposed for several fields is tried once.
-func (v *run) tryEdits(base snapshot, nd nondeterminism, fields []parsedField) ([]*tryout, error) {
-	var tries []*tryout
-	index := map[editKey]*tryout{}
+// addTries renders the candidate edits of every field that were not tried
+// yet, each on its own. An edit proposed for several fields is tried once.
+// With fragments the candidates are those of FindFragments, otherwise those of
+// Find.
+func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, fragments bool) error {
+	if v.index == nil {
+		v.index = map[editKey]*tryout{}
+	}
+	var added []*tryout
 	for i, f := range fields {
-		for _, c := range f.Found.Candidates {
-			k := editKey{c.File, c.Path.String(), f.newValue}
-			if t, ok := index[k]; ok {
-				t.origin = append(t.origin, i)
+		found := f.Found
+		if fragments {
+			found = f.Fragments
+		}
+		if found == nil {
+			continue
+		}
+		for _, c := range found.Candidates {
+			value := f.newValue
+			if c.Fragment {
+				value = c.NewValue
+			}
+			k := editKey{c.File, c.Path.String(), value}
+			if t, ok := v.index[k]; ok {
+				if !slices.Contains(t.origin, i) {
+					t.origin = append(t.origin, i)
+				}
 				continue
 			}
-			t := &tryout{cand: c, value: f.newValue, origin: []int{i}}
-			index[k] = t
-			tries = append(tries, t)
+			t := &tryout{cand: c, value: value, fragment: c.Fragment, origin: []int{i}}
+			v.index[k] = t
+			v.tries = append(v.tries, t)
+			added = append(added, t)
 		}
 	}
 	byPointer := map[string]int{}
 	for i, f := range fields {
 		byPointer[f.Change.Path] = i
 	}
-	for _, t := range tries {
+	for _, t := range added {
 		files, why := tryEdit(v.in.Files, t.cand, t.value)
 		if why != "" {
 			t.why = why
@@ -632,7 +735,7 @@ func (v *run) tryEdits(base snapshot, nd nondeterminism, fields []parsedField) (
 			t.why = "the chart does not render with it"
 			continue
 		case err != nil:
-			return nil, err
+			return err
 		}
 		for _, ch := range diff(base, snap, nd) {
 			if i, ok := byPointer[ch.Pointer]; ok && ch.Key == v.in.Resource && snap[ch.Key][ch.Pointer] == fields[i].live {
@@ -642,7 +745,7 @@ func (v *run) tryEdits(base snapshot, nd nondeterminism, fields []parsedField) (
 			t.collateral = append(t.collateral, collateralOf(base, snap, ch))
 		}
 	}
-	return tries, nil
+	return nil
 }
 
 func collateralOf(base, edited snapshot, ch change) Collateral {
@@ -668,7 +771,7 @@ func collateralOf(base, edited snapshot, ch change) Collateral {
 
 // uncovered returns a failure for each drifted field that no accepted edit
 // reproduces, with the reasons and the nearest miss.
-func uncovered(fields []parsedField, tries, accepted []*tryout) []FieldFailure {
+func uncovered(fields []parsedField, tries, accepted []*tryout, rule collateralRule) []FieldFailure {
 	covered := make([]bool, len(fields))
 	for _, t := range accepted {
 		for _, i := range t.covers {
@@ -689,9 +792,9 @@ func uncovered(fields []parsedField, tries, accepted []*tryout) []FieldFailure {
 			switch {
 			case t.why != "":
 				others = append(others, t.key()+": "+t.why)
-			case slices.Contains(t.covers, i) && len(t.collateral) > 0:
-				if near == nil || len(t.collateral) < len(near.collateral) ||
-					(len(t.collateral) == len(near.collateral) && len(t.covers) > len(near.covers)) {
+			case slices.Contains(t.covers, i) && len(t.disallowed(rule)) > 0:
+				if near == nil || len(t.disallowed(rule)) < len(near.disallowed(rule)) ||
+					(len(t.disallowed(rule)) == len(near.disallowed(rule)) && len(t.covers) > len(near.covers)) {
 					near = t
 				}
 			case len(t.covers) == 0:
@@ -700,11 +803,12 @@ func uncovered(fields []parsedField, tries, accepted []*tryout) []FieldFailure {
 		}
 		ff := FieldFailure{Pointer: f.Change.Path, Reason: ReasonNoVerifiedCandidate}
 		if near != nil {
-			nm := &NearMiss{File: near.cand.File, Path: near.cand.Path, Value: near.value, CollateralTotal: len(near.collateral)}
+			rest := near.disallowed(rule)
+			nm := &NearMiss{File: near.cand.File, Path: near.cand.Path, Value: near.value, CollateralTotal: len(rest)}
 			for _, c := range near.covers {
 				nm.Covers = append(nm.Covers, fields[c].Change.Path)
 			}
-			nm.Collateral = near.collateral[:min(len(near.collateral), MaxCollateralShown)]
+			nm.Collateral = rest[:min(len(rest), MaxCollateralShown)]
 			ff.NearMiss = nm
 			others = append(others, nm.String())
 		}
@@ -934,14 +1038,27 @@ func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.
 // noCandidateDetail explains why a field has no verified candidate.
 func noCandidateDetail(f parsedField, rejected []string) string {
 	var parts []string
-	for _, p := range f.Found.ChartDefaults {
-		parts = append(parts, fmt.Sprintf("the value comes from the chart's own defaults (%s); chart defaults are not edited", p))
+	seen := map[string]bool{}
+	say := func(msg string) {
+		if !seen[msg] {
+			seen[msg] = true
+			parts = append(parts, msg)
+		}
 	}
-	for _, c := range f.Found.Controlled {
-		parts = append(parts, fmt.Sprintf("the value is set by %s at %s in the Application, not by a value file", c.Layer, c.Path))
-	}
-	if len(f.Found.RemoteValueFiles) > 0 {
-		parts = append(parts, "it may come from a remote value file: "+strings.Join(f.Found.RemoteValueFiles, ", "))
+	// What the whole value and a part of it were found in, said once.
+	for _, found := range []*Result{f.Found, f.Fragments} {
+		if found == nil {
+			continue
+		}
+		for _, p := range found.ChartDefaults {
+			say(fmt.Sprintf("the value comes from the chart's own defaults (%s); chart defaults are not edited", p))
+		}
+		for _, c := range found.Controlled {
+			say(fmt.Sprintf("the value is set by %s at %s in the Application, not by a value file", c.Layer, c.Path))
+		}
+		if len(found.RemoteValueFiles) > 0 {
+			say("it may come from a remote value file: " + strings.Join(found.RemoteValueFiles, ", "))
+		}
 	}
 	parts = append(parts, rejected...)
 	if len(parts) == 0 {

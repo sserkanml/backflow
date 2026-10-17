@@ -258,7 +258,20 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 				return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
 			}
 		}
-		fields[i] = helmmap.Field{Index: i, Change: ch, Found: found}
+		field := helmmap.Field{Index: i, Change: ch, Found: found}
+		// A string that changed may be a part of it that a key holds: the tag of an
+		// image, say. Those keys are tried only when no key holds the whole value.
+		if oldS, ok := scalarOf(ch.Desired); ok && ch.Op == backflowv1alpha1.OpReplace {
+			newV, newOK := scalarOf(ch.Live)
+			o, oIsString := oldS.(string)
+			n, nIsString := newV.(string)
+			if newOK && oIsString && nIsString {
+				if field.Fragments, err = src.FindFragments(files, o, n); err != nil {
+					return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
+				}
+			}
+		}
+		fields[i] = field
 	}
 
 	rend, err := r.renderer(ctx, dp)
