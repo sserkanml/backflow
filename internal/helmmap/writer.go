@@ -87,8 +87,11 @@ func SetValue(file string, content []byte, key KeyPath, value string) (*Written,
 	}, nil
 }
 
-// typed returns value as the Go type of the old YAML tag when it reads as
-// that type in its canonical spelling, and as a string otherwise.
+// typed returns value as the Go type of the old YAML tag when writing it as
+// that type renders back to exactly the same string, and as a string
+// otherwise. The test is the round trip: a templated string has to come out as
+// it was meant. 1.20 written as a float renders as 1.2, so a float field gets
+// the quoted string "1.20"; 4 written as an int renders as 4 and stays an int.
 func typed(tag, value string) any {
 	switch tag {
 	case "!!int":
@@ -96,8 +99,9 @@ func typed(tag, value string) any {
 			return json.Number(value)
 		}
 	case "!!float":
-		// A JSON number: no leading +, no bare dot, no hex, no NaN.
-		if _, err := strconv.ParseFloat(value, 64); err == nil && json.Valid([]byte(value)) && value[0] != '"' {
+		// A JSON number that renders back as written: no leading +, no bare dot,
+		// no trailing zero, no exponent.
+		if _, err := strconv.ParseFloat(value, 64); err == nil && json.Valid([]byte(value)) && RenderValue(json.Number(value)) == value {
 			return json.Number(value)
 		}
 	case "!!bool":

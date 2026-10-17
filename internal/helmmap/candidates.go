@@ -3,6 +3,8 @@ package helmmap
 import (
 	"fmt"
 	"slices"
+	"strings"
+	"unicode/utf8"
 )
 
 // Candidate is a scalar in a value file whose effective value equals the old
@@ -13,6 +15,12 @@ type Candidate struct {
 	// File is the repository path of the value file.
 	File string
 	Path KeyPath
+	// Fragment is set when only part of the drifted value is the key's value:
+	// the key holds the "1.27-alpine" of "nginx:1.27-alpine". NewValue is then
+	// what the key must become. A candidate for the whole value has neither;
+	// the value to write is the new value of the field.
+	Fragment bool
+	NewValue string
 }
 
 // Controlled is a key path an inline setting of the Application decides, so
@@ -57,14 +65,113 @@ type Result struct {
 // later file (or, for a key an inline setting decides, the inline layer)
 // overrides it.
 func (s *Source) Find(files map[string][]byte, old any) (*Result, error) {
-	res := &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}
 	if old == nil {
-		return res, nil
+		return &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}, nil
 	}
 	want := RenderValue(old)
 	if _, ok := old.(string); !ok && want == "" {
-		return res, nil // a map or list has no scalar form to compare
+		return &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}, nil // a map or list has no scalar form to compare
 	}
+	return s.find(files, func(v string) []occurrence {
+		if v != want {
+			return nil
+		}
+		return []occurrence{{}}
+	}, false)
+}
+
+// FindFragments looks for keys whose value is a part of the drifted string
+// field: the field went from old to new, and a key's value occurs in old and
+// covers everything that changed. It is what a change of the image tag looks
+// like from the cluster ("nginx:1.27-alpine" became "nginx:1.28-alpine"), where
+// the key image.tag holds only "1.27-alpine".
+//
+// The changed region is what is left of old after the longest common prefix and
+// suffix of old and new are taken away. A key qualifies when its value, as a
+// string, occurs in old and the occurrence includes the whole region; the new
+// value of the key is the same stretch cut out of new. Every occurrence is a
+// candidate of its own. The rules of Find apply otherwise: effective
+// definitions only, the chart's own values.yaml is reported and not offered,
+// inline settings are reported.
+//
+// A key whose value is the whole of old is left out: Find already offers it.
+func (s *Source) FindFragments(files map[string][]byte, old, new string) (*Result, error) {
+	if old == new {
+		return &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}, nil
+	}
+	return s.find(files, fragmentMatcher(old, new), true)
+}
+
+// occurrence is a way a key's value matches the drifted field. newValue is what
+// the key must become; it is empty for a match of the whole value.
+type occurrence struct{ newValue string }
+
+// fragmentMatcher returns the matcher of FindFragments.
+func fragmentMatcher(old, new string) func(string) []occurrence {
+	prefix := commonPrefixLen(old, new)
+	suffix := commonSuffixLen(old[prefix:], new[prefix:])
+	regionStart, regionEnd := prefix, len(old)-suffix
+	return func(v string) []occurrence {
+		if v == "" || v == old {
+			return nil
+		}
+		var out []occurrence
+		for from := 0; from < len(old); {
+			j := strings.Index(old[from:], v)
+			if j < 0 {
+				break
+			}
+			at := from + j
+			from = at + 1
+			end := at + len(v)
+			covers := at <= regionStart && end >= regionEnd
+			if regionStart == regionEnd { // something was inserted: the key must reach the place
+				covers = at <= regionStart && regionStart <= end
+			}
+			if !covers {
+				continue
+			}
+			cutEnd := len(new) - (len(old) - end)
+			if cutEnd < at || cutEnd > len(new) {
+				continue
+			}
+			out = append(out, occurrence{newValue: new[at:cutEnd]})
+		}
+		return out
+	}
+}
+
+// commonPrefixLen is the length in bytes of the longest common prefix of a and
+// b that ends between two characters.
+func commonPrefixLen(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	for n > 0 && n < len(a) && !utf8.RuneStart(a[n]) {
+		n--
+	}
+	return n
+}
+
+// commonSuffixLen is the length in bytes of the longest common suffix of a and
+// b that starts between two characters.
+func commonSuffixLen(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[len(a)-1-n] == b[len(b)-1-n] {
+		n++
+	}
+	for n > 0 && !utf8.RuneStart(a[len(a)-n]) {
+		n--
+	}
+	return n
+}
+
+// find is the search of Find and FindFragments. match says how a scalar's
+// string form relates to the drifted field; a scalar that does not match gives
+// no occurrence.
+func (s *Source) find(files map[string][]byte, match func(string) []occurrence, fragments bool) (*Result, error) {
+	res := &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}
 
 	// Layer 0 is the chart's values.yaml; the value files follow in order.
 	names := append([]string{s.ChartValues}, s.ValueFiles...)
@@ -95,10 +202,11 @@ func (s *Source) Find(files map[string][]byte, old any) (*Result, error) {
 
 	for i, defs := range layers {
 		for _, d := range defs {
-			if d.kind != defScalar || d.value != want || d.viaMerge {
+			if d.kind != defScalar || d.viaMerge {
 				continue
 			}
-			if overridden(d, layers[i+1:]) {
+			occurrences := match(d.value)
+			if len(occurrences) == 0 || overridden(d, layers[i+1:]) {
 				continue
 			}
 			if v, ok := s.inlineFor(d.path); ok {
@@ -109,13 +217,15 @@ func (s *Source) Find(files map[string][]byte, old any) (*Result, error) {
 				res.ChartDefaults = append(res.ChartDefaults, d.path)
 				continue
 			}
-			res.Candidates = append(res.Candidates, Candidate{File: names[i], Path: d.path})
+			for _, o := range occurrences {
+				res.Candidates = append(res.Candidates, Candidate{File: names[i], Path: d.path, Fragment: fragments, NewValue: o.newValue})
+			}
 		}
 	}
 
-	// An inline setting whose own value is the old one.
+	// An inline setting whose own value matches.
 	for i, v := range s.Inline {
-		if !v.HasValue || v.Value != want {
+		if !v.HasValue || len(match(v.Value)) == 0 {
 			continue
 		}
 		shadowed := false

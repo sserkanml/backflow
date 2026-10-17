@@ -356,3 +356,179 @@ func TestFindErrors(t *testing.T) {
 		t.Error("a value file that is not a map was accepted")
 	}
 }
+
+func TestFindFragments(t *testing.T) {
+	type frag struct {
+		path, newValue string
+	}
+	tests := []struct {
+		name     string
+		values   string
+		old, new string
+		want     []frag
+		defaults []string
+	}{
+		{
+			name:   "an image tag",
+			values: "image:\n  repository: nginxinc/nginx-unprivileged\n  tag: 1.27-alpine\n",
+			old:    "nginxinc/nginx-unprivileged:1.27-alpine", new: "nginxinc/nginx-unprivileged:1.28-alpine",
+			want: []frag{{"image.tag", "1.28-alpine"}},
+		},
+		{
+			name:   "a registry, the repository is a fragment too",
+			values: "image:\n  registry: registry.a.io\n  repository: team/app\n  tag: \"1.0\"\n",
+			old:    "registry.a.io/team/app:1.0", new: "registry.b.io/team/app:1.0",
+			want: []frag{{"image.registry", "registry.b.io"}},
+		},
+		{
+			name:   "a tag that is only digits, written as a number in the file",
+			values: "image:\n  tag: 127\n",
+			old:    "app:127", new: "app:128",
+			want: []frag{{"image.tag", "128"}},
+		},
+		{
+			name:   "a value that occurs twice and covers the change both times",
+			values: "k: xyx\n",
+			old:    "xyxyx", new: "xyzyx",
+			want: []frag{{"k", "xyz"}, {"k", "zyx"}},
+		},
+		{
+			name:   "a value that occurs twice and covers it once",
+			values: "k: foo\n",
+			old:    "foo-foo", new: "foo-bar",
+			want: []frag{{"k", "bar"}},
+		},
+		{
+			name:   "a fragment that does not cover what changed is no candidate",
+			values: "image:\n  repository: nginxinc/nginx-unprivileged\n",
+			old:    "nginxinc/nginx-unprivileged:1.27-alpine", new: "nginxinc/nginx-unprivileged:1.28-alpine",
+		},
+		{
+			name:   "a fragment that covers only a part of what changed is no candidate",
+			values: "image:\n  registry: registry.a.io\n  repository: team/app\n",
+			old:    "registry.a.io/team/app:1.0", new: "registry.b.io/other/app:1.0",
+		},
+		{
+			name:   "a float in the file is found by the way it renders",
+			values: "image:\n  tag: 1.10\n",
+			old:    "app:1.1", new: "app:1.2",
+			want: []frag{{"image.tag", "1.2"}},
+		},
+		{
+			name:   "a number inside a longer number is not the changed part",
+			values: "replicaCount: 2\nimage:\n  tag: 1.27-alpine\n",
+			old:    "app:1.27-alpine", new: "app:1.28-alpine",
+			want: []frag{{"image.tag", "1.28-alpine"}},
+		},
+		{
+			name:   "an insertion",
+			values: "image:\n  name: app\n",
+			old:    "reg/app", new: "reg/app-debug",
+			want: []frag{{"image.name", "app-debug"}},
+		},
+		{
+			name:   "a character that is not ASCII is not cut in two",
+			values: "k: ümlaut\n",
+			old:    "ümlaut", new: "ömlaut",
+		},
+		{
+			name:   "nothing changed",
+			values: "k: app\n",
+			old:    "app", new: "app",
+		},
+		{
+			name:   "a value that is only in the chart defaults is reported, not offered",
+			values: "",
+			old:    "app:1.0", new: "app:2.0",
+			defaults: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := fstest.MapFS{"c/a.yaml": &fstest.MapFile{Data: []byte(tt.values)}}
+			src, err := NewSource(m, Spec{Path: "c", ValueFiles: []string{"a.yaml"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := src.FindFragments(map[string][]byte{"c/a.yaml": []byte(tt.values)}, tt.old, tt.new)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []frag
+			for _, c := range res.Candidates {
+				if !c.Fragment || c.File != "c/a.yaml" {
+					t.Errorf("candidate %+v is not a fragment of c/a.yaml", c)
+				}
+				got = append(got, frag{c.Path.String(), c.NewValue})
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("fragments = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindFragmentsRules(t *testing.T) {
+	files := map[string]string{
+		"c/values.yaml": "image:\n  repository: app\n  tag: 1.0\n",
+		"c/a.yaml":      "image:\n  tag: 1.0\n",
+		"c/b.yaml":      "image:\n  tag: 1.0\n",
+	}
+	m := fstest.MapFS{}
+	raw := map[string][]byte{}
+	for n, c := range files {
+		m[n] = &fstest.MapFile{Data: []byte(c)}
+		raw[n] = []byte(c)
+	}
+
+	t.Run("a later file shadows an earlier one", func(t *testing.T) {
+		src, _ := NewSource(m, Spec{Path: "c", ValueFiles: []string{"a.yaml", "b.yaml"}})
+		res, err := src.FindFragments(raw, "app:1.0", "app:2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Candidates) != 1 || res.Candidates[0].File != "c/b.yaml" {
+			t.Errorf("candidates = %+v", res.Candidates)
+		}
+	})
+	t.Run("the chart's own values.yaml is reported and never offered", func(t *testing.T) {
+		src, _ := NewSource(m, Spec{Path: "c"})
+		res, err := src.FindFragments(raw, "app:1.0", "app:2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defaults := make([]string, 0, len(res.ChartDefaults))
+		for _, d := range res.ChartDefaults {
+			defaults = append(defaults, d.String())
+		}
+		if len(res.Candidates) != 0 || !reflect.DeepEqual(defaults, []string{"image.tag"}) {
+			t.Errorf("candidates = %+v, defaults = %v", res.Candidates, defaults)
+		}
+	})
+	t.Run("a key an inline setting decides is reported", func(t *testing.T) {
+		src, _ := NewSource(m, Spec{Path: "c", ValueFiles: []string{"a.yaml"}, Parameters: []Parameter{{Name: "image.tag", Value: "1.0"}}})
+		res, err := src.FindFragments(raw, "app:1.0", "app:2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Candidates) != 0 || len(res.Controlled) != 1 || res.Controlled[0].Layer != LayerParameters {
+			t.Errorf("candidates = %+v, controlled = %+v", res.Candidates, res.Controlled)
+		}
+	})
+	t.Run("a key whose value is the whole field is left to Find", func(t *testing.T) {
+		quoted := map[string][]byte{"c/a.yaml": []byte("image:\n  tag: \"1.0\"\n")}
+		qm := fstest.MapFS{"c/a.yaml": &fstest.MapFile{Data: quoted["c/a.yaml"]}}
+		src, _ := NewSource(qm, Spec{Path: "c", ValueFiles: []string{"a.yaml"}})
+		res, err := src.FindFragments(quoted, "1.0", "2.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Candidates) != 0 {
+			t.Errorf("candidates = %+v", res.Candidates)
+		}
+		whole, _ := src.Find(quoted, "1.0")
+		if len(whole.Candidates) != 1 {
+			t.Errorf("Find = %+v", whole.Candidates)
+		}
+	})
+}
