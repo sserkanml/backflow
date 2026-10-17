@@ -98,12 +98,31 @@ func (f *fakeHelmRenderer) Render(_ context.Context, app helmmap.App, files map[
 			"AMBIGUOUS":    max(minA, minB),
 		},
 	}}
-	return []*unstructured.Unstructured{cm}, nil
+	// The Deployment: its image is "repository:tag", and the tag is also its
+	// version label, on the Deployment and on the pods.
+	tag := nested(values, "image", "tag")
+	deployment := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{
+			"name": "demo-helm", "namespace": app.DestNamespace,
+			"labels": map[string]any{"app.kubernetes.io/version": tag},
+		},
+		"spec": map[string]any{
+			"selector": map[string]any{"matchLabels": map[string]any{"app": "demo-helm"}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": map[string]any{"app": "demo-helm", "app.kubernetes.io/version": tag}},
+				"spec": map[string]any{"containers": []any{map[string]any{
+					"name": "web", "image": nested(values, "image", "repository") + ":" + tag,
+				}}},
+			},
+		},
+	}}
+	return []*unstructured.Unstructured{cm, deployment}, nil
 }
 
 const (
 	helmChartYAML = "apiVersion: v2\nname: demo\nversion: 0.1.0\n"
-	helmValues    = "# Chart defaults.\nconfig:\n  logLevel: info\n  timeout: 30\n  minA: 1\n  minB: 1\nglobal:\n  region: eu-west-1\n"
+	helmValues    = "# Chart defaults.\nconfig:\n  logLevel: info\n  timeout: 30\n  minA: 1\n  minB: 1\nglobal:\n  region: eu-west-1\nimage:\n  repository: nginxinc/nginx-unprivileged\n  tag: 1.26-alpine\n"
 	helmValuesDev = `# Development environment.
 config:
   # Log verbosity.
@@ -112,6 +131,8 @@ config:
   minB: 3
 global:
   region: eu-central-1
+image:
+  tag: 1.27-alpine
 `
 )
 
@@ -369,6 +390,100 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(repo.file(tip, "helm/demo/values-extra.yaml")).To(Equal("# Overrides.\nconfig:\n  timeout: 120\n"))
 		Expect(provider.created[0].Body).To(ContainSubstring("helm/demo/values-extra.yaml"))
 		Expect(provider.created[0].Body).To(ContainSubstring("(/data/REGION, /data/TIMEOUT)"))
+	})
+
+	Context("a changed image", func() {
+		const (
+			oldImg    = "nginxinc/nginx-unprivileged:1.27-alpine"
+			newImg    = "nginxinc/nginx-unprivileged:1.28-alpine"
+			verLabel  = "/metadata/labels/app.kubernetes.io~1version"
+			podLabel  = "/spec/template/metadata/labels/app.kubernetes.io~1version"
+			imagePath = "/spec/template/spec/containers/0/image"
+		)
+		BeforeEach(func() {
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+				s.Resource = backflowv1alpha1.ResourceRef{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm"}
+				s.Changes = []backflowv1alpha1.FieldChange{{
+					Path: imagePath, Op: backflowv1alpha1.OpReplace, Desired: `"` + oldImg + `"`, Live: `"` + newImg + `"`,
+				}}
+			})
+		})
+		allow := func(kinds ...backflowv1alpha1.HelmCollateralKind) {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Spec.Helm = &backflowv1alpha1.HelmOptions{AllowCollateralChanges: kinds}
+			ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+		}
+
+		It("is unmapped by default: image.tag is the near miss, the labels are what it also changes", func() {
+			for range 2 {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			c := condition(conditionMapped)
+			Expect(c.Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+			for _, want := range []string{"image.tag", "1.28-alpine", "would reproduce " + imagePath, verLabel, podLabel} {
+				Expect(c.Message).To(ContainSubstring(want))
+			}
+			Expect(provider.created).To(BeEmpty())
+		})
+
+		It("is proposed when the policy allows labels, and the merge request lists them", func() {
+			allow(backflowv1alpha1.CollateralLabels)
+			settle(backflowv1alpha1.PhaseProposed)
+
+			got := latest()
+			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+				File: "helm/demo/values-dev.yaml", Location: "image.tag", Value: `"1.28-alpine"`, ChangeIndex: 0,
+			}}))
+			Expect(got.Status.Mapping.Collateral).To(ConsistOf(
+				backflowv1alpha1.CollateralChange{Group: "apps", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm", Path: verLabel, Current: `"1.27-alpine"`, New: `"1.28-alpine"`},
+				backflowv1alpha1.CollateralChange{Group: "apps", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm", Path: podLabel, Current: `"1.27-alpine"`, New: `"1.28-alpine"`},
+			))
+			Expect(condition(conditionMapped).Message).To(ContainSubstring("2 label or annotation field(s)"))
+
+			tip := repo.branch(got.Status.MergeRequest.Branch)
+			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "tag: 1.27-alpine", "tag: 1.28-alpine", 1)))
+			Expect(repo.file(tip, "helm/demo/values.yaml")).To(Equal(helmValues))
+
+			body := provider.created[0].Body
+			for _, want := range []string{
+				"**This edit also changes**", "spec.helm.allowCollateralChanges", "| Resource | Path | Current | New |",
+				"| ` Deployment demo-helm/demo-helm ` | ` " + verLabel + " ` | ` \"1.27-alpine\" ` | ` \"1.28-alpine\" ` |",
+				podLabel, "Verified by rendering through Argo CD",
+			} {
+				Expect(body).To(ContainSubstring(want))
+			}
+			msg := repo.commitAt(tip).Message
+			Expect(msg).To(ContainSubstring("This edit also changes (allowed by the policy's spec.helm.allowCollateralChanges):\n"))
+			Expect(msg).To(ContainSubstring("- Deployment demo-helm/demo-helm " + verLabel + ": \"1.27-alpine\" -> \"1.28-alpine\"\n"))
+			Expect(msg).To(ContainSubstring("Proposal: helm-dp\n"))
+		})
+
+		It("allowing only annotations does not help with labels", func() {
+			allow(backflowv1alpha1.CollateralAnnotations)
+			for range 2 {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(condition(conditionMapped).Message).To(ContainSubstring(verLabel))
+		})
+
+		It("keeps the collateral in the head's mapping when the target branch moved", func() {
+			allow(backflowv1alpha1.CollateralLabels)
+			setMode(backflowv1alpha1.ModeReportOnly)
+			for range 2 {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
+			setMode(backflowv1alpha1.ModeMergeRequest)
+			repo.commit(map[string]string{"helm/demo/README.md": "changed\n"}, "elsewhere")
+			settle(backflowv1alpha1.PhaseProposed)
+			Expect(latest().Status.Mapping.Collateral).To(HaveLen(2))
+		})
 	})
 
 	DescribeTable("is Unmapped with the reason in the Mapped condition",

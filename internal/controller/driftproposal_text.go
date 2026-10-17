@@ -74,6 +74,13 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal) string {
 			fmt.Fprintf(&b, "- %s: %s -> %s\n", singleLine(row.key), singleLine(row.old), singleLine(row.new))
 		}
 		fmt.Fprintf(&b, "\n%s\n\n", helmVerifiedLine(dp))
+		if lines := collateralLines(dp); len(lines) > 0 {
+			b.WriteString("This edit also changes (allowed by the policy's spec.helm.allowCollateralChanges):\n")
+			for _, l := range lines {
+				fmt.Fprintf(&b, "- %s\n", l)
+			}
+			b.WriteString("\n")
+		}
 	}
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposal, dp.Name)
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposalUID, dp.UID)
@@ -164,6 +171,13 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(row.file, "-"), cell(row.key, "-"), cell(row.old, "(none)"), cell(row.new, "(none)"))
 		}
 		fmt.Fprintf(&b, "\n%s\n", helmVerifiedLine(dp))
+		if c := dp.Status.Mapping.Collateral; len(c) > 0 {
+			b.WriteString("\n**This edit also changes** (allowed by the policy's `spec.helm.allowCollateralChanges`):\n\n")
+			b.WriteString("| Resource | Path | Current | New |\n|---|---|---|---|\n")
+			for _, ch := range c {
+				fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(collateralResource(ch), "-"), cell(ch.Path, "-"), cell(ch.Current, "(absent)"), cell(ch.New, "(absent)"))
+			}
+		}
 	}
 
 	if diff != "" {
@@ -238,4 +252,23 @@ func helmVerifiedLine(dp *backflowv1alpha1.DriftProposal) string {
 	}
 	return fmt.Sprintf("Verified by rendering through Argo CD: this edit changes exactly the drifted fields (%s) and nothing else.",
 		strings.Join(paths, ", "))
+}
+
+// collateralResource is "Kind namespace/name" of a resource that also changes.
+func collateralResource(c backflowv1alpha1.CollateralChange) string {
+	return resourceLabel(backflowv1alpha1.ResourceRef{Kind: c.Kind, Namespace: c.Namespace, Name: c.Name})
+}
+
+// collateralLines lists, one line each, the changes beyond the drifted fields
+// of a proposal mapped with the HelmValues strategy.
+func collateralLines(dp *backflowv1alpha1.DriftProposal) []string {
+	m := dp.Status.Mapping
+	if m == nil || m.Strategy != backflowv1alpha1.StrategyHelmValues {
+		return nil
+	}
+	lines := make([]string, 0, len(m.Collateral))
+	for _, c := range m.Collateral {
+		lines = append(lines, fmt.Sprintf("%s %s: %s -> %s", singleLine(collateralResource(c)), singleLine(c.Path), singleLine(c.Current), singleLine(c.New)))
+	}
+	return lines
 }

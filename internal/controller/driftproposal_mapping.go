@@ -195,10 +195,11 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	orig := dp.DeepCopy()
 	edits := change.edits()
 	dp.Status.Mapping = &backflowv1alpha1.Mapping{
-		Strategy: change.strategy,
-		Edits:    edits,
-		Verified: true,
-		Diff:     truncateDiff(change.diff()),
+		Strategy:   change.strategy,
+		Edits:      edits,
+		Verified:   true,
+		Diff:       truncateDiff(change.diff()),
+		Collateral: change.collateralStatus(),
 	}
 	dp.Status.Message = change.message()
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
