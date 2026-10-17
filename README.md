@@ -144,60 +144,33 @@ kubectl delete crd scmconnections.backflow.io backflowpolicies.backflow.io drift
 Helm installs the files in `crds/` once and never upgrades or removes them, so
 the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
 
-### Upgrading from 0.1.x to 0.2.0
+### Upgrading: apply the CRDs first
 
-Version 0.2.0 adds fields to the `DriftProposal` status (`pushRejections` and
-`lastPushRejectedAt`, which count the pushes a Git server declined) and the
-Helm mapping. **Apply the new CRDs before you upgrade the chart:**
+**Before every `helm upgrade`, apply the CRDs of the version you upgrade to:**
 
 ```bash
-helm show crds oci://ghcr.io/sserkanml/charts/backflow --version 0.2.0 | kubectl apply --server-side -f -
-helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version 0.2.0 -n backflow-system
+helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <version> | kubectl apply --server-side -f -
+helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version <version> -n backflow-system
 ```
 
+Helm installs the files in the chart's `crds/` once and never upgrades them, so
 `helm upgrade` leaves the CRDs of the old version in place, and an API server
-with the old `driftproposals` CRD silently drops fields it does not know. The
-operator notices: when it records a declined push and the count does not come
-back, it emits a Warning Event `CRDsOutdated` and fails that proposal with
-`PushRejected` instead of retrying for ever. Applying the CRDs fixes it for new
-proposals; a failed one is not retried.
-Branches and merge requests that Backflow opened stay in Git.
+with an old CRD silently drops the fields it does not know. New versions add
+fields, and the operator then runs with a CRD that cannot hold them:
 
-### Running in a cluster
+- 0.2.0 added `status.pushRejections` and `status.lastPushRejectedAt` to the
+  `DriftProposal` (the count of pushes a Git server declined). The operator
+  notices: when it records a declined push and the count does not come back, it
+  emits a Warning Event `CRDsOutdated` and fails that proposal with
+  `PushRejected` instead of retrying for ever.
+- 0.3.0 adds `spec.helm.allowCollateralChanges` to the `BackflowPolicy` and
+  `status.mapping.collateral` to the `DriftProposal`. With the old CRDs the
+  policy field is dropped, so label and annotation changes are never allowed and
+  such proposals stay `Unmapped`, and a mapping would not keep its list of
+  collateral changes.
 
-- The container root file system is read-only. Git repositories are cached in
-  an `emptyDir` (2Gi) mounted at `/var/cache/backflow` and passed with
-  `--repo-cache-dir`. The operator checks at startup that the directory is
-  writable and exits with an error if it is not.
-- Memory requests/limits (128Mi/512Mi) are a starting point; tune them to the
-  number of Secrets and Applications in the cluster and the size of the
-  repositories.
-- `--merge-request-poll-interval` (default `2m`) is how often the state of an
-  open merge request is polled. A shorter interval notices a merge or a close
-  sooner and costs more calls to the Git host's API.
-- Argo CD is reached at `spec.argoCD.url` of the policy, by default
-  `https://argocd-server.argocd.svc`. An Argo CD with a private CA needs
-  `caSecretRef` (a Secret key holding the PEM bundle).
-- Without the Argo CD Application CRD the operator starts anyway; policies are
-  `Ready=False` with the reason `ArgoCDNotFound` until Argo CD is installed.
-
-### Trust
-
-**One operator instance is a single trust domain.** The repository cache is
-shared by every `BackflowPolicy` and `ScmConnection` the instance serves: a
-repository fetched with one connection's token stays in the cache and can be
-read for another policy that names the same URL. All Secrets are also readable
-by the operator cluster-wide. Run a separate instance (own namespace, own cache
-volume) for teams or tenants that must not see each other's repositories.
-
-An Argo CD `repoURL` that carries credentials (`https://user:token@host/...`,
-`ssh://user:password@host/...`) is never used or stored. The policy does not
-track that Application: its entry in `status.applications` has the reason
-`CredentialsInRepoURL` and only the redacted URL, one Event says so, and the
-Application is skipped by drift detection, so the URL never reaches a
-DriftProposal, the repository cache or a log. (A plain user name in an ssh URL,
-`git@host:path`, is not a credential.) Give Backflow access with an
-`ScmConnection` instead.
+Applying the CRDs afterwards fixes new proposals; a proposal that failed is not
+retried.
 
 ## Development
 
@@ -307,7 +280,8 @@ spec:
 With it, an edit may also change, on any rendered resource,
 `metadata.labels` and `spec.template.metadata.labels` (`Labels`), and
 `metadata.annotations` and `spec.template.metadata.annotations`
-(`Annotations`). The edit is still proven by rendering through Argo CD; the
+(`Annotations`); for a CronJob also the pod template of its jobs,
+`spec.jobTemplate.spec.template.metadata.labels` and `.annotations`. The edit is still proven by rendering through Argo CD; the
 strict rule (exactly the drifted fields) is tried first, and this is used only
 when it finds nothing. **Never allowed, whatever the policy says:** any selector
 (`spec.selector`, its `matchLabels` and `matchExpressions`, a Service's
