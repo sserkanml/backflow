@@ -737,11 +737,20 @@ func (r collateralRule) allows(c Collateral) bool {
 			return false
 		}
 	}
-	under := func(prefix string) bool { return c.Pointer == prefix || strings.HasPrefix(c.Pointer, prefix+"/") }
+	under := func(prefixes ...string) bool {
+		for _, prefix := range prefixes {
+			if c.Pointer == prefix || strings.HasPrefix(c.Pointer, prefix+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	// The resource itself, the pod template of a workload, and the pod template
+	// of the jobs of a CronJob.
 	switch {
-	case r.labels && (under("/metadata/labels") || under("/spec/template/metadata/labels")):
+	case r.labels && under("/metadata/labels", "/spec/template/metadata/labels", "/spec/jobTemplate/spec/template/metadata/labels"):
 		return true
-	case r.annotations && (under("/metadata/annotations") || under("/spec/template/metadata/annotations")):
+	case r.annotations && under("/metadata/annotations", "/spec/template/metadata/annotations", "/spec/jobTemplate/spec/template/metadata/annotations"):
 		return true
 	}
 	return false
