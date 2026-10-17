@@ -270,6 +270,41 @@ spec:
               mapping:
                 description: Mapping records where each change lands in the source.
                 properties:
+                  collateral:
+                    description: |-
+                      Changes the edits also make beyond the drifted fields, which the policy
+                      allowed (spec.helm.allowCollateralChanges). Set only for HelmValues.
+                    items:
+                      description: CollateralChange is a field the edit changes although
+                        it did not drift.
+                      properties:
+                        current:
+                          description: JSON-encoded value before the edit (the value
+                            of the unmodified render).
+                          type: string
+                        group:
+                          type: string
+                        kind:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        new:
+                          description: JSON-encoded value after the edit.
+                          type: string
+                        path:
+                          description: JSON pointer in the rendered resource.
+                          type: string
+                      required:
+                      - current
+                      - kind
+                      - name
+                      - new
+                      - path
+                      type: object
+                    maxItems: 64
+                    type: array
                   diff:
                     description: Unified diff of the edited files, truncated to 32
                       KiB.
