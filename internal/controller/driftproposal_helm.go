@@ -34,6 +34,37 @@ const (
 type mappedChange struct {
 	strategy backflowv1alpha1.MappingStrategy
 	results  []mapping.Result
+	// collateral are the changes beyond the drifted fields that the policy
+	// allowed (HelmValues only).
+	collateral []helmmap.Collateral
+}
+
+// maxCollateralRecorded bounds the collateral changes kept in a status, and
+// maxCollateralValue the length of a value in one.
+const (
+	maxCollateralRecorded = 64
+	maxCollateralValue    = 512
+)
+
+// collateralStatus is the collateral as the status records it.
+func (m *mappedChange) collateralStatus() []backflowv1alpha1.CollateralChange {
+	if len(m.collateral) == 0 {
+		return nil
+	}
+	short := func(v string) string {
+		if r := []rune(v); len(r) > maxCollateralValue {
+			return string(r[:maxCollateralValue]) + "..."
+		}
+		return v
+	}
+	out := make([]backflowv1alpha1.CollateralChange, 0, min(len(m.collateral), maxCollateralRecorded))
+	for _, c := range m.collateral[:min(len(m.collateral), maxCollateralRecorded)] {
+		out = append(out, backflowv1alpha1.CollateralChange{
+			Group: c.Resource.Group, Kind: c.Resource.Kind, Namespace: c.Resource.Namespace, Name: c.Resource.Name,
+			Path: c.Pointer, Current: short(c.Current), New: short(c.After),
+		})
+	}
+	return out
 }
 
 // files maps each edited path to its new content.
@@ -84,6 +115,10 @@ func (m *mappedChange) edits() []backflowv1alpha1.SourceEdit {
 func (m *mappedChange) message() string {
 	files := strings.Join(m.paths(), ", ")
 	if m.strategy == backflowv1alpha1.StrategyHelmValues {
+		if len(m.collateral) > 0 {
+			return fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD. Besides the drifted fields it changes %d label or annotation field(s) the policy allows.",
+				files, len(m.collateral))
+		}
 		return fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD and changes exactly the drifted fields.", files)
 	}
 	return fmt.Sprintf("Mapped to %s; the edit reproduces the live state and is verified.", files)
@@ -152,18 +187,11 @@ func helmAppOf(app *unstructured.Unstructured) helmmap.App {
 
 // renderer returns the proposal's policy's renderer: it talks to Argo CD with
 // the policy's URL, token and TLS settings, the same as the drift controller.
-func (r *DriftProposalReconciler) renderer(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (helmmap.Renderer, error) {
-	var policy backflowv1alpha1.BackflowPolicy
-	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, &policy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, &heldError{reason: reasonPolicyNotFound, cause: fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyName)}
-		}
-		return nil, err
-	}
+func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (helmmap.Renderer, error) {
 	if policy.Spec.ArgoCD == nil {
 		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD", policy.Name)}
 	}
-	cfg, err := argoCDConfig(ctx, r.Client, &policy)
+	cfg, err := argoCDConfig(ctx, r.Client, policy)
 	if err != nil {
 		return nil, &heldError{reason: reasonArgoCDCredentials, cause: err}
 	}
@@ -178,6 +206,31 @@ func (r *DriftProposalReconciler) renderer(ctx context.Context, dp *backflowv1al
 		}
 	}
 	return r.renderers.get(policy.Namespace+"/"+policy.Name, cfg, build)
+}
+
+// policyOf reads the proposal's policy.
+func (r *DriftProposalReconciler) policyOf(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (*backflowv1alpha1.BackflowPolicy, error) {
+	var policy backflowv1alpha1.BackflowPolicy
+	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, &policy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, &heldError{reason: reasonPolicyNotFound, cause: fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyName)}
+		}
+		return nil, err
+	}
+	return &policy, nil
+}
+
+// allowedCollateral is what the policy allows an edit to change beyond the
+// drifted fields (spec.helm.allowCollateralChanges).
+func allowedCollateral(policy *backflowv1alpha1.BackflowPolicy) []string {
+	if policy.Spec.Helm == nil {
+		return nil
+	}
+	out := make([]string, len(policy.Spec.Helm.AllowCollateralChanges))
+	for i, k := range policy.Spec.Helm.AllowCollateralChanges {
+		out[i] = string(k)
+	}
+	return out
 }
 
 // argoFailure turns an error of the render call into a held proposal: Argo CD
@@ -258,10 +311,27 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 				return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
 			}
 		}
-		fields[i] = helmmap.Field{Index: i, Change: ch, Found: found}
+		field := helmmap.Field{Index: i, Change: ch, Found: found}
+		// A string that changed may be a part of it that a key holds: the tag of an
+		// image, say. Those keys are tried only when no key holds the whole value.
+		if oldS, ok := scalarOf(ch.Desired); ok && ch.Op == backflowv1alpha1.OpReplace {
+			newV, newOK := scalarOf(ch.Live)
+			o, oIsString := oldS.(string)
+			n, nIsString := newV.(string)
+			if newOK && oIsString && nIsString {
+				if field.Fragments, err = src.FindFragments(files, o, n); err != nil {
+					return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
+				}
+			}
+		}
+		fields[i] = field
 	}
 
-	rend, err := r.renderer(ctx, dp)
+	policy, err := r.policyOf(ctx, dp)
+	if err != nil {
+		return nil, err
+	}
+	rend, err := r.renderer(ctx, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +340,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		App:      helmAppOf(app),
 		Resource: helmmap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
 		Fields:   fields, Source: src, Files: files,
-	}, helmmap.Options{})
+	}, helmmap.Options{AllowCollateral: allowedCollateral(policy)})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -280,5 +350,5 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	if !out.Mapped() {
 		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
 	}
-	return &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results}, nil
+	return &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral}, nil
 }

@@ -27,10 +27,15 @@
 #   g. TIMEOUT exists only in the chart's own values.yaml, and FEATURE is set by
 #      a helm parameter of the Application: both Unmapped (NoVerifiedCandidate).
 #   h. A Deployment: scaling demo-helm is mapped to replicaCount and stays an
-#      integer. Changing the container image with kubectl set image is Unmapped
-#      (the image is "repository:tag", so no value file holds it). Changing the
-#      version label to the tag's value finds image.tag as a near miss, because
-#      the same key also changes the image.
+#      integer. Changing the container image with kubectl set image changes only
+#      a part of the image string ("repository:tag"); the key image.tag holds that
+#      part. With the default policy the edit is unmapped, because the same tag
+#      also feeds the version label of the Deployment and of its pods: the
+#      message names image.tag as the nearest edit and the two labels as what it
+#      would also change. With spec.helm.allowCollateralChanges: [Labels] the
+#      merge request edits only image.tag, and its body lists the label changes.
+#      Changing the version label alone finds image.tag too, and the image is
+#      what the edit would also change.
 #   i. Git ahead, with automated sync off for the three Applications: a commit
 #      to another service's values file (helm/shared/services/beta/dev.yaml)
 #      pauses only shared-beta, not shared-alpha; a commit to another
@@ -802,6 +807,8 @@ rm -f "$WORKDIR/paths"
 for f in "$VALUES_DEV" "$VALUES_PROD" "$ALPHA_VALUES" "$BETA_VALUES" helm/demo/values.yaml; do
   [[ -s "$WORKDIR/orig/$f" ]] || die "$f not found on main; has the Helm demo content been pushed to the demo repository?"
 done
+[[ "$(grep -c 'app.kubernetes.io/version' "$WORKDIR/orig/helm/demo/templates/deployment.yaml")" -ge 2 ]] ||
+  die "the demo chart's Deployment does not put the image tag into the version label of its pod template as well. Push the demo repository's commit \"put the image tag into the version label of the pod template too\" first."
 pass "main is at ${MAIN_ORIG_SHA:0:8}; $(find "$WORKDIR/orig" -type f | wc -l | tr -d ' ') file(s) saved for restoring"
 
 # Start from a settled Argo CD. The Applications sync a new commit of main by
@@ -1149,19 +1156,68 @@ GIT_REPO_IMG="$(yaml_value "$VALUES_DEV" main repository)"
 GIT_TAG="$(yaml_value "$VALUES_DEV" main tag)"
 NEW_TAG="1.28-alpine"
 OLD_IMAGE="$GIT_REPO_IMG:$GIT_TAG"
+NEW_IMAGE="$GIT_REPO_IMG:$NEW_TAG"
+VERSION_LABEL='/metadata/labels/app.kubernetes.io~1version'
+POD_LABEL='/spec/template/metadata/labels/app.kubernetes.io~1version'
 LIVE_IMAGE="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
-require_drift h2 "$OLD_IMAGE" "$LIVE_IMAGE" "$GIT_REPO_IMG:$NEW_TAG"
-k -n "$DEMO_NS" set image "deployment/$DEMO_APP" "web=$GIT_REPO_IMG:$NEW_TAG" >/dev/null
+require_drift h2 "$OLD_IMAGE" "$LIVE_IMAGE" "$NEW_IMAGE"
+
+echo "  h2. kubectl set image, with the default policy..."
+k -n "$DEMO_NS" set image "deployment/$DEMO_APP" "web=$NEW_IMAGE" >/dev/null
 refresh_app "$DEMO_APP"
-wait_for "proposal is Unmapped (image $OLD_IMAGE -> $GIT_REPO_IMG:$NEW_TAG)" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "containers/0/image:Replace:\"$OLD_IMAGE\">\"$GIT_REPO_IMG:$NEW_TAG\""
+wait_for "proposal is Unmapped (image $OLD_IMAGE -> $NEW_IMAGE)" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "containers/0/image:Replace:\"$OLD_IMAGE\">\"$NEW_IMAGE\""
 remember_proposals
-P_H2="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "\"$GIT_REPO_IMG:$NEW_TAG\"" | head -n 1)"
+P_H2="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "\"$NEW_IMAGE\"" | head -n 1)"
 if [[ -n "$P_H2" ]]; then
-  # The image is "repository:tag": no key holds the whole value, so there is no
-  # candidate at all (and no near miss on image.tag).
-  expect_unmapped "$P_H2" NoVerifiedCandidate "derived"
+  # No key holds the whole image. The key image.tag holds the part that changed,
+  # so it is the nearest edit; the tag also goes to the labels, which the default
+  # policy does not accept.
+  expect_unmapped "$P_H2" NoVerifiedCandidate "image.tag" "to $NEW_TAG" "would reproduce" "containers/0/image" "$VERSION_LABEL" "$POD_LABEL"
 fi
 reset_cluster
+if [[ -n "$P_H2" ]]; then
+  wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_H2" Reverted
+fi
+
+echo "  h2b. the same with spec.helm.allowCollateralChanges: [Labels]..."
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"helm":{"allowCollateralChanges":["Labels"]}}}' >/dev/null; then
+  pass "the policy allows label changes beside a Helm edit"
+else
+  fail "could not set spec.helm.allowCollateralChanges"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+require_drift h2b "$OLD_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')" "$NEW_IMAGE"
+k -n "$DEMO_NS" set image "deployment/$DEMO_APP" "web=$NEW_IMAGE" >/dev/null
+refresh_app "$DEMO_APP"
+wait_for "proposal is Proposed (image $OLD_IMAGE -> $NEW_IMAGE)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "containers/0/image:Replace:\"$OLD_IMAGE\">\"$NEW_IMAGE\""
+remember_proposals
+P_H2B="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "\"$NEW_IMAGE\"" | head -n 1)"
+if [[ -n "$P_H2B" ]]; then
+  BRANCH_H2B="$(branch_of "$P_H2B")"
+  IFS='|' read -r IID_H2B STATE_H2B _ _ <<<"$(mr_info "$BRANCH_H2B")"
+  expect_eq "merge request state" "opened" "$STATE_H2B"
+  expect_mapping "$P_H2B" "$VALUES_DEV" "image.tag"
+  expect_eq "the tag is the value of the edit" "\"$NEW_TAG\"" "$(dp_field "$P_H2B" '.status.mapping.edits[0].value')"
+  expect_branch_file "$BRANCH_H2B" "$VALUES_DEV" "s/^\\( *tag:\\) $GIT_TAG/\\1 $NEW_TAG/"
+  expect_eq "paths of the collateral changes in the status" "$VERSION_LABEL $POD_LABEL" "$(dp_field "$P_H2B" '.status.mapping.collateral[*].path' | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+  BODY_H2B="$(gl GET "$(project_path "/merge_requests/$IID_H2B")" | jx 'd["description"]')"
+  expect_contains "description" "This edit also changes" "$BODY_H2B"
+  expect_contains "description (label of the Deployment)" "$VERSION_LABEL" "$BODY_H2B"
+  expect_contains "description (label of the pods)" "$POD_LABEL" "$BODY_H2B"
+  expect_contains "description (values)" "\"$GIT_TAG\"" "$BODY_H2B"
+  expect_contains "description (values)" "\"$NEW_TAG\"" "$BODY_H2B"
+  expect_contains "description (drifted field)" "(/spec/template/spec/containers/0/image)" "$BODY_H2B"
+  COMMIT_H2B="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_H2B")")" | jx 'd["message"]')"
+  expect_contains "commit message" "This edit also changes" "$COMMIT_H2B"
+  expect_contains "commit message" "Value file: $VALUES_DEV" "$COMMIT_H2B"
+  close_and_reset "$IID_H2B" "$P_H2B"
+fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"helm":null}}' >/dev/null; then
+  pass "the policy is back to the default (no collateral changes)"
+else
+  fail "could not remove spec.helm from the policy"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 
 LIVE_VERSION="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.metadata.labels.app\.kubernetes\.io/version}')"
 require_drift h3 "$GIT_TAG" "$LIVE_VERSION" "$NEW_TAG"

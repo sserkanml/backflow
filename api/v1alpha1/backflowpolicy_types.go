@@ -184,7 +184,35 @@ type HelmOptions struct {
 	// Application's spec.source.helm.valuesObject instead of leaving it unmapped.
 	// +kubebuilder:default=false
 	FallbackToApplicationOverride bool `json:"fallbackToApplicationOverride,omitempty"`
+
+	// Changes beyond the drifted fields that an edit of a value file may also
+	// make, for a Helm edit that is otherwise proven right by rendering. By
+	// default none: an edit is accepted only when it changes exactly the
+	// drifted fields. A chart often derives more than one field from one value
+	// (the image tag also goes into a version label), and without this the
+	// proposal stays unmapped, with the nearest edit in its message.
+	//
+	// Labels allows changes to metadata.labels and spec.template.metadata.labels
+	// of any rendered resource, Annotations the same for annotations. Selectors
+	// are never allowed (spec.selector, matchLabels, matchExpressions, a
+	// Service's spec.selector), nor a change to a drifted field that does not
+	// end at its live value. The changes that were accepted are listed in the
+	// merge request.
+	// +optional
+	// +listType=set
+	AllowCollateralChanges []HelmCollateralKind `json:"allowCollateralChanges,omitempty"`
 }
+
+// HelmCollateralKind names a kind of change beyond the drifted fields.
+// +kubebuilder:validation:Enum=Labels;Annotations
+type HelmCollateralKind string
+
+const (
+	// CollateralLabels allows changes to labels.
+	CollateralLabels HelmCollateralKind = "Labels"
+	// CollateralAnnotations allows changes to annotations.
+	CollateralAnnotations HelmCollateralKind = "Annotations"
+)
 
 // HelmFieldMapping ties a field of a rendered resource to a values key.
 type HelmFieldMapping struct {

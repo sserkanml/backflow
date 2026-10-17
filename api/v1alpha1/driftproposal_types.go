@@ -168,6 +168,27 @@ type Mapping struct {
 	// Why the change could not be mapped. Set only when strategy is Unmapped.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+	// Changes the edits also make beyond the drifted fields, which the policy
+	// allowed (spec.helm.allowCollateralChanges). Set only for HelmValues.
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	Collateral []CollateralChange `json:"collateral,omitempty"`
+}
+
+// CollateralChange is a field the edit changes although it did not drift.
+type CollateralChange struct {
+	// +optional
+	Group string `json:"group,omitempty"`
+	Kind  string `json:"kind"`
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	// JSON pointer in the rendered resource.
+	Path string `json:"path"`
+	// JSON-encoded value before the edit (the value of the unmodified render).
+	Current string `json:"current"`
+	// JSON-encoded value after the edit.
+	New string `json:"new"`
 }
 
 // SourceEdit is one edit in a Git file.

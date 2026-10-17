@@ -158,3 +158,34 @@ func TestSetValueErrors(t *testing.T) {
 		t.Errorf("invalid YAML: err = %v", err)
 	}
 }
+
+func TestSetValueFloatRoundTrip(t *testing.T) {
+	const doc = "image:\n  tag: 1.10\n  digits: 127\n  name: app\n"
+	tests := []struct {
+		key, value, want string
+	}{
+		// 1.10 is a float that renders as 1.1; 1.20 would render as 1.2, which is
+		// not what was meant, so it is written as a string.
+		{"image.tag", "1.20", `  tag: "1.20"`},
+		{"image.tag", "1.2", "  tag: 1.2"},
+		{"image.tag", "2", "  tag: 2"},
+		{"image.tag", "1e3", `  tag: "1e3"`},
+		{"image.tag", "+1.5", `  tag: "+1.5"`},
+		{"image.tag", "true", `  tag: "true"`},
+		{"image.digits", "128", "  digits: 128"},
+		{"image.digits", "0128", `  digits: "0128"`},
+		{"image.name", "app2", "  name: app2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			key, _ := ParseKeyPath(tt.key)
+			w, err := SetValue("v.yaml", []byte(doc), key, tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w.Text != tt.want {
+				t.Errorf("line = %q, want %q", w.Text, tt.want)
+			}
+		})
+	}
+}

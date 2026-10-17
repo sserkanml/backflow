@@ -35,6 +35,12 @@ type demoRenderer struct {
 
 	// Behaviours of the chart that the real demo chart does not have, to
 	// build the cases a verifier must catch.
+	// deployment adds the Deployment demo-helm, whose image is "repository:tag".
+	deployment bool
+	// Where else image.tag goes in that Deployment.
+	tagLabel2 bool // metadata.labels and spec.template.metadata.labels app.kubernetes.io/version
+	tagSelect bool // spec.selector.matchLabels and the pod template labels: the selector
+	tagAnnot  bool // metadata.annotations example.com/version
 	tagLabel  bool // data.IMAGE_TAG and the label app.kubernetes.io/version both follow image.tag
 	noDerived bool // data.LOG_LEVEL_UP, which derives from config.logLevel, is left out
 	alsoOther bool // a second ConfigMap that also follows global.region
@@ -159,6 +165,9 @@ func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]b
 	}
 	if d.tagLabel {
 		objs[0].SetLabels(map[string]string{"app.kubernetes.io/version": str(get(values, "image", "tag"))})
+	}
+	if d.deployment {
+		objs = append(objs, d.deploymentObject(app, values))
 	}
 	if d.alsoOther {
 		objs = append(objs, configMap(app.DestNamespace, "demo-helm-other", map[string]any{"REGION": region}))
@@ -710,9 +719,358 @@ func TestNearMissReporting(t *testing.T) {
 		cand := func(key string, n int) *tryout {
 			return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
 		}
-		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil)
+		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil, collateralRule{})
 		if len(bad) != 1 || bad[0].NearMiss == nil || bad[0].NearMiss.Path.String() != "few" {
 			t.Errorf("bad = %+v", bad)
 		}
 	})
+}
+
+// deploymentObject renders the Deployment of the chart: its image is
+// "repository:tag", and the tag goes to other places by the flags.
+func (d *demoRenderer) deploymentObject(app App, values map[string]any) *unstructured.Unstructured {
+	tag := str(get(values, "image", "tag"))
+	replicas := int64(2)
+	if n, ok := get(values, "replicaCount").(int); ok {
+		replicas = int64(n)
+	}
+	podLabels := map[string]any{"app": "demo-helm"}
+	obj := map[string]any{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": map[string]any{"name": "demo-helm", "namespace": app.DestNamespace},
+		"spec": map[string]any{
+			"replicas": replicas,
+			"selector": map[string]any{"matchLabels": map[string]any{"app": "demo-helm"}},
+			"template": map[string]any{
+				"metadata": map[string]any{"labels": podLabels},
+				"spec": map[string]any{"containers": []any{map[string]any{
+					"name": "web", "image": str(get(values, "image", "repository")) + ":" + tag,
+				}}},
+			},
+		},
+	}
+	meta := obj["metadata"].(map[string]any)
+	spec := obj["spec"].(map[string]any)
+	if d.tagLabel2 {
+		meta["labels"] = map[string]any{"app.kubernetes.io/version": tag}
+		podLabels["app.kubernetes.io/version"] = tag
+	}
+	if d.tagSelect {
+		spec["selector"] = map[string]any{"matchLabels": map[string]any{"app": "demo-helm", "app.kubernetes.io/version": tag}}
+		podLabels["app.kubernetes.io/version"] = tag
+	}
+	if d.tagAnnot {
+		meta["annotations"] = map[string]any{"example.com/version": tag}
+	}
+	return &unstructured.Unstructured{Object: obj}
+}
+
+var keyDeploy = ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo-helm"}
+
+const (
+	imagePointer = "/spec/template/spec/containers/0/image"
+	oldImage     = "nginxinc/nginx-unprivileged:1.27-alpine"
+	newImage     = "nginxinc/nginx-unprivileged:1.28-alpine"
+)
+
+// imageDrift is the Field of a changed image: the keys that hold the whole
+// value, and those that hold a part of it.
+func imageDrift(t *testing.T, env demoEnv, live string) Field {
+	t.Helper()
+	f := drift(t, env.src, env.files, 0, "X", oldImage, live)
+	f.Change.Path = imagePointer
+	frag, err := env.src.FindFragments(env.files, oldImage, live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Fragments = frag
+	return f
+}
+
+func TestVerifyFragments(t *testing.T) {
+	const dev = "helm/demo/values-dev.yaml"
+
+	t.Run("an image tag change maps to image.tag through the fragment", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true}
+		f := imageDrift(t, env, newImage)
+		if len(f.Found.Candidates) != 0 {
+			t.Fatalf("no key holds the whole image, found %+v", f.Found.Candidates)
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		if err != nil || !out.Mapped() {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		r := out.Results[0]
+		if r.File != dev || len(r.Edits) != 1 || decodePointer(r.Edits[0].Location) != "image.tag" || r.Edits[0].Value != `"1.28-alpine"` {
+			t.Errorf("result = %+v", r)
+		}
+		if !strings.Contains(r.Diff, "-  tag: 1.27-alpine") || !strings.Contains(r.Diff, "+  tag: 1.28-alpine") {
+			t.Errorf("diff = %s", r.Diff)
+		}
+		if out.Renders != 3 {
+			t.Errorf("renders = %d: the unmodified files twice and the one fragment", out.Renders)
+		}
+	})
+
+	t.Run("a registry or repository that only the chart's defaults hold is reported", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true}
+		f := imageDrift(t, env, "other/nginx-unprivileged:1.27-alpine")
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate ||
+			!strings.Contains(out.Unmapped.Message, "chart's own defaults") || !strings.Contains(out.Unmapped.Message, "image.repository") {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+	})
+
+	t.Run("a key that holds the whole value is preferred: fragments are not even rendered", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src}
+		f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
+		// A fragment candidate that would be rendered if it were tried.
+		f.Fragments = &Result{Candidates: []Candidate{{File: dev, Path: KeyPath{"replicaCount"}, Fragment: true, NewValue: "x"}}}
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		if err != nil || !out.Mapped() {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		if decodePointer(out.Results[0].Edits[0].Location) != "global.region" {
+			t.Errorf("edit = %+v", out.Results[0].Edits)
+		}
+		if out.Renders != 3 {
+			t.Errorf("renders = %d, want the unmodified files twice and the one whole-value edit", out.Renders)
+		}
+	})
+
+	t.Run("fragments follow when the whole-value edits do not verify", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src}
+		// LOG_LEVEL: config.logLevel also moves LOG_LEVEL_UP, so it never verifies;
+		// the fragment stage tries the same field with parts and fails the same way.
+		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+		frag, _ := env.src.FindFragments(env.files, "debug", "trace")
+		f.Fragments = frag
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+	})
+
+	t.Run("the bound counts fragments too", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true}
+		f := imageDrift(t, env, newImage)
+		f.Found = &Result{}
+		for i := range 8 {
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: dev, Path: KeyPath{"k", strconv.Itoa(i)}})
+		}
+		for i := range 3 {
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: dev, Path: KeyPath{"f", strconv.Itoa(i)}, Fragment: true, NewValue: "x"})
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		if rend.calls > 2+8 {
+			t.Errorf("%d renders: fragments were rendered although the bound was exceeded", rend.calls)
+		}
+	})
+}
+
+func collateralPointers(c []Collateral) []string {
+	out := make([]string, len(c))
+	for i, x := range c {
+		out[i] = x.Pointer
+	}
+	return out
+}
+
+func TestVerifyCollateral(t *testing.T) {
+	const (
+		versionLabel = "/metadata/labels/app.kubernetes.io~1version"
+		podLabel     = "/spec/template/metadata/labels/app.kubernetes.io~1version"
+		selectorKey  = "/spec/selector/matchLabels/app.kubernetes.io~1version"
+		annotation   = "/metadata/annotations/example.com~1version"
+	)
+	labels := []string{CollateralLabels}
+	both := []string{CollateralLabels, CollateralAnnotations}
+	tests := []struct {
+		name      string
+		rend      func(r *demoRenderer)
+		allow     []string
+		wantMap   bool
+		collat    []string // allowed collateral, when mapped
+		nearMiss  []string // the other changes of the near miss, when not
+		renders   int
+		reasonHas string
+	}{
+		{
+			name:     "the tag also feeds a version label: strict stays unmapped with the near miss",
+			rend:     func(r *demoRenderer) { r.tagLabel2 = true },
+			nearMiss: []string{versionLabel, podLabel},
+		},
+		{
+			name: "the same with Labels allowed is mapped, and the labels are listed",
+			rend: func(r *demoRenderer) { r.tagLabel2 = true }, allow: labels,
+			wantMap: true, collat: []string{versionLabel, podLabel}, renders: 3,
+		},
+		{
+			name: "the tag also feeds a selector: unmapped even with Labels",
+			rend: func(r *demoRenderer) { r.tagSelect = true }, allow: both,
+			nearMiss: []string{selectorKey},
+		},
+		{
+			name: "the tag also feeds an annotation, only Labels allowed: unmapped",
+			rend: func(r *demoRenderer) { r.tagAnnot = true }, allow: labels,
+			nearMiss: []string{annotation},
+		},
+		{
+			name: "the tag feeds a label and an annotation, only Labels allowed: unmapped, the annotation is the problem",
+			rend: func(r *demoRenderer) { r.tagLabel2, r.tagAnnot = true, true }, allow: labels,
+			nearMiss: []string{annotation},
+		},
+		{
+			name: "the same with Labels and Annotations: mapped",
+			rend: func(r *demoRenderer) { r.tagLabel2, r.tagAnnot = true, true }, allow: both,
+			wantMap: true, collat: []string{annotation, versionLabel, podLabel},
+		},
+		{
+			name: "annotations alone are not labels",
+			rend: func(r *demoRenderer) { r.tagLabel2 = true }, allow: []string{CollateralAnnotations},
+			nearMiss: []string{versionLabel, podLabel},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newDemo(t, Spec{})
+			rend := &demoRenderer{src: env.src, deployment: true}
+			tt.rend(rend)
+			f := imageDrift(t, env, newImage)
+			out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{AllowCollateral: tt.allow})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Mapped() != tt.wantMap {
+				t.Fatalf("mapped = %v: %+v", out.Mapped(), out.Unmapped)
+			}
+			if tt.wantMap {
+				if decodePointer(out.Results[0].Edits[0].Location) != "image.tag" || len(out.Results[0].Edits) != 1 {
+					t.Errorf("edits = %+v", out.Results[0].Edits)
+				}
+				got := collateralPointers(out.Collateral)
+				slices.Sort(got)
+				want := slices.Clone(tt.collat)
+				slices.Sort(want)
+				if !slices.Equal(got, want) {
+					t.Errorf("collateral = %v, want %v", got, want)
+				}
+				for _, c := range out.Collateral {
+					if c.Resource != keyDeploy || c.Current != `"1.27-alpine"` || c.After != `"1.28-alpine"` {
+						t.Errorf("collateral = %+v", c)
+					}
+				}
+				if tt.renders != 0 && out.Renders != tt.renders {
+					t.Errorf("renders = %d, want %d: the stage with collateral renders nothing new", out.Renders, tt.renders)
+				}
+				return
+			}
+			if out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+				t.Fatalf("reason = %s: %s", out.Unmapped.Reason, out.Unmapped.Message)
+			}
+			nm := out.Unmapped.Fields[0].NearMiss
+			if nm == nil || nm.Path.String() != "image.tag" {
+				t.Fatalf("near miss = %+v", nm)
+			}
+			got := collateralPointers(nm.Collateral)
+			slices.Sort(got)
+			want := slices.Clone(tt.nearMiss)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("the near miss lists %v, want %v (what the policy does not allow)", got, want)
+			}
+		})
+	}
+
+	t.Run("strict is tried first: an edit that needs no collateral is used even when it is allowed", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src}
+		f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{AllowCollateral: both})
+		if err != nil || !out.Mapped() || len(out.Collateral) != 0 {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+	})
+
+	t.Run("a set of two edits lists the collateral of the combined render", func(t *testing.T) {
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true, tagLabel2: true}
+		f1 := imageDrift(t, env, newImage)
+		found, err := env.src.Find(env.files, float64(2))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f2 := Field{Index: 1, Found: found, Change: v1alpha1.FieldChange{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: "2", Live: "3"}}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f1, f2), Options{AllowCollateral: labels})
+		if err != nil || !out.Mapped() {
+			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
+		}
+		keys := make([]string, 0, len(out.Results[0].Edits))
+		for _, e := range out.Results[0].Edits {
+			keys = append(keys, decodePointer(e.Location))
+		}
+		slices.Sort(keys)
+		if !slices.Equal(keys, []string{"image.tag", "replicaCount"}) {
+			t.Errorf("edits = %v", keys)
+		}
+		got := collateralPointers(out.Collateral)
+		slices.Sort(got)
+		if !slices.Equal(got, []string{versionLabel, podLabel}) {
+			t.Errorf("collateral = %v", got)
+		}
+	})
+}
+
+func TestCollateralRuleAllows(t *testing.T) {
+	res := ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "web"}
+	other := ResourceKey{Kind: "Service", Namespace: "demo", Name: "web"}
+	rule := newCollateralRule([]string{CollateralLabels, CollateralAnnotations}, res, []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/metadata/labels/x"}}}})
+	labelsOnly := newCollateralRule([]string{CollateralLabels}, res, nil)
+	tests := []struct {
+		name string
+		rule collateralRule
+		c    Collateral
+		want bool
+	}{
+		{"a label", rule, Collateral{Resource: res, Pointer: "/metadata/labels/app"}, true},
+		{"a label of another resource", rule, Collateral{Resource: other, Pointer: "/metadata/labels/app"}, true},
+		{"a pod template label", rule, Collateral{Resource: res, Pointer: "/spec/template/metadata/labels/app"}, true},
+		{"an annotation", rule, Collateral{Resource: res, Pointer: "/metadata/annotations/a"}, true},
+		{"a pod template annotation", rule, Collateral{Resource: res, Pointer: "/spec/template/metadata/annotations/a"}, true},
+		{"an empty labels map", rule, Collateral{Resource: res, Pointer: "/metadata/labels"}, true},
+		{"a pod template label of a CronJob", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/metadata/labels/app"}, true},
+		{"a pod template annotation of a CronJob", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/metadata/annotations/a"}, true},
+		{"a CronJob pod template annotation when only labels are allowed", labelsOnly, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/metadata/annotations/a"}, false},
+		{"the selector of a CronJob's job", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/selector/matchLabels/app"}, false},
+		{"the pod spec of a CronJob", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/spec/containers/0/image"}, false},
+		{"the labels of the job template itself are not a pod template", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/metadata/labels/app"}, false},
+		{"an annotation when only labels are allowed", labelsOnly, Collateral{Resource: res, Pointer: "/metadata/annotations/a"}, false},
+		{"the selector of a Deployment", rule, Collateral{Resource: res, Pointer: "/spec/selector/matchLabels/app"}, false},
+		{"matchExpressions", rule, Collateral{Resource: res, Pointer: "/spec/selector/matchExpressions/0/key"}, false},
+		{"the selector of a Service", rule, Collateral{Resource: other, Pointer: "/spec/selector/app"}, false},
+		{"a label named like a selector is only a label", rule, Collateral{Resource: res, Pointer: "/metadata/labels/selector"}, true},
+		{"a field that is not metadata", rule, Collateral{Resource: res, Pointer: "/spec/replicas"}, false},
+		{"a field of the pod spec", rule, Collateral{Resource: res, Pointer: "/spec/template/spec/containers/0/image"}, false},
+		{"a drifted field that did not end at its live value", rule, Collateral{Resource: res, Pointer: "/metadata/labels/x"}, false},
+		{"the same pointer on another resource is not that drifted field", rule, Collateral{Resource: other, Pointer: "/metadata/labels/x"}, true},
+		{"a whole resource that appears", rule, Collateral{Resource: other}, false},
+		{"labels of a path that only begins like labels", rule, Collateral{Resource: res, Pointer: "/metadata/labelsX/a"}, false},
+		{"nothing is allowed by the zero rule", collateralRule{}, Collateral{Resource: res, Pointer: "/metadata/labels/app"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.rule.allows(tt.c); got != tt.want {
+				t.Errorf("allows(%+v) = %v, want %v", tt.c, got, tt.want)
+			}
+		})
+	}
 }
