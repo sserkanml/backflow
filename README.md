@@ -245,6 +245,16 @@ How a proposal is made:
    in Argo CD's order and with its globbing, `$ARGOCD_APP_*` variables and
    `ignoreMissingValueFiles`) whose effective value equals the value Git had
    for the drifted field. A key that a later file overrides is not a candidate.
+   When no edit of such a key verifies, Backflow also tries the keys that hold
+   a **part** of the value: after `kubectl set image` an image
+   `nginxinc/nginx-unprivileged:1.27-alpine` became `...:1.28-alpine`, and the
+   key `image.tag` holds `1.27-alpine`. What changed is the part of the old
+   string that is left after the common beginning and end of the two strings
+   are taken away; a key whose value occurs in the old string and covers that
+   whole part is a candidate, and its new value is the same stretch cut out of
+   the new string (so a registry change finds `image.registry`, and a value that
+   occurs twice gives two candidates). The keys that hold the whole value are
+   always tried first.
 2. It renders the chart through Argo CD (`GetManifestsWithFiles`) with the files
    of the proposal's revision, once for the unmodified files (twice, to find
    fields that change on every render) and once for each candidate edit.
@@ -277,6 +287,39 @@ read-only account in the install steps has it) and must be reachable over
 that only speaks HTTP/1.1 in front of Argo CD makes mapping wait and retry
 (`ArgoCDUnreachable`). Nothing is applied to the cluster.
 
+### Label and annotation changes beside an edit
+
+A chart often puts one value in more than one place: the image tag is also the
+`app.kubernetes.io/version` label of the Deployment and of its pods. Editing the
+tag then changes more than the field that drifted, and by default such an edit
+is not accepted: the proposal is `Unmapped`, and its message names the nearest
+edit and the other fields it would change. A policy can accept this for labels
+and annotations:
+
+```yaml
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
+spec:
+  helm:
+    allowCollateralChanges: [Labels]        # and/or Annotations
+```
+
+With it, an edit may also change, on any rendered resource,
+`metadata.labels` and `spec.template.metadata.labels` (`Labels`), and
+`metadata.annotations` and `spec.template.metadata.annotations`
+(`Annotations`). The edit is still proven by rendering through Argo CD; the
+strict rule (exactly the drifted fields) is tried first, and this is used only
+when it finds nothing. **Never allowed, whatever the policy says:** any selector
+(`spec.selector`, its `matchLabels` and `matchExpressions`, a Service's
+`spec.selector`), because changing one can orphan the pods of a workload, and a
+change to a field that drifted but does not end at its live value. A tag that
+also feeds a selector label is therefore always `Unmapped`.
+
+The changes that were accepted are recorded in `status.mapping.collateral` and
+listed in the merge request body and in the commit message ("This edit also
+changes: ..."), each with the resource, the path, the value now and the value
+after the edit, so the reviewer sees them before merging.
+
 Limits of Helm mapping:
 
 - **Single source, chart in Git.** A Helm chart from a Helm repository or an
@@ -298,15 +341,19 @@ Limits of Helm mapping:
   moves is a drifted field; if the template also moves one that did not drift
   (a version label that follows `image.tag`), the proposal is `Unmapped` with
   that near miss. The reason is that merging the edit would make Git disagree
-  with the cluster on a field nobody changed.
+  with the cluster on a field nobody changed. Labels and annotations that follow
+  the value can be accepted by the policy, see below.
 - **Secret resources are never proposed.** Argo CD masks the data of Secrets,
   and a Secret value must not be put into Git (`SecretNotVerifiable`).
 - **Fields that change on every render** (`randAlphaNum`, `now`) cannot be
   verified (`NondeterministicField`); resources with a random name are ignored
   when comparing renders.
 - **Values keep their type.** An integer stays an integer, a boolean a boolean,
-  a quoted string stays quoted, when the live value reads as that type;
-  otherwise it is written as a string. YAML anchors and merge keys are read, but
+  a quoted string stays quoted, when the live value reads as that type and
+  writing it that way renders back to exactly the same string; otherwise it is
+  written as a quoted string. A tag `1.10` in a file is a number that renders
+  as `1.1`, so the new tag `1.20` is written as `"1.20"`, not as `1.20`, which
+  would render as `1.2`. YAML anchors and merge keys are read, but
   a key that exists only through a merge key (`<<: *base`) cannot be edited. A
   list is replaced by a later file as a whole, as Helm does, and items cannot be
   added to or removed from lists.
