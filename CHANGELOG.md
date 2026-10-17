@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/sserkanml/backflow/compare/v0.2.0...v0.3.0) (2026-10-17)
+
+
+### Features
+
+* **helm:** map a change inside a composed value, such as an image tag, to its values key ([38bde51](https://github.com/sserkanml/backflow/commit/38bde5147e26d08eafafb5547945a54d6ab8b1d5))
+* **helm:** optionally accept label and annotation changes that come with an edit ([38bde51](https://github.com/sserkanml/backflow/commit/38bde5147e26d08eafafb5547945a54d6ab8b1d5))
+
 ## [0.2.0](https://github.com/sserkanml/backflow/compare/v0.1.2...v0.2.0) (2026-10-16)
 
 
