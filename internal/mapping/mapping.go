@@ -28,6 +28,8 @@ type Result struct {
 	Edited []byte
 	// Diff is the unified diff of the file.
 	Diff string
+	// LeftOut are the changes a partial mapping does not make (MapPartial).
+	LeftOut []LeftOut
 }
 
 // Map locates the document that defines res under appPath, applies changes,
