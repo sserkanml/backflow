@@ -117,7 +117,32 @@ else
   GREEN=""; RED=""; BOLD=""; NC=""
 fi
 
-step() { echo; echo "${BOLD}▶ $*${NC}"; }
+# Seconds per section (bash 3.2: indexed arrays only), for the summary.
+TIMING_NAMES=()
+TIMING_SECS=()
+SECTION_NAME=""
+SECTION_START=$SECONDS
+SCRIPT_START=$SECONDS
+end_section() {
+  if [[ -n "$SECTION_NAME" ]]; then
+    TIMING_NAMES+=("$SECTION_NAME")
+    TIMING_SECS+=("$((SECONDS - SECTION_START))")
+  fi
+  SECTION_NAME=""
+}
+begin_section() { end_section; SECTION_NAME="$1"; SECTION_START=$SECONDS; }
+print_timing() {
+  local i n
+  end_section
+  echo
+  echo "${BOLD}Time per section:${NC}"
+  n="${#TIMING_NAMES[@]}"
+  for ((i = 0; i < n; i++)); do
+    printf '  %5ss  %s\n' "${TIMING_SECS[$i]}" "$(printf '%s' "${TIMING_NAMES[$i]}" | cut -c1-72)"
+  done
+  printf '  %5ss  %s\n' "$((SECONDS - SCRIPT_START))" "total"
+}
+step() { begin_section "$*"; echo; echo "${BOLD}▶ $*${NC}"; }
 pass() { echo "  ${GREEN}✔${NC} $*"; PASS=$((PASS + 1)); }
 fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
@@ -1059,6 +1084,7 @@ if [[ "$LEAK" == "true" ]]; then fail "the GitLab token appears in a DriftPropos
 # ---------------------------------------------------------------------------
 echo
 echo "${BOLD}Summary:${NC} ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}"
+print_timing
 if [[ "$KEEP" == "true" ]]; then
   echo "Test namespace '$NS' kept: kubectl -n $NS get bfp,scm,driftproposals"
 fi
