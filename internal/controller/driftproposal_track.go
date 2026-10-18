@@ -104,19 +104,55 @@ func applyLifecycle(dp *backflowv1alpha1.DriftProposal) bool {
 		dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
 		dp.Status.SupersededBy = dp.Annotations[annotationSupersededBy]
 		dp.Status.Message = "A newer drift on the same resource replaced this proposal."
+		leaveProposedIfProposed(dp, reasonSuperseded, "Replaced by the newer proposal "+dp.Status.SupersededBy+".")
 		return true
 	case dp.Annotations[annotationReverted] != "":
 		dp.Status.Phase = backflowv1alpha1.PhaseReverted
 		dp.Status.Message = dp.Annotations[annotationReverted]
+		leaveProposedIfProposed(dp, reasonLiveReverted, dp.Status.Message)
 		return true
 	case dp.Annotations[annotationLiveReverted] != "":
 		// Only reached when there is no open merge request to keep the change
 		// in (a proposal with one is handled by trackProposed): a plain revert.
 		dp.Status.Phase = backflowv1alpha1.PhaseReverted
 		dp.Status.Message = "The live resource was reset to Git by an Argo CD sync of " + dp.Annotations[annotationLiveReverted] + "."
+		leaveProposedIfProposed(dp, reasonLiveReverted, dp.Status.Message)
 		return true
 	}
 	return false
+}
+
+// leaveProposed records in the Proposed condition that the proposal is no longer
+// open: it is written together with the phase, so the conditions, which the
+// console shows first, never say that a merge request is open when it is not.
+func leaveProposed(dp *backflowv1alpha1.DriftProposal, reason, message string) {
+	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reason,
+		Message: message, ObservedGeneration: dp.Generation,
+	})
+}
+
+// leaveProposedIfProposed does so for a proposal that got as far as being
+// proposed (it has a Proposed condition or a merge request), and names its
+// merge request. A proposal retired before that has nothing to correct.
+func leaveProposedIfProposed(dp *backflowv1alpha1.DriftProposal, reason, message string) {
+	if ref := dp.Status.MergeRequest; ref != nil {
+		message = strings.TrimSpace(message) + " Merge request: " + ref.URL + "."
+	} else if meta.FindStatusCondition(dp.Status.Conditions, conditionProposed) == nil {
+		return
+	}
+	leaveProposed(dp, reason, message)
+}
+
+func mergedConditionMessage(url, commit string) string {
+	if commit == "" {
+		return fmt.Sprintf("Merge request %s was merged.", url)
+	}
+	return fmt.Sprintf("Merge request %s was merged as commit %s.", url, commit)
+}
+
+func closedConditionMessage(url string) string {
+	return fmt.Sprintf("Merge request %s was closed without merging.", url)
 }
 
 // trackProposed follows a proposal that has an open merge request. The state
@@ -147,12 +183,14 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 		dp.Status.CommitSHA = cur.MergeCommitSHA
 		ref.State = string(scm.StateMerged)
 		dp.Status.Message = mergedMessage(ref.URL)
+		leaveProposed(dp, reasonMergeRequestMerged, mergedConditionMessage(ref.URL, cur.MergeCommitSHA))
 		log.Info("Merge request merged", "proposal", dp.Name, "url", ref.URL, "commit", cur.MergeCommitSHA)
 		return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
 	case scm.StateClosed:
 		dp.Status.Phase = backflowv1alpha1.PhaseRejected
 		ref.State = string(scm.StateClosed)
 		dp.Status.Message = closedMessage(ref.URL)
+		leaveProposed(dp, reasonMergeRequestClosed, closedConditionMessage(ref.URL))
 		log.Info("Merge request closed without merging", "proposal", dp.Name, "url", ref.URL)
 		return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
 	}

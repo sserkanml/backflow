@@ -961,6 +961,88 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.calls = nil
 		})
 
+		Context("the Proposed condition follows the phase", func() {
+			// The console shows the conditions first: a proposal that is no
+			// longer open must not say Proposed=True (MergeRequestOpened).
+			expectPhaseAndCondition := func(phase backflowv1alpha1.ProposalPhase, reason string) *metav1.Condition {
+				got := latest()
+				ExpectWithOffset(1, got.Status.Phase).To(Equal(phase))
+				c := condition(conditionProposed)
+				ExpectWithOffset(1, c).NotTo(BeNil())
+				ExpectWithOffset(1, c.Status).To(Equal(metav1.ConditionFalse), "the proposal is not open any more")
+				ExpectWithOffset(1, c.Reason).To(Equal(reason))
+				ExpectWithOffset(1, c.ObservedGeneration).To(Equal(got.Generation))
+				return c
+			}
+
+			It("is Proposed=True while the merge request is open", func() {
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
+				Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestOpened))
+			})
+
+			It("is False/MergeRequestClosed when the merge request is closed without merging", func() {
+				provider.setState(scm.StateClosed, "")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				c := expectPhaseAndCondition(backflowv1alpha1.PhaseRejected, reasonMergeRequestClosed)
+				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+				Expect(c.Message).To(ContainSubstring("closed without merging"))
+			})
+
+			It("is False/MergeRequestMerged, with the merge commit, when the merge request is merged", func() {
+				merge := repo.commit(map[string]string{"README.md": "merged\n"}, "merge")
+				provider.setState(scm.StateMerged, merge)
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				c := expectPhaseAndCondition(backflowv1alpha1.PhaseMerged, reasonMergeRequestMerged)
+				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+				Expect(c.Message).To(ContainSubstring(merge))
+			})
+
+			It("is False/LiveReverted, naming the merge request, when the live value went back to Git", func() {
+				annotate(annotationReverted, "The live resource is back in sync with Git.")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				c := expectPhaseAndCondition(backflowv1alpha1.PhaseReverted, reasonLiveReverted)
+				Expect(c.Message).To(ContainSubstring("back in sync with Git"))
+				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+			})
+
+			It("is False/SupersededByNewerDrift, naming the new proposal and the merge request", func() {
+				annotate(annotationSupersededBy, "newer-proposal")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				c := expectPhaseAndCondition(backflowv1alpha1.PhaseSuperseded, reasonSuperseded)
+				Expect(c.Message).To(ContainSubstring("newer-proposal"))
+				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+			})
+
+			It("is False/SourceChanged when Git changes under the proposal", func() {
+				// The retry of a held proposal finds the file gone from the head of main.
+				reconcileAfterRemoval := func() {
+					forgetStatus()
+					repo.commit(map[string]string{"apps/demo/configmap.yaml": ""}, "remove the ConfigMap")
+					provider.open = map[string]*scm.MergeRequest{}
+					_, err := reconcileDP()
+					ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				}
+				reconcileAfterRemoval()
+				expectPhaseAndCondition(backflowv1alpha1.PhaseSuperseded, reasonSourceChanged)
+			})
+
+			It("is False with the same reason the phase uses when a merge request found after a crash was closed or merged", func() {
+				forgetStatus()
+				got := latest()
+				got.Status.Branch = branch
+				Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
+				provider.setState(scm.StateClosed, "")
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+				expectPhaseAndCondition(backflowv1alpha1.PhaseRejected, reasonMergeRequestClosed)
+			})
+		})
+
 		It("keeps polling while the merge request is open", func() {
 			before := latest()
 			res, err := reconcileDP()
@@ -1832,6 +1914,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(got.Status.Message).To(ContainSubstring("0123456789abcdef"))
 			Expect(provider.calls).To(BeEmpty())
 			Expect(condition(conditionLiveReverted)).To(BeNil())
+			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonLiveReverted), "it was held in ReportOnly, now it is retired")
 		})
 
 		It("does not touch the provider", func() {
@@ -1847,6 +1931,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
 			Expect(provider.calls).To(BeEmpty())
 			Expect(condition(conditionCleanedUp)).To(BeNil())
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonSuperseded))
 		})
 	})
 
@@ -1862,6 +1947,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			tip := repo.branch("main")
 			Expect(tip).NotTo(Equal(initial))
 			Expect(got.Status.CommitSHA).To(Equal(tip))
+			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue), "a commit is the proposal landing: Committed stays True")
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
 			Expect(repo.file(tip, "apps/demo/configmap.yaml")).To(ContainSubstring("# Log level of the demo app.\n  LOG_LEVEL: debug"))
 			Expect(repo.commitAt(tip).Message).To(ContainSubstring("Proposal: prop-dp\n"))
@@ -2136,6 +2222,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(pushes).To(Equal(3))
 				got := latest()
 				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
 				Expect(got.Status.Message).To(ContainSubstring("declined"))
 				Expect(got.Status.Message).To(ContainSubstring("3 times"))
