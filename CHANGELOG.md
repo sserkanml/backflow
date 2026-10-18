@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/sserkanml/backflow/compare/v0.3.0...v0.3.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **drift:** keep the Proposed condition in step with the phase ([#9](https://github.com/sserkanml/backflow/issues/9)) ([4707fe1](https://github.com/sserkanml/backflow/commit/4707fe1c74f43695dbce545b976b44e4f14a1668))
+
 ## [0.3.0](https://github.com/sserkanml/backflow/compare/v0.2.0...v0.3.0) (2026-10-17)
 
 
