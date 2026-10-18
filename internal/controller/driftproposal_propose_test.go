@@ -1728,6 +1728,20 @@ var _ = Describe("DriftProposal proposing", func() {
 			DeferCleanup(os.RemoveAll, cacheDir+"-restarted")
 		}
 
+		It("says what it is doing before the slow steps, so it never sits in Mapping without a Proposed condition", func() {
+			var during *metav1.Condition
+			r.Writer = &branchWriter{RepositoryWriter: writer, hook: func() {
+				during = meta.FindStatusCondition(latest().Status.Conditions, conditionProposed)
+			}}
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(during).NotTo(BeNil(), "while the branch is being pushed the proposal has a Proposed condition")
+			Expect(during.Status).To(Equal(metav1.ConditionFalse))
+			Expect(during.Reason).To(Equal(reasonProposing))
+			Expect(during.Message).To(ContainSubstring("main"))
+			Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestOpened), "and it ends as Proposed")
+		})
+
 		It("records the branch before it pushes it", func() {
 			var seen string
 			r.Writer = &branchWriter{RepositoryWriter: writer, hook: func() { seen = latest().Status.Branch }}
