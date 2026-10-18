@@ -96,9 +96,10 @@ func TestVerifyPartialLeavesOutFieldsWithoutAVerifiedKey(t *testing.T) {
 		if !out.Mapped() {
 			t.Fatalf("unmapped: %+v", out.Unmapped)
 		}
-		var keys []string
-		var idx []int
-		for _, e := range out.Results[0].Edits {
+		edits := out.Results[0].Edits
+		keys := make([]string, 0, len(edits))
+		idx := make([]int, 0, len(edits))
+		for _, e := range edits {
 			keys = append(keys, decodePointer(e.Location))
 			idx = append(idx, e.ChangeIndex)
 		}
