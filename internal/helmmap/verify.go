@@ -35,6 +35,12 @@ type Options struct {
 	// edit may also make: CollateralLabels and CollateralAnnotations. Empty
 	// means none. They are only used when no edit verifies without them.
 	AllowCollateral []string
+	// AllowPartial maps the fields that can be mapped when others cannot: a
+	// field that cannot be traced back (an unsupported kind of change, or no
+	// verified key) is left out, and Outcome.LeftOut says why. The edits of the
+	// others are verified as before, and must not change any left-out field.
+	// Without it, one field that cannot be mapped makes the proposal Unmapped.
+	AllowPartial bool
 }
 
 // The kinds of collateral changes an edit may be allowed to make.
@@ -169,6 +175,9 @@ type Outcome struct {
 	// make, all of them allowed by Options.AllowCollateral. Empty for an edit
 	// that changes exactly the drifted fields.
 	Collateral []Collateral
+	// LeftOut are the fields the edits do not cover, with the reason for each.
+	// Set only with Options.AllowPartial, when some fields were mapped.
+	LeftOut []FieldFailure
 	// Unmapped is set when the proposal cannot be mapped.
 	Unmapped *Unmapped
 	// Renders is the number of renders done.
@@ -378,6 +387,10 @@ type run struct {
 	// The edits tried so far, and the key of each. A later stage adds to them.
 	tries []*tryout
 	index map[editKey]*tryout
+
+	// leftOut are the pointers of the fields a partial mapping leaves out: no
+	// edit may change them, whatever the collateral rule says.
+	leftOut []string
 }
 
 var (
@@ -425,7 +438,7 @@ func Verify(ctx context.Context, r Renderer, in Input, opts Options) (*Outcome, 
 	defer cancel()
 	v := &run{ctx: bctx, r: r, in: in}
 
-	out, err := v.verify(opts)
+	out, err := v.verifyPartially(opts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -446,7 +459,12 @@ func unmapped(reason, format string, args ...any) *Outcome {
 	return &Outcome{Unmapped: &Unmapped{Reason: reason, Message: fmt.Sprintf(format, args...)}}
 }
 
-func (v *run) verify(opts Options) (*Outcome, error) {
+// verifyPartially verifies the fields of the input. With Options.AllowPartial a
+// field that cannot be mapped is left out and the others are verified again
+// without it, until the rest verifies or no field is left. A failure that is
+// not about one field (the edits interact, the render budget ran out) is not
+// worked around: the proposal is Unmapped as a whole.
+func (v *run) verifyPartially(opts Options) (*Outcome, error) {
 	in := v.in
 	if len(in.Fields) == 0 {
 		return nil, errors.New("no drifted fields")
@@ -456,7 +474,78 @@ func (v *run) verify(opts Options) (*Outcome, error) {
 	if in.Resource.Group == "" && in.Resource.Kind == "Secret" {
 		return unmapped(ReasonSecretNotVerifiable, "%s is a Secret: Argo CD masks its data, and Secret values are never proposed to Git", in.Resource), nil
 	}
-	fields, fail := preflight(in.Fields, opts)
+	fields := in.Fields
+	var left []FieldFailure
+	if opts.AllowPartial {
+		fields = fields[:0:0]
+		for _, f := range in.Fields {
+			if _, err := parseField(f); err != nil {
+				left = append(left, FieldFailure{Pointer: f.Change.Path, Reason: ReasonUnsupportedChange, Detail: err.Error()})
+				continue
+			}
+			fields = append(fields, f)
+		}
+		if len(fields) == 0 {
+			return failure(left), nil
+		}
+	}
+	for {
+		attempt := &run{ctx: v.ctx, r: v.r, in: in, leftOut: leftOutPointers(left)}
+		out, err := attempt.verify(fields, opts)
+		v.renders += attempt.renders
+		v.budget = v.budget || attempt.budget
+		if err != nil {
+			return nil, err
+		}
+		if out.Mapped() {
+			out.LeftOut = left
+			return out, nil
+		}
+		if !opts.AllowPartial || len(out.Unmapped.Fields) == 0 {
+			return out, nil
+		}
+		bad, rest := splitByFailure(fields, out.Unmapped.Fields)
+		if len(bad) == 0 {
+			return out, nil
+		}
+		left = append(left, bad...)
+		if len(rest) == 0 {
+			return failure(left), nil
+		}
+		fields = rest
+	}
+}
+
+// splitByFailure separates the fields that have a failure of their own from
+// the others. A failure whose pointer is not exactly that of one field (several
+// fields named together) is not about one field and splits nothing.
+func splitByFailure(fields []Field, failures []FieldFailure) (bad []FieldFailure, rest []Field) {
+	byPointer := map[string]FieldFailure{}
+	for _, ff := range failures {
+		byPointer[ff.Pointer] = ff
+	}
+	for _, f := range fields {
+		if ff, ok := byPointer[f.Change.Path]; ok {
+			bad = append(bad, ff)
+			continue
+		}
+		rest = append(rest, f)
+	}
+	return bad, rest
+}
+
+// leftOutPointers are the JSON pointers of the left-out fields.
+func leftOutPointers(left []FieldFailure) []string {
+	out := make([]string, len(left))
+	for i, ff := range left {
+		out[i] = ff.Pointer
+	}
+	return out
+}
+
+// verify verifies some fields of the input, all of which must be mapped.
+func (v *run) verify(in []Field, opts Options) (*Outcome, error) {
+	fields, fail := preflight(in, opts)
 	if fail != nil {
 		return fail, nil
 	}
@@ -489,7 +578,7 @@ func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opt
 	if hasFragments {
 		stages = append(stages, stage{fragments: true})
 	}
-	if rule := newCollateralRule(opts.AllowCollateral, v.in.Resource, fields); rule.any() {
+	if rule := newCollateralRule(opts.AllowCollateral, v.in.Resource, fields, v.leftOut); rule.any() {
 		// Only when nothing verified without them. The edits have been rendered
 		// already; what changes is which of their other changes are accepted.
 		stages = append(stages, stage{fragments: hasFragments, rule: rule})
@@ -703,10 +792,11 @@ type collateralRule struct {
 	labels, annotations bool
 	resource            ResourceKey     // the drifted resource
 	drifted             map[string]bool // its drifted fields, by pointer
+	leftOut             []string        // its fields a partial mapping leaves out
 }
 
-func newCollateralRule(kinds []string, res ResourceKey, fields []parsedField) collateralRule {
-	r := collateralRule{resource: res, drifted: map[string]bool{}}
+func newCollateralRule(kinds []string, res ResourceKey, fields []parsedField, leftOut []string) collateralRule {
+	r := collateralRule{resource: res, drifted: map[string]bool{}, leftOut: leftOut}
 	for _, k := range kinds {
 		switch k {
 		case CollateralLabels:
@@ -730,6 +820,15 @@ func (r collateralRule) any() bool { return r.labels || r.annotations }
 func (r collateralRule) allows(c Collateral) bool {
 	if c.Pointer == "" || (c.Resource == r.resource && r.drifted[c.Pointer]) {
 		return false
+	}
+	// A field a partial mapping leaves out stays as it is, or the merge request
+	// would change what it says it does not.
+	if c.Resource == r.resource {
+		for _, p := range r.leftOut {
+			if c.Pointer == p || strings.HasPrefix(c.Pointer, p+"/") || strings.HasPrefix(p, c.Pointer+"/") {
+				return false
+			}
+		}
 	}
 	segs := strings.Split(strings.TrimPrefix(c.Pointer, "/"), "/")
 	for _, seg := range segs[:len(segs)-1] {

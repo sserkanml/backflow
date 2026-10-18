@@ -37,6 +37,68 @@ type mappedChange struct {
 	// collateral are the changes beyond the drifted fields that the policy
 	// allowed (HelmValues only).
 	collateral []helmmap.Collateral
+	// leftOut are the changes of the proposal the edits do not make (a partial
+	// mapping, spec.mapping.allowPartial).
+	leftOut []leftOutField
+}
+
+// leftOutField is a drifted field a partial mapping leaves out.
+type leftOutField struct {
+	path, reason, message string
+}
+
+// partial reports whether some changes of the proposal are not made.
+func (m *mappedChange) partial() bool { return len(m.leftOut) > 0 }
+
+// maxUnmappedRecorded bounds the left-out fields kept in a status, and
+// maxUnmappedMessage the length of the message of one.
+const (
+	maxUnmappedRecorded = 64
+	maxUnmappedMessage  = 1024
+)
+
+// unmappedStatus is the left-out fields as the status records them.
+func (m *mappedChange) unmappedStatus() []backflowv1alpha1.UnmappedField {
+	if len(m.leftOut) == 0 {
+		return nil
+	}
+	out := make([]backflowv1alpha1.UnmappedField, 0, min(len(m.leftOut), maxUnmappedRecorded))
+	for _, l := range m.leftOut[:min(len(m.leftOut), maxUnmappedRecorded)] {
+		msg := l.message
+		if r := []rune(msg); len(r) > maxUnmappedMessage {
+			msg = string(r[:maxUnmappedMessage-3]) + "..."
+		}
+		out = append(out, backflowv1alpha1.UnmappedField{Path: l.path, Reason: l.reason, Message: msg})
+	}
+	return out
+}
+
+// mappedPaths are the JSON pointers of the changes the edits make, in the order
+// of the proposal.
+func (m *mappedChange) mappedPaths(dp *backflowv1alpha1.DriftProposal) []string {
+	seen := map[int]bool{}
+	for _, e := range m.edits() {
+		seen[int(e.ChangeIndex)] = true
+	}
+	var out []string
+	for i, ch := range dp.Spec.Changes {
+		if seen[i] {
+			out = append(out, ch.Path)
+		}
+	}
+	return out
+}
+
+// partialMessage is the message of a partial mapping: what is mapped and what
+// is not, and why.
+func (m *mappedChange) partialMessage(dp *backflowv1alpha1.DriftProposal) string {
+	mapped := m.mappedPaths(dp)
+	parts := make([]string, len(m.leftOut))
+	for i, l := range m.leftOut {
+		parts[i] = fmt.Sprintf("%s (%s)", l.path, l.reason)
+	}
+	return fmt.Sprintf("Partially mapped: %d of %d changes are mapped to %s (%s) and verified; not mapped, and still different from Git after a merge: %s.",
+		len(mapped), len(dp.Spec.Changes), strings.Join(m.paths(), ", "), strings.Join(mapped, ", "), strings.Join(parts, ", "))
 }
 
 // maxCollateralRecorded bounds the collateral changes kept in a status, and
@@ -112,7 +174,10 @@ func (m *mappedChange) edits() []backflowv1alpha1.SourceEdit {
 }
 
 // message is the status message of a mapped proposal.
-func (m *mappedChange) message() string {
+func (m *mappedChange) message(dp *backflowv1alpha1.DriftProposal) string {
+	if m.partial() {
+		return m.partialMessage(dp)
+	}
 	files := strings.Join(m.paths(), ", ")
 	if m.strategy == backflowv1alpha1.StrategyHelmValues {
 		if len(m.collateral) > 0 {
@@ -340,7 +405,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		App:      helmAppOf(app),
 		Resource: helmmap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
 		Fields:   fields, Source: src, Files: files,
-	}, helmmap.Options{AllowCollateral: allowedCollateral(policy)})
+	}, helmmap.Options{AllowCollateral: allowedCollateral(policy), AllowPartial: policy.Spec.PartialAllowed()})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -350,5 +415,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	if !out.Mapped() {
 		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
 	}
-	return &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral}, nil
+	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral}
+	for _, l := range out.LeftOut {
+		change.leftOut = append(change.leftOut, leftOutField{path: l.Pointer, reason: l.Reason, message: l.Detail})
+	}
+	return change, nil
 }

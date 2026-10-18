@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -110,6 +111,28 @@ var _ = Describe("DriftProposal Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, after)).To(Succeed())
 			Expect(after.Spec).To(Equal(before.Spec))
 			Expect(after.Status.Phase).To(Equal(backflowv1alpha1.PhaseDetected))
+		})
+
+		It("accepts the fields a partial mapping leaves out in its status", func() {
+			resource := &backflowv1alpha1.DriftProposal{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
+			resource.Status.Phase = backflowv1alpha1.PhaseMapping
+			resource.Status.Mapping = &backflowv1alpha1.Mapping{
+				Strategy: backflowv1alpha1.StrategyDirect, Verified: true,
+				Unmapped: []backflowv1alpha1.UnmappedField{{
+					Path: "/spec/template/spec/containers/2/volumeMounts/1", Reason: "UnsupportedChange",
+					Message: "a removed list element cannot be written to a value file",
+				}},
+			}
+			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
+
+			got := &backflowv1alpha1.DriftProposal{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
+			Expect(got.Status.Mapping.Unmapped).To(Equal(resource.Status.Mapping.Unmapped))
+
+			By("rejecting a message that is too long to keep in a status")
+			got.Status.Mapping.Unmapped[0].Message = strings.Repeat("x", 1025)
+			Expect(k8sClient.Status().Update(ctx, got)).NotTo(Succeed())
 		})
 
 		Context("phase handling", func() {

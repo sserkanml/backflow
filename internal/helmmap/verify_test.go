@@ -1033,8 +1033,8 @@ func TestVerifyCollateral(t *testing.T) {
 func TestCollateralRuleAllows(t *testing.T) {
 	res := ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "web"}
 	other := ResourceKey{Kind: "Service", Namespace: "demo", Name: "web"}
-	rule := newCollateralRule([]string{CollateralLabels, CollateralAnnotations}, res, []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/metadata/labels/x"}}}})
-	labelsOnly := newCollateralRule([]string{CollateralLabels}, res, nil)
+	rule := newCollateralRule([]string{CollateralLabels, CollateralAnnotations}, res, []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/metadata/labels/x"}}}}, nil)
+	labelsOnly := newCollateralRule([]string{CollateralLabels}, res, nil, nil)
 	tests := []struct {
 		name string
 		rule collateralRule

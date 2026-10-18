@@ -10,7 +10,8 @@
 #   3. Backflow CRDs
 #   4. Demo Argo CD Applications pointing at the demo repository: demo-app
 #      (plain manifests) and the Helm ones demo-helm, shared-alpha, shared-beta
-#   5. Read-only Argo CD account "backflow" and its API token Secret
+#   5. Read-only Argo CD account "backflow" and its API token Secret, and
+#      timeout.reconciliation 30s in argocd-cm (new commits are seen quickly)
 #
 # Usage (from the repository root):
 #   ./hack/dev-up.sh
@@ -237,6 +238,25 @@ done
 patch="$(POLICY="$policy" python3 -c 'import json,os; print(json.dumps({"data":{"policy.csv":os.environ["POLICY"]+"\n"}}))')"
 k -n "$ARGOCD_NS" patch configmap argocd-rbac-cm --type merge -p "$patch" >/dev/null
 ok "read-only RBAC policy for backflow merged into argocd-rbac-cm"
+
+# Argo CD looks for new commits every three minutes (plus up to a minute of
+# jitter) unless told otherwise. The tests wait for it, so poll every 30s with
+# little jitter. The application controller reads the settings at start, so it
+# is restarted, but only when a value changed.
+want_reconciliation="30s"
+want_jitter="5s"
+have_reconciliation="$(k -n "$ARGOCD_NS" get configmap argocd-cm -o jsonpath='{.data.timeout\.reconciliation}' 2>/dev/null || true)"
+have_jitter="$(k -n "$ARGOCD_NS" get configmap argocd-cm -o jsonpath='{.data.timeout\.reconciliation\.jitter}' 2>/dev/null || true)"
+if [[ "$have_reconciliation" == "$want_reconciliation" && "$have_jitter" == "$want_jitter" ]]; then
+  ok "argocd-cm already has timeout.reconciliation $want_reconciliation (jitter $want_jitter)"
+else
+  k -n "$ARGOCD_NS" patch configmap argocd-cm --type merge \
+    -p "{\"data\":{\"timeout.reconciliation\":\"$want_reconciliation\",\"timeout.reconciliation.jitter\":\"$want_jitter\"}}" >/dev/null
+  ok "argocd-cm: timeout.reconciliation $want_reconciliation, jitter $want_jitter (was '${have_reconciliation:-default}', '${have_jitter:-default}')"
+  k -n "$ARGOCD_NS" rollout restart statefulset argocd-application-controller >/dev/null
+  k -n "$ARGOCD_NS" rollout status statefulset argocd-application-controller --timeout=300s >/dev/null
+  ok "application controller restarted"
+fi
 
 k create namespace "$BF_NS" --dry-run=client -o yaml | k apply -f - >/dev/null
 if k -n "$BF_NS" get secret "$BF_TOKEN_SECRET" >/dev/null 2>&1; then

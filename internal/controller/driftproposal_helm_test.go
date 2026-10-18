@@ -392,6 +392,118 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(provider.created[0].Body).To(ContainSubstring("(/data/REGION, /data/TIMEOUT)"))
 	})
 
+	Context("a partial mapping (spec.mapping.allowPartial)", func() {
+		// Besides the region, which a value file feeds, a key of the cluster's
+		// ConfigMap is gone: Helm values cannot say that.
+		gone := backflowv1alpha1.FieldChange{Path: "/data/EXTRA", Op: backflowv1alpha1.OpRemove, Desired: `"x"`}
+		timeout := backflowv1alpha1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}
+		setPartial := func(on bool) {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Spec.Mapping = &backflowv1alpha1.MappingOptions{AllowPartial: on}
+			ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+		}
+		drifted := func(changes ...backflowv1alpha1.FieldChange) {
+			setMode(backflowv1alpha1.ModeReportOnly)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = changes })
+		}
+		mapOnce := func() *backflowv1alpha1.DriftProposal {
+			for range 2 {
+				_, err := reconcileDP()
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
+			return latest()
+		}
+
+		It("leaves the whole proposal Unmapped when it is off, as before", func() {
+			drifted(regionChange, gone)
+			got := mapOnce()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+			Expect(got.Status.Mapping.Unmapped).To(BeEmpty())
+		})
+
+		It("maps the field a value file feeds and lists the removal when it is on", func() {
+			setPartial(true)
+			drifted(regionChange, gone)
+			got := mapOnce()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
+			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
+			Expect(condition(conditionMapped).Message).To(And(ContainSubstring("1 of 2"), ContainSubstring("/data/REGION"),
+				ContainSubstring("/data/EXTRA"), ContainSubstring(helmmap.ReasonUnsupportedChange)))
+			m := got.Status.Mapping
+			Expect(m.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+			Expect(m.Verified).To(BeTrue())
+			Expect(m.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+				File: "helm/demo/values-dev.yaml", Location: "global.region", Value: `"us-west-2"`, ChangeIndex: 0,
+			}}))
+			Expect(m.Unmapped).To(HaveLen(1))
+			Expect(m.Unmapped[0].Path).To(Equal("/data/EXTRA"))
+			Expect(m.Unmapped[0].Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+			Expect(m.Unmapped[0].Message).NotTo(BeEmpty())
+			Expect(got.Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{regionChange, gone}), "the spec lists every change")
+		})
+
+		It("leaves out a field with no verified key too, and keeps the index of the others", func() {
+			setPartial(true)
+			drifted(timeout, regionChange) // the timeout is only in the chart's defaults
+			got := mapOnce()
+			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
+			Expect(got.Status.Mapping.Edits).To(HaveLen(1))
+			Expect(got.Status.Mapping.Edits[0].ChangeIndex).To(Equal(int32(1)))
+			Expect(got.Status.Mapping.Unmapped).To(HaveLen(1))
+			Expect(got.Status.Mapping.Unmapped[0].Path).To(Equal("/data/TIMEOUT"))
+			Expect(got.Status.Mapping.Unmapped[0].Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+		})
+
+		It("opens a merge request that says it is partial and lists what it leaves out", func() {
+			setPartial(true)
+			setMode(backflowv1alpha1.ModeMergeRequest)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
+			})
+			settle(backflowv1alpha1.PhaseProposed)
+
+			Expect(provider.created).To(HaveLen(1))
+			Expect(provider.created[0].Title).To(Equal("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)"))
+			body := provider.created[0].Body
+			Expect(body).To(ContainSubstring("**Not included in this merge request**"))
+			Expect(body).To(ContainSubstring("| Path | Live value | Git value | Reason |"))
+			Expect(body).To(MatchRegexp("\\| `+ /data/EXTRA +` \\| \\(removed\\) \\| `+ \"x\" +` \\| "))
+			Expect(body).To(ContainSubstring("the next Argo CD sync of the Application resets the fields listed above to their Git values"))
+			Expect(body).To(ContainSubstring("exactly the drifted fields (/data/REGION) and nothing else"))
+			Expect(body).NotTo(ContainSubstring("(/data/REGION, /data/EXTRA)"))
+
+			tip := repo.branch(latest().Status.MergeRequest.Branch)
+			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "region: eu-central-1", "region: us-west-2", 1)))
+			msg := repo.commitAt(tip).Message
+			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
+			Expect(msg).To(ContainSubstring("Changed paths:\n- /data/REGION\n\nNot included (the next Argo CD sync resets these to their Git values; with automated sync, right after merging):\n- /data/EXTRA\n"))
+		})
+
+		It("commits directly with the same marking", func() {
+			setPartial(true)
+			setMode(backflowv1alpha1.ModeDirectCommit)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
+			})
+			settle(backflowv1alpha1.PhaseMerged)
+
+			Expect(provider.created).To(BeEmpty())
+			msg := repo.commitAt(repo.branch("main")).Message
+			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
+			Expect(msg).To(ContainSubstring("Not included (the next Argo CD sync resets these to their Git values; with automated sync, right after merging):\n- /data/EXTRA\n"))
+		})
+
+		It("is still Unmapped when nothing can be mapped", func() {
+			setPartial(true)
+			drifted(gone)
+			got := mapOnce()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+		})
+	})
+
 	Context("a changed image", func() {
 		const (
 			oldImg    = "nginxinc/nginx-unprivileged:1.27-alpine"

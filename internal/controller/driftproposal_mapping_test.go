@@ -657,6 +657,109 @@ var _ = Describe("DriftProposal mapping", func() {
 		})
 	})
 
+	Context("a partial mapping (spec.mapping.allowPartial)", func() {
+		const mountedDeployment = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+  namespace: demo
+spec:
+  # Keep it small.
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: demo
+          image: nginx:1.27
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: cache
+              mountPath: /cache
+`
+		scale := backflowv1alpha1.FieldChange{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: `1`, Live: `3`}
+		unmount := backflowv1alpha1.FieldChange{
+			Path: "/spec/template/spec/containers/0/volumeMounts/1", Op: backflowv1alpha1.OpRemove, Desired: `{"name":"cache","mountPath":"/cache"}`,
+		}
+		setPartial := func(on bool) {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Spec.Mapping = &backflowv1alpha1.MappingOptions{AllowPartial: on}
+			ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+		}
+		drifted := func(changes ...backflowv1alpha1.FieldChange) {
+			repos.files = tree(map[string]string{"apps/demo/deployment.yaml": mountedDeployment})
+			recreate(func(spec *backflowv1alpha1.DriftProposalSpec) {
+				spec.Resource = backflowv1alpha1.ResourceRef{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "demo", Name: "demo"}
+				spec.Changes = changes
+			})
+		}
+
+		It("leaves the whole proposal Unmapped when it is off, as before", func() {
+			drifted(scale, unmount)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(mapped().Status).To(Equal(metav1.ConditionFalse))
+			Expect(mapped().Reason).To(Equal(reasonCannotApply))
+			Expect(got.Status.Mapping.Unmapped).To(BeEmpty())
+		})
+
+		It("maps the fields that can be written and lists the others when it is on", func() {
+			setPartial(true)
+			drifted(scale, unmount)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+
+			got := latest()
+			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping), "mapped, not Unmapped")
+			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
+			Expect(mapped().Reason).To(Equal(reasonPartiallyMapped))
+			Expect(mapped().Message).To(And(ContainSubstring("1 of 2 changes"), ContainSubstring("/spec/replicas"),
+				ContainSubstring(unmount.Path), ContainSubstring(reasonCannotApply), ContainSubstring("still different from Git")))
+			Expect(mapped().ObservedGeneration).To(Equal(got.Generation))
+
+			m := got.Status.Mapping
+			Expect(m.Strategy).To(Equal(backflowv1alpha1.StrategyDirect))
+			Expect(m.Verified).To(BeTrue())
+			Expect(m.Edits).To(HaveLen(1))
+			Expect(m.Edits[0]).To(Equal(backflowv1alpha1.SourceEdit{File: "apps/demo/deployment.yaml", Location: "/spec/replicas", Value: "3", ChangeIndex: 0}))
+			Expect(m.Unmapped).To(HaveLen(1))
+			Expect(m.Unmapped[0].Path).To(Equal(unmount.Path))
+			Expect(m.Unmapped[0].Reason).To(Equal(reasonCannotApply))
+			Expect(m.Unmapped[0].Message).To(ContainSubstring("array items cannot be removed"))
+			Expect(m.Diff).To(ContainSubstring("+  replicas: 3"))
+			Expect(m.Diff).NotTo(ContainSubstring("cache"))
+
+			By("the spec still lists every change")
+			Expect(got.Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{scale, unmount}))
+
+			By("mapping is settled")
+			calls := repos.calls
+			_, err = reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(repos.calls).To(Equal(calls))
+		})
+
+		It("is the same as before when every field can be written", func() {
+			setPartial(true)
+			drifted(scale)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mapped().Reason).To(Equal(reasonMapped))
+			Expect(latest().Status.Mapping.Unmapped).To(BeEmpty())
+		})
+
+		It("is still Unmapped when no field can be written", func() {
+			setPartial(true)
+			drifted(unmount)
+			_, err := reconcileDP()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(mapped().Reason).To(Equal(reasonCannotApply))
+		})
+	})
+
 	Context("repository URLs with credentials", func() {
 		const withToken = "https://oauth2:glpat-supersecret@gitlab.com/x/y.git"
 

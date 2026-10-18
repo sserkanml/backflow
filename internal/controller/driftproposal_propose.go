@@ -41,6 +41,11 @@ const (
 // are final.
 const (
 	reasonReportOnly           = "ReportOnly"
+	// reasonProposing is the Proposed condition while the change is mapped again
+	// at the target branch, committed and pushed. These steps talk to Argo CD
+	// and the Git host and can take minutes; the condition says what the
+	// proposal is doing until it has a merge request or a reason to wait.
+	reasonProposing = "Proposing"
 	reasonMissingScmConnection = "MissingScmConnection"
 	reasonPolicyNotFound       = "PolicyNotFound"
 	reasonScmAuthFailed        = "ScmAuthFailed"
@@ -166,6 +171,14 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 		return out.result, out.err
 	}
 
+	if meta.FindStatusCondition(dp.Status.Conditions, conditionProposed) == nil {
+		if err := r.setProposedCondition(ctx, dp, metav1.ConditionFalse, reasonProposing,
+			"Mapping the change again at the head of "+target+", committing it and pushing a branch."); err != nil {
+			return ctrl.Result{}, err
+		}
+		logf.FromContext(ctx).Info("Proposing the change", "proposal", dp.Name, "mode", mode, "targetBranch", target)
+	}
+
 	switch mode {
 	case backflowv1alpha1.ModeDirectCommit:
 		return r.directCommit(ctx, dp, access, target)
@@ -243,7 +256,10 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(r.gitFailure(ctx, dp, err))
 	}
 
+	started := time.Now()
 	res, err := r.mapAt(ctx, dp, access, head)
+	logf.FromContext(ctx).Info("Mapped again at the head of the target branch",
+		"proposal", dp.Name, "head", head, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
 	if err != nil {
 		if held, ok := errors.AsType[*heldError](err); ok {
 			return stop(r.holdProposal(ctx, dp, held.reason, held.cause, 0))
@@ -262,7 +278,10 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(ctrl.Result{}, err)
 	}
 
-	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access))
+	started = time.Now()
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut))
+	logf.FromContext(ctx).Info("Commit built",
+		"proposal", dp.Name, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrNoChange) {
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
@@ -397,12 +416,12 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp), When: dp.Spec.DetectedAt.UTC()}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left), When: dp.Spec.DetectedAt.UTC()}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -449,7 +468,11 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		}
 	}
 
-	if err := r.Writer.CreateBranch(ctx, dp.Spec.Source.RepoURL, branch, change.sha, access.auth); err != nil {
+	pushStarted := time.Now()
+	err = r.Writer.CreateBranch(ctx, dp.Spec.Source.RepoURL, branch, change.sha, access.auth)
+	logf.FromContext(ctx).Info("Pushed the branch",
+		"proposal", dp.Name, "branch", branch, "took", time.Since(pushStarted).Round(time.Millisecond).String(), "error", err)
+	if err != nil {
 		var exists *gitrepo.BranchExistsError
 		if !errors.As(err, &exists) {
 			return r.gitFailure(ctx, dp, err)
@@ -481,7 +504,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.diff()),
+		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {
@@ -612,7 +635,10 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 		if out != nil {
 			return out.result, out.err
 		}
+		pushStarted := time.Now()
 		err := r.Writer.UpdateBranch(ctx, dp.Spec.Source.RepoURL, target, change.sha, access.auth)
+		logf.FromContext(ctx).Info("Pushed the commit to the target branch",
+			"proposal", dp.Name, "branch", target, "took", time.Since(pushStarted).Round(time.Millisecond).String(), "error", err)
 		switch {
 		case err == nil:
 			return ctrl.Result{}, r.recordCommitted(ctx, dp, target, change.sha)

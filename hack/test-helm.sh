@@ -42,6 +42,17 @@
 #      environment's file (helm/demo/values-prod.yaml) does not pause demo-helm;
 #      a commit to helm/demo/values-dev.yaml does, until it is synced.
 #
+#   j. Partial proposals: scaling demo-helm and changing its image at the same
+#      time. With the default policy the proposal is Unmapped (the image has no
+#      verified edit). With spec.mapping.allowPartial: true the merge request is
+#      marked "(partial)" and edits only replicaCount; its body lists the image
+#      under "Not included in this merge request", with the warning that the next
+#      Argo CD sync resets it. With manual sync, after the merge Argo CD compares
+#      against the merge commit but does not sync: Backflow pauses (GitAhead
+#      Event) and makes no proposal; a sync then resets the image to its Git
+#      value, the proposal stays Merged and no proposal appears. With automated
+#      sync the reset follows the merge at once, with the same outcome.
+#
 # Requires the environment from ./hack/dev-up.sh (the Applications demo-helm,
 # shared-alpha and shared-beta, label env=helm-test) and GITLAB_TOKEN with the
 # api and write_repository scopes (owner or maintainer of the demo project).
@@ -58,6 +69,9 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-helm.sh
+#   SECTIONS=a,j ./hack/test-helm.sh     # only those sections (default: all);
+#                                        every section works on its own
+#   WINDOW=10s POLL=3s QUIET=25           # batchWindow, merge request polling, quiet waits
 #   KEEP=true ./hack/test-helm.sh        # keep the test namespace
 
 set -euo pipefail
@@ -78,14 +92,21 @@ MANAGER_NS="${MANAGER_NS:-backflow-system}"
 MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
 # How often the local operator polls merge requests.
-POLL="${POLL:-10s}"
+POLL="${POLL:-3s}"
 # A drift becomes a proposal after it has been stable for the policy's
-# batchWindow (default 30s, which this test uses), across two observations.
-WINDOW="${WINDOW:-30s}"
+# batchWindow across two observations (the policy has no minimum, 0s is valid).
+# Every wait for "nothing happens" is derived from it (QUIET below).
+WINDOW="${WINDOW:-10s}"
+WINDOW_S="${WINDOW%s}"
+if ! [[ "$WINDOW_S" =~ ^[0-9]+$ ]]; then
+  echo "WINDOW must be a number of seconds like 10s, got '$WINDOW'" >&2
+  exit 1
+fi
 # Seconds to wait for Argo CD, the operator and GitLab to react.
 if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-360}"; else WAIT="${WAIT:-180}"; fi
-# Seconds to wait before asserting that nothing happened.
-QUIET="${QUIET:-25}"
+# Seconds to wait before asserting that nothing happened: long enough for the
+# two observations a proposal needs, plus a margin.
+QUIET="${QUIET:-$((2 * WINDOW_S + 5))}"
 
 # The Applications under test, their namespaces and the resources they render.
 APPS="demo-helm shared-alpha shared-beta"
@@ -101,6 +122,31 @@ VALUES_DEV="helm/demo/values-dev.yaml"
 VALUES_PROD="helm/demo/values-prod.yaml"
 ALPHA_VALUES="helm/shared/services/alpha/dev.yaml"
 BETA_VALUES="helm/shared/services/beta/dev.yaml"
+
+# SECTIONS=a,j runs only those sections (letters, comma separated) after the
+# prerequisites; default all. Every section works on its own.
+SECTIONS="${SECTIONS:-}"
+section_wanted() { [[ -z "$SECTIONS" || ",$SECTIONS," == *",$1,"* ]]; }
+section_needs() {
+  case "$1" in
+    # no section needs another one
+
+    *) echo "" ;;
+  esac
+}
+check_sections() {
+  local s n
+  for s in ${SECTIONS//,/ }; do
+    case " a b c d e f g h i j " in
+      *" $s "*) ;;
+      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h,i,j)" >&2; exit 1 ;;
+    esac
+    for n in $(section_needs "$s"); do
+      section_wanted "$n" || { echo "SECTIONS: section $s needs section $n, before it (see the notes at SECTIONS); add it to the list, for example SECTIONS=$n,$s, or leave SECTIONS out" >&2; exit 1; }
+    done
+  done
+}
+check_sections
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
@@ -131,7 +177,32 @@ else
 fi
 
 CURRENT_STEP=""
-step() { CURRENT_STEP="$*"; echo; echo "${BOLD}▶ $*${NC}"; }
+# Seconds per section (bash 3.2: indexed arrays only), for the summary.
+TIMING_NAMES=()
+TIMING_SECS=()
+SECTION_NAME=""
+SECTION_START=$SECONDS
+SCRIPT_START=$SECONDS
+end_section() {
+  if [[ -n "$SECTION_NAME" ]]; then
+    TIMING_NAMES+=("$SECTION_NAME")
+    TIMING_SECS+=("$((SECONDS - SECTION_START))")
+  fi
+  SECTION_NAME=""
+}
+begin_section() { end_section; SECTION_NAME="$1"; SECTION_START=$SECONDS; }
+print_timing() {
+  local i n
+  end_section
+  echo
+  echo "${BOLD}Time per section:${NC}"
+  n="${#TIMING_NAMES[@]}"
+  for ((i = 0; i < n; i++)); do
+    printf '  %5ss  %s\n' "${TIMING_SECS[$i]}" "$(printf '%s' "${TIMING_NAMES[$i]}" | cut -c1-72)"
+  done
+  printf '  %5ss  %s\n' "$((SECONDS - SCRIPT_START))" "total"
+}
+step() { CURRENT_STEP="$*"; begin_section "$*"; echo; echo "${BOLD}▶ $*${NC}"; }
 pass() { echo "  ${GREEN}✔${NC} $*"; PASS=$((PASS + 1)); }
 fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); }
 die()  { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
@@ -393,11 +464,14 @@ app_settled_at() {
   reconciled="$(app_field "$1" '{.status.reconciledAt}')"
   [[ -z "$finished" ]] || { [[ -n "$reconciled" && ! "$reconciled" < "$finished" ]]; }
 }
-# wait_all_settled <sha>: every Application settled at the commit, within WAIT.
+# wait_all_settled <sha> [app...]: every Application (default: all) settled at
+# the commit, within WAIT.
 wait_all_settled() {
-  local a waited=0
-  for a in $APPS; do
-    while ! app_settled_at "$a" "$1"; do
+  local a waited=0 sha="$1" apps
+  shift
+  apps="${*:-$APPS}"
+  for a in $apps; do
+    while ! app_settled_at "$a" "$sha"; do
       waited=$((waited + 2))
       (( waited > WAIT )) && return 1
       sleep 2
@@ -424,20 +498,22 @@ sync_app() {
   return 1
 }
 sync_all() {
-  local a ok=0
-  for a in $APPS; do sync_app "$a" || ok=1; done
+  local a ok=0 apps="${*:-$APPS}"
+  for a in $apps; do sync_app "$a" || ok=1; done
   return "$ok"
 }
 
-# reset_cluster: Git is the truth; sync everything and wait until Argo CD is idle
-# at the head of main, so the next section starts from a known state.
+# reset_cluster [app...]: Git is the truth; sync the Applications (default: all)
+# and wait until Argo CD is idle at the head of main, so the next section starts
+# from a known state. A section that drifted one Application resets only that
+# one: syncing and settling the others is wasted time.
 reset_cluster() {
-  local head
+  local head a apps="${*:-$APPS}"
   head="$(main_sha)"
-  refresh_all hard
+  for a in $apps; do refresh_app "$a" hard; done
   sleep 3
-  sync_all || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
-  wait_all_settled "$head" || fail "Argo CD did not settle at ${head:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
+  sync_all $apps || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
+  wait_all_settled "$head" $apps || fail "Argo CD did not settle at ${head:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
 }
 
 disable_autosync() {
@@ -604,7 +680,7 @@ expect_unmapped() {
 close_and_reset() {
   gl PUT "$(project_path "/merge_requests/$1")" '{"state_event":"close"}' >/dev/null || fail "could not close !$1"
   wait_for "proposal is Rejected" phase_is "$2" Rejected
-  reset_cluster
+  reset_cluster "$DEMO_APP"
 }
 
 # ---------------------------------------------------------------------------
@@ -655,6 +731,7 @@ print_summary() {
     echo "${RED}${BOLD}The test stopped early${NC} in: ${CURRENT_STEP:-the start}"
   fi
   echo "${BOLD}Summary:${NC} ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}${aborted:+ (the run did not finish)}"
+  print_timing
   if [[ "$KEEP" == "true" ]]; then
     echo "Test namespace '$NS' kept: kubectl -n $NS get bfp,scm,driftproposals"
   fi
@@ -936,7 +1013,18 @@ policy_matched() {
 }
 wait_for "policy tracks the three Applications and matched their repository to the ScmConnection" policy_matched
 
+# Values of the image sections (h and j), read from main before any section runs.
+GIT_REPO_IMG="$(yaml_value "$VALUES_DEV" main repository)"
+[[ -n "$GIT_REPO_IMG" ]] || GIT_REPO_IMG="$(yaml_value helm/demo/values.yaml main repository)"
+GIT_TAG="$(yaml_value "$VALUES_DEV" main tag)"
+NEW_TAG="1.28-alpine"
+OLD_IMAGE="$GIT_REPO_IMG:$GIT_TAG"
+NEW_IMAGE="$GIT_REPO_IMG:$NEW_TAG"
+VERSION_LABEL='/metadata/labels/app.kubernetes.io~1version'
+POD_LABEL='/spec/template/metadata/labels/app.kubernetes.io~1version'
+
 # ---------------------------------------------------------------------------
+if section_wanted a; then
 step "a. A REGION drift becomes a merge request that edits global.region, and is merged"
 GIT_REGION="$(yaml_value "$VALUES_DEV" main region)"
 LIVE_REGION="$(live_cm "$DEMO_NS" "$CM" REGION)"
@@ -996,9 +1084,12 @@ if [[ -n "$P_A" ]]; then
   expect_eq "proposals for $DEMO_APP (no new one)" "$BEFORE_A" "$(proposal_count "$DEMO_APP")"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
+
+fi
 
 # ---------------------------------------------------------------------------
+if section_wanted b; then
 step "b. LOG_LEVEL and LOG_LEVEL_UP changed together: the merge request edits config.logLevel"
 GIT_LEVEL="$(yaml_value "$VALUES_DEV" main logLevel)"
 LIVE_LEVEL="$(live_cm "$DEMO_NS" "$CM" LOG_LEVEL)"
@@ -1024,7 +1115,10 @@ if [[ -n "$P_B" ]]; then
   expect_eq "live LOG_LEVEL after the sync" "$GIT_LEVEL" "$(live_cm "$DEMO_NS" "$CM" LOG_LEVEL)"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted c; then
 step "c. LOG_LEVEL alone is Unmapped: its key also feeds LOG_LEVEL_UP"
 GIT_LEVEL="$(yaml_value "$VALUES_DEV" main logLevel)"
 LIVE_LEVEL="$(live_cm "$DEMO_NS" "$CM" LOG_LEVEL)"
@@ -1040,9 +1134,12 @@ if [[ -n "$P_C" ]]; then
   expect_eq "no merge request" "" "$(dp_field "$P_C" .status.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
+
+fi
 
 # ---------------------------------------------------------------------------
+if section_wanted d; then
 step "d. A key of the subchart: TIMEOUT_SECONDS is mapped to demo-sidecar.timeoutSeconds"
 GIT_TIMEOUT="$(yaml_value "$VALUES_DEV" main timeoutSeconds)"
 LIVE_TIMEOUT="$(live_cm "$DEMO_NS" "$SIDECAR_CM" TIMEOUT_SECONDS)"
@@ -1061,7 +1158,10 @@ if [[ -n "$P_D" ]]; then
   close_and_reset "$IID_D" "$P_D"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted e; then
 step "e. EQUAL_A: two keys hold the value, only config.colorA verifies"
 GIT_COLOR="$(yaml_value "$VALUES_DEV" main colorA)"
 GIT_COLOR_B="$(yaml_value "$VALUES_DEV" main colorB)"
@@ -1083,7 +1183,10 @@ if [[ -n "$P_E" ]]; then
   close_and_reset "$IID_E" "$P_E"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted f; then
 step "f. AMBIGUOUS: two keys give the same result"
 GIT_MIN="$(yaml_value "$VALUES_DEV" main minA)"
 LIVE_AMB="$(live_cm "$DEMO_NS" "$CM" AMBIGUOUS)"
@@ -1097,9 +1200,12 @@ P_F="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_AMB\"" | head -n 1)"
 if [[ -n "$P_F" ]]; then
   expect_unmapped "$P_F" AmbiguousCandidates "config.minA" "config.minB"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
+
+fi
 
 # ---------------------------------------------------------------------------
+if section_wanted g; then
 step "g. TIMEOUT (chart defaults) and FEATURE (helm parameter) are Unmapped"
 GIT_TO="$(yaml_value helm/demo/values.yaml main timeout)"
 LIVE_TO="$(live_cm "$DEMO_NS" "$CM" TIMEOUT)"
@@ -1123,9 +1229,12 @@ P_G2="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_FEATURE\"" | head -n 1)
 if [[ -n "$P_G2" ]]; then
   expect_unmapped "$P_G2" NoVerifiedCandidate "helm.parameters" "config.feature"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
+
+fi
 
 # ---------------------------------------------------------------------------
+if section_wanted h; then
 step "h. A Deployment: scaling is mapped to replicaCount; the image and the version label are not"
 GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
 LIVE_REPLICAS="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.replicas}')"
@@ -1151,14 +1260,6 @@ if [[ -n "$P_H1" ]]; then
   close_and_reset "$IID_H1" "$P_H1"
 fi
 
-GIT_REPO_IMG="$(yaml_value "$VALUES_DEV" main repository)"
-[[ -n "$GIT_REPO_IMG" ]] || GIT_REPO_IMG="$(yaml_value helm/demo/values.yaml main repository)"
-GIT_TAG="$(yaml_value "$VALUES_DEV" main tag)"
-NEW_TAG="1.28-alpine"
-OLD_IMAGE="$GIT_REPO_IMG:$GIT_TAG"
-NEW_IMAGE="$GIT_REPO_IMG:$NEW_TAG"
-VERSION_LABEL='/metadata/labels/app.kubernetes.io~1version'
-POD_LABEL='/spec/template/metadata/labels/app.kubernetes.io~1version'
 LIVE_IMAGE="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
 require_drift h2 "$OLD_IMAGE" "$LIVE_IMAGE" "$NEW_IMAGE"
 
@@ -1174,7 +1275,7 @@ if [[ -n "$P_H2" ]]; then
   # policy does not accept.
   expect_unmapped "$P_H2" NoVerifiedCandidate "image.tag" "to $NEW_TAG" "would reproduce" "containers/0/image" "$VERSION_LABEL" "$POD_LABEL"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 if [[ -n "$P_H2" ]]; then
   wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_H2" Reverted
 fi
@@ -1231,9 +1332,12 @@ if [[ -n "$P_H3" ]]; then
   # miss: it reproduces the label, and the image changes with it.
   expect_unmapped "$P_H3" NoVerifiedCandidate "image.tag" "would reproduce" "containers/0/image"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
+
+fi
 
 # ---------------------------------------------------------------------------
+if section_wanted i; then
 step "i. Git ahead: only commits to files a render depends on pause an Application"
 reset_cluster
 for a in $APPS; do
@@ -1350,6 +1454,163 @@ if restore_autosync; then pass "automated sync switched back on"; else fail "cou
 for a in $APPS; do
   if autosync_enabled "$a"; then pass "$a has automated sync again"; else fail "$a has no automated sync"; fi
 done
+
+fi
+
+# ---------------------------------------------------------------------------
+if section_wanted j; then
+step "j. Partial proposals: replicas are mapped, an image Git cannot trace is left out (spec.mapping.allowPartial)"
+# One drift of the Deployment has two fields: the replicas (replicaCount maps
+# them) and the image (with the default policy no edit is accepted, see h2).
+# Automated sync stays off for demo-helm: a sync of the merge commit would
+# apply the Git image over the one that is left out.
+reset_cluster "$DEMO_APP"
+if disable_autosync "$DEMO_APP"; then pass "automated sync of $DEMO_APP switched off"; else fail "could not switch automated sync of $DEMO_APP off"; fi
+J_GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
+J_NEW_REPLICAS="$((J_GIT_REPLICAS + 1))"
+J_LIVE_IMAGE="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+require_drift j "$OLD_IMAGE" "$J_LIVE_IMAGE" "$NEW_IMAGE"
+require_drift j "$J_GIT_REPLICAS" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.replicas}')" "$J_NEW_REPLICAS"
+IMAGE_PATH='/spec/template/spec/containers/0/image'
+drift_deployment() {
+  k -n "$DEMO_NS" scale deployment "$DEMO_APP" --replicas="$J_NEW_REPLICAS" >/dev/null
+  k -n "$DEMO_NS" set image "deployment/$DEMO_APP" "web=$NEW_IMAGE" >/dev/null
+  refresh_app "$DEMO_APP"
+}
+
+echo "  j1. (manual sync) allowPartial off (the default): the whole proposal is Unmapped..."
+drift_deployment
+wait_for "proposal is Unmapped (replicas $J_GIT_REPLICAS -> $J_NEW_REPLICAS and the image)" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
+remember_proposals
+P_J1="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
+if [[ -n "$P_J1" ]]; then
+  expect_unmapped "$P_J1" NoVerifiedCandidate "image.tag"
+  expect_eq "nothing is listed as left out" "" "$(dp_field "$P_J1" '.status.mapping.unmapped[*].path')"
+fi
+reset_cluster "$DEMO_APP"
+if [[ -n "$P_J1" ]]; then
+  wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_J1" Reverted
+fi
+
+echo "  j2. allowPartial on: the replicas are proposed, the image is listed as not included..."
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":{"allowPartial":true}}}' >/dev/null; then
+  pass "the policy allows partial proposals"
+else
+  fail "could not set spec.mapping.allowPartial"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+drift_deployment
+wait_for "proposal is Proposed (partial)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
+remember_proposals
+P_J2="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
+if [[ -n "$P_J2" ]]; then
+  BRANCH_J2="$(branch_of "$P_J2")"
+  IFS='|' read -r IID_J2 STATE_J2 _ _ <<<"$(mr_info "$BRANCH_J2")"
+  expect_eq "merge request state" "opened" "$STATE_J2"
+  expect_eq "Mapped condition" "True" "$(condition "$P_J2" Mapped status)"
+  expect_eq "Mapped reason" "PartiallyMapped" "$(condition "$P_J2" Mapped reason)"
+  expect_mapping "$P_J2" "$VALUES_DEV" "replicaCount"
+  expect_eq "left out: path" "$IMAGE_PATH" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].path')"
+  expect_eq "left out: reason" "NoVerifiedCandidate" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].reason')"
+  expect_eq "the spec still lists both changes" "2" "$(dp_field "$P_J2" '.spec.changes[*].path' | wc -w | tr -d ' ')"
+  expect_branch_file "$BRANCH_J2" "$VALUES_DEV" "s/^replicaCount: $J_GIT_REPLICAS/replicaCount: $J_NEW_REPLICAS/"
+  MR_J2="$(gl GET "$(project_path "/merge_requests/$IID_J2")")"
+  expect_contains "merge request title" "(partial)" "$(echo "$MR_J2" | jx 'd["title"]')"
+  BODY_J2="$(echo "$MR_J2" | jx 'd["description"]')"
+  expect_contains "description" "Not included in this merge request" "$BODY_J2"
+  expect_contains "description (left-out path)" "$IMAGE_PATH" "$BODY_J2"
+  expect_contains "description (live value)" "$NEW_IMAGE" "$BODY_J2"
+  expect_contains "description (Git value)" "$OLD_IMAGE" "$BODY_J2"
+  expect_contains "description (warning)" "the next Argo CD sync of the Application resets the fields listed above to their Git values" "$BODY_J2"
+  expect_contains "description (warning)" "with automated sync, right after this merge request is merged" "$BODY_J2"
+  expect_not_contains "description" "reported separately" "$BODY_J2"
+  expect_contains "description (verified fields)" "(/spec/replicas)" "$BODY_J2"
+  COMMIT_J2="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_J2")")" | jx 'd["message"]')"
+  expect_contains "commit message" "(partial)" "$COMMIT_J2"
+  expect_contains "commit message" "Not included (the next Argo CD sync resets these to their Git values" "$COMMIT_J2"
+
+  GA_BEFORE_J="$(git_ahead_count "$DEMO_APP")"
+  merged=false
+  for _ in $(seq 1 20); do
+    if gl PUT "$(project_path "/merge_requests/$IID_J2/merge")" '{"should_remove_source_branch":false}' >/dev/null 2>&1; then
+      merged=true; break
+    fi
+    sleep 3
+  done
+  if [[ "$merged" == "true" ]]; then pass "merged !$IID_J2 through the API"; else fail "could not merge !$IID_J2"; fi
+  MERGE_J2="$(gl GET "$(project_path "/merge_requests/$IID_J2")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
+  wait_for "proposal is Merged" phase_is "$P_J2" Merged
+  echo "  j3. manual sync: Argo CD compares against the merge commit, Backflow pauses, the sync resets the image..."
+  wait_for "$DEMO_APP is OutOfSync, comparing against the merge commit but not synced to it" app_ahead_at "$DEMO_APP" "$MERGE_J2"
+  wait_for "the pause is reported (GitAhead Event for $DEMO_APP)" git_ahead_exceeds "$DEMO_APP" "$GA_BEFORE_J"
+  BEFORE_J="$(proposal_count "$DEMO_APP")"
+  echo "  waiting ${QUIET}s: no proposal may be made for the image while Git is ahead..."
+  sleep "$QUIET"
+  expect_eq "proposals for $DEMO_APP (none while paused)" "$BEFORE_J" "$(proposal_count "$DEMO_APP")"
+  expect_eq "the image is still the left-out live one" "$NEW_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  if sync_app "$DEMO_APP"; then pass "one sync of $DEMO_APP at the merge commit"; else fail "$DEMO_APP did not stay Synced"; fi
+  expect_eq "the sync reset the image to its Git value" "$OLD_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  sleep "$QUIET"
+  expect_eq "the merged proposal stays Merged" "Merged" "$(dp_field "$P_J2" .status.phase)"
+  expect_eq "proposals for $DEMO_APP (none for the image)" "$BEFORE_J" "$(proposal_count "$DEMO_APP")"
+  expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
+fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":null}}' >/dev/null; then
+  pass "the policy is back to the default (no partial proposals)"
+else
+  fail "could not remove spec.mapping from the policy"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+reset_cluster "$DEMO_APP"
+
+echo "  j4. automated sync on: right after the merge, the sync resets the image that was left out..."
+if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on for:$AUTOSYNC_OFF"; fi
+if autosync_enabled "$DEMO_APP"; then pass "$DEMO_APP syncs automatically"; else fail "$DEMO_APP has no automated sync"; fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":{"allowPartial":true}}}' >/dev/null; then
+  pass "the policy allows partial proposals"
+else
+  fail "could not set spec.mapping.allowPartial"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+J4_GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
+J_GIT_REPLICAS="$J4_GIT_REPLICAS"
+J_NEW_REPLICAS="$((J4_GIT_REPLICAS + 1))"
+drift_deployment
+wait_for "proposal is Proposed (partial)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
+remember_proposals
+P_J4="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
+if [[ -n "$P_J4" ]]; then
+  BRANCH_J4="$(branch_of "$P_J4")"
+  IFS='|' read -r IID_J4 STATE_J4 _ _ <<<"$(mr_info "$BRANCH_J4")"
+  expect_eq "merge request state" "opened" "$STATE_J4"
+  expect_eq "Mapped reason" "PartiallyMapped" "$(condition "$P_J4" Mapped reason)"
+  BEFORE_J4="$(proposal_count "$DEMO_APP")"
+  merged=false
+  for _ in $(seq 1 20); do
+    if gl PUT "$(project_path "/merge_requests/$IID_J4/merge")" '{"should_remove_source_branch":false}' >/dev/null 2>&1; then
+      merged=true; break
+    fi
+    sleep 3
+  done
+  if [[ "$merged" == "true" ]]; then pass "merged !$IID_J4 through the API"; else fail "could not merge !$IID_J4"; fi
+  MERGE_J4="$(gl GET "$(project_path "/merge_requests/$IID_J4")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
+  wait_for "proposal is Merged" phase_is "$P_J4" Merged
+  wait_for "$DEMO_APP is Synced at the merge commit (automated sync)" app_synced_at "$DEMO_APP" "$MERGE_J4"
+  expect_eq "the image is back to its Git value" "$OLD_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  sleep "$QUIET"
+  expect_eq "the merged proposal stays Merged" "Merged" "$(dp_field "$P_J4" .status.phase)"
+  expect_eq "proposals for $DEMO_APP (none for the image)" "$BEFORE_J4" "$(proposal_count "$DEMO_APP")"
+  expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
+fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":null}}' >/dev/null; then
+  pass "the policy is back to the default (no partial proposals)"
+else
+  fail "could not remove spec.mapping from the policy"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+reset_cluster "$DEMO_APP"
+
+fi
 
 # ---------------------------------------------------------------------------
 step "Secrets"

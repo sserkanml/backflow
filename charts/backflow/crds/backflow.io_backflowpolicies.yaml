@@ -339,6 +339,25 @@ spec:
                   - kind
                   type: object
                 type: array
+              mapping:
+                description: |-
+                  How drifted fields are traced back to Git, for Directory and Helm
+                  sources alike.
+                properties:
+                  allowPartial:
+                    default: false
+                    description: |-
+                      Propose the fields that can be mapped when others of the same resource
+                      cannot. By default any field that cannot be traced back to Git makes the
+                      whole proposal Unmapped, and the fields that could have been mapped are
+                      lost with it. With this on, the proposal maps the verified fields only and
+                      lists the others in status.mapping.unmapped (Mapped=True, reason
+                      PartiallyMapped); the merge request says that it is partial and lists what
+                      it leaves out. Those fields stay different from Git after the merge and are
+                      reported as a new proposal. A proposal that maps no field is still
+                      Unmapped.
+                    type: boolean
+                type: object
               mergeRequest:
                 description: Merge request settings. Used when Mode is MergeRequest.
                 properties:

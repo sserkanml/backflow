@@ -77,6 +77,11 @@ type BackflowPolicySpec struct {
 	// +optional
 	Helm *HelmOptions `json:"helm,omitempty"`
 
+	// How drifted fields are traced back to Git, for Directory and Helm
+	// sources alike.
+	// +optional
+	Mapping *MappingOptions `json:"mapping,omitempty"`
+
 	// Merge request settings. Used when Mode is MergeRequest.
 	// +optional
 	MergeRequest *MergeRequestOptions `json:"mergeRequest,omitempty"`
@@ -90,6 +95,13 @@ type BackflowPolicySpec struct {
 	// +kubebuilder:default="30s"
 	// +optional
 	BatchWindow *metav1.Duration `json:"batchWindow,omitempty"`
+}
+
+// PartialAllowed reports whether a proposal may be mapped partially: the fields
+// that can be traced back are proposed and the others left out
+// (spec.mapping.allowPartial).
+func (s BackflowPolicySpec) PartialAllowed() bool {
+	return s.Mapping != nil && s.Mapping.AllowPartial
 }
 
 // DefaultBatchWindow is the batch window of a policy that does not set one.
@@ -152,6 +164,21 @@ type IgnoreRule struct {
 	// JSON pointers to ignore, e.g. /spec/replicas.
 	// +kubebuilder:validation:MinItems=1
 	JSONPointers []string `json:"jsonPointers"`
+}
+
+// MappingOptions configures how a proposal is mapped to files in Git.
+type MappingOptions struct {
+	// Propose the fields that can be mapped when others of the same resource
+	// cannot. By default any field that cannot be traced back to Git makes the
+	// whole proposal Unmapped, and the fields that could have been mapped are
+	// lost with it. With this on, the proposal maps the verified fields only and
+	// lists the others in status.mapping.unmapped (Mapped=True, reason
+	// PartiallyMapped); the merge request says that it is partial and lists what
+	// it leaves out. Those fields stay different from Git after the merge and are
+	// reported as a new proposal. A proposal that maps no field is still
+	// Unmapped.
+	// +kubebuilder:default=false
+	AllowPartial bool `json:"allowPartial,omitempty"`
 }
 
 // HelmMappingMode controls how rendered fields are traced back to values.
