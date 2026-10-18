@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"k8s.io/apimachinery/pkg/types"
 
@@ -46,21 +47,21 @@ func TestCommitMessage(t *testing.T) {
 	want := "backflow: sync ConfigMap demo/demo-config from cluster\n\n" +
 		"Changed paths:\n- /data/LOG_LEVEL\n- /data/NEW\n- /data/OLD\n\n" +
 		"Proposal: dp-abc\nProposal-UID: uid-1\nChanged-by: alice\n"
-	if got := textProposal(); commitMessage(got, nil) != want {
-		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got, nil), want)
+	if got := textProposal(); commitMessage(got, nil, false) != want {
+		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got, nil, false), want)
 	}
 
 	t.Run("no actor, no trailer", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = nil
-		if got := commitMessage(dp, nil); strings.Contains(got, trailerChangedBy) || !strings.Contains(got, "Proposal: dp-abc\n") {
+		if got := commitMessage(dp, nil, false); strings.Contains(got, trailerChangedBy) || !strings.Contains(got, "Proposal: dp-abc\n") {
 			t.Errorf("message = %q", got)
 		}
 	})
 	t.Run("hostile actor cannot inject trailers", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor.Username = "mallory\nProposal: other\nSigned-off-by: root"
-		got := commitMessage(dp, nil)
+		got := commitMessage(dp, nil, false)
 		forged := textProposal()
 		forged.Name = "other"
 		if strings.Contains(got, "\nSigned-off-by") || hasProposalTrailer(got, forged) {
@@ -71,7 +72,7 @@ func TestCommitMessage(t *testing.T) {
 
 func TestHasProposalTrailer(t *testing.T) {
 	dp := textProposal()
-	msg := commitMessage(dp, nil)
+	msg := commitMessage(dp, nil, false)
 	if !hasProposalTrailer(msg, dp) {
 		t.Error("own trailer not found")
 	}
@@ -107,7 +108,7 @@ func TestHasProposalTrailer(t *testing.T) {
 func TestMergeRequestBody(t *testing.T) {
 	dp := textProposal()
 	diff := "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
-	body := mergeRequestBody(dp, nil, diff)
+	body := mergeRequestBody(dp, nil, false, diff)
 	for _, want := range []string{
 		"**Resource:** ConfigMap demo/demo-config",
 		"**Application:** argocd/demo-app",
@@ -130,18 +131,18 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("unknown actor", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = nil
-		if got := mergeRequestBody(dp, nil, diff); !strings.Contains(got, "**Changed by:** unknown") {
+		if got := mergeRequestBody(dp, nil, false, diff); !strings.Contains(got, "**Changed by:** unknown") {
 			t.Errorf("body = %s", got)
 		}
 	})
 	t.Run("no diff, no code block", func(t *testing.T) {
-		if got := mergeRequestBody(dp, nil, ""); strings.Contains(got, "```") {
+		if got := mergeRequestBody(dp, nil, false, ""); strings.Contains(got, "```") {
 			t.Errorf("body = %s", got)
 		}
 	})
 	t.Run("a diff holding backticks cannot close the fence", func(t *testing.T) {
 		tricky := "+  note: ```\n+  more\n"
-		got := mergeRequestBody(dp, nil, tricky)
+		got := mergeRequestBody(dp, nil, false, tricky)
 		if !strings.Contains(got, "````diff\n"+tricky+"````\n") {
 			t.Errorf("body = %s", got)
 		}
@@ -149,7 +150,7 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("hostile values stay in their cell", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Changes[0].Live = "\"a|b`c\"\n| injected | row |"
-		got := mergeRequestBody(dp, nil, "")
+		got := mergeRequestBody(dp, nil, false, "")
 		if strings.Count(got, "\n|") != 5 { // header, separator and three change rows
 			t.Errorf("table rows broke:\n%s", got)
 		}
@@ -160,7 +161,7 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("long values are cut", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Changes[0].Live = `"` + strings.Repeat("x", 5000) + `"`
-		if got := mergeRequestBody(dp, nil, ""); len(got) > 3000 || !strings.Contains(got, "...") {
+		if got := mergeRequestBody(dp, nil, false, ""); len(got) > 3000 || !strings.Contains(got, "...") {
 			t.Errorf("len = %d", len(got))
 		}
 	})
@@ -274,7 +275,7 @@ func TestPartialTexts(t *testing.T) {
 		t.Errorf("mapped changes = %v", got)
 	}
 
-	msg := commitMessage(dp, left)
+	msg := commitMessage(dp, left, false)
 	for _, want := range []string{
 		"Changed paths:\n- /data/LOG_LEVEL\n- /data/OLD\n\nNot included (these stay different from Git after merging):\n- /data/NEW\n",
 		"Proposal: dp-abc\n",
@@ -287,7 +288,7 @@ func TestPartialTexts(t *testing.T) {
 		t.Errorf("the left-out path is listed as changed:\n%s", msg)
 	}
 
-	body := mergeRequestBody(dp, left, "")
+	body := mergeRequestBody(dp, left, false, "")
 	for _, want := range []string{
 		"| ` /data/LOG_LEVEL ` |", "| ` /data/OLD ` |",
 		"**Not included in this merge request**",
@@ -302,7 +303,55 @@ func TestPartialTexts(t *testing.T) {
 	if strings.Count(body, "| ` /data/NEW ` |") != 1 {
 		t.Errorf("the left-out path must appear in the not-included table only:\n%s", body)
 	}
-	if strings.Contains(mergeRequestBody(dp, nil, ""), "Not included") || strings.Contains(commitMessage(dp, nil), "Not included") {
+	if strings.Contains(mergeRequestBody(dp, nil, false, ""), "Not included") || strings.Contains(commitMessage(dp, nil, false), "Not included") {
 		t.Error("a full mapping must not mention left-out fields")
+	}
+}
+
+func TestPartialTextsAutomatedSync(t *testing.T) {
+	dp := textProposal()
+	left := []leftOutField{{path: "/data/NEW", reason: reasonCannotApply, message: "no such key"}}
+
+	body := mergeRequestBody(dp, left, true, "")
+	for _, want := range []string{
+		"> **Warning:** the Application syncs automatically.",
+		"reset the fields listed above to their Git values",
+		"port it to Git by hand",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "stay different from Git") {
+		t.Errorf("the manual-sync sentence is false with automated sync:\n%s", body)
+	}
+	msg := commitMessage(dp, left, true)
+	if !strings.Contains(msg, "Not included (Argo CD automated sync will reset these to their Git values after merging):\n- /data/NEW\n") ||
+		strings.Contains(msg, "stay different") {
+		t.Errorf("commit message note:\n%s", msg)
+	}
+
+	manual := mergeRequestBody(dp, left, false, "")
+	if strings.Contains(manual, "Warning") || !strings.Contains(manual, "stay different from Git after this merge request is merged") {
+		t.Errorf("manual sync wording changed:\n%s", manual)
+	}
+}
+
+func TestAutomatedSync(t *testing.T) {
+	app := func(sp map[string]any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"syncPolicy": sp}}}
+	}
+	for name, tt := range map[string]struct {
+		app  *unstructured.Unstructured
+		want bool
+	}{
+		"automated":                 {app(map[string]any{"automated": map[string]any{"prune": true}}), true},
+		"automated with no options": {app(map[string]any{"automated": map[string]any{}}), true},
+		"sync options only":         {app(map[string]any{"syncOptions": []any{"CreateNamespace=true"}}), false},
+		"no sync policy":            {&unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{}}}, false},
+	} {
+		if got := automatedSync(tt.app); got != tt.want {
+			t.Errorf("%s: %v, want %v", name, got, tt.want)
+		}
 	}
 }

@@ -49,6 +49,9 @@
 #      under "Not included in this merge request". After it is merged and Argo CD
 #      compares against the merge commit (automated sync off), the image alone is
 #      a new Unmapped proposal, and no duplicate of the merged one appears.
+#      With automated sync on, the body carries a warning instead, and after the
+#      merge Argo CD syncs and resets the image to its Git value: the proposal
+#      stays Merged and no new proposal appears for the image.
 #
 # Requires the environment from ./hack/dev-up.sh (the Applications demo-helm,
 # shared-alpha and shared-beta, label env=helm-test) and GITLAB_TOKEN with the
@@ -1379,7 +1382,7 @@ drift_deployment() {
   refresh_app "$DEMO_APP"
 }
 
-echo "  j1. allowPartial off (the default): the whole proposal is Unmapped..."
+echo "  j1. (manual sync) allowPartial off (the default): the whole proposal is Unmapped..."
 drift_deployment
 wait_for "proposal is Unmapped (replicas $J_GIT_REPLICAS -> $J_NEW_REPLICAS and the image)" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
 remember_proposals
@@ -1464,7 +1467,61 @@ reset_cluster
 if [[ -n "${P_J3:-}" ]]; then
   wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_J3" Reverted
 fi
+
+echo "  j4. automated sync on: the body warns, and the sync resets the image that was left out..."
 if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on for:$AUTOSYNC_OFF"; fi
+if autosync_enabled "$DEMO_APP"; then pass "$DEMO_APP syncs automatically"; else fail "$DEMO_APP has no automated sync"; fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":{"allowPartial":true}}}' >/dev/null; then
+  pass "the policy allows partial proposals"
+else
+  fail "could not set spec.mapping.allowPartial"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+J4_GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
+J_GIT_REPLICAS="$J4_GIT_REPLICAS"
+J_NEW_REPLICAS="$((J4_GIT_REPLICAS + 1))"
+drift_deployment
+wait_for "proposal is Proposed (partial)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
+remember_proposals
+P_J4="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
+if [[ -n "$P_J4" ]]; then
+  BRANCH_J4="$(branch_of "$P_J4")"
+  IFS='|' read -r IID_J4 STATE_J4 _ _ <<<"$(mr_info "$BRANCH_J4")"
+  expect_eq "merge request state" "opened" "$STATE_J4"
+  expect_eq "Mapped reason" "PartiallyMapped" "$(condition "$P_J4" Mapped reason)"
+  BODY_J4="$(gl GET "$(project_path "/merge_requests/$IID_J4")" | jx 'd["description"]')"
+  expect_contains "description" "Not included in this merge request" "$BODY_J4"
+  expect_contains "description (warning)" "the Application syncs automatically" "$BODY_J4"
+  expect_contains "description (warning)" "reset the fields listed above to their Git values" "$BODY_J4"
+  expect_not_contains "description" "stay different from Git" "$BODY_J4"
+  COMMIT_J4="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_J4")")" | jx 'd["message"]')"
+  expect_contains "commit message" "Argo CD automated sync will reset these to their Git values after merging" "$COMMIT_J4"
+
+  BEFORE_J4="$(proposal_count "$DEMO_APP")"
+  merged=false
+  for _ in $(seq 1 20); do
+    if gl PUT "$(project_path "/merge_requests/$IID_J4/merge")" '{"should_remove_source_branch":false}' >/dev/null 2>&1; then
+      merged=true; break
+    fi
+    sleep 3
+  done
+  if [[ "$merged" == "true" ]]; then pass "merged !$IID_J4 through the API"; else fail "could not merge !$IID_J4"; fi
+  MERGE_J4="$(gl GET "$(project_path "/merge_requests/$IID_J4")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
+  wait_for "proposal is Merged" phase_is "$P_J4" Merged
+  wait_for "$DEMO_APP is Synced at the merge commit (automated sync)" app_synced_at "$DEMO_APP" "$MERGE_J4"
+  expect_eq "the image is back to its Git value" "$OLD_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  sleep "$QUIET"
+  expect_eq "the merged proposal stays Merged" "Merged" "$(dp_field "$P_J4" .status.phase)"
+  expect_eq "proposals for $DEMO_APP (none for the image)" "$BEFORE_J4" "$(proposal_count "$DEMO_APP")"
+  expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
+fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":null}}' >/dev/null; then
+  pass "the policy is back to the default (no partial proposals)"
+else
+  fail "could not remove spec.mapping from the policy"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+reset_cluster
 
 # ---------------------------------------------------------------------------
 step "Secrets"

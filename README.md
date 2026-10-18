@@ -375,18 +375,30 @@ verification of the combined edit fails, the whole proposal is `Unmapped`.
 
 A partial merge request (or direct commit) is marked "(partial)" in its title
 and commit subject, and its body has a **Not included in this merge request**
-table: path, live value, Git value and the reason, followed by a note that these
-fields stay different from Git after merging and are reported separately. The
+table: path, live value, Git value and the reason, followed by what merging
+means for them (see the warning below). The
 changes table and the diff list the mapped fields only. The same rule applies
 when the proposal is mapped again at a moved head of the target branch, and
 `DirectCommit` mode honours it too.
 
-Lifecycle: merging a partial merge request does not make the cluster match Git.
-Once Argo CD syncs the merge commit, what is left is a different set of changes,
-so Backflow opens a new proposal for it (normally `Unmapped`, with the reason
-the fields could not be mapped). The merged proposal is not reopened, and while
-Argo CD has not seen the merge commit yet the same changes at the same revision
-do not produce a duplicate.
+> [!WARNING]
+> **With automated sync, the fields left out are lost.** Merging a partial merge
+> request makes Argo CD sync the merge commit, and a sync resets every field of
+> the resource to its Git value, including the live changes that could not be
+> mapped. To keep one of them, port it to Git by hand, in the merge request or
+> before it is merged. Backflow reads the Application's
+> `spec.syncPolicy.automated`: when it is set, the merge request body and the
+> commit message say so plainly; without it they say the fields stay different
+> from Git after merging.
+
+Lifecycle with manual sync: merging a partial merge request does not make the
+cluster match Git. Once Argo CD compares against the merge commit, what is left
+is a different set of changes, so Backflow opens a new proposal for it
+(normally `Unmapped`, with the reason the fields could not be mapped). The
+merged proposal is not reopened, and while Argo CD has not seen the merge
+commit yet the same changes at the same revision do not produce a duplicate.
+With automated sync the left-out fields are reset by the sync, so no proposal
+follows: the merged one stays `Merged`.
 
 ## Limitations
 
