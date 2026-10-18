@@ -48,22 +48,53 @@ func resourceLabel(r backflowv1alpha1.ResourceRef) string {
 	return fmt.Sprintf("%s %s/%s", r.Kind, r.Namespace, r.Name)
 }
 
-// commitSubject is also the merge request title.
-func commitSubject(dp *backflowv1alpha1.DriftProposal) string {
-	return fmt.Sprintf("backflow: sync %s from cluster", resourceLabel(dp.Spec.Resource))
+// commitSubject is also the merge request title. left are the changes a
+// partial mapping leaves out; the subject says so.
+func commitSubject(dp *backflowv1alpha1.DriftProposal, left []leftOutField) string {
+	subject := fmt.Sprintf("backflow: sync %s from cluster", resourceLabel(dp.Spec.Resource))
+	if len(left) > 0 {
+		subject += " (partial)"
+	}
+	return subject
+}
+
+// mappedChanges are the changes of the proposal that the edits make: all of
+// them, except those a partial mapping leaves out.
+func mappedChanges(dp *backflowv1alpha1.DriftProposal, left []leftOutField) []backflowv1alpha1.FieldChange {
+	if len(left) == 0 {
+		return dp.Spec.Changes
+	}
+	skip := make(map[string]bool, len(left))
+	for _, l := range left {
+		skip[l.path] = true
+	}
+	out := make([]backflowv1alpha1.FieldChange, 0, len(dp.Spec.Changes))
+	for _, ch := range dp.Spec.Changes {
+		if !skip[ch.Path] {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 // commitMessage lists the changed paths and names the proposal. The actor is
 // recorded as a trailer: the Kubernetes user has no Git identity, so the
 // commit is authored by the committer.
-func commitMessage(dp *backflowv1alpha1.DriftProposal) string {
+func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField) string {
 	var b strings.Builder
-	b.WriteString(commitSubject(dp))
+	b.WriteString(commitSubject(dp, left))
 	b.WriteString("\n\nChanged paths:\n")
-	for _, ch := range dp.Spec.Changes {
+	for _, ch := range mappedChanges(dp, left) {
 		fmt.Fprintf(&b, "- %s\n", singleLine(ch.Path))
 	}
 	b.WriteString("\n")
+	if len(left) > 0 {
+		b.WriteString("Not included (these stay different from Git after merging):\n")
+		for _, l := range left {
+			fmt.Fprintf(&b, "- %s\n", singleLine(l.path))
+		}
+		b.WriteString("\n")
+	}
 	if rows := helmEditRows(dp); len(rows) > 0 {
 		lastFile := ""
 		for _, row := range rows {
@@ -73,7 +104,7 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal) string {
 			}
 			fmt.Fprintf(&b, "- %s: %s -> %s\n", singleLine(row.key), singleLine(row.old), singleLine(row.new))
 		}
-		fmt.Fprintf(&b, "\n%s\n\n", helmVerifiedLine(dp))
+		fmt.Fprintf(&b, "\n%s\n\n", helmVerifiedLine(dp, left))
 		if lines := collateralLines(dp); len(lines) > 0 {
 			b.WriteString("This edit also changes (allowed by the policy's spec.helm.allowCollateralChanges):\n")
 			for _, l := range lines {
@@ -144,7 +175,7 @@ func fenceFor(text string) string {
 // mergeRequestBody explains the change to the reviewer: what changed, who
 // changed it, the diff, which proposal it belongs to, and what merging or
 // closing means.
-func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
+func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, diff string) string {
 	var b strings.Builder
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.Resource)))
@@ -161,7 +192,7 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 	fmt.Fprintf(&b, "- **Detected:** %s\n\n", dp.Spec.DetectedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
 
 	b.WriteString("| Path | Git value | Live value |\n|---|---|---|\n")
-	for _, ch := range dp.Spec.Changes {
+	for _, ch := range mappedChanges(dp, left) {
 		fmt.Fprintf(&b, "| %s | %s | %s |\n", cell(ch.Path, "-"), cell(ch.Desired, "(absent)"), cell(ch.Live, "(removed)"))
 	}
 
@@ -170,7 +201,7 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 		for _, row := range rows {
 			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(row.file, "-"), cell(row.key, "-"), cell(row.old, "(none)"), cell(row.new, "(none)"))
 		}
-		fmt.Fprintf(&b, "\n%s\n", helmVerifiedLine(dp))
+		fmt.Fprintf(&b, "\n%s\n", helmVerifiedLine(dp, left))
 		if c := dp.Status.Mapping.Collateral; len(c) > 0 {
 			b.WriteString("\n**This edit also changes** (allowed by the policy's `spec.helm.allowCollateralChanges`):\n\n")
 			b.WriteString("| Resource | Path | Current | New |\n|---|---|---|---|\n")
@@ -178,6 +209,20 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, diff string) string {
 				fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(collateralResource(ch), "-"), cell(ch.Path, "-"), cell(ch.Current, "(absent)"), cell(ch.New, "(absent)"))
 			}
 		}
+	}
+
+	if len(left) > 0 {
+		b.WriteString("\n**Not included in this merge request**\n\n| Path | Live value | Git value | Reason |\n|---|---|---|---|\n")
+		byPath := make(map[string]backflowv1alpha1.FieldChange, len(dp.Spec.Changes))
+		for _, ch := range dp.Spec.Changes {
+			byPath[ch.Path] = ch
+		}
+		for _, l := range left {
+			ch := byPath[l.path]
+			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(l.path, "-"), cell(ch.Live, "(removed)"), cell(ch.Desired, "(absent)"), cell(l.reason+": "+l.message, "-"))
+		}
+		b.WriteString("\nThese fields stay different from Git after this merge request is merged. " +
+			"Backflow reports them separately.\n")
 	}
 
 	if diff != "" {
@@ -245,9 +290,10 @@ func helmEditRows(dp *backflowv1alpha1.DriftProposal) []helmRow {
 }
 
 // helmVerifiedLine says how a Helm edit was checked and what it changes.
-func helmVerifiedLine(dp *backflowv1alpha1.DriftProposal) string {
-	paths := make([]string, len(dp.Spec.Changes))
-	for i, ch := range dp.Spec.Changes {
+func helmVerifiedLine(dp *backflowv1alpha1.DriftProposal, left []leftOutField) string {
+	changes := mappedChanges(dp, left)
+	paths := make([]string, len(changes))
+	for i, ch := range changes {
 		paths[i] = singleLine(ch.Path)
 	}
 	return fmt.Sprintf("Verified by rendering through Argo CD: this edit changes exactly the drifted fields (%s) and nothing else.",

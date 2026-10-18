@@ -262,7 +262,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(ctrl.Result{}, err)
 	}
 
-	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access))
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut))
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrNoChange) {
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
@@ -397,12 +397,12 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp), When: dp.Spec.DetectedAt.UTC()}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left), When: dp.Spec.DetectedAt.UTC()}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -481,7 +481,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp), Body: mergeRequestBody(dp, change.result.diff()),
+		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {

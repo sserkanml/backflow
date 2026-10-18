@@ -456,6 +456,41 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(got.Status.Mapping.Unmapped[0].Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
 		})
 
+		It("opens a merge request that says it is partial and lists what it leaves out", func() {
+			setPartial(true)
+			setMode(backflowv1alpha1.ModeMergeRequest)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone} })
+			settle(backflowv1alpha1.PhaseProposed)
+
+			Expect(provider.created).To(HaveLen(1))
+			Expect(provider.created[0].Title).To(Equal("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)"))
+			body := provider.created[0].Body
+			Expect(body).To(ContainSubstring("**Not included in this merge request**"))
+			Expect(body).To(ContainSubstring("| Path | Live value | Git value | Reason |"))
+			Expect(body).To(MatchRegexp("\\| `+ /data/EXTRA +` \\| \\(removed\\) \\| `+ \"x\" +` \\| "))
+			Expect(body).To(ContainSubstring("stay different from Git after this merge request is merged"))
+			Expect(body).To(ContainSubstring("exactly the drifted fields (/data/REGION) and nothing else"))
+			Expect(body).NotTo(ContainSubstring("(/data/REGION, /data/EXTRA)"))
+
+			tip := repo.branch(latest().Status.MergeRequest.Branch)
+			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "region: eu-central-1", "region: us-west-2", 1)))
+			msg := repo.commitAt(tip).Message
+			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
+			Expect(msg).To(ContainSubstring("Changed paths:\n- /data/REGION\n\nNot included (these stay different from Git after merging):\n- /data/EXTRA\n"))
+		})
+
+		It("commits directly with the same marking", func() {
+			setPartial(true)
+			setMode(backflowv1alpha1.ModeDirectCommit)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone} })
+			settle(backflowv1alpha1.PhaseMerged)
+
+			Expect(provider.created).To(BeEmpty())
+			msg := repo.commitAt(repo.branch("main")).Message
+			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
+			Expect(msg).To(ContainSubstring("Not included (these stay different from Git after merging):\n- /data/EXTRA\n"))
+		})
+
 		It("is still Unmapped when nothing can be mapped", func() {
 			setPartial(true)
 			drifted(gone)

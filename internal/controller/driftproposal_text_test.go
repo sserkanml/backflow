@@ -33,11 +33,11 @@ func textProposal() *backflowv1alpha1.DriftProposal {
 
 func TestCommitSubject(t *testing.T) {
 	dp := textProposal()
-	if got, want := commitSubject(dp), "backflow: sync ConfigMap demo/demo-config from cluster"; got != want {
+	if got, want := commitSubject(dp, nil), "backflow: sync ConfigMap demo/demo-config from cluster"; got != want {
 		t.Errorf("subject = %q, want %q", got, want)
 	}
 	dp.Spec.Resource = backflowv1alpha1.ResourceRef{Kind: "ClusterRole", Name: "viewer"}
-	if got, want := commitSubject(dp), "backflow: sync ClusterRole viewer from cluster"; got != want {
+	if got, want := commitSubject(dp, nil), "backflow: sync ClusterRole viewer from cluster"; got != want {
 		t.Errorf("cluster-scoped subject = %q, want %q", got, want)
 	}
 }
@@ -46,21 +46,21 @@ func TestCommitMessage(t *testing.T) {
 	want := "backflow: sync ConfigMap demo/demo-config from cluster\n\n" +
 		"Changed paths:\n- /data/LOG_LEVEL\n- /data/NEW\n- /data/OLD\n\n" +
 		"Proposal: dp-abc\nProposal-UID: uid-1\nChanged-by: alice\n"
-	if got := textProposal(); commitMessage(got) != want {
-		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got), want)
+	if got := textProposal(); commitMessage(got, nil) != want {
+		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got, nil), want)
 	}
 
 	t.Run("no actor, no trailer", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = nil
-		if got := commitMessage(dp); strings.Contains(got, trailerChangedBy) || !strings.Contains(got, "Proposal: dp-abc\n") {
+		if got := commitMessage(dp, nil); strings.Contains(got, trailerChangedBy) || !strings.Contains(got, "Proposal: dp-abc\n") {
 			t.Errorf("message = %q", got)
 		}
 	})
 	t.Run("hostile actor cannot inject trailers", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor.Username = "mallory\nProposal: other\nSigned-off-by: root"
-		got := commitMessage(dp)
+		got := commitMessage(dp, nil)
 		forged := textProposal()
 		forged.Name = "other"
 		if strings.Contains(got, "\nSigned-off-by") || hasProposalTrailer(got, forged) {
@@ -71,7 +71,7 @@ func TestCommitMessage(t *testing.T) {
 
 func TestHasProposalTrailer(t *testing.T) {
 	dp := textProposal()
-	msg := commitMessage(dp)
+	msg := commitMessage(dp, nil)
 	if !hasProposalTrailer(msg, dp) {
 		t.Error("own trailer not found")
 	}
@@ -107,7 +107,7 @@ func TestHasProposalTrailer(t *testing.T) {
 func TestMergeRequestBody(t *testing.T) {
 	dp := textProposal()
 	diff := "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
-	body := mergeRequestBody(dp, diff)
+	body := mergeRequestBody(dp, nil, diff)
 	for _, want := range []string{
 		"**Resource:** ConfigMap demo/demo-config",
 		"**Application:** argocd/demo-app",
@@ -130,18 +130,18 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("unknown actor", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = nil
-		if got := mergeRequestBody(dp, diff); !strings.Contains(got, "**Changed by:** unknown") {
+		if got := mergeRequestBody(dp, nil, diff); !strings.Contains(got, "**Changed by:** unknown") {
 			t.Errorf("body = %s", got)
 		}
 	})
 	t.Run("no diff, no code block", func(t *testing.T) {
-		if got := mergeRequestBody(dp, ""); strings.Contains(got, "```") {
+		if got := mergeRequestBody(dp, nil, ""); strings.Contains(got, "```") {
 			t.Errorf("body = %s", got)
 		}
 	})
 	t.Run("a diff holding backticks cannot close the fence", func(t *testing.T) {
 		tricky := "+  note: ```\n+  more\n"
-		got := mergeRequestBody(dp, tricky)
+		got := mergeRequestBody(dp, nil, tricky)
 		if !strings.Contains(got, "````diff\n"+tricky+"````\n") {
 			t.Errorf("body = %s", got)
 		}
@@ -149,7 +149,7 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("hostile values stay in their cell", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Changes[0].Live = "\"a|b`c\"\n| injected | row |"
-		got := mergeRequestBody(dp, "")
+		got := mergeRequestBody(dp, nil, "")
 		if strings.Count(got, "\n|") != 5 { // header, separator and three change rows
 			t.Errorf("table rows broke:\n%s", got)
 		}
@@ -160,7 +160,7 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("long values are cut", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Changes[0].Live = `"` + strings.Repeat("x", 5000) + `"`
-		if got := mergeRequestBody(dp, ""); len(got) > 3000 || !strings.Contains(got, "...") {
+		if got := mergeRequestBody(dp, nil, ""); len(got) > 3000 || !strings.Contains(got, "...") {
 			t.Errorf("len = %d", len(got))
 		}
 	})
@@ -260,5 +260,49 @@ func TestConditionMessages(t *testing.T) {
 	}
 	if got := closedConditionMessage("https://x/7"); got != "Merge request https://x/7 was closed without merging." {
 		t.Errorf("closed = %q", got)
+	}
+}
+
+func TestPartialTexts(t *testing.T) {
+	dp := textProposal()
+	left := []leftOutField{{path: "/data/NEW", reason: reasonCannotApply, message: "no such key | here"}}
+
+	if got, want := commitSubject(dp, left), "backflow: sync ConfigMap demo/demo-config from cluster (partial)"; got != want {
+		t.Errorf("subject = %q, want %q", got, want)
+	}
+	if got := mappedChanges(dp, left); len(got) != 2 || got[0].Path != "/data/LOG_LEVEL" || got[1].Path != "/data/OLD" {
+		t.Errorf("mapped changes = %v", got)
+	}
+
+	msg := commitMessage(dp, left)
+	for _, want := range []string{
+		"Changed paths:\n- /data/LOG_LEVEL\n- /data/OLD\n\nNot included (these stay different from Git after merging):\n- /data/NEW\n",
+		"Proposal: dp-abc\n",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("commit message lacks %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "Changed paths:\n- /data/LOG_LEVEL\n- /data/NEW") {
+		t.Errorf("the left-out path is listed as changed:\n%s", msg)
+	}
+
+	body := mergeRequestBody(dp, left, "")
+	for _, want := range []string{
+		"| ` /data/LOG_LEVEL ` |", "| ` /data/OLD ` |",
+		"**Not included in this merge request**",
+		"| Path | Live value | Git value | Reason |",
+		"| ` /data/NEW ` | ` \"x\" ` | (absent) | ` CannotApply: no such key \\| here ` |",
+		"stay different from Git after this merge request is merged",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q:\n%s", want, body)
+		}
+	}
+	if strings.Count(body, "| ` /data/NEW ` |") != 1 {
+		t.Errorf("the left-out path must appear in the not-included table only:\n%s", body)
+	}
+	if strings.Contains(mergeRequestBody(dp, nil, ""), "Not included") || strings.Contains(commitMessage(dp, nil), "Not included") {
+		t.Error("a full mapping must not mention left-out fields")
 	}
 }
