@@ -42,6 +42,14 @@
 #      environment's file (helm/demo/values-prod.yaml) does not pause demo-helm;
 #      a commit to helm/demo/values-dev.yaml does, until it is synced.
 #
+#   j. Partial proposals: scaling demo-helm and changing its image at the same
+#      time. With the default policy the proposal is Unmapped (the image has no
+#      verified edit). With spec.mapping.allowPartial: true the merge request is
+#      marked "(partial)" and edits only replicaCount; its body lists the image
+#      under "Not included in this merge request". After it is merged and Argo CD
+#      compares against the merge commit (automated sync off), the image alone is
+#      a new Unmapped proposal, and no duplicate of the merged one appears.
+#
 # Requires the environment from ./hack/dev-up.sh (the Applications demo-helm,
 # shared-alpha and shared-beta, label env=helm-test) and GITLAB_TOKEN with the
 # api and write_repository scopes (owner or maintainer of the demo project).
@@ -1350,6 +1358,113 @@ if restore_autosync; then pass "automated sync switched back on"; else fail "cou
 for a in $APPS; do
   if autosync_enabled "$a"; then pass "$a has automated sync again"; else fail "$a has no automated sync"; fi
 done
+
+# ---------------------------------------------------------------------------
+step "j. Partial proposals: replicas are mapped, an image Git cannot trace is left out (spec.mapping.allowPartial)"
+# One drift of the Deployment has two fields: the replicas (replicaCount maps
+# them) and the image (with the default policy no edit is accepted, see h2).
+# Automated sync stays off for demo-helm: a sync of the merge commit would
+# apply the Git image over the one that is left out.
+reset_cluster
+if disable_autosync "$DEMO_APP"; then pass "automated sync of $DEMO_APP switched off"; else fail "could not switch automated sync of $DEMO_APP off"; fi
+J_GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
+J_NEW_REPLICAS="$((J_GIT_REPLICAS + 1))"
+J_LIVE_IMAGE="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+require_drift j "$OLD_IMAGE" "$J_LIVE_IMAGE" "$NEW_IMAGE"
+require_drift j "$J_GIT_REPLICAS" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.replicas}')" "$J_NEW_REPLICAS"
+IMAGE_PATH='/spec/template/spec/containers/0/image'
+drift_deployment() {
+  k -n "$DEMO_NS" scale deployment "$DEMO_APP" --replicas="$J_NEW_REPLICAS" >/dev/null
+  k -n "$DEMO_NS" set image "deployment/$DEMO_APP" "web=$NEW_IMAGE" >/dev/null
+  refresh_app "$DEMO_APP"
+}
+
+echo "  j1. allowPartial off (the default): the whole proposal is Unmapped..."
+drift_deployment
+wait_for "proposal is Unmapped (replicas $J_GIT_REPLICAS -> $J_NEW_REPLICAS and the image)" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
+remember_proposals
+P_J1="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
+if [[ -n "$P_J1" ]]; then
+  expect_unmapped "$P_J1" NoVerifiedCandidate "image.tag"
+  expect_eq "nothing is listed as left out" "" "$(dp_field "$P_J1" '.status.mapping.unmapped[*].path')"
+fi
+reset_cluster
+if [[ -n "$P_J1" ]]; then
+  wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_J1" Reverted
+fi
+
+echo "  j2. allowPartial on: the replicas are proposed, the image is listed as not included..."
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":{"allowPartial":true}}}' >/dev/null; then
+  pass "the policy allows partial proposals"
+else
+  fail "could not set spec.mapping.allowPartial"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+drift_deployment
+wait_for "proposal is Proposed (partial)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS"
+remember_proposals
+P_J2="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
+if [[ -n "$P_J2" ]]; then
+  BRANCH_J2="$(branch_of "$P_J2")"
+  IFS='|' read -r IID_J2 STATE_J2 _ _ <<<"$(mr_info "$BRANCH_J2")"
+  expect_eq "merge request state" "opened" "$STATE_J2"
+  expect_eq "Mapped condition" "True" "$(condition "$P_J2" Mapped status)"
+  expect_eq "Mapped reason" "PartiallyMapped" "$(condition "$P_J2" Mapped reason)"
+  expect_mapping "$P_J2" "$VALUES_DEV" "replicaCount"
+  expect_eq "left out: path" "$IMAGE_PATH" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].path')"
+  expect_eq "left out: reason" "NoVerifiedCandidate" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].reason')"
+  expect_eq "the spec still lists both changes" "2" "$(dp_field "$P_J2" '.spec.changes[*].path' | wc -w | tr -d ' ')"
+  expect_branch_file "$BRANCH_J2" "$VALUES_DEV" "s/^replicaCount: $J_GIT_REPLICAS/replicaCount: $J_NEW_REPLICAS/"
+  MR_J2="$(gl GET "$(project_path "/merge_requests/$IID_J2")")"
+  expect_contains "merge request title" "(partial)" "$(echo "$MR_J2" | jx 'd["title"]')"
+  BODY_J2="$(echo "$MR_J2" | jx 'd["description"]')"
+  expect_contains "description" "Not included in this merge request" "$BODY_J2"
+  expect_contains "description (left-out path)" "$IMAGE_PATH" "$BODY_J2"
+  expect_contains "description (live value)" "$NEW_IMAGE" "$BODY_J2"
+  expect_contains "description (Git value)" "$OLD_IMAGE" "$BODY_J2"
+  expect_contains "description" "stay different from Git after this merge request is merged" "$BODY_J2"
+  expect_contains "description (verified fields)" "(/spec/replicas)" "$BODY_J2"
+  COMMIT_J2="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_J2")")" | jx 'd["message"]')"
+  expect_contains "commit message" "(partial)" "$COMMIT_J2"
+  expect_contains "commit message" "Not included" "$COMMIT_J2"
+
+  merged=false
+  for _ in $(seq 1 20); do
+    if gl PUT "$(project_path "/merge_requests/$IID_J2/merge")" '{"should_remove_source_branch":false}' >/dev/null 2>&1; then
+      merged=true; break
+    fi
+    sleep 3
+  done
+  if [[ "$merged" == "true" ]]; then pass "merged !$IID_J2 through the API"; else fail "could not merge !$IID_J2"; fi
+  MERGE_J2="$(gl GET "$(project_path "/merge_requests/$IID_J2")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
+  wait_for "proposal is Merged" phase_is "$P_J2" Merged
+  echo "  j3. Argo CD compares against the merge commit: only the image is left, as a new proposal..."
+  wait_for "$DEMO_APP compares against the merge commit" app_compared_at "$DEMO_APP" "$MERGE_J2"
+  wait_for "a new proposal for the image alone is Unmapped" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "$IMAGE_PATH:Replace:"
+  remember_proposals
+  P_J3="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "$IMAGE_PATH:Replace:" | head -n 1)"
+  if [[ -n "$P_J3" ]]; then
+    if [[ "$P_J3" != "$P_J2" ]]; then pass "it is a new proposal, not the merged one"; else fail "the merged proposal was reused"; fi
+    expect_eq "it has one change" "$IMAGE_PATH" "$(dp_field "$P_J3" '.spec.changes[*].path')"
+    expect_eq "its revision is the merge commit" "$MERGE_J2" "$(dp_field "$P_J3" .spec.source.revision)"
+  fi
+  BEFORE_J="$(proposal_count "$DEMO_APP")"
+  sleep "$QUIET"
+  expect_eq "the merged proposal stays Merged" "Merged" "$(dp_field "$P_J2" .status.phase)"
+  expect_eq "proposals for $DEMO_APP (no duplicate)" "$BEFORE_J" "$(proposal_count "$DEMO_APP")"
+  expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
+fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":null}}' >/dev/null; then
+  pass "the policy is back to the default (no partial proposals)"
+else
+  fail "could not remove spec.mapping from the policy"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+reset_cluster
+if [[ -n "${P_J3:-}" ]]; then
+  wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_J3" Reverted
+fi
+if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on for:$AUTOSYNC_OFF"; fi
 
 # ---------------------------------------------------------------------------
 step "Secrets"
