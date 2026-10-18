@@ -91,12 +91,19 @@ ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
 # How often the local operator polls merge requests.
 POLL="${POLL:-10s}"
 # A drift becomes a proposal after it has been stable for the policy's
-# batchWindow (default 30s, which this test uses), across two observations.
-WINDOW="${WINDOW:-30s}"
+# batchWindow across two observations (the policy has no minimum, 0s is valid).
+# Every wait for "nothing happens" is derived from it (QUIET below).
+WINDOW="${WINDOW:-10s}"
+WINDOW_S="${WINDOW%s}"
+if ! [[ "$WINDOW_S" =~ ^[0-9]+$ ]]; then
+  echo "WINDOW must be a number of seconds like 10s, got '$WINDOW'" >&2
+  exit 1
+fi
 # Seconds to wait for Argo CD, the operator and GitLab to react.
 if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-360}"; else WAIT="${WAIT:-180}"; fi
-# Seconds to wait before asserting that nothing happened.
-QUIET="${QUIET:-25}"
+# Seconds to wait before asserting that nothing happened: long enough for the
+# two observations a proposal needs, plus a margin.
+QUIET="${QUIET:-$((2 * WINDOW_S + 5))}"
 
 # The Applications under test, their namespaces and the resources they render.
 APPS="demo-helm shared-alpha shared-beta"
