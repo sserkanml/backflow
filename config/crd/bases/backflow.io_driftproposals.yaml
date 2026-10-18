@@ -357,6 +357,35 @@ spec:
                     - ApplicationOverride
                     - Unmapped
                     type: string
+                  unmapped:
+                    description: |-
+                      Fields of spec.changes the edits leave out, with the reason for each. Set
+                      only for a partial mapping (spec.mapping.allowPartial of the policy): the
+                      edits then cover the other changes, and these fields stay different from
+                      Git after the merge request is merged.
+                    items:
+                      description: UnmappedField is a drifted field that a partial
+                        mapping leaves out.
+                      properties:
+                        message:
+                          description: Why the field could not be traced back to Git,
+                            for people.
+                          maxLength: 1024
+                          type: string
+                        path:
+                          description: JSON pointer of the field in the resource.
+                          type: string
+                        reason:
+                          description: Machine-readable reason, such as UnsupportedChange
+                            or NoVerifiedCandidate.
+                          type: string
+                      required:
+                      - message
+                      - path
+                      - reason
+                      type: object
+                    maxItems: 64
+                    type: array
                   verified:
                     description: True when a re-render with the edits reproduced the
                       live state exactly.

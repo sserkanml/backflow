@@ -99,6 +99,22 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(backflowpolicy.Status.ObservedGeneration).To(Equal(backflowpolicy.Generation))
 		})
 
+		It("accepts spec.mapping.allowPartial, off unless set", func() {
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.PartialAllowed()).To(BeFalse(), "off by default")
+
+			backflowpolicy.Spec.Mapping = &backflowv1alpha1.MappingOptions{}
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.Mapping).NotTo(BeNil())
+			Expect(backflowpolicy.Spec.PartialAllowed()).To(BeFalse(), "the field defaults to false")
+
+			backflowpolicy.Spec.Mapping.AllowPartial = true
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.PartialAllowed()).To(BeTrue())
+		})
+
 		It("is InvalidSpec when it selects Applications neither by name nor by selector", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			backflowpolicy.Spec.Applications = backflowv1alpha1.ApplicationSelector{}

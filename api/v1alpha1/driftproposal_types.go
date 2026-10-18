@@ -173,6 +173,24 @@ type Mapping struct {
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
 	Collateral []CollateralChange `json:"collateral,omitempty"`
+	// Fields of spec.changes the edits leave out, with the reason for each. Set
+	// only for a partial mapping (spec.mapping.allowPartial of the policy): the
+	// edits then cover the other changes, and these fields stay different from
+	// Git after the merge request is merged.
+	// +kubebuilder:validation:MaxItems=64
+	// +optional
+	Unmapped []UnmappedField `json:"unmapped,omitempty"`
+}
+
+// UnmappedField is a drifted field that a partial mapping leaves out.
+type UnmappedField struct {
+	// JSON pointer of the field in the resource.
+	Path string `json:"path"`
+	// Machine-readable reason, such as UnsupportedChange or NoVerifiedCandidate.
+	Reason string `json:"reason"`
+	// Why the field could not be traced back to Git, for people.
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message"`
 }
 
 // CollateralChange is a field the edit changes although it did not drift.
