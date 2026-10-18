@@ -69,6 +69,9 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-helm.sh
+#   SECTIONS=a,j ./hack/test-helm.sh     # only those sections (default: all);
+#                                        every section works on its own
+#   WINDOW=10s POLL=3s QUIET=25           # batchWindow, merge request polling, quiet waits
 #   KEEP=true ./hack/test-helm.sh        # keep the test namespace
 
 set -euo pipefail
@@ -119,6 +122,31 @@ VALUES_DEV="helm/demo/values-dev.yaml"
 VALUES_PROD="helm/demo/values-prod.yaml"
 ALPHA_VALUES="helm/shared/services/alpha/dev.yaml"
 BETA_VALUES="helm/shared/services/beta/dev.yaml"
+
+# SECTIONS=a,j runs only those sections (letters, comma separated) after the
+# prerequisites; default all. Every section works on its own.
+SECTIONS="${SECTIONS:-}"
+section_wanted() { [[ -z "$SECTIONS" || ",$SECTIONS," == *",$1,"* ]]; }
+section_needs() {
+  case "$1" in
+    # no section needs another one
+
+    *) echo "" ;;
+  esac
+}
+check_sections() {
+  local s n
+  for s in ${SECTIONS//,/ }; do
+    case " a b c d e f g h i j " in
+      *" $s "*) ;;
+      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h,i,j)" >&2; exit 1 ;;
+    esac
+    for n in $(section_needs "$s"); do
+      section_wanted "$n" || { echo "SECTIONS: section $s needs section $n, before it (see the notes at SECTIONS); add it to the list, for example SECTIONS=$n,$s, or leave SECTIONS out" >&2; exit 1; }
+    done
+  done
+}
+check_sections
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
@@ -980,7 +1008,18 @@ policy_matched() {
 }
 wait_for "policy tracks the three Applications and matched their repository to the ScmConnection" policy_matched
 
+# Values of the image sections (h and j), read from main before any section runs.
+GIT_REPO_IMG="$(yaml_value "$VALUES_DEV" main repository)"
+[[ -n "$GIT_REPO_IMG" ]] || GIT_REPO_IMG="$(yaml_value helm/demo/values.yaml main repository)"
+GIT_TAG="$(yaml_value "$VALUES_DEV" main tag)"
+NEW_TAG="1.28-alpine"
+OLD_IMAGE="$GIT_REPO_IMG:$GIT_TAG"
+NEW_IMAGE="$GIT_REPO_IMG:$NEW_TAG"
+VERSION_LABEL='/metadata/labels/app.kubernetes.io~1version'
+POD_LABEL='/spec/template/metadata/labels/app.kubernetes.io~1version'
+
 # ---------------------------------------------------------------------------
+if section_wanted a; then
 step "a. A REGION drift becomes a merge request that edits global.region, and is merged"
 GIT_REGION="$(yaml_value "$VALUES_DEV" main region)"
 LIVE_REGION="$(live_cm "$DEMO_NS" "$CM" REGION)"
@@ -1042,7 +1081,10 @@ if [[ -n "$P_A" ]]; then
 fi
 reset_cluster
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted b; then
 step "b. LOG_LEVEL and LOG_LEVEL_UP changed together: the merge request edits config.logLevel"
 GIT_LEVEL="$(yaml_value "$VALUES_DEV" main logLevel)"
 LIVE_LEVEL="$(live_cm "$DEMO_NS" "$CM" LOG_LEVEL)"
@@ -1068,7 +1110,10 @@ if [[ -n "$P_B" ]]; then
   expect_eq "live LOG_LEVEL after the sync" "$GIT_LEVEL" "$(live_cm "$DEMO_NS" "$CM" LOG_LEVEL)"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted c; then
 step "c. LOG_LEVEL alone is Unmapped: its key also feeds LOG_LEVEL_UP"
 GIT_LEVEL="$(yaml_value "$VALUES_DEV" main logLevel)"
 LIVE_LEVEL="$(live_cm "$DEMO_NS" "$CM" LOG_LEVEL)"
@@ -1086,7 +1131,10 @@ if [[ -n "$P_C" ]]; then
 fi
 reset_cluster
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted d; then
 step "d. A key of the subchart: TIMEOUT_SECONDS is mapped to demo-sidecar.timeoutSeconds"
 GIT_TIMEOUT="$(yaml_value "$VALUES_DEV" main timeoutSeconds)"
 LIVE_TIMEOUT="$(live_cm "$DEMO_NS" "$SIDECAR_CM" TIMEOUT_SECONDS)"
@@ -1105,7 +1153,10 @@ if [[ -n "$P_D" ]]; then
   close_and_reset "$IID_D" "$P_D"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted e; then
 step "e. EQUAL_A: two keys hold the value, only config.colorA verifies"
 GIT_COLOR="$(yaml_value "$VALUES_DEV" main colorA)"
 GIT_COLOR_B="$(yaml_value "$VALUES_DEV" main colorB)"
@@ -1127,7 +1178,10 @@ if [[ -n "$P_E" ]]; then
   close_and_reset "$IID_E" "$P_E"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted f; then
 step "f. AMBIGUOUS: two keys give the same result"
 GIT_MIN="$(yaml_value "$VALUES_DEV" main minA)"
 LIVE_AMB="$(live_cm "$DEMO_NS" "$CM" AMBIGUOUS)"
@@ -1143,7 +1197,10 @@ if [[ -n "$P_F" ]]; then
 fi
 reset_cluster
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted g; then
 step "g. TIMEOUT (chart defaults) and FEATURE (helm parameter) are Unmapped"
 GIT_TO="$(yaml_value helm/demo/values.yaml main timeout)"
 LIVE_TO="$(live_cm "$DEMO_NS" "$CM" TIMEOUT)"
@@ -1169,7 +1226,10 @@ if [[ -n "$P_G2" ]]; then
 fi
 reset_cluster
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted h; then
 step "h. A Deployment: scaling is mapped to replicaCount; the image and the version label are not"
 GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
 LIVE_REPLICAS="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.replicas}')"
@@ -1195,14 +1255,6 @@ if [[ -n "$P_H1" ]]; then
   close_and_reset "$IID_H1" "$P_H1"
 fi
 
-GIT_REPO_IMG="$(yaml_value "$VALUES_DEV" main repository)"
-[[ -n "$GIT_REPO_IMG" ]] || GIT_REPO_IMG="$(yaml_value helm/demo/values.yaml main repository)"
-GIT_TAG="$(yaml_value "$VALUES_DEV" main tag)"
-NEW_TAG="1.28-alpine"
-OLD_IMAGE="$GIT_REPO_IMG:$GIT_TAG"
-NEW_IMAGE="$GIT_REPO_IMG:$NEW_TAG"
-VERSION_LABEL='/metadata/labels/app.kubernetes.io~1version'
-POD_LABEL='/spec/template/metadata/labels/app.kubernetes.io~1version'
 LIVE_IMAGE="$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
 require_drift h2 "$OLD_IMAGE" "$LIVE_IMAGE" "$NEW_IMAGE"
 
@@ -1277,7 +1329,10 @@ if [[ -n "$P_H3" ]]; then
 fi
 reset_cluster
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted i; then
 step "i. Git ahead: only commits to files a render depends on pause an Application"
 reset_cluster
 for a in $APPS; do
@@ -1395,7 +1450,10 @@ for a in $APPS; do
   if autosync_enabled "$a"; then pass "$a has automated sync again"; else fail "$a has no automated sync"; fi
 done
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted j; then
 step "j. Partial proposals: replicas are mapped, an image Git cannot trace is left out (spec.mapping.allowPartial)"
 # One drift of the Deployment has two fields: the replicas (replicaCount maps
 # them) and the image (with the default policy no edit is accepted, see h2).
@@ -1555,6 +1613,8 @@ else
 fi
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 reset_cluster
+
+fi
 
 # ---------------------------------------------------------------------------
 step "Secrets"

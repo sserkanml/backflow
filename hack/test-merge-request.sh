@@ -50,6 +50,8 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-merge-request.sh
+#   SECTIONS=c,e,f ./hack/test-merge-request.sh   # only those sections (default: all);
+#       b needs a; d and e need c; f needs c and e (the script refuses otherwise)
 #   KEEP=true ./hack/test-merge-request.sh      # keep the test namespace
 
 set -euo pipefail
@@ -87,6 +89,33 @@ if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-360}"; else WAIT="${WAIT:-1
 # Seconds to wait before asserting that nothing happened: long enough for the
 # two observations a proposal needs, plus a margin.
 QUIET="${QUIET:-$((2 * WINDOW_S + 5))}"
+
+# SECTIONS=a,j runs only those sections (letters, comma separated) after the
+# prerequisites; default all. Sections build on each other: b closes the merge request of a, d and e start from the Git value c merged, f from the value e merged; such a section refuses to run without them.
+SECTIONS="${SECTIONS:-}"
+section_wanted() { [[ -z "$SECTIONS" || ",$SECTIONS," == *",$1,"* ]]; }
+section_needs() {
+  case "$1" in
+    b) echo "a" ;;
+    d) echo "c" ;;
+    e) echo "c" ;;
+    f) echo "c e" ;;
+    *) echo "" ;;
+  esac
+}
+check_sections() {
+  local s n
+  for s in ${SECTIONS//,/ }; do
+    case " a b c d e f g " in
+      *" $s "*) ;;
+      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g)" >&2; exit 1 ;;
+    esac
+    for n in $(section_needs "$s"); do
+      section_wanted "$n" || { echo "SECTIONS: section $s needs section $n, before it (see the notes at SECTIONS); add it to the list, for example SECTIONS=$n,$s, or leave SECTIONS out" >&2; exit 1; }
+    done
+  done
+}
+check_sections
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
@@ -740,6 +769,7 @@ policy_has_connection() { [[ "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.stat
 wait_for "policy matched the repository to the ScmConnection" policy_has_connection
 
 # ---------------------------------------------------------------------------
+if section_wanted a; then
 step "a. A drift becomes a merge request"
 require_drift a debug
 set_log_level debug
@@ -777,7 +807,10 @@ if [[ -n "$P_A" ]]; then
   expect_contains "commit message trailer" "Proposal: $P_A" "$(echo "$COMMIT_JSON" | jx 'd["message"]')"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted b; then
 step "b. Closing the merge request rejects the proposal"
 if [[ -n "${P_A:-}" ]]; then
   gl PUT "$(project_path "/merge_requests/$IID_A")" '{"state_event":"close"}' >/dev/null || fail "could not close !$IID_A"
@@ -809,7 +842,10 @@ if [[ -n "${P_A:-}" ]]; then
   fi
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted c; then
 step "c. A different drift is merged"
 require_drift c warn
 set_log_level warn
@@ -869,7 +905,10 @@ if [[ -n "$P_C" ]]; then
   expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted d; then
 step "d. The live value goes back to Git while the merge request is open"
 require_drift d debug
 set_log_level debug
@@ -894,7 +933,10 @@ if [[ -n "$P_D" ]]; then
   expect_eq "status.mergeRequest.state" "closed" "$(dp_field "$P_D" .status.mergeRequest.state)"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted e; then
 step "e. A new sync resets the cluster while the merge request is open"
 require_drift e error
 set_log_level error
@@ -958,7 +1000,10 @@ PY
   expect_eq "open merge requests" "0" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted f; then
 step "f. Git ahead of the last sync pauses drift detection"
 if [[ -z "$AUTOMATED_ORIG" ]]; then
   note "skipped: $APP has no automated sync to switch off"
@@ -1035,7 +1080,10 @@ PY
   if autosync_enabled; then pass "$APP has automated sync again"; else fail "$APP has no automated sync"; fi
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if section_wanted g; then
 step "g. A proposal made in ReportOnly is proposed when the mode is switched"
 held_by_report_only() { [[ "$(condition "$1" Proposed status)/$(condition "$1" Proposed reason)" == "False/ReportOnly" ]]; }
 set_mode() { k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"mode\":\"$1\"}}" >/dev/null; }
@@ -1074,6 +1122,8 @@ if [[ -n "$P_G" ]]; then
 else
   set_log_level "$LEVEL_G"
   set_mode MergeRequest || true
+fi
+
 fi
 
 # ---------------------------------------------------------------------------
