@@ -851,6 +851,11 @@ if [[ -n "$P_C" ]]; then
   BEFORE_C="$(proposal_count)"
   echo "  waiting ${HOLD_C}s: no new proposal for the change that was just merged..."
   sleep "$HOLD_C"
+  if [[ "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.revision}')" == "$MERGE_SHA" ]]; then
+    # dev-up.sh makes Argo CD poll Git every 30s, so it can be quicker than this
+    # wait; the check below then passes without testing the sync lag.
+    note "Argo CD already compares against the merge commit: the sync lag was not exercised this time"
+  fi
   expect_eq "proposals for demo-config (no duplicate right after the merge)" "$BEFORE_C" "$(proposal_count)"
   expect_eq "proposal stays Merged" "Merged" "$(dp_field "$P_C" .status.phase)"
 
