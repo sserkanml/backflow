@@ -46,12 +46,12 @@
 #      time. With the default policy the proposal is Unmapped (the image has no
 #      verified edit). With spec.mapping.allowPartial: true the merge request is
 #      marked "(partial)" and edits only replicaCount; its body lists the image
-#      under "Not included in this merge request". After it is merged and Argo CD
-#      compares against the merge commit (automated sync off), the image alone is
-#      a new Unmapped proposal, and no duplicate of the merged one appears.
-#      With automated sync on, the body carries a warning instead, and after the
-#      merge Argo CD syncs and resets the image to its Git value: the proposal
-#      stays Merged and no new proposal appears for the image.
+#      under "Not included in this merge request", with the warning that the next
+#      Argo CD sync resets it. With manual sync, after the merge Argo CD compares
+#      against the merge commit but does not sync: Backflow pauses (GitAhead
+#      Event) and makes no proposal; a sync then resets the image to its Git
+#      value, the proposal stays Merged and no proposal appears. With automated
+#      sync the reset follows the merge at once, with the same outcome.
 #
 # Requires the environment from ./hack/dev-up.sh (the Applications demo-helm,
 # shared-alpha and shared-beta, label env=helm-test) and GITLAB_TOKEN with the
@@ -1516,12 +1516,15 @@ if [[ -n "$P_J2" ]]; then
   expect_contains "description (left-out path)" "$IMAGE_PATH" "$BODY_J2"
   expect_contains "description (live value)" "$NEW_IMAGE" "$BODY_J2"
   expect_contains "description (Git value)" "$OLD_IMAGE" "$BODY_J2"
-  expect_contains "description" "stay different from Git after this merge request is merged" "$BODY_J2"
+  expect_contains "description (warning)" "the next Argo CD sync of the Application resets the fields listed above to their Git values" "$BODY_J2"
+  expect_contains "description (warning)" "with automated sync, right after this merge request is merged" "$BODY_J2"
+  expect_not_contains "description" "reported separately" "$BODY_J2"
   expect_contains "description (verified fields)" "(/spec/replicas)" "$BODY_J2"
   COMMIT_J2="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_J2")")" | jx 'd["message"]')"
   expect_contains "commit message" "(partial)" "$COMMIT_J2"
-  expect_contains "commit message" "Not included" "$COMMIT_J2"
+  expect_contains "commit message" "Not included (the next Argo CD sync resets these to their Git values" "$COMMIT_J2"
 
+  GA_BEFORE_J="$(git_ahead_count "$DEMO_APP")"
   merged=false
   for _ in $(seq 1 20); do
     if gl PUT "$(project_path "/merge_requests/$IID_J2/merge")" '{"should_remove_source_branch":false}' >/dev/null 2>&1; then
@@ -1532,20 +1535,19 @@ if [[ -n "$P_J2" ]]; then
   if [[ "$merged" == "true" ]]; then pass "merged !$IID_J2 through the API"; else fail "could not merge !$IID_J2"; fi
   MERGE_J2="$(gl GET "$(project_path "/merge_requests/$IID_J2")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
   wait_for "proposal is Merged" phase_is "$P_J2" Merged
-  echo "  j3. Argo CD compares against the merge commit: only the image is left, as a new proposal..."
-  wait_for "$DEMO_APP compares against the merge commit" app_compared_at "$DEMO_APP" "$MERGE_J2"
-  wait_for "a new proposal for the image alone is Unmapped" has_proposal "$DEMO_APP" "$DEMO_APP" Unmapped "$IMAGE_PATH:Replace:"
-  remember_proposals
-  P_J3="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "$IMAGE_PATH:Replace:" | head -n 1)"
-  if [[ -n "$P_J3" ]]; then
-    if [[ "$P_J3" != "$P_J2" ]]; then pass "it is a new proposal, not the merged one"; else fail "the merged proposal was reused"; fi
-    expect_eq "it has one change" "$IMAGE_PATH" "$(dp_field "$P_J3" '.spec.changes[*].path')"
-    expect_eq "its revision is the merge commit" "$MERGE_J2" "$(dp_field "$P_J3" .spec.source.revision)"
-  fi
+  echo "  j3. manual sync: Argo CD compares against the merge commit, Backflow pauses, the sync resets the image..."
+  wait_for "$DEMO_APP is OutOfSync, comparing against the merge commit but not synced to it" app_ahead_at "$DEMO_APP" "$MERGE_J2"
+  wait_for "the pause is reported (GitAhead Event for $DEMO_APP)" git_ahead_exceeds "$DEMO_APP" "$GA_BEFORE_J"
   BEFORE_J="$(proposal_count "$DEMO_APP")"
+  echo "  waiting ${QUIET}s: no proposal may be made for the image while Git is ahead..."
+  sleep "$QUIET"
+  expect_eq "proposals for $DEMO_APP (none while paused)" "$BEFORE_J" "$(proposal_count "$DEMO_APP")"
+  expect_eq "the image is still the left-out live one" "$NEW_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  if sync_app "$DEMO_APP"; then pass "one sync of $DEMO_APP at the merge commit"; else fail "$DEMO_APP did not stay Synced"; fi
+  expect_eq "the sync reset the image to its Git value" "$OLD_IMAGE" "$(k -n "$DEMO_NS" get deployment "$DEMO_APP" -o jsonpath='{.spec.template.spec.containers[0].image}')"
   sleep "$QUIET"
   expect_eq "the merged proposal stays Merged" "Merged" "$(dp_field "$P_J2" .status.phase)"
-  expect_eq "proposals for $DEMO_APP (no duplicate)" "$BEFORE_J" "$(proposal_count "$DEMO_APP")"
+  expect_eq "proposals for $DEMO_APP (none for the image)" "$BEFORE_J" "$(proposal_count "$DEMO_APP")"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
 if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":null}}' >/dev/null; then
@@ -1555,11 +1557,8 @@ else
 fi
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 reset_cluster
-if [[ -n "${P_J3:-}" ]]; then
-  wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_J3" Reverted
-fi
 
-echo "  j4. automated sync on: the body warns, and the sync resets the image that was left out..."
+echo "  j4. automated sync on: right after the merge, the sync resets the image that was left out..."
 if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on for:$AUTOSYNC_OFF"; fi
 if autosync_enabled "$DEMO_APP"; then pass "$DEMO_APP syncs automatically"; else fail "$DEMO_APP has no automated sync"; fi
 if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"mapping":{"allowPartial":true}}}' >/dev/null; then
@@ -1580,14 +1579,6 @@ if [[ -n "$P_J4" ]]; then
   IFS='|' read -r IID_J4 STATE_J4 _ _ <<<"$(mr_info "$BRANCH_J4")"
   expect_eq "merge request state" "opened" "$STATE_J4"
   expect_eq "Mapped reason" "PartiallyMapped" "$(condition "$P_J4" Mapped reason)"
-  BODY_J4="$(gl GET "$(project_path "/merge_requests/$IID_J4")" | jx 'd["description"]')"
-  expect_contains "description" "Not included in this merge request" "$BODY_J4"
-  expect_contains "description (warning)" "the Application syncs automatically" "$BODY_J4"
-  expect_contains "description (warning)" "reset the fields listed above to their Git values" "$BODY_J4"
-  expect_not_contains "description" "stay different from Git" "$BODY_J4"
-  COMMIT_J4="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_J4")")" | jx 'd["message"]')"
-  expect_contains "commit message" "Argo CD automated sync will reset these to their Git values after merging" "$COMMIT_J4"
-
   BEFORE_J4="$(proposal_count "$DEMO_APP")"
   merged=false
   for _ in $(seq 1 20); do

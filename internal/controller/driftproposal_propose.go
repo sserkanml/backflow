@@ -14,7 +14,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -263,7 +262,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return stop(ctrl.Result{}, err)
 	}
 
-	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut, res.autoSync))
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut))
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrNoChange) {
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" Git already contains the live value."))
@@ -326,19 +325,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 		return nil, err
 	}
 	defer func() { _ = tree.Close() }()
-	change, err := r.mapTree(ctx, dp, app, tree, sha)
-	if change != nil {
-		change.autoSync = automatedSync(app)
-	}
-	return change, err
-}
-
-// automatedSync reports whether the Application syncs by itself
-// (spec.syncPolicy.automated): a merge is then applied by Argo CD, which also
-// resets every field a partial proposal leaves out.
-func automatedSync(app *unstructured.Unstructured) bool {
-	_, found, _ := unstructured.NestedMap(app.Object, "spec", "syncPolicy", "automated")
-	return found
+	return r.mapTree(ctx, dp, app, tree, sha)
 }
 
 // ownBranch reports whether an existing branch is this proposal's own work
@@ -410,12 +397,12 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField, autoSync bool) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left, autoSync), When: dp.Spec.DetectedAt.UTC()}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left), When: dp.Spec.DetectedAt.UTC()}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -494,7 +481,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.autoSync, change.result.diff()),
+		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {

@@ -80,7 +80,7 @@ func mappedChanges(dp *backflowv1alpha1.DriftProposal, left []leftOutField) []ba
 // commitMessage lists the changed paths and names the proposal. The actor is
 // recorded as a trailer: the Kubernetes user has no Git identity, so the
 // commit is authored by the committer.
-func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, autoSync bool) string {
+func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField) string {
 	var b strings.Builder
 	b.WriteString(commitSubject(dp, left))
 	b.WriteString("\n\nChanged paths:\n")
@@ -89,11 +89,7 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, auto
 	}
 	b.WriteString("\n")
 	if len(left) > 0 {
-		if autoSync {
-			b.WriteString("Not included (Argo CD automated sync will reset these to their Git values after merging):\n")
-		} else {
-			b.WriteString("Not included (these stay different from Git after merging):\n")
-		}
+		b.WriteString("Not included (the next Argo CD sync resets these to their Git values; with automated sync, right after merging):\n")
 		for _, l := range left {
 			fmt.Fprintf(&b, "- %s\n", singleLine(l.path))
 		}
@@ -179,7 +175,7 @@ func fenceFor(text string) string {
 // mergeRequestBody explains the change to the reviewer: what changed, who
 // changed it, the diff, which proposal it belongs to, and what merging or
 // closing means.
-func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, autoSync bool, diff string) string {
+func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, diff string) string {
 	var b strings.Builder
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.Resource)))
@@ -225,14 +221,9 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, a
 			ch := byPath[l.path]
 			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(l.path, "-"), cell(ch.Live, "(removed)"), cell(ch.Desired, "(absent)"), cell(l.reason+": "+l.message, "-"))
 		}
-		if autoSync {
-			b.WriteString("\n> **Warning:** the Application syncs automatically. Merging this merge request makes Argo CD " +
-				"reset the fields listed above to their Git values, so those live changes are lost. " +
-				"To keep one, port it to Git by hand, in this merge request or before it is merged.\n")
-		} else {
-			b.WriteString("\nThese fields stay different from Git after this merge request is merged. " +
-				"Backflow reports them separately.\n")
-		}
+		b.WriteString("\n> **Warning:** the next Argo CD sync of the Application resets the fields listed above to their Git values " +
+			"(with automated sync, right after this merge request is merged), so those live changes are lost. " +
+			"To keep one, port it to Git by hand, in this merge request or before it is merged.\n")
 	}
 
 	if diff != "" {

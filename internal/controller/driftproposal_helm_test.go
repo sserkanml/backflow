@@ -470,7 +470,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(body).To(ContainSubstring("**Not included in this merge request**"))
 			Expect(body).To(ContainSubstring("| Path | Live value | Git value | Reason |"))
 			Expect(body).To(MatchRegexp("\\| `+ /data/EXTRA +` \\| \\(removed\\) \\| `+ \"x\" +` \\| "))
-			Expect(body).To(ContainSubstring("stay different from Git after this merge request is merged"))
+			Expect(body).To(ContainSubstring("the next Argo CD sync of the Application resets the fields listed above to their Git values"))
 			Expect(body).To(ContainSubstring("exactly the drifted fields (/data/REGION) and nothing else"))
 			Expect(body).NotTo(ContainSubstring("(/data/REGION, /data/EXTRA)"))
 
@@ -478,27 +478,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "region: eu-central-1", "region: us-west-2", 1)))
 			msg := repo.commitAt(tip).Message
 			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
-			Expect(msg).To(ContainSubstring("Changed paths:\n- /data/REGION\n\nNot included (these stay different from Git after merging):\n- /data/EXTRA\n"))
-		})
-
-		It("warns that Argo CD resets the fields left out when the Application syncs automatically", func() {
-			ExpectWithOffset(1, unstructured.SetNestedMap(app.Object, map[string]any{"prune": true}, "spec", "syncPolicy", "automated")).To(Succeed())
-			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
-			setPartial(true)
-			setMode(backflowv1alpha1.ModeMergeRequest)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
-			})
-			settle(backflowv1alpha1.PhaseProposed)
-
-			Expect(provider.created).To(HaveLen(1))
-			body := provider.created[0].Body
-			Expect(body).To(ContainSubstring("**Not included in this merge request**"))
-			Expect(body).To(ContainSubstring("> **Warning:** the Application syncs automatically."))
-			Expect(body).To(ContainSubstring("reset the fields listed above to their Git values"))
-			Expect(body).NotTo(ContainSubstring("stay different from Git"))
-			msg := repo.commitAt(repo.branch(latest().Status.MergeRequest.Branch)).Message
-			Expect(msg).To(ContainSubstring("Not included (Argo CD automated sync will reset these to their Git values after merging):\n- /data/EXTRA\n"))
+			Expect(msg).To(ContainSubstring("Changed paths:\n- /data/REGION\n\nNot included (the next Argo CD sync resets these to their Git values; with automated sync, right after merging):\n- /data/EXTRA\n"))
 		})
 
 		It("commits directly with the same marking", func() {
@@ -512,7 +492,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(provider.created).To(BeEmpty())
 			msg := repo.commitAt(repo.branch("main")).Message
 			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
-			Expect(msg).To(ContainSubstring("Not included (these stay different from Git after merging):\n- /data/EXTRA\n"))
+			Expect(msg).To(ContainSubstring("Not included (the next Argo CD sync resets these to their Git values; with automated sync, right after merging):\n- /data/EXTRA\n"))
 		})
 
 		It("is still Unmapped when nothing can be mapped", func() {

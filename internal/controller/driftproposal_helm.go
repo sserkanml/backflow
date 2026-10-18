@@ -40,8 +40,6 @@ type mappedChange struct {
 	// leftOut are the changes of the proposal the edits do not make (a partial
 	// mapping, spec.mapping.allowPartial).
 	leftOut []leftOutField
-	// autoSync is set when the Application syncs automatically (proposing only).
-	autoSync bool
 }
 
 // leftOutField is a drifted field a partial mapping leaves out.
