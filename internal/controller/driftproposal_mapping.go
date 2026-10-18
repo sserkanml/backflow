@@ -41,6 +41,7 @@ const (
 // Reasons of the Mapped condition.
 const (
 	reasonMapped                = "Mapped"
+	reasonPartiallyMapped       = "PartiallyMapped"
 	reasonNotFound              = "NotFound"
 	reasonAmbiguous             = "Ambiguous"
 	reasonVerificationFailed    = "VerificationFailed"
@@ -200,10 +201,15 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		Verified:   true,
 		Diff:       truncateDiff(change.diff()),
 		Collateral: change.collateralStatus(),
+		Unmapped:   change.unmappedStatus(),
 	}
-	dp.Status.Message = change.message()
+	dp.Status.Message = change.message(dp)
+	reason := reasonMapped
+	if change.partial() {
+		reason = reasonPartiallyMapped
+	}
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
-		Type: conditionMapped, Status: metav1.ConditionTrue, Reason: reasonMapped,
+		Type: conditionMapped, Status: metav1.ConditionTrue, Reason: reason,
 		Message: dp.Status.Message, ObservedGeneration: dp.Generation,
 	})
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
@@ -343,7 +349,15 @@ func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alp
 		return r.mapHelm(ctx, dp, app, tree, sha)
 	}
 	src := directoryInfoOf(app)
-	res, err := mapping.Map(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
+	policy, err := r.policyOf(ctx, dp)
+	if err != nil {
+		return nil, err
+	}
+	mapDirectory := mapping.Map
+	if policy.Spec.PartialAllowed() {
+		mapDirectory = mapping.MapPartial
+	}
+	res, err := mapDirectory(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
 		mapping.ResourceID{
 			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
 			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
@@ -354,7 +368,11 @@ func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alp
 		}
 		return nil, err
 	}
-	return &mappedChange{strategy: backflowv1alpha1.StrategyDirect, results: []mapping.Result{*res}}, nil
+	change := &mappedChange{strategy: backflowv1alpha1.StrategyDirect, results: []mapping.Result{*res}}
+	for _, l := range res.LeftOut {
+		change.leftOut = append(change.leftOut, leftOutField{path: l.Path, reason: reasonCannotApply, message: l.Message()})
+	}
+	return change, nil
 }
 
 // repositoryAuth returns the credentials and CA bundle of the ScmConnection
