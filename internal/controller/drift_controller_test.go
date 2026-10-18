@@ -407,6 +407,21 @@ func TestBlockingProposal(t *testing.T) {
 			}
 		})
 	}
+	t.Run("the remainder of a merged partial proposal is a different change", func(t *testing.T) {
+		both := append(append([]backflowv1alpha1.FieldChange{}, changes...),
+			backflowv1alpha1.FieldChange{Path: "/data/b", Op: backflowv1alpha1.OpRemove, Desired: `"x"`})
+		merged := proposal(backflowv1alpha1.PhaseMerged, "r1", both)
+		all := []backflowv1alpha1.DriftProposal{merged}
+		if blockingProposal(all, "app", "res", both, "r1") == nil {
+			t.Error("the merged changes at the same revision must block until Argo CD syncs the merge")
+		}
+		remaining := both[1:]
+		for _, rev := range []string{"r1", "r2"} {
+			if blockingProposal(all, "app", "res", remaining, rev) != nil {
+				t.Errorf("the left-out change at %s must not be blocked by the merged proposal", rev)
+			}
+		}
+	})
 	t.Run("superseded by Git blocks, by a newer drift does not", func(t *testing.T) {
 		byGit := proposal(backflowv1alpha1.PhaseSuperseded, "r1", changes)
 		if blockingProposal([]backflowv1alpha1.DriftProposal{byGit}, "app", "res", changes, "r1") == nil {
@@ -894,6 +909,58 @@ var _ = Describe("Drift detection", func() {
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
 			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		})
+
+		Context("after a partial proposal was merged", func() {
+			// The merge request made one of two drifted fields; the other stays
+			// different from Git. Argo CD, once it syncs the merge commit, no
+			// longer reports the first one.
+			twoFields := func(level string) map[string]any {
+				st := configMapState(level)
+				st["data"].(map[string]any)["EXTRA"] = "x"
+				return st
+			}
+			BeforeEach(func() {
+				old := proposals()[0]
+				Expect(k8sClient.Delete(ctx, &old)).To(Succeed())
+				live := configMapState("debug")
+				argo.items[0].PredictedLiveState = twoFields("info")
+				argo.items[0].NormalizedLiveState = live
+				reconcileOnce()
+				Expect(proposals()).To(HaveLen(1))
+				Expect(proposals()[0].Spec.Changes).To(HaveLen(2))
+				retire(backflowv1alpha1.PhaseMerged, nil)
+			})
+
+			It("does not propose the merged changes again while the merge is not synced", func() {
+				for range 3 {
+					reconcileOnce()
+				}
+				Expect(proposals()).To(HaveLen(1))
+			})
+
+			It("proposes the remaining difference as a new, different change, once", func() {
+				merged := proposals()[0]
+				// The merge commit is synced: LOG_LEVEL now matches, EXTRA does not.
+				argo.items[0].PredictedLiveState = twoFields("debug")
+				setRevision("def456")
+				for range 3 {
+					reconcileOnce()
+				}
+				all := proposals()
+				Expect(all).To(HaveLen(2), "one new proposal, no duplicate of the merged one")
+				fresh := byPhase(backflowv1alpha1.PhaseDetected)
+				Expect(fresh).To(HaveLen(1))
+				Expect(fresh[0].Name).NotTo(Equal(merged.Name))
+				Expect(fresh[0].Spec.Source.Revision).To(Equal("def456"))
+				Expect(fresh[0].Spec.Changes).To(HaveLen(1))
+				Expect(fresh[0].Spec.Changes[0].Path).To(Equal("/data/EXTRA"))
+
+				By("the merged proposal is left as it was")
+				Expect(byPhase(backflowv1alpha1.PhaseMerged)).To(HaveLen(1))
+				Expect(byPhase(backflowv1alpha1.PhaseMerged)[0].Spec.Changes).To(Equal(merged.Spec.Changes))
+				Expect(byPhase(backflowv1alpha1.PhaseMerged)[0].Annotations).NotTo(HaveKey(annotationSupersededBy))
+			})
 		})
 
 		It("does not let a Reverted proposal block the same drift coming back", func() {

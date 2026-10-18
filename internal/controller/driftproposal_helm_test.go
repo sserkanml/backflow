@@ -459,7 +459,9 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		It("opens a merge request that says it is partial and lists what it leaves out", func() {
 			setPartial(true)
 			setMode(backflowv1alpha1.ModeMergeRequest)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone} })
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
+			})
 			settle(backflowv1alpha1.PhaseProposed)
 
 			Expect(provider.created).To(HaveLen(1))
@@ -482,7 +484,9 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		It("commits directly with the same marking", func() {
 			setPartial(true)
 			setMode(backflowv1alpha1.ModeDirectCommit)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone} })
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
+			})
 			settle(backflowv1alpha1.PhaseMerged)
 
 			Expect(provider.created).To(BeEmpty())
