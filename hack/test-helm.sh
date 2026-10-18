@@ -464,11 +464,14 @@ app_settled_at() {
   reconciled="$(app_field "$1" '{.status.reconciledAt}')"
   [[ -z "$finished" ]] || { [[ -n "$reconciled" && ! "$reconciled" < "$finished" ]]; }
 }
-# wait_all_settled <sha>: every Application settled at the commit, within WAIT.
+# wait_all_settled <sha> [app...]: every Application (default: all) settled at
+# the commit, within WAIT.
 wait_all_settled() {
-  local a waited=0
-  for a in $APPS; do
-    while ! app_settled_at "$a" "$1"; do
+  local a waited=0 sha="$1" apps
+  shift
+  apps="${*:-$APPS}"
+  for a in $apps; do
+    while ! app_settled_at "$a" "$sha"; do
       waited=$((waited + 2))
       (( waited > WAIT )) && return 1
       sleep 2
@@ -495,20 +498,22 @@ sync_app() {
   return 1
 }
 sync_all() {
-  local a ok=0
-  for a in $APPS; do sync_app "$a" || ok=1; done
+  local a ok=0 apps="${*:-$APPS}"
+  for a in $apps; do sync_app "$a" || ok=1; done
   return "$ok"
 }
 
-# reset_cluster: Git is the truth; sync everything and wait until Argo CD is idle
-# at the head of main, so the next section starts from a known state.
+# reset_cluster [app...]: Git is the truth; sync the Applications (default: all)
+# and wait until Argo CD is idle at the head of main, so the next section starts
+# from a known state. A section that drifted one Application resets only that
+# one: syncing and settling the others is wasted time.
 reset_cluster() {
-  local head
+  local head a apps="${*:-$APPS}"
   head="$(main_sha)"
-  refresh_all hard
+  for a in $apps; do refresh_app "$a" hard; done
   sleep 3
-  sync_all || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
-  wait_all_settled "$head" || fail "Argo CD did not settle at ${head:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
+  sync_all $apps || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
+  wait_all_settled "$head" $apps || fail "Argo CD did not settle at ${head:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
 }
 
 disable_autosync() {
@@ -675,7 +680,7 @@ expect_unmapped() {
 close_and_reset() {
   gl PUT "$(project_path "/merge_requests/$1")" '{"state_event":"close"}' >/dev/null || fail "could not close !$1"
   wait_for "proposal is Rejected" phase_is "$2" Rejected
-  reset_cluster
+  reset_cluster "$DEMO_APP"
 }
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1084,7 @@ if [[ -n "$P_A" ]]; then
   expect_eq "proposals for $DEMO_APP (no new one)" "$BEFORE_A" "$(proposal_count "$DEMO_APP")"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 fi
 
@@ -1129,7 +1134,7 @@ if [[ -n "$P_C" ]]; then
   expect_eq "no merge request" "" "$(dp_field "$P_C" .status.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 fi
 
@@ -1195,7 +1200,7 @@ P_F="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_AMB\"" | head -n 1)"
 if [[ -n "$P_F" ]]; then
   expect_unmapped "$P_F" AmbiguousCandidates "config.minA" "config.minB"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 fi
 
@@ -1224,7 +1229,7 @@ P_G2="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_FEATURE\"" | head -n 1)
 if [[ -n "$P_G2" ]]; then
   expect_unmapped "$P_G2" NoVerifiedCandidate "helm.parameters" "config.feature"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 fi
 
@@ -1270,7 +1275,7 @@ if [[ -n "$P_H2" ]]; then
   # policy does not accept.
   expect_unmapped "$P_H2" NoVerifiedCandidate "image.tag" "to $NEW_TAG" "would reproduce" "containers/0/image" "$VERSION_LABEL" "$POD_LABEL"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 if [[ -n "$P_H2" ]]; then
   wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_H2" Reverted
 fi
@@ -1327,7 +1332,7 @@ if [[ -n "$P_H3" ]]; then
   # miss: it reproduces the label, and the image changes with it.
   expect_unmapped "$P_H3" NoVerifiedCandidate "image.tag" "would reproduce" "containers/0/image"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 fi
 
@@ -1459,7 +1464,7 @@ step "j. Partial proposals: replicas are mapped, an image Git cannot trace is le
 # them) and the image (with the default policy no edit is accepted, see h2).
 # Automated sync stays off for demo-helm: a sync of the merge commit would
 # apply the Git image over the one that is left out.
-reset_cluster
+reset_cluster "$DEMO_APP"
 if disable_autosync "$DEMO_APP"; then pass "automated sync of $DEMO_APP switched off"; else fail "could not switch automated sync of $DEMO_APP off"; fi
 J_GIT_REPLICAS="$(yaml_value "$VALUES_DEV" main replicaCount)"
 J_NEW_REPLICAS="$((J_GIT_REPLICAS + 1))"
@@ -1482,7 +1487,7 @@ if [[ -n "$P_J1" ]]; then
   expect_unmapped "$P_J1" NoVerifiedCandidate "image.tag"
   expect_eq "nothing is listed as left out" "" "$(dp_field "$P_J1" '.status.mapping.unmapped[*].path')"
 fi
-reset_cluster
+reset_cluster "$DEMO_APP"
 if [[ -n "$P_J1" ]]; then
   wait_for "the unmapped proposal is retired once the cluster is back" phase_is "$P_J1" Reverted
 fi
@@ -1556,7 +1561,7 @@ else
   fail "could not remove spec.mapping from the policy"
 fi
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 echo "  j4. automated sync on: right after the merge, the sync resets the image that was left out..."
 if restore_autosync; then pass "automated sync switched back on"; else fail "could not switch automated sync back on for:$AUTOSYNC_OFF"; fi
@@ -1603,7 +1608,7 @@ else
   fail "could not remove spec.mapping from the policy"
 fi
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
-reset_cluster
+reset_cluster "$DEMO_APP"
 
 fi
 
