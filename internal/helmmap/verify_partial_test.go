@@ -1,0 +1,198 @@
+package helmmap
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/sserkanml/backflow/api/v1alpha1"
+)
+
+// removed is a field Helm values cannot express: an element or a key that is
+// gone from the cluster.
+func removed(index int, path, was string) Field {
+	return Field{Index: index, Found: &Result{},
+		Change: v1alpha1.FieldChange{Path: path, Op: v1alpha1.OpRemove, Desired: was}}
+}
+
+func pointersOfFailures(ff []FieldFailure) []string {
+	out := make([]string, len(ff))
+	for i, f := range ff {
+		out[i] = f.Pointer
+	}
+	return out
+}
+
+func TestVerifyPartialLeavesOutUnsupportedChanges(t *testing.T) {
+	env := newDemo(t, Spec{})
+	region := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
+	gone := removed(1, "/data/EXTRA", `"x"`)
+
+	t.Run("without AllowPartial the whole proposal is unmapped", func(t *testing.T) {
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, gone), Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Mapped() || out.Unmapped.Reason != ReasonUnsupportedChange {
+			t.Fatalf("out = %+v", out)
+		}
+	})
+
+	t.Run("with it the mappable field is proposed and the other is listed", func(t *testing.T) {
+		rend := &demoRenderer{src: env.src}
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, region, gone), Options{AllowPartial: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !out.Mapped() {
+			t.Fatalf("unmapped: %+v", out.Unmapped)
+		}
+		if len(out.Results) != 1 || len(out.Results[0].Edits) != 1 || out.Results[0].Edits[0].ChangeIndex != 0 ||
+			decodePointer(out.Results[0].Edits[0].Location) != "global.region" {
+			t.Errorf("results = %+v", out.Results)
+		}
+		if len(out.LeftOut) != 1 || out.LeftOut[0].Pointer != "/data/EXTRA" || out.LeftOut[0].Reason != ReasonUnsupportedChange {
+			t.Errorf("left out = %+v", out.LeftOut)
+		}
+		want := strings.Replace(string(env.files["helm/demo/values-dev.yaml"]), "region: eu-central-1", "region: us-west-2", 1)
+		if string(out.Results[0].Edited) != want {
+			t.Errorf("only the region line may change:\n%s", out.Results[0].Diff)
+		}
+		if rend.calls != 3 {
+			t.Errorf("renders = %d: the unsupported field must not cost any", rend.calls)
+		}
+	})
+
+	t.Run("nothing mappable stays unmapped", func(t *testing.T) {
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, gone), Options{AllowPartial: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Mapped() || out.Unmapped.Reason != ReasonUnsupportedChange || len(out.LeftOut) != 0 {
+			t.Errorf("out = %+v", out)
+		}
+	})
+}
+
+func TestVerifyPartialLeavesOutFieldsWithoutAVerifiedKey(t *testing.T) {
+	env := newDemo(t, Spec{})
+	region := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
+	timeout := drift(t, env.src, env.files, 1, "TIMEOUT", "30", "45") // only in the chart's defaults
+	colorA := drift(t, env.src, env.files, 2, "EQUAL_A", "green", "blue")
+
+	t.Run("without AllowPartial the whole proposal is unmapped", func(t *testing.T) {
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, timeout, colorA), Options{})
+		if out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+			t.Fatalf("out = %+v", out)
+		}
+	})
+
+	t.Run("with it the others are mapped and keep the index of their change", func(t *testing.T) {
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, timeout, colorA), Options{AllowPartial: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !out.Mapped() {
+			t.Fatalf("unmapped: %+v", out.Unmapped)
+		}
+		var keys []string
+		var idx []int
+		for _, e := range out.Results[0].Edits {
+			keys = append(keys, decodePointer(e.Location))
+			idx = append(idx, e.ChangeIndex)
+		}
+		if !slices.Equal(keys, []string{"global.region", "config.colorA"}) || !slices.Equal(idx, []int{0, 2}) {
+			t.Errorf("edits: keys %v, indexes %v", keys, idx)
+		}
+		if got := pointersOfFailures(out.LeftOut); !slices.Equal(got, []string{"/data/TIMEOUT"}) {
+			t.Fatalf("left out = %v", got)
+		}
+		if out.LeftOut[0].Reason != ReasonNoVerifiedCandidate || !strings.Contains(out.LeftOut[0].Detail, "chart's own defaults") {
+			t.Errorf("left out = %+v", out.LeftOut[0])
+		}
+	})
+
+	t.Run("every field failing is unmapped, naming all of them", func(t *testing.T) {
+		gone := removed(1, "/data/EXTRA", `"x"`)
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, timeout, gone), Options{AllowPartial: true})
+		if out.Mapped() {
+			t.Fatalf("mapped: %+v", out.Results)
+		}
+		if got := pointersOfFailures(out.Unmapped.Fields); !slices.Equal(got, []string{"/data/EXTRA", "/data/TIMEOUT"}) {
+			t.Errorf("fields = %v: %s", got, out.Unmapped.Message)
+		}
+	})
+}
+
+func TestVerifyPartialDoesNotWorkAroundWhatIsNotAboutOneField(t *testing.T) {
+	env := newDemo(t, Spec{})
+
+	t.Run("fields that interact", func(t *testing.T) {
+		a := drift(t, env.src, env.files, 0, "EQUAL_A", "green", "blue")
+		b := drift(t, env.src, env.files, 1, "REGION", "eu-central-1", "mars")
+		gone := removed(2, "/data/EXTRA", `"x"`)
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src, interact: true}, env.input(keyConfig, a, b, gone), Options{AllowPartial: true})
+		if out.Mapped() || out.Unmapped.Reason != ReasonEditsInteract {
+			t.Errorf("out = %+v", out)
+		}
+	})
+
+	t.Run("ambiguous candidates of several fields", func(t *testing.T) {
+		amb := drift(t, env.src, env.files, 0, "AMBIGUOUS", "3", "5")
+		region := drift(t, env.src, env.files, 1, "REGION", "eu-central-1", "us-west-2")
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, amb, region), Options{AllowPartial: true})
+		if out.Mapped() {
+			t.Fatalf("an ambiguous field is left out, not guessed: %+v", out.Results)
+		}
+	})
+}
+
+func TestVerifyPartialNeverChangesALeftOutField(t *testing.T) {
+	// The chart derives LOG_LEVEL_UP from config.logLevel. LOG_LEVEL_UP drifted
+	// too but is left out (a removal): editing config.logLevel would change it,
+	// so the edit cannot be proposed, partial or not.
+	env := newDemo(t, Spec{})
+	logLevel := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+	derived := removed(1, "/data/LOG_LEVEL_UP", `"DEBUG"`)
+	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, logLevel, derived), Options{AllowPartial: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Mapped() {
+		t.Fatalf("an edit that changes a left-out field was proposed: %+v", out.Results)
+	}
+	if got := pointersOfFailures(out.Unmapped.Fields); !slices.Contains(got, "/data/LOG_LEVEL") {
+		t.Errorf("fields = %v", got)
+	}
+}
+
+func TestVerifyPartialCollateralNeverTouchesALeftOutField(t *testing.T) {
+	const annotation = "/metadata/annotations/example.com~1version"
+	both := []string{CollateralLabels, CollateralAnnotations}
+	run := func(t *testing.T, fields func(f Field) []Field) *Outcome {
+		t.Helper()
+		env := newDemo(t, Spec{})
+		rend := &demoRenderer{src: env.src, deployment: true, tagAnnot: true}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, fields(imageDrift(t, env, newImage))...),
+			Options{AllowCollateral: both, AllowPartial: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	t.Run("an annotation the tag also changes is allowed collateral", func(t *testing.T) {
+		out := run(t, func(f Field) []Field { return []Field{f} })
+		if !out.Mapped() || !slices.Contains(collateralPointers(out.Collateral), annotation) {
+			t.Fatalf("out = %+v", out)
+		}
+	})
+
+	t.Run("the same annotation, drifted and left out, is not", func(t *testing.T) {
+		out := run(t, func(f Field) []Field { return []Field{f, removed(1, annotation, `"1.27-alpine"`)} })
+		if out.Mapped() {
+			t.Fatalf("the edit changes a left-out field but was proposed: collateral %v", collateralPointers(out.Collateral))
+		}
+	})
+}
