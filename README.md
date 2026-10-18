@@ -169,6 +169,12 @@ fields, and the operator then runs with a CRD that cannot hold them:
   such proposals stay `Unmapped`, and a mapping would not keep its list of
   collateral changes.
 
+- 0.4.0 adds `spec.mapping.allowPartial` to the `BackflowPolicy` and
+  `status.mapping.unmapped` to the `DriftProposal` (partial proposals, see
+  below). With the old CRDs the policy field is dropped, so the option stays
+  off and a proposal with a field that cannot be mapped stays `Unmapped`, as
+  before; nothing breaks, the feature is just unavailable.
+
 Applying the CRDs afterwards fixes new proposals; a proposal that failed is not
 retried.
 
@@ -339,6 +345,48 @@ Limits of Helm mapping:
   Application: Helm version, `helm.releaseName`, `kubeVersion` and API versions
   are those of Argo CD. A `.argocd-source*.yaml` file in the chart directory is
   not modelled (`ArgoSourceOverrides`).
+
+## Partial proposals
+
+By default a proposal is all or nothing: when one drifted field cannot be traced
+back to Git, the whole proposal is `Unmapped`, even though the other fields
+could be proposed. A policy can opt in to proposing what can be proven:
+
+```yaml
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
+spec:
+  mapping:
+    allowPartial: true        # default false
+```
+
+With it, a proposal with at least one mappable field is mapped for those fields
+only (Directory and Helm sources alike). Every field that is left out is listed
+in `status.mapping.unmapped` (`path`, `reason`, `message`), the `Mapped`
+condition is `True` with reason `PartiallyMapped`, and its message names both
+sets. `spec.changes` is unchanged and still lists every change. A proposal where
+nothing can be mapped is `Unmapped` as before.
+
+Nothing is guessed: the edits of the mapped fields are verified together, they
+must change exactly those fields to their live values, and every left-out field
+must render exactly as it does in Git. An edit that would also change a left-out
+field is not accepted, and the field it was for is left out as well. If the
+verification of the combined edit fails, the whole proposal is `Unmapped`.
+
+A partial merge request (or direct commit) is marked "(partial)" in its title
+and commit subject, and its body has a **Not included in this merge request**
+table: path, live value, Git value and the reason, followed by a note that these
+fields stay different from Git after merging and are reported separately. The
+changes table and the diff list the mapped fields only. The same rule applies
+when the proposal is mapped again at a moved head of the target branch, and
+`DirectCommit` mode honours it too.
+
+Lifecycle: merging a partial merge request does not make the cluster match Git.
+Once Argo CD syncs the merge commit, what is left is a different set of changes,
+so Backflow opens a new proposal for it (normally `Unmapped`, with the reason
+the fields could not be mapped). The merged proposal is not reopened, and while
+Argo CD has not seen the merge commit yet the same changes at the same revision
+do not produce a duplicate.
 
 ## Limitations
 
