@@ -36,6 +36,14 @@ spec:
       name: Strategy
       priority: 1
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Mapped")].reason
+      name: Mapped
+      priority: 1
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Proposed")].reason
+      name: Proposed
+      priority: 1
+      type: string
     - jsonPath: .status.mergeRequest.url
       name: MR
       priority: 1

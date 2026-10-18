@@ -257,6 +257,8 @@ type DriftProposalStatus struct {
 // +kubebuilder:printcolumn:name="Actor",type=string,JSONPath=`.spec.actor.username`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Strategy",type=string,JSONPath=`.status.mapping.strategy`,priority=1
+// +kubebuilder:printcolumn:name="Mapped",type=string,JSONPath=`.status.conditions[?(@.type=="Mapped")].reason`,priority=1
+// +kubebuilder:printcolumn:name="Proposed",type=string,JSONPath=`.status.conditions[?(@.type=="Proposed")].reason`,priority=1
 // +kubebuilder:printcolumn:name="MR",type=string,JSONPath=`.status.mergeRequest.url`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

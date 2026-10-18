@@ -49,6 +49,10 @@ const (
 	reasonScmUnavailable       = "ScmUnavailable"
 	reasonMergeRequestRejected = "MergeRequestRejected"
 	reasonMergeRequestOpened   = "MergeRequestOpened"
+	reasonMergeRequestClosed   = "MergeRequestClosed"
+	reasonMergeRequestMerged   = "MergeRequestMerged"
+	reasonLiveReverted         = "LiveReverted"
+	reasonSuperseded           = "SupersededByNewerDrift"
 	reasonCommitted            = "Committed"
 	reasonTargetNotABranch     = "TargetNotABranch"
 	reasonBranchConflict       = "BranchConflict"
@@ -565,9 +569,11 @@ func (r *DriftProposalReconciler) adoptMergeRequest(ctx context.Context, dp *bac
 		dp.Status.Phase = backflowv1alpha1.PhaseMerged
 		dp.Status.CommitSHA = mr.MergeCommitSHA
 		dp.Status.Message = mergedMessage(mr.URL)
+		leaveProposed(dp, reasonMergeRequestMerged, mergedConditionMessage(mr.URL, mr.MergeCommitSHA))
 	case scm.StateClosed:
 		dp.Status.Phase = backflowv1alpha1.PhaseRejected
 		dp.Status.Message = closedMessage(mr.URL)
+		leaveProposed(dp, reasonMergeRequestClosed, closedConditionMessage(mr.URL))
 	default:
 		dp.Status.Phase = backflowv1alpha1.PhaseProposed
 		dp.Status.Message = fmt.Sprintf("Merge request %s proposes the change against %s.", mr.URL, target)

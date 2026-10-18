@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+
 	"k8s.io/apimachinery/pkg/types"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -214,5 +216,49 @@ func TestProposalBranch(t *testing.T) {
 	got := proposalBranch("backflow/", dp(long, uid))
 	if len(got) > maxBranchLen || !strings.HasSuffix(got, "-3f2a9c1e") || !strings.HasPrefix(got, "backflow/a") {
 		t.Errorf("a long name is cut, the UID is kept: %q (%d)", got, len(got))
+	}
+}
+
+func TestLeaveProposedIfProposed(t *testing.T) {
+	t.Run("a proposal that was never proposed gets no Proposed condition", func(t *testing.T) {
+		dp := textProposal()
+		leaveProposedIfProposed(dp, reasonLiveReverted, "back in sync")
+		if len(dp.Status.Conditions) != 0 {
+			t.Errorf("conditions = %+v", dp.Status.Conditions)
+		}
+	})
+	t.Run("one with a merge request is closed out and names it", func(t *testing.T) {
+		dp := textProposal()
+		dp.Generation = 4
+		dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: "https://git.test/mr/7", Number: 7}
+		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+			Type: conditionProposed, Status: metav1.ConditionTrue, Reason: reasonMergeRequestOpened, Message: "open"})
+		leaveProposedIfProposed(dp, reasonSuperseded, "Replaced by the newer proposal n.")
+		c := meta.FindStatusCondition(dp.Status.Conditions, conditionProposed)
+		if c == nil || c.Status != metav1.ConditionFalse || c.Reason != reasonSuperseded || c.ObservedGeneration != 4 ||
+			!strings.Contains(c.Message, "Replaced by the newer proposal n.") || !strings.Contains(c.Message, "https://git.test/mr/7") {
+			t.Errorf("condition = %+v", c)
+		}
+	})
+	t.Run("one that already has the condition (held in ReportOnly) is updated", func(t *testing.T) {
+		dp := textProposal()
+		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+			Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reasonReportOnly, Message: "report only"})
+		leaveProposedIfProposed(dp, reasonLiveReverted, "back in sync")
+		if c := meta.FindStatusCondition(dp.Status.Conditions, conditionProposed); c.Reason != reasonLiveReverted || c.Message != "back in sync" {
+			t.Errorf("condition = %+v", c)
+		}
+	})
+}
+
+func TestConditionMessages(t *testing.T) {
+	if got := mergedConditionMessage("https://x/7", "abc123"); got != "Merge request https://x/7 was merged as commit abc123." {
+		t.Errorf("merged = %q", got)
+	}
+	if got := mergedConditionMessage("https://x/7", ""); got != "Merge request https://x/7 was merged." {
+		t.Errorf("merged without a commit = %q", got)
+	}
+	if got := closedConditionMessage("https://x/7"); got != "Merge request https://x/7 was closed without merging." {
+		t.Errorf("closed = %q", got)
 	}
 }
