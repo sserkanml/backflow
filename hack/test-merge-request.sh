@@ -72,7 +72,7 @@ MANAGER_NS="${MANAGER_NS:-backflow-system}"
 MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
 # How often the local operator polls merge requests.
-POLL="${POLL:-10s}"
+POLL="${POLL:-3s}"
 # A drift becomes a proposal after it has been stable for the policy's
 # batchWindow across two observations (the policy has no minimum, 0s is valid).
 # Every wait for "nothing happens" is derived from it (QUIET below).
