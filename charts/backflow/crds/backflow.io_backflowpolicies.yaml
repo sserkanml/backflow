@@ -220,6 +220,19 @@ spec:
               helm:
                 description: Helm-specific behaviour.
                 properties:
+                  addOverrides:
+                    default: true
+                    description: |-
+                      When the value a drifted field had in Git comes only from the chart's
+                      own defaults (the chart's values.yaml, or that of a dependency under its
+                      name or alias, or global.*), propose adding that key, with the live
+                      value, to the Application's last value file, which wins over the
+                      defaults. Existing lines of the value files are edited first; an
+                      override is only tried when none of those verifies, and it is verified
+                      by rendering like any other edit. Keys under a list in the defaults are
+                      not overridden. Set it to false to leave such proposals Unmapped.
+                      Defaults to true.
+                    type: boolean
                   allowCollateralChanges:
                     description: |-
                       Changes beyond the drifted fields that an edit of a value file may also

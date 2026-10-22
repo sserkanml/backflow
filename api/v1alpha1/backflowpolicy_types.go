@@ -104,6 +104,13 @@ func (s BackflowPolicySpec) PartialAllowed() bool {
 	return s.Mapping != nil && s.Mapping.AllowPartial
 }
 
+// OverridesAllowed reports whether a Helm edit may add a key to the
+// Application's last value file to override a chart default
+// (spec.helm.addOverrides, true unless set to false).
+func (s BackflowPolicySpec) OverridesAllowed() bool {
+	return s.Helm == nil || s.Helm.AddOverrides == nil || *s.Helm.AddOverrides
+}
+
 // DefaultBatchWindow is the batch window of a policy that does not set one.
 const DefaultBatchWindow = 30 * time.Second
 
@@ -228,6 +235,19 @@ type HelmOptions struct {
 	// +optional
 	// +listType=set
 	AllowCollateralChanges []HelmCollateralKind `json:"allowCollateralChanges,omitempty"`
+
+	// When the value a drifted field had in Git comes only from the chart's
+	// own defaults (the chart's values.yaml, or that of a dependency under its
+	// name or alias, or global.*), propose adding that key, with the live
+	// value, to the Application's last value file, which wins over the
+	// defaults. Existing lines of the value files are edited first; an
+	// override is only tried when none of those verifies, and it is verified
+	// by rendering like any other edit. Keys under a list in the defaults are
+	// not overridden. Set it to false to leave such proposals Unmapped.
+	// Defaults to true.
+	// +kubebuilder:default=true
+	// +optional
+	AddOverrides *bool `json:"addOverrides,omitempty"`
 }
 
 // HelmCollateralKind names a kind of change beyond the drifted fields.

@@ -115,6 +115,24 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(backflowpolicy.Spec.PartialAllowed()).To(BeTrue())
 		})
 
+		It("accepts spec.helm.addOverrides, on unless it is set to false", func() {
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeTrue(), "on without a helm block")
+
+			backflowpolicy.Spec.Helm = &backflowv1alpha1.HelmOptions{}
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.Helm.AddOverrides).NotTo(BeNil(), "the API server fills in the default")
+			Expect(*backflowpolicy.Spec.Helm.AddOverrides).To(BeTrue())
+			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeTrue())
+
+			off := false
+			backflowpolicy.Spec.Helm.AddOverrides = &off
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeFalse())
+		})
+
 		It("is InvalidSpec when it selects Applications neither by name nor by selector", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			backflowpolicy.Spec.Applications = backflowv1alpha1.ApplicationSelector{}
