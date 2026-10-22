@@ -140,10 +140,10 @@ func TestFindOverrides(t *testing.T) {
 
 	t.Run("global keys of a dependency keep their place", func(t *testing.T) {
 		src, files := overrideRepo(t, Spec{Path: "c", ValueFiles: []string{"prod.yaml"}}, map[string]string{
-			"c/Chart.yaml":           ovChartYAML + "dependencies:\n  - name: common\n    version: 1.0.0\n    repository: file://../common\n",
-			"common/values.yaml":     "global:\n  imageRegistry: docker.io\nlocal: x\n",
-			"c/values.yaml":          "b: 1\n",
-			"c/prod.yaml":            "a: 1\n",
+			"c/Chart.yaml":       ovChartYAML + "dependencies:\n  - name: common\n    version: 1.0.0\n    repository: file://../common\n",
+			"common/values.yaml": "global:\n  imageRegistry: docker.io\nlocal: x\n",
+			"c/values.yaml":      "b: 1\n",
+			"c/prod.yaml":        "a: 1\n",
 		})
 		got, _ := src.Find(files, "docker.io")
 		if len(got.Overrides) != 1 || got.Overrides[0].Path.String() != "global.imageRegistry" {
