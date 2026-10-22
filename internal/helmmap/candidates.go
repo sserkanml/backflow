@@ -21,6 +21,30 @@ type Candidate struct {
 	// the value to write is the new value of the field.
 	Fragment bool
 	NewValue string
+	// Override is set when File does not define Path: the candidate adds the
+	// key to override a default of the chart. Default says which.
+	Override bool
+	Default  *ChartDefault
+}
+
+// ChartDefault is a default of the chart, or of one of its dependencies, that
+// feeds a drifted field.
+type ChartDefault struct {
+	// File is the values.yaml that defines it.
+	File string
+	// Key is the key path in that file. For a dependency it is the path in the
+	// dependency's own values, without its name or alias.
+	Key KeyPath
+	// Value is the default as a template renders it.
+	Value string
+	// Tag is the YAML tag of the default (!!str, !!int, !!float, !!bool).
+	Tag string
+}
+
+// NoOverride is a chart default that cannot be overridden from a value file.
+type NoOverride struct {
+	Path   KeyPath
+	Reason string
 }
 
 // Controlled is a key path an inline setting of the Application decides, so
@@ -41,6 +65,13 @@ type Result struct {
 	// That file is not edited; the value comes from the chart, not from the
 	// Application's repository configuration.
 	ChartDefaults []KeyPath
+	// Overrides are the ways to set a chart default from the Application: the
+	// key added to the last value file, with the value the field has to get.
+	// They are only tried when no key a value file already defines works.
+	Overrides []Candidate
+	// NoOverride says, for chart defaults that Overrides does not cover, why
+	// they cannot be overridden: a key under a list, or no value file to add to.
+	NoOverride []NoOverride
 	// Controlled are inline settings that decide the value: either a setting
 	// whose own value equals the old value, or a setting at (or above, or
 	// below) a key that a value file matched.
@@ -173,22 +204,45 @@ func commonSuffixLen(a, b string) int {
 func (s *Source) find(files map[string][]byte, match func(string) []occurrence, fragments bool) (*Result, error) {
 	res := &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}
 
-	// Layer 0 is the chart's values.yaml; the value files follow in order.
-	names := append([]string{s.ChartValues}, s.ValueFiles...)
-	layers := make([][]definition, len(names))
-	for i, name := range names {
+	// The layers, lowest precedence first: the defaults of the dependencies, the
+	// chart's own values.yaml, then the value files in order.
+	type layer struct {
+		name      string
+		defs      []definition
+		isDefault bool
+	}
+	var layers []layer
+	for _, dd := range dependencyDefaults(files, s.ChartDir) {
+		defs, err := parseValues(files[dd.file])
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", dd.file, err)
+		}
+		layers = append(layers, layer{name: dd.file, defs: moveInto(defs, dd.prefix), isDefault: true})
+	}
+	if data, ok := files[s.ChartValues]; ok {
+		defs, err := parseValues(data)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", s.ChartValues, err)
+		}
+		layers = append(layers, layer{name: s.ChartValues, defs: defs, isDefault: true})
+	}
+	for _, name := range s.ValueFiles {
 		data, ok := files[name]
 		if !ok {
-			if i == 0 {
-				continue
-			}
 			return nil, fmt.Errorf("value file %s was not provided", name)
 		}
 		defs, err := parseValues(data)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		layers[i] = defs
+		layers = append(layers, layer{name: name, defs: defs})
+	}
+	later := func(i int) [][]definition {
+		out := make([][]definition, 0, len(layers)-i-1)
+		for _, l := range layers[i+1:] {
+			out = append(out, l.defs)
+		}
+		return out
 	}
 
 	seen := map[string]bool{}
@@ -200,25 +254,43 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 		}
 	}
 
-	for i, defs := range layers {
-		for _, d := range defs {
+	for i, l := range layers {
+		for _, d := range l.defs {
 			if d.kind != defScalar || d.viaMerge {
 				continue
 			}
 			occurrences := match(d.value)
-			if len(occurrences) == 0 || overridden(d, layers[i+1:]) {
+			if len(occurrences) == 0 || overridden(d, later(i)) {
 				continue
 			}
 			if v, ok := s.inlineFor(d.path); ok {
 				control(v.Layer, v.Path)
 				continue
 			}
-			if i == 0 {
+			if l.isDefault {
 				res.ChartDefaults = append(res.ChartDefaults, d.path)
+				switch {
+				case d.inList:
+					res.NoOverride = append(res.NoOverride, NoOverride{Path: d.path, Reason: "the key is in a list in the chart's defaults; a list item cannot be overridden on its own"})
+				case len(s.ValueFiles) == 0:
+					res.NoOverride = append(res.NoOverride, NoOverride{Path: d.path, Reason: "the Application has no value file to add an override to"})
+				default:
+					key := d.local
+					if key == nil {
+						key = d.path
+					}
+					def := &ChartDefault{File: l.name, Key: key, Value: d.value, Tag: d.tag}
+					for _, o := range occurrences {
+						res.Overrides = append(res.Overrides, Candidate{
+							File: s.ValueFiles[len(s.ValueFiles)-1], Path: d.path, Fragment: fragments, NewValue: o.newValue,
+							Override: true, Default: def,
+						})
+					}
+				}
 				continue
 			}
 			for _, o := range occurrences {
-				res.Candidates = append(res.Candidates, Candidate{File: names[i], Path: d.path, Fragment: fragments, NewValue: o.newValue})
+				res.Candidates = append(res.Candidates, Candidate{File: l.name, Path: d.path, Fragment: fragments, NewValue: o.newValue})
 			}
 		}
 	}
