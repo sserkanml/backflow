@@ -40,6 +40,11 @@ type mappedChange struct {
 	// leftOut are the changes of the proposal the edits do not make (a partial
 	// mapping, spec.mapping.allowPartial).
 	leftOut []leftOutField
+	// overrides are the edits that add a key to a value file to override a
+	// default of the chart (spec.helm.addOverrides).
+	overrides []helmmap.AppliedOverride
+	// renders is the number of renders through Argo CD the mapping took (Helm).
+	renders int
 }
 
 // leftOutField is a drifted field a partial mapping leaves out.
@@ -180,13 +185,26 @@ func (m *mappedChange) message(dp *backflowv1alpha1.DriftProposal) string {
 	}
 	files := strings.Join(m.paths(), ", ")
 	if m.strategy == backflowv1alpha1.StrategyHelmValues {
+		msg := fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD and changes exactly the drifted fields.", files)
 		if len(m.collateral) > 0 {
-			return fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD. Besides the drifted fields it changes %d label or annotation field(s) the policy allows.",
+			msg = fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD. Besides the drifted fields it changes %d label or annotation field(s) the policy allows.",
 				files, len(m.collateral))
 		}
-		return fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD and changes exactly the drifted fields.", files)
+		if n := len(m.overrides); n > 0 {
+			msg += fmt.Sprintf(" It adds %d key(s) that override chart defaults: %s.", n, m.overrideSummary())
+		}
+		return msg
 	}
 	return fmt.Sprintf("Mapped to %s; the edit reproduces the live state and is verified.", files)
+}
+
+// overrideSummary names the keys an edit adds to override chart defaults.
+func (m *mappedChange) overrideSummary() string {
+	names := make([]string, len(m.overrides))
+	for i, o := range m.overrides {
+		names[i] = o.Path.String()
+	}
+	return strings.Join(names, ", ")
 }
 
 // application reads the Argo CD Application of a proposal. A missing
@@ -311,19 +329,8 @@ func argoFailure(err error) error {
 	return &heldError{reason: reasonArgoCDUnreachable, cause: err}
 }
 
-// scalarOf decodes a JSON value that is a string, number or bool. Anything
-// else (an object, null, invalid JSON) is not one.
-func scalarOf(raw string) (any, bool) {
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return nil, false
-	}
-	switch v.(type) {
-	case string, float64, bool:
-		return v, true
-	}
-	return nil, false
-}
+// scalarOf decodes a JSON value that is a string, number or bool.
+func scalarOf(raw string) (any, bool) { return helmmap.ScalarOf(raw) }
 
 // helmSourceProblem returns a *verdictError for a Helm Application whose
 // source cannot be mapped at all: several sources, or a chart that comes from a
@@ -360,6 +367,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		}
 		return nil, err
 	}
+	if policy, err := r.policyOf(ctx, dp); err == nil && policy.Spec.Helm != nil {
+		src.OverrideTarget = policy.Spec.Helm.TargetValuesFile
+	}
 	files, err := helmmap.CollectFiles(tree, src)
 	if err != nil {
 		if reason := helmmap.ReasonOf(err); reason != "" {
@@ -368,28 +378,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		return nil, err
 	}
 
-	fields := make([]helmmap.Field, len(dp.Spec.Changes))
-	for i, ch := range dp.Spec.Changes {
-		found := &helmmap.Result{}
-		if old, ok := scalarOf(ch.Desired); ok && ch.Op == backflowv1alpha1.OpReplace {
-			if found, err = src.Find(files, old); err != nil {
-				return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
-			}
-		}
-		field := helmmap.Field{Index: i, Change: ch, Found: found}
-		// A string that changed may be a part of it that a key holds: the tag of an
-		// image, say. Those keys are tried only when no key holds the whole value.
-		if oldS, ok := scalarOf(ch.Desired); ok && ch.Op == backflowv1alpha1.OpReplace {
-			newV, newOK := scalarOf(ch.Live)
-			o, oIsString := oldS.(string)
-			n, nIsString := newV.(string)
-			if newOK && oIsString && nIsString {
-				if field.Fragments, err = src.FindFragments(files, o, n); err != nil {
-					return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
-				}
-			}
-		}
-		fields[i] = field
+	fields, err := helmmap.FieldsFor(src, files, dp.Spec.Changes)
+	if err != nil {
+		return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
 	}
 
 	policy, err := r.policyOf(ctx, dp)
@@ -405,7 +396,10 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		App:      helmAppOf(app),
 		Resource: helmmap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
 		Fields:   fields, Source: src, Files: files,
-	}, helmmap.Options{AllowCollateral: allowedCollateral(policy), AllowPartial: policy.Spec.PartialAllowed()})
+	}, helmmap.Options{
+		AllowCollateral: allowedCollateral(policy), AllowPartial: policy.Spec.PartialAllowed(),
+		AddOverrides: policy.Spec.OverridesAllowed(),
+	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -415,7 +409,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	if !out.Mapped() {
 		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
 	}
-	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral}
+	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral, overrides: out.Overrides, renders: out.Renders}
 	for _, l := range out.LeftOut {
 		change.leftOut = append(change.leftOut, leftOutField{path: l.Pointer, reason: l.Reason, message: l.Detail})
 	}

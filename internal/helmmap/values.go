@@ -29,6 +29,14 @@ type definition struct {
 	// (<<: *anchor). They are defined, but there is no line of their own to
 	// edit.
 	viaMerge bool
+	// tag is the YAML tag of a scalar (!!str, !!int, ...).
+	tag string
+	// inList is set when the path goes through a list item. Such a key cannot
+	// be set on its own: a list is replaced as a whole.
+	inList bool
+	// local is the path in the file the definition is read from, when path was
+	// moved into the namespace of a parent chart (dependency defaults).
+	local KeyPath
 }
 
 // parseValues returns the definitions of a values document in document order.
@@ -50,14 +58,14 @@ func parseValues(data []byte) ([]definition, error) {
 		return nil, fmt.Errorf("values must be a map at the top level")
 	}
 	var defs []definition
-	collect(&defs, nil, root, false, 0)
+	collect(&defs, nil, root, false, false, 0)
 	return defs, nil
 }
 
 // maxDepth bounds the walk, so a self-referencing alias cannot loop forever.
 const maxDepth = 64
 
-func collect(out *[]definition, path KeyPath, n *yaml.Node, viaMerge bool, depth int) {
+func collect(out *[]definition, path KeyPath, n *yaml.Node, viaMerge, inList bool, depth int) {
 	if depth > maxDepth {
 		return
 	}
@@ -65,20 +73,20 @@ func collect(out *[]definition, path KeyPath, n *yaml.Node, viaMerge bool, depth
 	switch n.Kind {
 	case yaml.MappingNode:
 		for _, e := range mapEntries(n) {
-			collect(out, path.child(e.key), e.value, viaMerge || e.merged, depth+1)
+			collect(out, path.child(e.key), e.value, viaMerge || e.merged, inList, depth+1)
 		}
 	case yaml.SequenceNode:
-		*out = append(*out, definition{path: path, kind: defList, viaMerge: viaMerge})
+		*out = append(*out, definition{path: path, kind: defList, viaMerge: viaMerge, inList: inList})
 		for i, item := range n.Content {
-			collect(out, path.child(strconv.Itoa(i)), item, viaMerge, depth+1)
+			collect(out, path.child(strconv.Itoa(i)), item, viaMerge, true, depth+1)
 		}
 	case yaml.ScalarNode:
 		if n.Tag == nullTag {
-			*out = append(*out, definition{path: path, kind: defNull, viaMerge: viaMerge})
+			*out = append(*out, definition{path: path, kind: defNull, viaMerge: viaMerge, inList: inList})
 			return
 		}
 		v, _ := renderScalar(n)
-		*out = append(*out, definition{path: path, kind: defScalar, value: v, viaMerge: viaMerge})
+		*out = append(*out, definition{path: path, kind: defScalar, value: v, viaMerge: viaMerge, tag: n.Tag, inList: inList})
 	}
 }
 

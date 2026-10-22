@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 	"time"
 
@@ -35,6 +36,21 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
+
+// conflictingClient makes every status update fail with a conflict, as when the
+// object changed since it was read.
+type conflictingClient struct{ client.Client }
+
+func (c conflictingClient) Status() client.SubResourceWriter {
+	return conflictingStatus{c.Client.Status()}
+}
+
+type conflictingStatus struct{ client.SubResourceWriter }
+
+func (conflictingStatus) Update(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
+	return errors.NewConflict(backflowv1alpha1.GroupVersion.WithResource("backflowpolicies").GroupResource(), obj.GetName(),
+		stderrors.New("the object has been modified"))
+}
 
 var _ = Describe("BackflowPolicy Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -113,6 +129,31 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.PartialAllowed()).To(BeTrue())
+		})
+
+		It("accepts spec.helm.addOverrides, on unless it is set to false", func() {
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeTrue(), "on without a helm block")
+
+			backflowpolicy.Spec.Helm = &backflowv1alpha1.HelmOptions{}
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.Helm.AddOverrides).NotTo(BeNil(), "the API server fills in the default")
+			Expect(*backflowpolicy.Spec.Helm.AddOverrides).To(BeTrue())
+			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeTrue())
+
+			off := false
+			backflowpolicy.Spec.Helm.AddOverrides = &off
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeFalse())
+		})
+
+		It("looks again soon, without an error, when the policy changed while its status was computed", func() {
+			controllerReconciler := &BackflowPolicyReconciler{Client: conflictingClient{k8sClient}, Scheme: k8sClient.Scheme()}
+			res, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred(), "an update conflict is not an error of the reconciler")
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 		})
 
 		It("is InvalidSpec when it selects Applications neither by name nor by selector", func() {

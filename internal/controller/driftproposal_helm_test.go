@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.yaml.in/yaml/v3"
@@ -17,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -201,6 +204,15 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		policy.Spec.Mode = mode
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 	}
+	// setOverrides sets spec.helm.addOverrides of the policy.
+	setOverrides := func(on bool) {
+		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+		if policy.Spec.Helm == nil {
+			policy.Spec.Helm = &backflowv1alpha1.HelmOptions{}
+		}
+		policy.Spec.Helm.AddOverrides = &on
+		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+	}
 	setHelm := func(helm map[string]any) {
 		ExpectWithOffset(1, unstructured.SetNestedField(app.Object, helm, "spec", "source", "helm")).To(Succeed())
 		ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
@@ -310,7 +322,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(renderer.lastApp.Namespace).To(Equal(ns))
 		Expect(renderer.lastApp.DestNamespace).To(Equal("demo-helm"))
 		Expect(renderer.lastApp.ReleaseName).To(Equal("helm-app"), "the release is named after the Application unless helm.releaseName says otherwise")
-		Expect(renderer.calls).To(Equal(2*(2+1)), "mapped once, and again at the head of the target branch: the unmodified files twice and the one candidate each time")
+		Expect(renderer.calls).To(Equal(2+1), "mapped once, the unmodified files twice and the one candidate; the head is the revision it was mapped at, so it is not rendered again")
 
 		By("the branch holds the edited value file, comments intact, and nothing else changed")
 		branch := got.Status.MergeRequest.Branch
@@ -445,6 +457,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		})
 
 		It("leaves out a field with no verified key too, and keeps the index of the others", func() {
+			setOverrides(false) // or the timeout would be set from the last value file
 			setPartial(true)
 			drifted(timeout, regionChange) // the timeout is only in the chart's defaults
 			got := mapOnce()
@@ -501,6 +514,133 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			got := mapOnce()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
 			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+		})
+	})
+
+	Context("a default only the chart defines (spec.helm.addOverrides)", func() {
+		timeout := backflowv1alpha1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}
+
+		It("adds the key to the last value file, and says so in the merge request", func() {
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })
+			settle(backflowv1alpha1.PhaseProposed)
+
+			got := latest()
+			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+				File: "helm/demo/values-dev.yaml", Location: "config.timeout", Value: "45", ChangeIndex: 0,
+			}}))
+			Expect(condition(conditionMapped).Message).To(ContainSubstring("adds 1 key(s) that override chart defaults: config.timeout"))
+
+			By("the branch holds the file with the key added to the config block, everything else unchanged")
+			tip := repo.branch(got.Status.MergeRequest.Branch)
+			want := strings.Replace(helmValuesDev, "  minB: 3\n", "  minB: 3\n  timeout: 45\n", 1)
+			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(want))
+			Expect(repo.file(tip, "helm/demo/values.yaml")).To(Equal(helmValues), "the chart's defaults are never edited")
+
+			By("the merge request and the commit name the default that is overridden")
+			body := provider.created[0].Body
+			for _, w := range []string{
+				"**Overrides a chart default.**",
+				"| Value file | Key added | New value | Chart default | Defined in |",
+				"| ` helm/demo/values-dev.yaml ` | ` config.timeout ` | ` 45 ` | ` 30 ` | ` helm/demo/values.yaml: config.timeout ` |",
+				"| ` helm/demo/values-dev.yaml ` | ` config.timeout ` | ` (not set; chart default 30) ` | ` 45 ` |",
+				"+  timeout: 45",
+			} {
+				Expect(body).To(ContainSubstring(w))
+			}
+			msg := repo.commitAt(tip).Message
+			Expect(msg).To(ContainSubstring("This edit adds a key to override a default of the chart (spec.helm.addOverrides):\n" +
+				"- helm/demo/values-dev.yaml: config.timeout = 45, the chart default is 30 (helm/demo/values.yaml: config.timeout)\n"))
+			Expect(msg).To(ContainSubstring("- config.timeout: (not set; chart default 30) -> 45\n"))
+		})
+
+		Context("with several value files and spec.helm.targetValuesFile", func() {
+			var head string
+			setTarget := func(file string) {
+				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+				policy.Spec.Helm = &backflowv1alpha1.HelmOptions{TargetValuesFile: file}
+				ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+			}
+			BeforeEach(func() {
+				head = repo.commit(map[string]string{"helm/demo/values-extra.yaml": "# Extras.\nreplicaCount: 1\n"}, "add the extra values")
+				setHelm(map[string]any{"valueFiles": []any{"values-dev.yaml", "values-extra.yaml"}})
+				recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+					s.Source.Revision = head
+					s.Changes = []backflowv1alpha1.FieldChange{timeout}
+				})
+			})
+			editedFile := func() string {
+				Expect(latest().Status.Mapping.Edits).To(HaveLen(1))
+				return latest().Status.Mapping.Edits[0].File
+			}
+
+			It("adds the override to the last value file when it is not set", func() {
+				settle(backflowv1alpha1.PhaseProposed)
+				Expect(editedFile()).To(Equal("helm/demo/values-extra.yaml"))
+			})
+			It("adds it to the target file, given relative to the chart", func() {
+				setTarget("values-dev.yaml")
+				settle(backflowv1alpha1.PhaseProposed)
+				Expect(editedFile()).To(Equal("helm/demo/values-dev.yaml"))
+				tip := repo.branch(latest().Status.MergeRequest.Branch)
+				Expect(repo.file(tip, "helm/demo/values-extra.yaml")).To(Equal("# Extras.\nreplicaCount: 1\n"))
+			})
+			It("accepts a repository path too", func() {
+				setTarget("helm/demo/values-dev.yaml")
+				settle(backflowv1alpha1.PhaseProposed)
+				Expect(editedFile()).To(Equal("helm/demo/values-dev.yaml"))
+			})
+			It("is Unmapped with the reason when the target is not one of the Application's value files", func() {
+				setTarget("values-prod.yaml") // exists in the repository, but the Application does not use it
+				for range 2 {
+					_, err := reconcileDP()
+					Expect(err).NotTo(HaveOccurred())
+				}
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+				Expect(condition(conditionMapped).Message).To(And(
+					ContainSubstring(`spec.helm.targetValuesFile "values-prod.yaml" is not one of the Application's value files`),
+					ContainSubstring("helm/demo/values-dev.yaml, helm/demo/values-extra.yaml")))
+				Expect(provider.created).To(BeEmpty())
+			})
+		})
+
+		It("is Unmapped again with addOverrides: false, as in 0.4", func() {
+			setOverrides(false)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })
+			for range 2 {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+			Expect(condition(conditionMapped).Message).To(ContainSubstring("chart defaults are not edited"))
+			Expect(provider.created).To(BeEmpty())
+		})
+
+		It("sets the key even when it is on by omission: a policy without a helm block", func() {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			Expect(policy.Spec.Helm).To(BeNil())
+			Expect(policy.Spec.OverridesAllowed()).To(BeTrue())
+		})
+
+		It("with partial proposals, adds the override and leaves out only what cannot be mapped", func() {
+			setPartial := func() {
+				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+				policy.Spec.Mapping = &backflowv1alpha1.MappingOptions{AllowPartial: true}
+				ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+			}
+			setPartial()
+			gone := backflowv1alpha1.FieldChange{Path: "/data/EXTRA", Op: backflowv1alpha1.OpRemove, Desired: `"x"`}
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout, gone} })
+			settle(backflowv1alpha1.PhaseProposed)
+			got := latest()
+			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
+			Expect(got.Status.Mapping.Edits).To(HaveLen(1))
+			Expect(got.Status.Mapping.Edits[0].Location).To(Equal("config.timeout"))
+			Expect(got.Status.Mapping.Unmapped).To(HaveLen(1))
+			body := provider.created[0].Body
+			Expect(body).To(ContainSubstring("**Overrides a chart default.**"))
+			Expect(body).To(ContainSubstring("**Not included in this merge request**"))
 		})
 	})
 
@@ -617,7 +757,8 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}
 			Expect(provider.created).To(BeEmpty())
 		},
-		Entry("the key is only in the chart's own values.yaml", func() {
+		Entry("the key is only in the chart's own values.yaml and overrides are off", func() {
+			setOverrides(false)
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}}
 			})
@@ -706,17 +847,80 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			setMode(backflowv1alpha1.ModeMergeRequest)
 		}
 
-		It("renders the files of the new head and builds the commit on it", func() {
+		// settleLogged reconciles to Proposed and returns what the operator logged.
+		settleLogged := func() string {
+			var mu sync.Mutex
+			var lines []string
+			logger := funcr.New(func(_, args string) { mu.Lock(); lines = append(lines, args); mu.Unlock() }, funcr.Options{})
+			lctx := logf.IntoContext(ctx, logger)
+			for range 5 {
+				_, err := r.Reconcile(lctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				if latest().Status.Phase == backflowv1alpha1.PhaseProposed {
+					break
+				}
+			}
+			ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			mu.Lock()
+			defer mu.Unlock()
+			return strings.Join(lines, "\n")
+		}
+
+		It("reuses the mapping when the head only changed files the render does not read, and builds the commit on the head", func() {
 			mapOnly()
 			head := repo.commit(map[string]string{"helm/demo/README.md": "changed\n", "helm/demo/values-prod.yaml": "global:\n  region: us-east-2\n"}, "elsewhere")
 			callsBefore := renderer.calls
 
-			settle(backflowv1alpha1.PhaseProposed)
-			Expect(renderer.calls-callsBefore).To(Equal(2+1), "the head is rendered again, twice for the baseline and once for the edit")
+			out := settleLogged()
+			Expect(renderer.calls-callsBefore).To(BeZero(), "nothing the render reads changed: no render")
+			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
+			Expect(out).To(ContainSubstring("none of the 2 changed file(s) is one the mapping depends on"))
+			Expect(out).NotTo(ContainSubstring("Mapping again"))
 			tip := repo.branch(latest().Status.MergeRequest.Branch)
 			Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(head))
 			Expect(repo.file(tip, "helm/demo/README.md")).To(Equal("changed\n"))
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(ContainSubstring("region: us-west-2"))
+			Expect(repo.file(tip, "helm/demo/values-prod.yaml")).To(Equal("global:\n  region: us-east-2\n"))
+		})
+
+		It("reuses the mapping when the head is the revision it was mapped at", func() {
+			mapOnly()
+			callsBefore := renderer.calls
+			out := settleLogged()
+			Expect(renderer.calls - callsBefore).To(BeZero())
+			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
+			Expect(out).To(ContainSubstring("the target branch is still at the revision the proposal was mapped at"))
+		})
+
+		It("maps again when the head changed a file the render reads", func() {
+			mapOnly()
+			head := repo.commit(map[string]string{"helm/demo/values.yaml": strings.Replace(helmValues, "timeout: 30", "timeout: 31", 1)}, "a chart default")
+			callsBefore := renderer.calls
+
+			out := settleLogged()
+			Expect(renderer.calls-callsBefore).To(Equal(2+1), "the head is rendered again, twice for the baseline and once for the edit")
+			Expect(out).To(ContainSubstring("Mapping again at the head of the target branch"))
+			Expect(out).To(ContainSubstring("the target branch changed helm/demo/values.yaml, which the mapping depends on"))
+			Expect(out).NotTo(ContainSubstring("Reusing the mapping"))
+			Expect(repo.commitAt(repo.branch(latest().Status.MergeRequest.Branch)).ParentHashes[0].String()).To(Equal(head))
+		})
+
+		It("maps again when the Application's source changed since the mapping", func() {
+			mapOnly()
+			setHelm(map[string]any{"valueFiles": []any{"values-dev.yaml"}, "releaseName": "other"})
+			callsBefore := renderer.calls
+			out := settleLogged()
+			Expect(renderer.calls - callsBefore).To(BeNumerically(">", 0))
+			Expect(out).To(ContainSubstring("the Application's source or the policy's mapping options changed since the mapping"))
+		})
+
+		It("maps again when the operator has no earlier result, as after a restart", func() {
+			mapOnly()
+			r.memos = mappingMemos{}
+			callsBefore := renderer.calls
+			out := settleLogged()
+			Expect(renderer.calls - callsBefore).To(Equal(2 + 1))
+			Expect(out).To(ContainSubstring("there is no earlier result in memory"))
 		})
 
 		It("is superseded when the head no longer renders the old value", func() {
@@ -735,7 +939,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 
 		It("is not superseded by Argo CD being unreachable at the new head", func() {
 			mapOnly()
-			repo.commit(map[string]string{"helm/demo/README.md": "changed\n"}, "elsewhere")
+			repo.commit(map[string]string{"helm/demo/values.yaml": strings.Replace(helmValues, "timeout: 30", "timeout: 31", 1)}, "a chart default")
 			renderer.failures = []error{errors.New("boom")}
 
 			res, err := reconcileDP()

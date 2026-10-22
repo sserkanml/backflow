@@ -47,6 +47,7 @@ type demoRenderer struct {
 	random    bool // data.RANDOM changes on every render
 	randomCM  bool // a ConfigMap whose name changes on every render
 	interact  bool // data.BOTH is "yes" only if colorA is blue and region is mars
+	altRegion bool // the top level key "region", when set, replaces global.region
 }
 
 func deepMerge(dst, src map[string]any) {
@@ -130,6 +131,9 @@ func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]b
 
 	logLevel := str(get(values, "config", "logLevel"))
 	region := str(get(values, "global", "region"))
+	if r := get(values, "region"); d.altRegion && r != nil {
+		region = str(r)
+	}
 	data := map[string]any{
 		"LOG_LEVEL":    logLevel,
 		"REGION":       region,
@@ -719,7 +723,7 @@ func TestNearMissReporting(t *testing.T) {
 		cand := func(key string, n int) *tryout {
 			return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
 		}
-		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil, collateralRule{})
+		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil, collateralRule{}, false)
 		if len(bad) != 1 || bad[0].NearMiss == nil || bad[0].NearMiss.Path.String() != "few" {
 			t.Errorf("bad = %+v", bad)
 		}

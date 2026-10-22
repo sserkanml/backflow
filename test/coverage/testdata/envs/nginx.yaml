@@ -1,0 +1,13 @@
+# Production values of the nginx chart.
+replicaCount: 2
+
+image:
+  tag: 1.29.1-debian-12-r0 # pinned by the platform team
+
+resourcesPreset: small
+
+service:
+  type: ClusterIP
+
+podAnnotations:
+  team: platform

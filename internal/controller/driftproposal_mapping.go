@@ -193,6 +193,11 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		return r.retry(ctx, dp, reasonRepositoryUnavailable, err)
 	}
 
+	if policy, perr := r.policyOf(ctx, dp); perr == nil {
+		r.memos.put(dp.UID, mappingMemo{change: change, revision: dp.Spec.Source.Revision,
+			fingerprint: mappingFingerprint(app, policy), at: time.Now()})
+	}
+
 	orig := dp.DeepCopy()
 	edits := change.edits()
 	dp.Status.Mapping = &backflowv1alpha1.Mapping{
@@ -215,7 +220,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.Info("Proposal mapped", "proposal", dp.Name, "strategy", change.strategy, "files", change.paths(), "edits", len(edits))
+	log.Info("Proposal mapped", "proposal", dp.Name, "strategy", change.strategy, "files", change.paths(), "edits", len(edits), "renders", change.renders)
 	return ctrl.Result{}, nil
 }
 

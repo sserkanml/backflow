@@ -1,0 +1,13 @@
+# Defaults of the kvstore subchart. The parent chart's environment values reach
+# them under the alias "store".
+replicaCount: 1
+
+image:
+  repository: ghcr.io/example/kvstore
+  tag: 7.2.4
+  pullPolicy: IfNotPresent
+
+service:
+  port: 6379
+
+maxMemory: 256

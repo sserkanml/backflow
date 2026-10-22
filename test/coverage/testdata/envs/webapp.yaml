@@ -1,0 +1,14 @@
+# Production values of webapp.
+replicaCount: 2
+
+image:
+  tag: "1.4.3" # promoted by the release pipeline
+
+config:
+  region: eu-central-1
+
+service:
+  port: 8080
+
+store:
+  maxMemory: 512 # the only subchart value the environment sets

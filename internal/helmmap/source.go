@@ -113,6 +113,30 @@ type Source struct {
 	// helm.values, helm.valuesObject, helm.parameters and
 	// helm.fileParameters set.
 	Inline []InlineValue
+	// OverrideTarget is the value file an override of a chart default is added
+	// to (spec.helm.targetValuesFile of the policy): a repository path, a path
+	// relative to the chart directory, or as the Application writes it. Empty
+	// means the last value file.
+	OverrideTarget string
+}
+
+// overrideFile returns the value file that receives an override. When it
+// cannot be one, reason says why.
+func (s *Source) overrideFile() (file, reason string) {
+	if len(s.ValueFiles) == 0 {
+		return "", "the Application has no value file to add an override to"
+	}
+	if s.OverrideTarget == "" {
+		return s.ValueFiles[len(s.ValueFiles)-1], ""
+	}
+	t := strings.TrimPrefix(s.OverrideTarget, "/")
+	for _, vf := range s.ValueFiles {
+		if vf == t || vf == path.Join(s.ChartDir, t) || vf == path.Clean(t) {
+			return vf, ""
+		}
+	}
+	return "", fmt.Sprintf("spec.helm.targetValuesFile %q is not one of the Application's value files (%s)",
+		s.OverrideTarget, strings.Join(s.ValueFiles, ", "))
 }
 
 // NewSource resolves the Helm source of an Application against the

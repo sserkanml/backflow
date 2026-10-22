@@ -80,7 +80,7 @@ func mappedChanges(dp *backflowv1alpha1.DriftProposal, left []leftOutField) []ba
 // commitMessage lists the changed paths and names the proposal. The actor is
 // recorded as a trailer: the Kubernetes user has no Git identity, so the
 // commit is authored by the committer.
-func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField) string {
+func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []helmmap.AppliedOverride) string {
 	var b strings.Builder
 	b.WriteString(commitSubject(dp, left))
 	b.WriteString("\n\nChanged paths:\n")
@@ -95,7 +95,7 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField) stri
 		}
 		b.WriteString("\n")
 	}
-	if rows := helmEditRows(dp); len(rows) > 0 {
+	if rows := helmEditRows(dp, overrides); len(rows) > 0 {
 		lastFile := ""
 		for _, row := range rows {
 			if row.file != lastFile {
@@ -103,6 +103,13 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField) stri
 				lastFile = row.file
 			}
 			fmt.Fprintf(&b, "- %s: %s -> %s\n", singleLine(row.key), singleLine(row.old), singleLine(row.new))
+		}
+		if len(overrides) > 0 {
+			b.WriteString("\nThis edit adds a key to override a default of the chart (spec.helm.addOverrides):\n")
+			for _, o := range overrides {
+				fmt.Fprintf(&b, "- %s: %s = %s, the chart default is %s (%s: %s)\n", singleLine(o.File), singleLine(o.Path.String()),
+					singleLine(overrideValue(o)), singleLine(o.Default.Value), singleLine(o.Default.File), singleLine(o.Default.Key.String()))
+			}
 		}
 		fmt.Fprintf(&b, "\n%s\n\n", helmVerifiedLine(dp, left))
 		if lines := collateralLines(dp); len(lines) > 0 {
@@ -175,7 +182,7 @@ func fenceFor(text string) string {
 // mergeRequestBody explains the change to the reviewer: what changed, who
 // changed it, the diff, which proposal it belongs to, and what merging or
 // closing means.
-func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, diff string) string {
+func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []helmmap.AppliedOverride, diff string) string {
 	var b strings.Builder
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.Resource)))
@@ -196,10 +203,18 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, d
 		fmt.Fprintf(&b, "| %s | %s | %s |\n", cell(ch.Path, "-"), cell(ch.Desired, "(absent)"), cell(ch.Live, "(removed)"))
 	}
 
-	if rows := helmEditRows(dp); len(rows) > 0 {
+	if rows := helmEditRows(dp, overrides); len(rows) > 0 {
 		b.WriteString("\n**Helm values**\n\n| File | Key | Old | New |\n|---|---|---|---|\n")
 		for _, row := range rows {
 			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(row.file, "-"), cell(row.key, "-"), cell(row.old, "(none)"), cell(row.new, "(none)"))
+		}
+		if len(overrides) > 0 {
+			b.WriteString("\n**Overrides a chart default.** The value was only set by the chart, so this merge request adds the key to the value file (`spec.helm.addOverrides` of the policy):\n\n")
+			b.WriteString("| Value file | Key added | New value | Chart default | Defined in |\n|---|---|---|---|---|\n")
+			for _, o := range overrides {
+				fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", cell(o.File, "-"), cell(o.Path.String(), "-"), cell(overrideValue(o), "(none)"),
+					cell(o.Default.Value, "(none)"), cell(o.Default.File+": "+o.Default.Key.String(), "-"))
+			}
 		}
 		fmt.Fprintf(&b, "\n%s\n", helmVerifiedLine(dp, left))
 		if c := dp.Status.Mapping.Collateral; len(c) > 0 {
@@ -268,7 +283,7 @@ type helmRow struct{ file, key, old, new string }
 // strategy: the value file, the key path, and the value before and after. The
 // old value is the one the change expected in Git, which is the value the key
 // held (candidates are found by that value). Empty for other strategies.
-func helmEditRows(dp *backflowv1alpha1.DriftProposal) []helmRow {
+func helmEditRows(dp *backflowv1alpha1.DriftProposal, overrides []helmmap.AppliedOverride) []helmRow {
 	m := dp.Status.Mapping
 	if m == nil || m.Strategy != backflowv1alpha1.StrategyHelmValues {
 		return nil
@@ -285,9 +300,31 @@ func helmEditRows(dp *backflowv1alpha1.DriftProposal) []helmRow {
 		if i := int(e.ChangeIndex); i >= 0 && i < len(dp.Spec.Changes) {
 			row.old = rendered(dp.Spec.Changes[i].Desired)
 		}
+		if o := overrideOf(overrides, e.File, e.Location); o != nil {
+			row.old = "(not set; chart default " + o.Default.Value + ")"
+		}
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// overrideOf returns the override an edit of file at a key (as shown in the
+// status) is, or nil for an edit of an existing line.
+func overrideOf(overrides []helmmap.AppliedOverride, file, key string) *helmmap.AppliedOverride {
+	for i := range overrides {
+		if overrides[i].File == file && overrides[i].Path.String() == key {
+			return &overrides[i]
+		}
+	}
+	return nil
+}
+
+// overrideValue is the value an override writes, as a template renders it.
+func overrideValue(o helmmap.AppliedOverride) string {
+	if v, ok := scalarOf(o.Value); ok {
+		return helmmap.RenderValue(v)
+	}
+	return o.Value
 }
 
 // helmVerifiedLine says how a Helm edit was checked and what it changes.

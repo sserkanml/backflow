@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kvstore
+description: A small key-value store, packaged into the webapp chart as charts/kvstore-0.1.0.tgz.
+type: application
+version: 0.1.0
+appVersion: "7.2.4"

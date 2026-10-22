@@ -1,0 +1,11 @@
+# Production values of the postgresql chart.
+auth:
+  postgresPassword: not-a-real-password
+  username: app
+  password: not-a-real-password-either
+  database: app
+
+primary:
+  resourcesPreset: small
+  persistence:
+    size: 20Gi

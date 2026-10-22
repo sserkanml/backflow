@@ -175,6 +175,14 @@ fields, and the operator then runs with a CRD that cannot hold them:
   off and a proposal with a field that cannot be mapped stays `Unmapped`, as
   before; nothing breaks, the feature is just unavailable.
 
+- 0.5.0 adds `spec.helm.addOverrides` to the `BackflowPolicy`. With the old CRD
+  the field is dropped and the default (on) applies, so you cannot turn
+  overrides off until the CRDs are applied. **This changes what proposals
+  become:** a Helm change whose old value only the chart's defaults hold used to
+  be `Unmapped` and now becomes a merge request that adds a key to your last
+  value file. Set `spec.helm.addOverrides: false` on the policy to keep the old
+  behaviour.
+
 Applying the CRDs afterwards fixes new proposals; a proposal that failed is not
 retried.
 
@@ -185,6 +193,7 @@ retried.
 make run                # run the operator locally against the current kube context
 make test               # unit and envtest tests
 make lint               # golangci-lint
+make coverage           # how much real-chart drift maps back to Git (needs helm; see test/coverage/REPORT.md)
 make helm-sync          # copy the CRDs and RBAC rules into charts/backflow after make manifests
 ```
 
@@ -248,8 +257,12 @@ How a proposal is made:
    through Argo CD.
 
 Like Directory proposals, a Helm proposal is made against the head of the target
-branch: the head is rendered again, and when it no longer renders the old values
-the proposal is `Superseded`.
+branch. When the head is the revision the proposal was mapped at, or only files
+the mapping does not depend on changed since (the files a render reads for Helm,
+everything below the directory for a Directory source), the mapping is reused
+and nothing is rendered again; the operator log says which ("Reusing the mapping"
+or "Mapping again", with the reason). Otherwise the head is mapped again, and
+when it no longer renders the old values the proposal is `Superseded`.
 
 When the change cannot be traced back with certainty the proposal is `Unmapped`,
 and the `Mapped` condition says why (`NoVerifiedCandidate`,
@@ -265,6 +278,46 @@ read-only account in the install steps has it) and must be reachable over
 **HTTP/2**: the render is a gRPC call on the same port as the API, so a proxy
 that only speaks HTTP/1.1 in front of Argo CD makes mapping wait and retry
 (`ArgoCDUnreachable`). Nothing is applied to the cluster.
+
+### Defaults that only the chart defines
+
+An environment often changes a value it never set: the replica count of a chart
+that nobody overrides, a timeout, the pull policy. The old value then comes only
+from the chart's own defaults (its `values.yaml`, or that of a dependency under
+its name or alias, and `global.*`), and that file is not the Application's
+configuration, so Backflow does not edit it. Instead it **adds an override**: the
+key, with the live value, is appended to the Application's last value file (the
+one with the highest precedence), where it wins over the defaults.
+
+```yaml
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
+spec:
+  helm:
+    addOverrides: true        # the default; false leaves such drift Unmapped
+```
+
+- The key goes to the last value file of the Application, or to the file named in
+  `spec.helm.targetValuesFile`. That file must be one of the Application's
+  resolved value files (a repository path, relative to the chart directory, or
+  as the Application writes it); otherwise the proposal stays `Unmapped` and the
+  message says which file was named and which ones the Application uses.
+- Missing intermediate maps are created, an existing parent map gets the entry
+  appended in its own indentation, and the rest of the file (comments, quoting,
+  key order) is not touched. The new value keeps the type of the default.
+- Edits of keys a value file already defines are always tried first; an override
+  is only tried when none of them verifies. It is verified by rendering through
+  Argo CD like any other edit: it must change exactly the drifted fields, and the
+  collateral and partial rules apply unchanged.
+- Whole values and parts of a value (the image tag of `repository:tag`) both
+  work. A key under a list in the defaults is out of scope: a list is replaced
+  as a whole, and the proposal stays `Unmapped` with that reason.
+- A key that the Application sets inline (`helm.values`, `helm.parameters`, ...)
+  stays `Unmapped`; so does an Application without any value file.
+- The merge request body has an **Overrides a chart default** table (value file,
+  key added, new value, chart default, and the file that defines it), the commit
+  message says the same, and the table of Helm values shows the old value as
+  `(not set; chart default ...)`.
 
 ### Label and annotation changes beside an edit
 
@@ -307,9 +360,9 @@ Limits of Helm mapping:
   `$values` references), are `Unmapped` (`UnsupportedSourceType`). Value files
   that are URLs are not edited; Backflow reports that a value may come from one.
 - **The chart's own `values.yaml` is never edited.** A value that exists only
-  there is `Unmapped` (`NoVerifiedCandidate`, "chart's own defaults"): the
-  chart's defaults are not an environment's configuration. Put an override in a
-  value file of the Application, then it can be changed.
+  there is overridden in the Application's last value file (see above); with
+  `spec.helm.addOverrides: false` it is `Unmapped` (`NoVerifiedCandidate`,
+  "chart's own defaults"), as are keys under a list in the defaults.
 - **Inline settings win and are not edited.** A key set by `helm.values`,
   `helm.valuesObject`, `helm.parameters` or `helm.fileParameters` on the
   Application overrides any value file, and that setting lives in the Argo CD

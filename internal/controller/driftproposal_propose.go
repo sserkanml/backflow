@@ -21,6 +21,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -40,12 +41,12 @@ const (
 // still in Mapping is retried; the reasons that end in Failed or Superseded
 // are final.
 const (
-	reasonReportOnly           = "ReportOnly"
+	reasonReportOnly = "ReportOnly"
 	// reasonProposing is the Proposed condition while the change is mapped again
 	// at the target branch, committed and pushed. These steps talk to Argo CD
 	// and the Git host and can take minutes; the condition says what the
 	// proposal is doing until it has a merge request or a reason to wait.
-	reasonProposing = "Proposing"
+	reasonProposing            = "Proposing"
 	reasonMissingScmConnection = "MissingScmConnection"
 	reasonPolicyNotFound       = "PolicyNotFound"
 	reasonScmAuthFailed        = "ScmAuthFailed"
@@ -257,9 +258,14 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 	}
 
 	started := time.Now()
-	res, err := r.mapAt(ctx, dp, access, head)
-	logf.FromContext(ctx).Info("Mapped again at the head of the target branch",
-		"proposal", dp.Name, "head", head, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
+	res, err := r.mapForHead(ctx, dp, access, head)
+	renders := 0
+	if res != nil {
+		renders = res.renders
+	}
+	logf.FromContext(ctx).Info("Mapping at the head of the target branch is ready",
+		"proposal", dp.Name, "head", head, "took", time.Since(started).Round(time.Millisecond).String(),
+		"rendersOfTheMapping", renders, "error", err)
 	if err != nil {
 		if held, ok := errors.AsType[*heldError](err); ok {
 			return stop(r.holdProposal(ctx, dp, held.reason, held.cause, 0))
@@ -279,7 +285,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 	}
 
 	started = time.Now()
-	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut))
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut, res.overrides))
 	logf.FromContext(ctx).Info("Commit built",
 		"proposal", dp.Name, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
 	if err != nil {
@@ -416,12 +422,12 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField, overrides []helmmap.AppliedOverride) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left), When: dp.Spec.DetectedAt.UTC()}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left, overrides), When: dp.Spec.DetectedAt.UTC()}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -504,7 +510,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.diff()),
+		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.overrides, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {
