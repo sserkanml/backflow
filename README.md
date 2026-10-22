@@ -293,6 +293,11 @@ spec:
     addOverrides: true        # the default; false leaves such drift Unmapped
 ```
 
+- The key goes to the last value file of the Application, or to the file named in
+  `spec.helm.targetValuesFile`. That file must be one of the Application's
+  resolved value files (a repository path, relative to the chart directory, or
+  as the Application writes it); otherwise the proposal stays `Unmapped` and the
+  message says which file was named and which ones the Application uses.
 - Missing intermediate maps are created, an existing parent map gets the entry
   appended in its own indentation, and the rest of the file (comments, quoting,
   key order) is not touched. The new value keeps the type of the default.

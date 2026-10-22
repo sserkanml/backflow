@@ -365,6 +365,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		}
 		return nil, err
 	}
+	if policy, err := r.policyOf(ctx, dp); err == nil && policy.Spec.Helm != nil {
+		src.OverrideTarget = policy.Spec.Helm.TargetValuesFile
+	}
 	files, err := helmmap.CollectFiles(tree, src)
 	if err != nil {
 		if reason := helmmap.ReasonOf(err); reason != "" {

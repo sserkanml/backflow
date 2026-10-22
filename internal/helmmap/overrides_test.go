@@ -161,3 +161,37 @@ func TestFindOverridesDependencyGlobal(t *testing.T) {
 		t.Errorf("overrides = %+v", got.Overrides)
 	}
 }
+
+func TestFindOverridesTarget(t *testing.T) {
+	spec := Spec{Path: "c", ValueFiles: []string{"base.yaml", "prod.yaml"}}
+	content := map[string]string{
+		"c/Chart.yaml": ovChartYAML, "c/values.yaml": "a: 1\n", "c/base.yaml": "b: 1\n", "c/prod.yaml": "b: 2\n",
+	}
+	for name, tt := range map[string]struct {
+		target, want, reason string
+	}{
+		"unset: the last file":               {"", "c/prod.yaml", ""},
+		"relative to the chart":              {"base.yaml", "c/base.yaml", ""},
+		"a repository path":                  {"c/base.yaml", "c/base.yaml", ""},
+		"a repository path with a slash":     {"/c/base.yaml", "c/base.yaml", ""},
+		"not one of the Application's files": {"other.yaml", "", `spec.helm.targetValuesFile "other.yaml" is not one of the Application's value files (c/base.yaml, c/prod.yaml)`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src, files := overrideRepo(t, spec, content)
+			src.OverrideTarget = tt.target
+			got, err := src.Find(files, float64(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.reason != "" {
+				if len(got.Overrides) != 0 || len(got.NoOverride) != 1 || got.NoOverride[0].Reason != tt.reason {
+					t.Errorf("overrides = %+v, no override = %+v", got.Overrides, got.NoOverride)
+				}
+				return
+			}
+			if len(got.Overrides) != 1 || got.Overrides[0].File != tt.want {
+				t.Errorf("overrides = %+v, want the file %s", got.Overrides, tt.want)
+			}
+		})
+	}
+}

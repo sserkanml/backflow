@@ -551,6 +551,56 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(msg).To(ContainSubstring("- config.timeout: (not set; chart default 30) -> 45\n"))
 		})
 
+		Context("with several value files and spec.helm.targetValuesFile", func() {
+			var head string
+			setTarget := func(file string) {
+				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+				policy.Spec.Helm = &backflowv1alpha1.HelmOptions{TargetValuesFile: file}
+				ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+			}
+			BeforeEach(func() {
+				head = repo.commit(map[string]string{"helm/demo/values-extra.yaml": "# Extras.\nreplicaCount: 1\n"}, "add the extra values")
+				setHelm(map[string]any{"valueFiles": []any{"values-dev.yaml", "values-extra.yaml"}})
+				recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
+					s.Source.Revision = head
+					s.Changes = []backflowv1alpha1.FieldChange{timeout}
+				})
+			})
+			editedFile := func() string {
+				Expect(latest().Status.Mapping.Edits).To(HaveLen(1))
+				return latest().Status.Mapping.Edits[0].File
+			}
+
+			It("adds the override to the last value file when it is not set", func() {
+				settle(backflowv1alpha1.PhaseProposed)
+				Expect(editedFile()).To(Equal("helm/demo/values-extra.yaml"))
+			})
+			It("adds it to the target file, given relative to the chart", func() {
+				setTarget("values-dev.yaml")
+				settle(backflowv1alpha1.PhaseProposed)
+				Expect(editedFile()).To(Equal("helm/demo/values-dev.yaml"))
+				tip := repo.branch(latest().Status.MergeRequest.Branch)
+				Expect(repo.file(tip, "helm/demo/values-extra.yaml")).To(Equal("# Extras.\nreplicaCount: 1\n"))
+			})
+			It("accepts a repository path too", func() {
+				setTarget("helm/demo/values-dev.yaml")
+				settle(backflowv1alpha1.PhaseProposed)
+				Expect(editedFile()).To(Equal("helm/demo/values-dev.yaml"))
+			})
+			It("is Unmapped with the reason when the target is not one of the Application's value files", func() {
+				setTarget("values-prod.yaml") // exists in the repository, but the Application does not use it
+				for range 2 {
+					_, err := reconcileDP()
+					Expect(err).NotTo(HaveOccurred())
+				}
+				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+				Expect(condition(conditionMapped).Message).To(And(
+					ContainSubstring(`spec.helm.targetValuesFile "values-prod.yaml" is not one of the Application's value files`),
+					ContainSubstring("helm/demo/values-dev.yaml, helm/demo/values-extra.yaml")))
+				Expect(provider.created).To(BeEmpty())
+			})
+		})
+
 		It("is Unmapped again with addOverrides: false, as in 0.4", func() {
 			setOverrides(false)
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })

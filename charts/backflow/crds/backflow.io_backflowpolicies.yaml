@@ -302,8 +302,12 @@ spec:
                     type: array
                   targetValuesFile:
                     description: |-
-                      Which values file receives the change when the Application uses several.
-                      Defaults to the last file in spec.source.helm.valueFiles.
+                      Which values file receives an override of a chart default (see
+                      addOverrides) when the Application uses several. It must be one of the
+                      Application's value files, as a repository path, relative to the chart
+                      directory, or as the Application writes it; otherwise such a change stays
+                      Unmapped and says so. Defaults to the last file in
+                      spec.source.helm.valueFiles.
                     type: string
                 type: object
               ignoreFields:

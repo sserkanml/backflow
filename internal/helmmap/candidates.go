@@ -245,6 +245,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 		return out
 	}
 
+	target, targetWhy := s.overrideFile()
 	seen := map[string]bool{}
 	control := func(layer string, p KeyPath) {
 		key := layer + "\x00" + p.String()
@@ -272,8 +273,8 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 				switch {
 				case d.inList:
 					res.NoOverride = append(res.NoOverride, NoOverride{Path: d.path, Reason: "the key is in a list in the chart's defaults; a list item cannot be overridden on its own"})
-				case len(s.ValueFiles) == 0:
-					res.NoOverride = append(res.NoOverride, NoOverride{Path: d.path, Reason: "the Application has no value file to add an override to"})
+				case target == "":
+					res.NoOverride = append(res.NoOverride, NoOverride{Path: d.path, Reason: targetWhy})
 				default:
 					key := d.local
 					if key == nil {
@@ -282,7 +283,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 					def := &ChartDefault{File: l.name, Key: key, Value: d.value, Tag: d.tag}
 					for _, o := range occurrences {
 						res.Overrides = append(res.Overrides, Candidate{
-							File: s.ValueFiles[len(s.ValueFiles)-1], Path: d.path, Fragment: fragments, NewValue: o.newValue,
+							File: target, Path: d.path, Fragment: fragments, NewValue: o.newValue,
 							Override: true, Default: def,
 						})
 					}
