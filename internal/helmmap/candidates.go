@@ -72,6 +72,10 @@ type Result struct {
 	// NoOverride says, for chart defaults that Overrides does not cover, why
 	// they cannot be overridden: a key under a list, or no value file to add to.
 	NoOverride []NoOverride
+	// UnreadDependencies are the chart's dependencies whose defaults are not in
+	// the repository (Argo CD downloads them when it renders), by name or alias.
+	// A value may come from one of them.
+	UnreadDependencies []string
 	// Controlled are inline settings that decide the value: either a setting
 	// whose own value equals the old value, or a setting at (or above, or
 	// below) a key that a value file matched.
@@ -212,8 +216,10 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 		isDefault bool
 	}
 	var layers []layer
-	for _, dd := range dependencyDefaults(files, s.ChartDir) {
-		defs, err := parseValues(files[dd.file])
+	deps, missing := dependencyDefaults(files, s.ChartDir)
+	res.UnreadDependencies = missing
+	for _, dd := range deps {
+		defs, err := parseValues(dd.data)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dd.file, err)
 		}

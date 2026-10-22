@@ -1418,6 +1418,12 @@ func noCandidateDetail(f parsedField, rejected []string, overrides bool) string 
 			say("it may come from a remote value file: " + strings.Join(found.RemoteValueFiles, ", "))
 		}
 	}
+	for _, found := range []*Result{f.Found, f.Fragments} {
+		if found != nil && len(found.UnreadDependencies) > 0 && len(found.Candidates) == 0 && len(found.Overrides) == 0 {
+			say(fmt.Sprintf("the chart depends on %s, whose defaults are not in the repository (Argo CD downloads it when it renders), so the value may come from them and cannot be overridden",
+				strings.Join(found.UnreadDependencies, ", ")))
+		}
+	}
 	parts = append(parts, rejected...)
 	if len(parts) == 0 {
 		return "no value file holds " + f.desired + "; the field may be derived from a value by the chart"
