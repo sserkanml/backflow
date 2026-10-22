@@ -190,3 +190,155 @@ func checkOnlyChanged(before, after []byte, key KeyPath, want string) error {
 	}
 	return nil
 }
+
+// AddValue adds a scalar to a value file at a key path the file does not
+// define, to override a default of the chart. Missing intermediate maps are
+// created; an existing parent map gets the entry appended after its last one,
+// in its own indentation. Everything else stays as it was, comments and
+// quoting included.
+//
+// defaultTag is the YAML tag of the default being overridden (!!int, !!bool,
+// !!float, or !!str); the value keeps that type when it reads as that type, as
+// for SetValue. The file must not define the key, nor anything above or below
+// it: an override is only ever added where the file has nothing to say.
+func AddValue(file string, content []byte, key KeyPath, value, defaultTag string) (*Written, error) {
+	if len(key) == 0 {
+		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
+	}
+	before, err := parseValues(content)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
+	}
+	for _, d := range before {
+		if related(d.path, key) {
+			return nil, fmt.Errorf("%w: %s already defines %s", ErrCannotSet, file, d.path)
+		}
+	}
+
+	nv := typed(defaultTag, value)
+	live, err := json.Marshal(nv)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrCannotSet, err)
+	}
+	pointer := key.pointer()
+	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{
+		{Path: pointer, Op: v1alpha1.OpAdd, Live: string(live)},
+	})
+	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) {
+		edited, err = appendKey(content, key, nv)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCannotSet, err)
+	}
+	if err := checkOnlyAdded(before, edited, key, RenderValue(nv)); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
+	}
+
+	var after yaml.Node
+	if err := yaml.Unmarshal(edited, &after); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
+	}
+	node, err := lookup(&after, key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %s: %v", ErrCannotSet, file, key, err)
+	}
+	lines := strings.Split(string(edited), "\n")
+	text := ""
+	if node.Line >= 1 && node.Line <= len(lines) {
+		text = strings.TrimRight(lines[node.Line-1], "\r")
+	}
+	return &Written{
+		Result: mapping.Result{
+			File:     file,
+			Document: 0,
+			Edits:    []mapping.Edit{{File: file, Location: pointer, Value: string(live)}},
+			Edited:   edited,
+			Diff:     mapping.UnifiedDiff(file, content, edited),
+		},
+		Line: node.Line,
+		Text: text,
+	}, nil
+}
+
+// hasMapRoot reports whether the file has a map at its top level (of any
+// style). A file with only comments, or with an explicit null, has none.
+func hasMapRoot(content []byte) bool {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return false
+	}
+	return resolve(doc.Content[0]).Kind == yaml.MappingNode
+}
+
+// appendKey writes the key at the end of a file that has no map yet (empty, or
+// comments only).
+func appendKey(content []byte, key KeyPath, value any) ([]byte, error) {
+	var node any = value
+	if n, ok := value.(json.Number); ok {
+		if i, err := n.Int64(); err == nil {
+			node = i
+		} else if f, err := n.Float64(); err == nil {
+			node = f
+		}
+	}
+	for i := len(key) - 1; i >= 0; i-- {
+		node = map[string]any{key[i]: node}
+	}
+	var buf strings.Builder
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(node); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	out := string(content)
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return []byte(out + buf.String()), nil
+}
+
+// checkOnlyAdded verifies that the edit added the one key and nothing else:
+// every definition of the file is still there with the same value, and the key
+// is a new scalar rendering as want.
+func checkOnlyAdded(before []definition, edited []byte, key KeyPath, want string) error {
+	after, err := parseValues(edited)
+	if err != nil {
+		return fmt.Errorf("the edited file does not parse: %w", err)
+	}
+	type id struct {
+		path string
+		kind defKind
+	}
+	old := make(map[id]string, len(before))
+	for _, d := range before {
+		old[id{d.path.String(), d.kind}] = d.value
+	}
+	added := 0
+	for _, d := range after {
+		if d.path.Equal(key) {
+			if d.kind != defScalar || d.value != want {
+				return fmt.Errorf("the added value is %q, want %q", d.value, want)
+			}
+			added++
+			continue
+		}
+		v, ok := old[id{d.path.String(), d.kind}]
+		if !ok {
+			return fmt.Errorf("the edit added %s", d.path)
+		}
+		if v != d.value {
+			return fmt.Errorf("the edit changed %s", d.path)
+		}
+		delete(old, id{d.path.String(), d.kind})
+	}
+	if added != 1 {
+		return fmt.Errorf("the key was not added")
+	}
+	if len(old) > 0 {
+		return fmt.Errorf("the edit removed definitions")
+	}
+	return nil
+}
