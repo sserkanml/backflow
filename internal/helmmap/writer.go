@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -273,7 +274,8 @@ func hasMapRoot(content []byte) bool {
 // appendKey writes the key at the end of a file that has no map yet (empty, or
 // comments only).
 func appendKey(content []byte, key KeyPath, value any) ([]byte, error) {
-	var node any = value
+	var node any
+	node = value
 	if n, ok := value.(json.Number); ok {
 		if i, err := n.Int64(); err == nil {
 			node = i
@@ -281,8 +283,8 @@ func appendKey(content []byte, key KeyPath, value any) ([]byte, error) {
 			node = f
 		}
 	}
-	for i := len(key) - 1; i >= 0; i-- {
-		node = map[string]any{key[i]: node}
+	for _, seg := range slices.Backward(key) {
+		node = map[string]any{seg: node}
 	}
 	var buf strings.Builder
 	enc := yaml.NewEncoder(&buf)
