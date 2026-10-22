@@ -41,6 +41,11 @@ type Options struct {
 	// others are verified as before, and must not change any left-out field.
 	// Without it, one field that cannot be mapped makes the proposal Unmapped.
 	AllowPartial bool
+	// AddOverrides lets an edit add a key to the Application's last value file
+	// to override a default that only the chart defines (Result.Overrides). Such
+	// edits are tried only when no edit of a key the value files already define
+	// verifies, and are verified like any other edit.
+	AddOverrides bool
 }
 
 // The kinds of collateral changes an edit may be allowed to make.
@@ -175,6 +180,9 @@ type Outcome struct {
 	// make, all of them allowed by Options.AllowCollateral. Empty for an edit
 	// that changes exactly the drifted fields.
 	Collateral []Collateral
+	// Overrides lists the edits of Results that add a key to override a chart
+	// default, with the default each one overrides.
+	Overrides []AppliedOverride
 	// LeftOut are the fields the edits do not cover, with the reason for each.
 	// Set only with Options.AllowPartial, when some fields were mapped.
 	LeftOut []FieldFailure
@@ -182,6 +190,17 @@ type Outcome struct {
 	Unmapped *Unmapped
 	// Renders is the number of renders done.
 	Renders int
+}
+
+// AppliedOverride is an edit that adds a key to a value file to override a
+// default of the chart.
+type AppliedOverride struct {
+	// File and Path are where the key was added; Value is the JSON written.
+	File  string
+	Path  KeyPath
+	Value string
+	// Default is the chart default it overrides.
+	Default ChartDefault
 }
 
 // Mapped reports whether the edits are verified.
@@ -391,6 +410,9 @@ type run struct {
 	// leftOut are the pointers of the fields a partial mapping leaves out: no
 	// edit may change them, whatever the collateral rule says.
 	leftOut []string
+
+	// overrides is set when edits that add a key are allowed.
+	overrides bool
 }
 
 var (
@@ -490,7 +512,7 @@ func (v *run) verifyPartially(opts Options) (*Outcome, error) {
 		}
 	}
 	for {
-		attempt := &run{ctx: v.ctx, r: v.r, in: in, leftOut: leftOutPointers(left)}
+		attempt := &run{ctx: v.ctx, r: v.r, in: in, leftOut: leftOutPointers(left), overrides: opts.AddOverrides}
 		out, err := attempt.verify(fields, opts)
 		v.renders += attempt.renders
 		v.budget = v.budget || attempt.budget
@@ -566,6 +588,9 @@ func (v *run) verify(in []Field, opts Options) (*Outcome, error) {
 // only tried when the one before verifies no edit set.
 type stage struct {
 	fragments bool
+	// overrides: the candidates are the keys added to the last value file to
+	// override a chart default, not the keys the value files define.
+	overrides bool
 	rule      collateralRule
 }
 
@@ -578,10 +603,25 @@ func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opt
 	if hasFragments {
 		stages = append(stages, stage{fragments: true})
 	}
-	if rule := newCollateralRule(opts.AllowCollateral, v.in.Resource, fields, v.leftOut); rule.any() {
+	rule := newCollateralRule(opts.AllowCollateral, v.in.Resource, fields, v.leftOut)
+	if rule.any() {
 		// Only when nothing verified without them. The edits have been rendered
 		// already; what changes is which of their other changes are accepted.
 		stages = append(stages, stage{fragments: hasFragments, rule: rule})
+	}
+	if v.overrides {
+		// The last resort: keys that only the chart defines are set from the
+		// Application's last value file. The edits of existing lines come first,
+		// whole values before parts of them, and so do the stricter rules.
+		if hasOverrides(fields, false) {
+			stages = append(stages, stage{overrides: true})
+		}
+		if hasOverrides(fields, true) {
+			stages = append(stages, stage{overrides: true, fragments: true})
+		}
+		if rule.any() && (hasOverrides(fields, false) || hasOverrides(fields, true)) {
+			stages = append(stages, stage{overrides: true, fragments: hasOverrides(fields, true), rule: rule})
+		}
 	}
 
 	var last *Outcome
@@ -591,7 +631,21 @@ func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opt
 				return failure(bad), nil
 			}
 		}
-		if err := v.addTries(base, nd, fields, st.fragments); err != nil {
+		if st.overrides {
+			if bad := tooManyOverrides(fields, opts); bad != nil {
+				return failure(bad), nil
+			}
+			// A later stage with the same candidates adds nothing new; the first
+			// of them already tried the whole values, the next the fragments.
+			if err := v.addTries(base, nd, fields, false, true); err != nil {
+				return v.renderErr(err)
+			}
+			if st.fragments {
+				if err := v.addTries(base, nd, fields, true, true); err != nil {
+					return v.renderErr(err)
+				}
+			}
+		} else if err := v.addTries(base, nd, fields, st.fragments, false); err != nil {
 			return v.renderErr(err)
 		}
 		out, escalate, err := v.evaluate(base, nd, fields, st.rule)
@@ -619,6 +673,40 @@ func tooManyWithFragments(fields []parsedField, opts Options) []FieldFailure {
 	return bad
 }
 
+// hasOverrides reports whether any field has an override candidate: for the
+// whole value, or for a part of it.
+func hasOverrides(fields []parsedField, fragments bool) bool {
+	for _, f := range fields {
+		found := f.Found
+		if fragments {
+			found = f.Fragments
+		}
+		if found != nil && len(found.Overrides) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// tooManyOverrides applies the bound on candidates to the override candidates
+// of a field, before any is rendered.
+func tooManyOverrides(fields []parsedField, opts Options) []FieldFailure {
+	var bad []FieldFailure
+	for _, f := range fields {
+		n := 0
+		for _, found := range []*Result{f.Found, f.Fragments} {
+			if found != nil {
+				n += len(found.Overrides)
+			}
+		}
+		if n > opts.MaxCandidates {
+			bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonTooManyCandidates,
+				Detail: fmt.Sprintf("%d chart defaults hold %s or a part of it, at most %d are tried", n, f.desired, opts.MaxCandidates)})
+		}
+	}
+	return bad
+}
+
 // evaluate decides on the edits tried so far. escalate is set when no edit set
 // verifies, which is when a more permissive stage is worth a try.
 func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, rule collateralRule) (out *Outcome, escalate bool, err error) {
@@ -628,7 +716,8 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 			accepted = append(accepted, t)
 		}
 	}
-	if bad := uncovered(fields, v.tries, accepted, rule); len(bad) > 0 {
+	accepted = dropShadowedOverrides(accepted)
+	if bad := uncovered(fields, v.tries, accepted, rule, v.overrides); len(bad) > 0 {
 		return failure(bad), true, nil
 	}
 
@@ -684,7 +773,49 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 		return failure([]FieldFailure{{Pointer: pointers(fields), Reason: ReasonAmbiguousCandidates,
 			Detail: "each of these reproduces the drift and changes nothing else: " + strings.Join(names, "; ")}}), false, nil
 	}
-	return &Outcome{Results: buildResults(v.in.Files, verified[0].final, verified[0].applied), Collateral: verified[0].collateral}, false, nil
+	return &Outcome{
+		Results:    buildResults(v.in.Files, verified[0].final, verified[0].applied),
+		Collateral: verified[0].collateral,
+		Overrides:  overridesOf(verified[0].applied),
+	}, false, nil
+}
+
+// dropShadowedOverrides removes the accepted overrides whose fields an accepted
+// edit of an existing line reproduces as well: an override is a last resort and
+// must not compete with the edit of a key the value files define.
+func dropShadowedOverrides(accepted []*tryout) []*tryout {
+	covered := map[int]bool{}
+	for _, t := range accepted {
+		if !t.cand.Override {
+			for _, i := range t.covers {
+				covered[i] = true
+			}
+		}
+	}
+	out := accepted[:0:0]
+	for _, t := range accepted {
+		if t.cand.Override {
+			shadowed := true
+			for _, i := range t.covers {
+				shadowed = shadowed && covered[i]
+			}
+			if shadowed {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+func overridesOf(edits []appliedEdit) []AppliedOverride {
+	var out []AppliedOverride
+	for _, e := range edits {
+		if e.cand.Override && e.cand.Default != nil {
+			out = append(out, AppliedOverride{File: e.cand.File, Path: e.cand.Path, Value: e.w.Edits[0].Value, Default: *e.cand.Default})
+		}
+	}
+	return out
 }
 
 // preflight parses the fields and applies the limits that need no render.
@@ -855,7 +986,12 @@ func (r collateralRule) allows(c Collateral) bool {
 	return false
 }
 
-func (t *tryout) key() string { return t.cand.File + " " + t.cand.Path.String() }
+func (t *tryout) key() string {
+	if t.cand.Override {
+		return t.cand.File + " " + t.cand.Path.String() + " (a new key)"
+	}
+	return t.cand.File + " " + t.cand.Path.String()
+}
 
 // conflicts reports two edits that set the same key to different values.
 func conflicts(a, b *tryout) bool {
@@ -865,8 +1001,8 @@ func conflicts(a, b *tryout) bool {
 // addTries renders the candidate edits of every field that were not tried
 // yet, each on its own. An edit proposed for several fields is tried once.
 // With fragments the candidates are those of FindFragments, otherwise those of
-// Find.
-func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, fragments bool) error {
+// Find; with overrides the keys to add instead of the keys to edit.
+func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, fragments, overrides bool) error {
 	if v.index == nil {
 		v.index = map[editKey]*tryout{}
 	}
@@ -879,7 +1015,11 @@ func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, f
 		if found == nil {
 			continue
 		}
-		for _, c := range found.Candidates {
+		cands := found.Candidates
+		if overrides {
+			cands = found.Overrides
+		}
+		for _, c := range cands {
 			value := f.newValue
 			if c.Fragment {
 				value = c.NewValue
@@ -949,7 +1089,7 @@ func collateralOf(base, edited snapshot, ch change) Collateral {
 
 // uncovered returns a failure for each drifted field that no accepted edit
 // reproduces, with the reasons and the nearest miss.
-func uncovered(fields []parsedField, tries, accepted []*tryout, rule collateralRule) []FieldFailure {
+func uncovered(fields []parsedField, tries, accepted []*tryout, rule collateralRule, overrides bool) []FieldFailure {
 	covered := make([]bool, len(fields))
 	for _, t := range accepted {
 		for _, i := range t.covers {
@@ -990,7 +1130,7 @@ func uncovered(fields []parsedField, tries, accepted []*tryout, rule collateralR
 			ff.NearMiss = nm
 			others = append(others, nm.String())
 		}
-		ff.Detail = noCandidateDetail(f, others)
+		ff.Detail = noCandidateDetail(f, others, overrides)
 		bad = append(bad, ff)
 	}
 	return bad
@@ -1118,13 +1258,26 @@ func failure(fields []FieldFailure) *Outcome {
 	return &Outcome{Unmapped: &Unmapped{Reason: reason, Message: msg, Fields: fields}}
 }
 
+// writeCandidate sets the key of a candidate in the content of its file, or
+// adds it when the candidate overrides a chart default.
+func writeCandidate(c Candidate, content []byte, value string) (*Written, error) {
+	if c.Override {
+		tag := ""
+		if c.Default != nil {
+			tag = c.Default.Tag
+		}
+		return AddValue(c.File, content, c.Path, value, tag)
+	}
+	return SetValue(c.File, content, c.Path, value)
+}
+
 // tryEdit applies one candidate's edit to a copy of the files.
 func tryEdit(base map[string][]byte, c Candidate, value string) (files map[string][]byte, why string) {
 	content, ok := base[c.File]
 	if !ok {
 		return nil, "the file was not provided"
 	}
-	w, err := SetValue(c.File, content, c.Path, value)
+	w, err := writeCandidate(c, content, value)
 	if err != nil {
 		return nil, err.Error()
 	}
@@ -1185,7 +1338,7 @@ func applySet(base map[string][]byte, fields []parsedField, set []*tryout) (map[
 	files := maps.Clone(base)
 	var applied []appliedEdit
 	for _, t := range set {
-		w, err := SetValue(t.cand.File, files[t.cand.File], t.cand.Path, t.value)
+		w, err := writeCandidate(t.cand, files[t.cand.File], t.value)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1218,8 +1371,17 @@ func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.
 	return out
 }
 
+func hasOverrideFor(r *Result, p KeyPath) bool {
+	for _, c := range r.Overrides {
+		if c.Path.Equal(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // noCandidateDetail explains why a field has no verified candidate.
-func noCandidateDetail(f parsedField, rejected []string) string {
+func noCandidateDetail(f parsedField, rejected []string, overrides bool) string {
 	var parts []string
 	seen := map[string]bool{}
 	say := func(msg string) {
@@ -1234,7 +1396,20 @@ func noCandidateDetail(f parsedField, rejected []string) string {
 			continue
 		}
 		for _, p := range found.ChartDefaults {
-			say(fmt.Sprintf("the value comes from the chart's own defaults (%s); chart defaults are not edited", p))
+			switch {
+			case !overrides:
+				say(fmt.Sprintf("the value comes from the chart's own defaults (%s); chart defaults are not edited", p))
+			case hasOverrideFor(found, p):
+				say(fmt.Sprintf("the value comes from the chart's own defaults (%s)", p))
+			default:
+				reason := "it cannot be overridden"
+				for _, n := range found.NoOverride {
+					if n.Path.Equal(p) {
+						reason = n.Reason
+					}
+				}
+				say(fmt.Sprintf("the value comes from the chart's own defaults (%s); %s", p, reason))
+			}
 		}
 		for _, c := range found.Controlled {
 			say(fmt.Sprintf("the value is set by %s at %s in the Application, not by a value file", c.Layer, c.Path))
