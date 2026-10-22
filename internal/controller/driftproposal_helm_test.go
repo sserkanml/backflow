@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.yaml.in/yaml/v3"
@@ -17,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -319,7 +322,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(renderer.lastApp.Namespace).To(Equal(ns))
 		Expect(renderer.lastApp.DestNamespace).To(Equal("demo-helm"))
 		Expect(renderer.lastApp.ReleaseName).To(Equal("helm-app"), "the release is named after the Application unless helm.releaseName says otherwise")
-		Expect(renderer.calls).To(Equal(2*(2+1)), "mapped once, and again at the head of the target branch: the unmodified files twice and the one candidate each time")
+		Expect(renderer.calls).To(Equal(2+1), "mapped once, the unmodified files twice and the one candidate; the head is the revision it was mapped at, so it is not rendered again")
 
 		By("the branch holds the edited value file, comments intact, and nothing else changed")
 		branch := got.Status.MergeRequest.Branch
@@ -844,17 +847,80 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			setMode(backflowv1alpha1.ModeMergeRequest)
 		}
 
-		It("renders the files of the new head and builds the commit on it", func() {
+		// settleLogged reconciles to Proposed and returns what the operator logged.
+		settleLogged := func() string {
+			var mu sync.Mutex
+			var lines []string
+			logger := funcr.New(func(_, args string) { mu.Lock(); lines = append(lines, args); mu.Unlock() }, funcr.Options{})
+			lctx := logf.IntoContext(ctx, logger)
+			for range 5 {
+				_, err := r.Reconcile(lctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				if latest().Status.Phase == backflowv1alpha1.PhaseProposed {
+					break
+				}
+			}
+			ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			mu.Lock()
+			defer mu.Unlock()
+			return strings.Join(lines, "\n")
+		}
+
+		It("reuses the mapping when the head only changed files the render does not read, and builds the commit on the head", func() {
 			mapOnly()
 			head := repo.commit(map[string]string{"helm/demo/README.md": "changed\n", "helm/demo/values-prod.yaml": "global:\n  region: us-east-2\n"}, "elsewhere")
 			callsBefore := renderer.calls
 
-			settle(backflowv1alpha1.PhaseProposed)
-			Expect(renderer.calls-callsBefore).To(Equal(2+1), "the head is rendered again, twice for the baseline and once for the edit")
+			out := settleLogged()
+			Expect(renderer.calls-callsBefore).To(BeZero(), "nothing the render reads changed: no render")
+			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
+			Expect(out).To(ContainSubstring("none of the 2 changed file(s) is one the mapping depends on"))
+			Expect(out).NotTo(ContainSubstring("Mapping again"))
 			tip := repo.branch(latest().Status.MergeRequest.Branch)
 			Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(head))
 			Expect(repo.file(tip, "helm/demo/README.md")).To(Equal("changed\n"))
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(ContainSubstring("region: us-west-2"))
+			Expect(repo.file(tip, "helm/demo/values-prod.yaml")).To(Equal("global:\n  region: us-east-2\n"))
+		})
+
+		It("reuses the mapping when the head is the revision it was mapped at", func() {
+			mapOnly()
+			callsBefore := renderer.calls
+			out := settleLogged()
+			Expect(renderer.calls - callsBefore).To(BeZero())
+			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
+			Expect(out).To(ContainSubstring("the target branch is still at the revision the proposal was mapped at"))
+		})
+
+		It("maps again when the head changed a file the render reads", func() {
+			mapOnly()
+			head := repo.commit(map[string]string{"helm/demo/values.yaml": strings.Replace(helmValues, "timeout: 30", "timeout: 31", 1)}, "a chart default")
+			callsBefore := renderer.calls
+
+			out := settleLogged()
+			Expect(renderer.calls-callsBefore).To(Equal(2+1), "the head is rendered again, twice for the baseline and once for the edit")
+			Expect(out).To(ContainSubstring("Mapping again at the head of the target branch"))
+			Expect(out).To(ContainSubstring("the target branch changed helm/demo/values.yaml, which the mapping depends on"))
+			Expect(out).NotTo(ContainSubstring("Reusing the mapping"))
+			Expect(repo.commitAt(repo.branch(latest().Status.MergeRequest.Branch)).ParentHashes[0].String()).To(Equal(head))
+		})
+
+		It("maps again when the Application's source changed since the mapping", func() {
+			mapOnly()
+			setHelm(map[string]any{"valueFiles": []any{"values-dev.yaml"}, "releaseName": "other"})
+			callsBefore := renderer.calls
+			out := settleLogged()
+			Expect(renderer.calls - callsBefore).To(BeNumerically(">", 0))
+			Expect(out).To(ContainSubstring("the Application's source or the policy's mapping options changed since the mapping"))
+		})
+
+		It("maps again when the operator has no earlier result, as after a restart", func() {
+			mapOnly()
+			r.memos = mappingMemos{}
+			callsBefore := renderer.calls
+			out := settleLogged()
+			Expect(renderer.calls - callsBefore).To(Equal(2 + 1))
+			Expect(out).To(ContainSubstring("there is no earlier result in memory"))
 		})
 
 		It("is superseded when the head no longer renders the old value", func() {
@@ -873,7 +939,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 
 		It("is not superseded by Argo CD being unreachable at the new head", func() {
 			mapOnly()
-			repo.commit(map[string]string{"helm/demo/README.md": "changed\n"}, "elsewhere")
+			repo.commit(map[string]string{"helm/demo/values.yaml": strings.Replace(helmValues, "timeout: 30", "timeout: 31", 1)}, "a chart default")
 			renderer.failures = []error{errors.New("boom")}
 
 			res, err := reconcileDP()

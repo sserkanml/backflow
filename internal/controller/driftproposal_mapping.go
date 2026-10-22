@@ -193,6 +193,11 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		return r.retry(ctx, dp, reasonRepositoryUnavailable, err)
 	}
 
+	if policy, perr := r.policyOf(ctx, dp); perr == nil {
+		r.memos.put(dp.UID, mappingMemo{change: change, revision: dp.Spec.Source.Revision,
+			fingerprint: mappingFingerprint(app, policy), at: time.Now()})
+	}
+
 	orig := dp.DeepCopy()
 	edits := change.edits()
 	dp.Status.Mapping = &backflowv1alpha1.Mapping{

@@ -428,7 +428,7 @@ show_state() {
   k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}{" phase="}{.status.phase}{" Mapped="}{.status.conditions[?(@.type=="Mapped")].reason}{" Proposed="}{.status.conditions[?(@.type=="Proposed")].reason}{" ("}{.status.conditions[?(@.type=="Proposed")].message}{")"}{"\n"}{end}' 2>/dev/null | cut -c1-300 | sed 's/^/      /'
   if [[ -f "$LOG_FILE" ]]; then
     echo "    last operator messages about mapping or proposing:"
-    grep -E "Cannot (map|propose)|Proposal (failed|unmapped)|Reconciler error|Mapped again|Commit built|Pushed the branch|declined" "$LOG_FILE" 2>/dev/null | tail -n 4 | cut -c1-400 | sed 's/^/      /'
+    grep -E "Cannot (map|propose)|Proposal (failed|unmapped)|Reconciler error|Mapping again|Reusing the mapping|Mapping at the head|Commit built|Pushed the branch|declined" "$LOG_FILE" 2>/dev/null | tail -n 4 | cut -c1-400 | sed 's/^/      /'
   fi
 }
 
@@ -1541,7 +1541,7 @@ step "j. Partial proposals: replicas are mapped, an image Git cannot trace is le
 # apply the Git image over the one that is left out.
 # Mapping a partial proposal renders through Argo CD several times, at the
 # synced revision and again at the head of main, and a render takes seconds:
-# the merge request can take minutes (see the "Mapped again" lines of the
+# the merge request can take minutes (see the "Mapping again" lines of the
 # operator log), so this section waits twice as long.
 J_WAIT_SAVED="$WAIT"
 WAIT=$((WAIT * 2))

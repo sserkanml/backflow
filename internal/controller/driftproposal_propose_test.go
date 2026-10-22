@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
+
 	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -30,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -719,6 +722,38 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(c.ParentHashes[0].String()).To(Equal(head), "based on the head, not on the synced revision")
 			Expect(repo.file(tipBefore, "README.md")).To(Equal("moved on\n"))
 			Expect(repo.file(tipBefore, "apps/demo/configmap.yaml")).To(ContainSubstring("LOG_LEVEL: debug"))
+		})
+
+		reconcileLogged := func() string {
+			var mu sync.Mutex
+			var lines []string
+			logger := funcr.New(func(_, args string) { mu.Lock(); lines = append(lines, args); mu.Unlock() }, funcr.Options{})
+			_, err := r.Reconcile(logf.IntoContext(ctx, logger), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			mu.Lock()
+			defer mu.Unlock()
+			return strings.Join(lines, "\n")
+		}
+
+		It("reuses the mapping when the head changed nothing in the Application's directory", func() {
+			repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change")
+			out := reconcileLogged()
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
+			Expect(out).To(ContainSubstring("none of the 1 changed file(s) is one the mapping depends on"))
+		})
+
+		It("maps again when the head changed a file in the Application's directory, and keeps that change", func() {
+			edited := strings.Replace(proposeConfigMap, "# Log level of the demo app.", "# Log level of the demo app (edited in Git).", 1)
+			head := repo.commit(map[string]string{"apps/demo/configmap.yaml": edited}, "a comment in the manifest")
+			out := reconcileLogged()
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(out).To(ContainSubstring("Mapping again at the head of the target branch"))
+			Expect(out).To(ContainSubstring("the target branch changed apps/demo/configmap.yaml, which the mapping depends on"))
+			tip := repo.branch(branch)
+			Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(head))
+			Expect(repo.file(tip, "apps/demo/configmap.yaml")).To(Equal(strings.Replace(edited, "LOG_LEVEL: info", "LOG_LEVEL: debug", 1)),
+				"the edit is made on the file of the head: reusing the old result would drop the comment")
 		})
 
 		It("supersedes the proposal when the source no longer verifies at the head", func() {

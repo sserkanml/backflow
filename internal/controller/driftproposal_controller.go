@@ -70,6 +70,7 @@ type DriftProposalReconciler struct {
 	NewRenderer func(argocd.Config) (helmmap.Renderer, error)
 
 	renderers argoClientCache[helmmap.Renderer] // per policy, so connections are reused
+	memos     mappingMemos                      // the mapping of a proposal, for the push (see mapForHead)
 }
 
 // trackEvery is how often an open merge request is polled.

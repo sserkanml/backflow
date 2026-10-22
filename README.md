@@ -257,8 +257,12 @@ How a proposal is made:
    through Argo CD.
 
 Like Directory proposals, a Helm proposal is made against the head of the target
-branch: the head is rendered again, and when it no longer renders the old values
-the proposal is `Superseded`.
+branch. When the head is the revision the proposal was mapped at, or only files
+the mapping does not depend on changed since (the files a render reads for Helm,
+everything below the directory for a Directory source), the mapping is reused
+and nothing is rendered again; the operator log says which ("Reusing the mapping"
+or "Mapping again", with the reason). Otherwise the head is mapped again, and
+when it no longer renders the old values the proposal is `Superseded`.
 
 When the change cannot be traced back with certainty the proposal is `Unmapped`,
 and the `Mapped` condition says why (`NoVerifiedCandidate`,
