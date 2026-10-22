@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.5.0](https://github.com/sserkanml/backflow/compare/v0.4.0...v0.5.0) (2026-10-22)
+
+
+### Features
+
+* **api:** spec.helm.addOverrides ([04c8cf0](https://github.com/sserkanml/backflow/commit/04c8cf09d68638ac5398e24b8273c30e24a7ec66))
+* **drift:** map a default only the chart defines to an override, and say so in the merge request ([f706e4e](https://github.com/sserkanml/backflow/commit/f706e4eaf9c2d5997ad4461227f232980f9d2ea9))
+* **drift:** reuse the mapping at the head of the target branch when nothing it depends on changed ([4f33b33](https://github.com/sserkanml/backflow/commit/4f33b33c343b58cc1a32f2da63fa2b409c81f92f))
+* **helmmap:** add overrides to spec.helm.targetValuesFile when it is set ([baa6809](https://github.com/sserkanml/backflow/commit/baa68097058b394208935f7047477359c7e51050))
+* **helmmap:** AddValue adds a key to a value file, keeping comments and style ([468f37b](https://github.com/sserkanml/backflow/commit/468f37b612e37f87b3373da85df656a82e7f2126))
+* **helmmap:** override candidates for defaults only the chart defines ([8a05354](https://github.com/sserkanml/backflow/commit/8a053547ec242367d18b0c9c51f60d9cddbdff19))
+* **helmmap:** read the defaults of packaged subcharts, and say when a dependency is not in the repository ([728c89a](https://github.com/sserkanml/backflow/commit/728c89af3a22812453193d856a6be634af9ddd91))
+* **helmmap:** verify override edits as a last resort, after edits of existing lines ([5bfabf6](https://github.com/sserkanml/backflow/commit/5bfabf6c169e4fc86818309eefda092ee5025aa9))
+* **helm:** override chart defaults in the Application's value file ([d7d20cc](https://github.com/sserkanml/backflow/commit/d7d20ccfec68d89008b0ef639507b8566e3caded))
+
+
+### Bug Fixes
+
+* **helmmap:** share the renders between the attempts of a partial mapping; log the renders ([edd9db4](https://github.com/sserkanml/backflow/commit/edd9db41a4e34febd74a9bdb72af9f5e8c4ef06f))
+
+
+### Refactoring
+
+* **helmmap:** build the Fields of a proposal in helmmap, so tests can run the same path ([d0dbb97](https://github.com/sserkanml/backflow/commit/d0dbb97df26c8a46f327715ad30f8815c59f1cd3))
+
+
+### Documentation
+
+* overrides of chart defaults, and the e2e for them ([62f7e16](https://github.com/sserkanml/backflow/commit/62f7e16a24d9287eec1415a568f6c0b491bf6f7f))
+
 ## [0.4.0](https://github.com/sserkanml/backflow/compare/v0.3.1...v0.4.0) (2026-10-18)
 
 
