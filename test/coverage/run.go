@@ -30,16 +30,20 @@ type policySet struct {
 	opts helmmap.Options
 }
 
-// The suite maps every case under two policies: the defaults, and a policy
-// that allows everything that is optional (partial proposals, label and
-// annotation changes beside an edit).
+// The suite maps every case under three policies: the defaults of a
+// BackflowPolicy, a policy that allows everything that is optional (partial
+// proposals, label and annotation changes beside an edit), and the defaults
+// with spec.helm.addOverrides turned off, which is how mapping worked before
+// overrides existed.
 func policySets() []policySet {
 	return []policySet{
-		{name: "default", opts: helmmap.Options{}},
+		{name: "default", opts: helmmap.Options{AddOverrides: true}},
 		{name: "permissive", opts: helmmap.Options{
+			AddOverrides:    true,
 			AllowPartial:    true,
 			AllowCollateral: []string{helmmap.CollateralLabels, helmmap.CollateralAnnotations},
 		}},
+		{name: "no-overrides", opts: helmmap.Options{}},
 	}
 }
 

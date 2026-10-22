@@ -2,133 +2,199 @@
 # chart | resource | scenario | policy | outcome
 nginx | Deployment nginx-prod | env-add | default | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | env-add | permissive | Unmapped UnsupportedChange
-nginx | Deployment nginx-prod | env-change | default | Unmapped NoVerifiedCandidate
-nginx | Deployment nginx-prod | env-change | permissive | Unmapped NoVerifiedCandidate
+nginx | Deployment nginx-prod | env-add | no-overrides | Unmapped UnsupportedChange
+nginx | Deployment nginx-prod | env-change | default | Unmapped TooManyCandidates
+nginx | Deployment nginx-prod | env-change | permissive | Unmapped TooManyCandidates
+nginx | Deployment nginx-prod | env-change | no-overrides | Unmapped NoVerifiedCandidate
 nginx | Deployment nginx-prod | image-tag | default | Mapped envs/prod/nginx.yaml: image.tag
 nginx | Deployment nginx-prod | image-tag | permissive | Mapped envs/prod/nginx.yaml: image.tag
+nginx | Deployment nginx-prod | image-tag | no-overrides | Mapped envs/prod/nginx.yaml: image.tag
 nginx | Deployment nginx-prod | pod-annotation | default | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | pod-annotation | permissive | Unmapped UnsupportedChange
-nginx | Deployment nginx-prod | probe-delay | default | Unmapped NoVerifiedCandidate
-nginx | Deployment nginx-prod | probe-delay | permissive | Unmapped NoVerifiedCandidate
+nginx | Deployment nginx-prod | pod-annotation | no-overrides | Unmapped UnsupportedChange
+nginx | Deployment nginx-prod | probe-delay | default | Mapped envs/prod/nginx.yaml: livenessProbe.initialDelaySeconds
+nginx | Deployment nginx-prod | probe-delay | permissive | Mapped envs/prod/nginx.yaml: livenessProbe.initialDelaySeconds
+nginx | Deployment nginx-prod | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
 nginx | Deployment nginx-prod | pull-policy | default | Unmapped NoVerifiedCandidate
 nginx | Deployment nginx-prod | pull-policy | permissive | Unmapped NoVerifiedCandidate
+nginx | Deployment nginx-prod | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
 nginx | Deployment nginx-prod | resources | default | Unmapped NoVerifiedCandidate
 nginx | Deployment nginx-prod | resources | permissive | Unmapped NoVerifiedCandidate
+nginx | Deployment nginx-prod | resources | no-overrides | Unmapped NoVerifiedCandidate
 nginx | Deployment nginx-prod | scale | default | Mapped envs/prod/nginx.yaml: replicaCount
 nginx | Deployment nginx-prod | scale | permissive | Mapped envs/prod/nginx.yaml: replicaCount
+nginx | Deployment nginx-prod | scale | no-overrides | Mapped envs/prod/nginx.yaml: replicaCount
 nginx | Deployment nginx-prod | scale+pod-annotation | default | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | scale+pod-annotation | permissive | Partial envs/prod/nginx.yaml: replicaCount | left out: UnsupportedChange
+nginx | Deployment nginx-prod | scale+pod-annotation | no-overrides | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | scale+toleration | default | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | scale+toleration | permissive | Partial envs/prod/nginx.yaml: replicaCount | left out: UnsupportedChange
+nginx | Deployment nginx-prod | scale+toleration | no-overrides | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | toleration | default | Unmapped UnsupportedChange
 nginx | Deployment nginx-prod | toleration | permissive | Unmapped UnsupportedChange
-nginx | Service nginx-prod | service-port | default | Unmapped NoVerifiedCandidate
-nginx | Service nginx-prod | service-port | permissive | Unmapped NoVerifiedCandidate
+nginx | Deployment nginx-prod | toleration | no-overrides | Unmapped UnsupportedChange
+nginx | Service nginx-prod | service-port | default | Mapped envs/prod/nginx.yaml: service.ports.http
+nginx | Service nginx-prod | service-port | permissive | Mapped envs/prod/nginx.yaml: service.ports.http
+nginx | Service nginx-prod | service-port | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | Service hl | service-port | default | Unmapped NoVerifiedCandidate
 postgresql | Service hl | service-port | permissive | Unmapped NoVerifiedCandidate
+postgresql | Service hl | service-port | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | Service postgresql-prod | service-port | default | Unmapped NoVerifiedCandidate
 postgresql | Service postgresql-prod | service-port | permissive | Unmapped NoVerifiedCandidate
+postgresql | Service postgresql-prod | service-port | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | StatefulSet postgresql-prod | env-add | default | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | env-add | permissive | Unmapped UnsupportedChange
-postgresql | StatefulSet postgresql-prod | env-change | default | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | env-change | permissive | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | image-tag | default | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | image-tag | permissive | Unmapped NoVerifiedCandidate
+postgresql | StatefulSet postgresql-prod | env-add | no-overrides | Unmapped UnsupportedChange
+postgresql | StatefulSet postgresql-prod | env-change | default | Unmapped TooManyCandidates
+postgresql | StatefulSet postgresql-prod | env-change | permissive | Unmapped TooManyCandidates
+postgresql | StatefulSet postgresql-prod | env-change | no-overrides | Unmapped NoVerifiedCandidate
+postgresql | StatefulSet postgresql-prod | image-tag | default | Mapped envs/prod/postgresql.yaml: image.tag
+postgresql | StatefulSet postgresql-prod | image-tag | permissive | Mapped envs/prod/postgresql.yaml: image.tag
+postgresql | StatefulSet postgresql-prod | image-tag | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | StatefulSet postgresql-prod | pod-annotation | default | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | pod-annotation | permissive | Unmapped UnsupportedChange
-postgresql | StatefulSet postgresql-prod | probe-delay | default | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | probe-delay | permissive | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | pull-policy | default | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | pull-policy | permissive | Unmapped NoVerifiedCandidate
+postgresql | StatefulSet postgresql-prod | pod-annotation | no-overrides | Unmapped UnsupportedChange
+postgresql | StatefulSet postgresql-prod | probe-delay | default | Mapped envs/prod/postgresql.yaml: primary.livenessProbe.initialDelaySeconds
+postgresql | StatefulSet postgresql-prod | probe-delay | permissive | Mapped envs/prod/postgresql.yaml: primary.livenessProbe.initialDelaySeconds
+postgresql | StatefulSet postgresql-prod | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
+postgresql | StatefulSet postgresql-prod | pull-policy | default | Mapped envs/prod/postgresql.yaml: image.pullPolicy
+postgresql | StatefulSet postgresql-prod | pull-policy | permissive | Mapped envs/prod/postgresql.yaml: image.pullPolicy
+postgresql | StatefulSet postgresql-prod | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | StatefulSet postgresql-prod | resources | default | Unmapped NoVerifiedCandidate
 postgresql | StatefulSet postgresql-prod | resources | permissive | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | scale | default | Unmapped NoVerifiedCandidate
-postgresql | StatefulSet postgresql-prod | scale | permissive | Unmapped NoVerifiedCandidate
+postgresql | StatefulSet postgresql-prod | resources | no-overrides | Unmapped NoVerifiedCandidate
+postgresql | StatefulSet postgresql-prod | scale | default | Unmapped TooManyCandidates
+postgresql | StatefulSet postgresql-prod | scale | permissive | Unmapped TooManyCandidates
+postgresql | StatefulSet postgresql-prod | scale | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | StatefulSet postgresql-prod | scale+pod-annotation | default | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | scale+pod-annotation | permissive | Unmapped UnsupportedChange
+postgresql | StatefulSet postgresql-prod | scale+pod-annotation | no-overrides | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | scale+toleration | default | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | scale+toleration | permissive | Unmapped UnsupportedChange
+postgresql | StatefulSet postgresql-prod | scale+toleration | no-overrides | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | toleration | default | Unmapped UnsupportedChange
 postgresql | StatefulSet postgresql-prod | toleration | permissive | Unmapped UnsupportedChange
+postgresql | StatefulSet postgresql-prod | toleration | no-overrides | Unmapped UnsupportedChange
 redis | ConfigMap configuration | configmap-data | default | Unmapped NoVerifiedCandidate
 redis | ConfigMap configuration | configmap-data | permissive | Unmapped NoVerifiedCandidate
+redis | ConfigMap configuration | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
 redis | ConfigMap health | configmap-data | default | Unmapped NoVerifiedCandidate
 redis | ConfigMap health | configmap-data | permissive | Unmapped NoVerifiedCandidate
+redis | ConfigMap health | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
 redis | ConfigMap scripts | configmap-data | default | Unmapped NoVerifiedCandidate
 redis | ConfigMap scripts | configmap-data | permissive | Unmapped NoVerifiedCandidate
+redis | ConfigMap scripts | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
 redis | Service headless | service-port | default | Unmapped NoVerifiedCandidate
 redis | Service headless | service-port | permissive | Unmapped NoVerifiedCandidate
+redis | Service headless | service-port | no-overrides | Unmapped NoVerifiedCandidate
 redis | Service master | service-port | default | Unmapped NoVerifiedCandidate
 redis | Service master | service-port | permissive | Unmapped NoVerifiedCandidate
-redis | Service replicas | service-port | default | Unmapped NoVerifiedCandidate
-redis | Service replicas | service-port | permissive | Unmapped NoVerifiedCandidate
+redis | Service master | service-port | no-overrides | Unmapped NoVerifiedCandidate
+redis | Service replicas | service-port | default | Mapped envs/prod/redis.yaml: replica.service.ports.redis
+redis | Service replicas | service-port | permissive | Mapped envs/prod/redis.yaml: replica.service.ports.redis
+redis | Service replicas | service-port | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | env-add | default | Unmapped UnsupportedChange
 redis | StatefulSet master | env-add | permissive | Unmapped UnsupportedChange
-redis | StatefulSet master | env-change | default | Unmapped NoVerifiedCandidate
-redis | StatefulSet master | env-change | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet master | env-add | no-overrides | Unmapped UnsupportedChange
+redis | StatefulSet master | env-change | default | Unmapped TooManyCandidates
+redis | StatefulSet master | env-change | permissive | Unmapped TooManyCandidates
+redis | StatefulSet master | env-change | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | image-tag | default | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | image-tag | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet master | image-tag | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | pod-annotation | default | Unmapped UnsupportedChange
 redis | StatefulSet master | pod-annotation | permissive | Unmapped UnsupportedChange
-redis | StatefulSet master | probe-delay | default | Unmapped NoVerifiedCandidate
-redis | StatefulSet master | probe-delay | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet master | pod-annotation | no-overrides | Unmapped UnsupportedChange
+redis | StatefulSet master | probe-delay | default | Mapped envs/prod/redis.yaml: master.livenessProbe.initialDelaySeconds
+redis | StatefulSet master | probe-delay | permissive | Mapped envs/prod/redis.yaml: master.livenessProbe.initialDelaySeconds
+redis | StatefulSet master | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | pull-policy | default | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | pull-policy | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet master | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | resources | default | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | resources | permissive | Unmapped NoVerifiedCandidate
-redis | StatefulSet master | scale | default | Unmapped NoVerifiedCandidate
-redis | StatefulSet master | scale | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet master | resources | no-overrides | Unmapped NoVerifiedCandidate
+redis | StatefulSet master | scale | default | Unmapped TooManyCandidates
+redis | StatefulSet master | scale | permissive | Unmapped TooManyCandidates
+redis | StatefulSet master | scale | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet master | scale+pod-annotation | default | Unmapped UnsupportedChange
 redis | StatefulSet master | scale+pod-annotation | permissive | Unmapped UnsupportedChange
+redis | StatefulSet master | scale+pod-annotation | no-overrides | Unmapped UnsupportedChange
 redis | StatefulSet master | scale+toleration | default | Unmapped UnsupportedChange
 redis | StatefulSet master | scale+toleration | permissive | Unmapped UnsupportedChange
+redis | StatefulSet master | scale+toleration | no-overrides | Unmapped UnsupportedChange
 redis | StatefulSet master | toleration | default | Unmapped UnsupportedChange
 redis | StatefulSet master | toleration | permissive | Unmapped UnsupportedChange
+redis | StatefulSet master | toleration | no-overrides | Unmapped UnsupportedChange
 redis | StatefulSet replicas | env-add | default | Unmapped UnsupportedChange
 redis | StatefulSet replicas | env-add | permissive | Unmapped UnsupportedChange
-redis | StatefulSet replicas | env-change | default | Unmapped NoVerifiedCandidate
-redis | StatefulSet replicas | env-change | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet replicas | env-add | no-overrides | Unmapped UnsupportedChange
+redis | StatefulSet replicas | env-change | default | Unmapped TooManyCandidates
+redis | StatefulSet replicas | env-change | permissive | Unmapped TooManyCandidates
+redis | StatefulSet replicas | env-change | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | image-tag | default | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | image-tag | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet replicas | image-tag | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | pod-annotation | default | Unmapped UnsupportedChange
 redis | StatefulSet replicas | pod-annotation | permissive | Unmapped UnsupportedChange
-redis | StatefulSet replicas | probe-delay | default | Unmapped NoVerifiedCandidate
-redis | StatefulSet replicas | probe-delay | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet replicas | pod-annotation | no-overrides | Unmapped UnsupportedChange
+redis | StatefulSet replicas | probe-delay | default | Mapped envs/prod/redis.yaml: replica.livenessProbe.initialDelaySeconds
+redis | StatefulSet replicas | probe-delay | permissive | Mapped envs/prod/redis.yaml: replica.livenessProbe.initialDelaySeconds
+redis | StatefulSet replicas | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | pull-policy | default | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | pull-policy | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet replicas | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | resources | default | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | resources | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet replicas | resources | no-overrides | Unmapped NoVerifiedCandidate
 redis | StatefulSet replicas | scale | default | Mapped envs/prod/redis.yaml: replica.replicaCount
 redis | StatefulSet replicas | scale | permissive | Mapped envs/prod/redis.yaml: replica.replicaCount
+redis | StatefulSet replicas | scale | no-overrides | Mapped envs/prod/redis.yaml: replica.replicaCount
 redis | StatefulSet replicas | scale+pod-annotation | default | Unmapped UnsupportedChange
 redis | StatefulSet replicas | scale+pod-annotation | permissive | Partial envs/prod/redis.yaml: replica.replicaCount | left out: UnsupportedChange
+redis | StatefulSet replicas | scale+pod-annotation | no-overrides | Unmapped UnsupportedChange
 redis | StatefulSet replicas | scale+toleration | default | Unmapped UnsupportedChange
 redis | StatefulSet replicas | scale+toleration | permissive | Partial envs/prod/redis.yaml: replica.replicaCount | left out: UnsupportedChange
+redis | StatefulSet replicas | scale+toleration | no-overrides | Unmapped UnsupportedChange
 redis | StatefulSet replicas | toleration | default | Unmapped UnsupportedChange
 redis | StatefulSet replicas | toleration | permissive | Unmapped UnsupportedChange
-webapp | ConfigMap webapp | configmap-data | default | Unmapped NoVerifiedCandidate
-webapp | ConfigMap webapp | configmap-data | permissive | Unmapped NoVerifiedCandidate
+redis | StatefulSet replicas | toleration | no-overrides | Unmapped UnsupportedChange
+webapp | ConfigMap webapp | configmap-data | default | Mapped charts/webapp/values-prod.yaml: config.cacheTTL
+webapp | ConfigMap webapp | configmap-data | permissive | Mapped charts/webapp/values-prod.yaml: config.cacheTTL
+webapp | ConfigMap webapp | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
 webapp | Deployment webapp | env-add | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | env-add | permissive | Unmapped UnsupportedChange
+webapp | Deployment webapp | env-add | no-overrides | Unmapped UnsupportedChange
 webapp | Deployment webapp | env-change | default | Unmapped NoVerifiedCandidate
 webapp | Deployment webapp | env-change | permissive | Unmapped NoVerifiedCandidate
+webapp | Deployment webapp | env-change | no-overrides | Unmapped NoVerifiedCandidate
 webapp | Deployment webapp | image-tag | default | Unmapped NoVerifiedCandidate
 webapp | Deployment webapp | image-tag | permissive | Mapped charts/webapp/values-prod.yaml: image.tag
+webapp | Deployment webapp | image-tag | no-overrides | Unmapped NoVerifiedCandidate
 webapp | Deployment webapp | pod-annotation | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | pod-annotation | permissive | Unmapped UnsupportedChange
-webapp | Deployment webapp | probe-delay | default | Unmapped NoVerifiedCandidate
-webapp | Deployment webapp | probe-delay | permissive | Unmapped NoVerifiedCandidate
-webapp | Deployment webapp | pull-policy | default | Unmapped NoVerifiedCandidate
-webapp | Deployment webapp | pull-policy | permissive | Unmapped NoVerifiedCandidate
-webapp | Deployment webapp | resources | default | Unmapped NoVerifiedCandidate
-webapp | Deployment webapp | resources | permissive | Unmapped NoVerifiedCandidate
+webapp | Deployment webapp | pod-annotation | no-overrides | Unmapped UnsupportedChange
+webapp | Deployment webapp | probe-delay | default | Mapped charts/webapp/values-prod.yaml: probes.initialDelaySeconds
+webapp | Deployment webapp | probe-delay | permissive | Mapped charts/webapp/values-prod.yaml: probes.initialDelaySeconds
+webapp | Deployment webapp | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
+webapp | Deployment webapp | pull-policy | default | Mapped charts/webapp/values-prod.yaml: image.pullPolicy
+webapp | Deployment webapp | pull-policy | permissive | Mapped charts/webapp/values-prod.yaml: image.pullPolicy
+webapp | Deployment webapp | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+webapp | Deployment webapp | resources | default | Mapped charts/webapp/values-prod.yaml: resources.limits.memory
+webapp | Deployment webapp | resources | permissive | Mapped charts/webapp/values-prod.yaml: resources.limits.memory
+webapp | Deployment webapp | resources | no-overrides | Unmapped NoVerifiedCandidate
 webapp | Deployment webapp | scale | default | Mapped charts/webapp/values-prod.yaml: replicaCount
 webapp | Deployment webapp | scale | permissive | Mapped charts/webapp/values-prod.yaml: replicaCount
+webapp | Deployment webapp | scale | no-overrides | Mapped charts/webapp/values-prod.yaml: replicaCount
 webapp | Deployment webapp | scale+pod-annotation | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | scale+pod-annotation | permissive | Partial charts/webapp/values-prod.yaml: replicaCount | left out: UnsupportedChange
+webapp | Deployment webapp | scale+pod-annotation | no-overrides | Unmapped UnsupportedChange
 webapp | Deployment webapp | scale+toleration | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | scale+toleration | permissive | Partial charts/webapp/values-prod.yaml: replicaCount | left out: UnsupportedChange
+webapp | Deployment webapp | scale+toleration | no-overrides | Unmapped UnsupportedChange
 webapp | Deployment webapp | toleration | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | toleration | permissive | Unmapped UnsupportedChange
+webapp | Deployment webapp | toleration | no-overrides | Unmapped UnsupportedChange
 webapp | Service webapp | service-port | default | Mapped charts/webapp/values-prod.yaml: service.port
 webapp | Service webapp | service-port | permissive | Mapped charts/webapp/values-prod.yaml: service.port
+webapp | Service webapp | service-port | no-overrides | Mapped charts/webapp/values-prod.yaml: service.port
