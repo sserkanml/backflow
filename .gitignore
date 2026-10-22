@@ -70,3 +70,4 @@ keys.txt
 Thumbs.db
 # Vendored charts of the coverage suite.
 !test/coverage/testdata/charts/*.tgz
+!test/coverage/testdata/charts/**/*.tgz

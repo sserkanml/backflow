@@ -162,6 +162,33 @@ redis | StatefulSet replicas | toleration | no-overrides | Unmapped UnsupportedC
 webapp | ConfigMap webapp | configmap-data | default | Mapped charts/webapp/values-prod.yaml: config.cacheTTL
 webapp | ConfigMap webapp | configmap-data | permissive | Mapped charts/webapp/values-prod.yaml: config.cacheTTL
 webapp | ConfigMap webapp | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
+webapp | Deployment kvstore | env-add | default | Unmapped UnsupportedChange
+webapp | Deployment kvstore | env-add | permissive | Unmapped UnsupportedChange
+webapp | Deployment kvstore | env-add | no-overrides | Unmapped UnsupportedChange
+webapp | Deployment kvstore | image-tag | default | Mapped charts/webapp/values-prod.yaml: store.image.tag
+webapp | Deployment kvstore | image-tag | permissive | Mapped charts/webapp/values-prod.yaml: store.image.tag
+webapp | Deployment kvstore | image-tag | no-overrides | Unmapped NoVerifiedCandidate
+webapp | Deployment kvstore | pod-annotation | default | Unmapped UnsupportedChange
+webapp | Deployment kvstore | pod-annotation | permissive | Unmapped UnsupportedChange
+webapp | Deployment kvstore | pod-annotation | no-overrides | Unmapped UnsupportedChange
+webapp | Deployment kvstore | pull-policy | default | Mapped charts/webapp/values-prod.yaml: store.image.pullPolicy
+webapp | Deployment kvstore | pull-policy | permissive | Mapped charts/webapp/values-prod.yaml: store.image.pullPolicy
+webapp | Deployment kvstore | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+webapp | Deployment kvstore | resources | default | Unmapped UnsupportedChange
+webapp | Deployment kvstore | resources | permissive | Unmapped UnsupportedChange
+webapp | Deployment kvstore | resources | no-overrides | Unmapped UnsupportedChange
+webapp | Deployment kvstore | scale | default | Mapped charts/webapp/values-prod.yaml: store.replicaCount
+webapp | Deployment kvstore | scale | permissive | Mapped charts/webapp/values-prod.yaml: store.replicaCount
+webapp | Deployment kvstore | scale | no-overrides | Unmapped NoVerifiedCandidate
+webapp | Deployment kvstore | scale+pod-annotation | default | Unmapped UnsupportedChange
+webapp | Deployment kvstore | scale+pod-annotation | permissive | Partial charts/webapp/values-prod.yaml: store.replicaCount | left out: UnsupportedChange
+webapp | Deployment kvstore | scale+pod-annotation | no-overrides | Unmapped UnsupportedChange
+webapp | Deployment kvstore | scale+toleration | default | Unmapped UnsupportedChange
+webapp | Deployment kvstore | scale+toleration | permissive | Partial charts/webapp/values-prod.yaml: store.replicaCount | left out: UnsupportedChange
+webapp | Deployment kvstore | scale+toleration | no-overrides | Unmapped UnsupportedChange
+webapp | Deployment kvstore | toleration | default | Unmapped UnsupportedChange
+webapp | Deployment kvstore | toleration | permissive | Unmapped UnsupportedChange
+webapp | Deployment kvstore | toleration | no-overrides | Unmapped UnsupportedChange
 webapp | Deployment webapp | env-add | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | env-add | permissive | Unmapped UnsupportedChange
 webapp | Deployment webapp | env-add | no-overrides | Unmapped UnsupportedChange
@@ -195,6 +222,9 @@ webapp | Deployment webapp | scale+toleration | no-overrides | Unmapped Unsuppor
 webapp | Deployment webapp | toleration | default | Unmapped UnsupportedChange
 webapp | Deployment webapp | toleration | permissive | Unmapped UnsupportedChange
 webapp | Deployment webapp | toleration | no-overrides | Unmapped UnsupportedChange
+webapp | Service kvstore | service-port | default | Unmapped NoVerifiedCandidate
+webapp | Service kvstore | service-port | permissive | Unmapped NoVerifiedCandidate
+webapp | Service kvstore | service-port | no-overrides | Unmapped NoVerifiedCandidate
 webapp | Service webapp | service-port | default | Mapped charts/webapp/values-prod.yaml: service.port
 webapp | Service webapp | service-port | permissive | Mapped charts/webapp/values-prod.yaml: service.port
 webapp | Service webapp | service-port | no-overrides | Mapped charts/webapp/values-prod.yaml: service.port

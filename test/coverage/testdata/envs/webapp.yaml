@@ -9,3 +9,6 @@ config:
 
 service:
   port: 8080
+
+store:
+  maxMemory: 512 # the only subchart value the environment sets

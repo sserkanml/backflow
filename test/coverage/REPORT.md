@@ -6,9 +6,9 @@ Policies: **default** is a policy with no options (`spec.helm.addOverrides` is o
 
 | Policy | Mapped | Partial | Unmapped | Cases | Mapped % | Mapped or partial % |
 |---|---|---|---|---|---|---|
-| default | 17 | 0 | 49 | 66 | 26% | 26% |
-| permissive | 18 | 6 | 42 | 66 | 27% | 36% |
-| no-overrides | 5 | 0 | 61 | 66 | 8% | 8% |
+| default | 20 | 0 | 56 | 76 | 26% | 26% |
+| permissive | 21 | 8 | 47 | 76 | 28% | 38% |
+| no-overrides | 5 | 0 | 71 | 76 | 7% | 7% |
 
 ## By chart
 
@@ -17,25 +17,25 @@ Policies: **default** is a policy with no options (`spec.helm.addOverrides` is o
 | nginx | 12 | 33% | 50% |
 | postgresql | 13 | 23% | 23% |
 | redis | 28 | 14% | 21% |
-| webapp | 13 | 46% | 69% |
+| webapp | 23 | 39% | 61% |
 
 ## By scenario
 
 | Scenario | Cases | Mapped % (default) | Mapped or partial % (permissive) |
 |---|---|---|---|
 | configmap-data | 4 | 25% | 25% |
-| env-add | 5 | 0% | 0% |
+| env-add | 6 | 0% | 0% |
 | env-change | 5 | 0% | 0% |
-| image-tag | 5 | 40% | 60% |
-| pod-annotation | 5 | 0% | 0% |
+| image-tag | 6 | 50% | 67% |
+| pod-annotation | 6 | 0% | 0% |
 | probe-delay | 5 | 100% | 100% |
-| pull-policy | 5 | 40% | 40% |
-| resources | 5 | 20% | 20% |
-| scale | 5 | 60% | 60% |
-| scale+pod-annotation | 5 | 0% | 60% |
-| scale+toleration | 5 | 0% | 60% |
-| service-port | 7 | 43% | 43% |
-| toleration | 5 | 0% | 0% |
+| pull-policy | 6 | 50% | 50% |
+| resources | 6 | 17% | 17% |
+| scale | 6 | 67% | 67% |
+| scale+pod-annotation | 6 | 0% | 67% |
+| scale+toleration | 6 | 0% | 67% |
+| service-port | 8 | 38% | 38% |
+| toleration | 6 | 0% | 0% |
 
 ## Cases
 
@@ -95,6 +95,15 @@ Policies: **default** is a policy with no options (`spec.helm.addOverrides` is o
 | redis | StatefulSet replicas | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `envs/prod/redis.yaml: replica.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
 | redis | StatefulSet replicas | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
 | webapp | ConfigMap webapp | configmap-data | `/data/CACHE_TTL` | Mapped `charts/webapp/values-prod.yaml: config.cacheTTL` | Mapped `charts/webapp/values-prod.yaml: config.cacheTTL` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | image-tag | `/spec/template/spec/containers/0/image` | Mapped `charts/webapp/values-prod.yaml: store.image.tag` | Mapped `charts/webapp/values-prod.yaml: store.image.tag` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | pod-annotation | `/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Mapped `charts/webapp/values-prod.yaml: store.image.pullPolicy` | Mapped `charts/webapp/values-prod.yaml: store.image.pullPolicy` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | resources | `/spec/template/spec/containers/0/resources` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | scale | `/spec/replicas` | Mapped `charts/webapp/values-prod.yaml: store.replicaCount` | Mapped `charts/webapp/values-prod.yaml: store.replicaCount` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: store.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: store.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
 | webapp | Deployment webapp | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
 | webapp | Deployment webapp | env-change | `/spec/template/spec/containers/0/env/0/value` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment webapp | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (NoVerifiedCandidate) | Mapped `charts/webapp/values-prod.yaml: image.tag` | Unmapped (NoVerifiedCandidate) |
@@ -106,4 +115,5 @@ Policies: **default** is a policy with no options (`spec.helm.addOverrides` is o
 | webapp | Deployment webapp | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
 | webapp | Deployment webapp | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
 | webapp | Deployment webapp | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Service kvstore | service-port | `/spec/ports/0/port` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
 | webapp | Service webapp | service-port | `/spec/ports/0/port` | Mapped `charts/webapp/values-prod.yaml: service.port` | Mapped `charts/webapp/values-prod.yaml: service.port` | Mapped `charts/webapp/values-prod.yaml: service.port` |
