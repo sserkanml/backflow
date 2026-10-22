@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "webapp.name" . }}
+  labels:
+    {{- include "webapp.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  REGION: {{ .Values.config.region | quote }}
+  CACHE_TTL: {{ .Values.config.cacheTTL | quote }}

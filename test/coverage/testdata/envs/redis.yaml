@@ -1,0 +1,13 @@
+# Production values of the redis chart.
+architecture: replication
+
+auth:
+  password: not-a-real-password
+
+replica:
+  replicaCount: 2
+
+master:
+  resourcesPreset: small
+  persistence:
+    size: 8Gi

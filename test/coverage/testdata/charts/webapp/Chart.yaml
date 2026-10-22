@@ -1,0 +1,6 @@
+apiVersion: v2
+name: webapp
+description: A small web application chart, the kind a team keeps next to its manifests.
+type: application
+version: 0.3.0
+appVersion: "1.4.2"

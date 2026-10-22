@@ -68,3 +68,5 @@ keys.txt
 *~
 .DS_Store
 Thumbs.db
+# Vendored charts of the coverage suite.
+!test/coverage/testdata/charts/*.tgz
