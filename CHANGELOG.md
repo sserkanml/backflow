@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/sserkanml/backflow/compare/v0.5.0...v0.5.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* changelog.md ([3e562e4](https://github.com/sserkanml/backflow/commit/3e562e436db339598e08349ad6c9b09cc151cda6))
+
 ## [0.5.0](https://github.com/sserkanml/backflow/compare/v0.4.0...v0.5.0) (2026-10-22)
 
 
