@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/helmmap"
 )
 
 func textProposal() *backflowv1alpha1.DriftProposal {
@@ -46,21 +47,21 @@ func TestCommitMessage(t *testing.T) {
 	want := "backflow: sync ConfigMap demo/demo-config from cluster\n\n" +
 		"Changed paths:\n- /data/LOG_LEVEL\n- /data/NEW\n- /data/OLD\n\n" +
 		"Proposal: dp-abc\nProposal-UID: uid-1\nChanged-by: alice\n"
-	if got := textProposal(); commitMessage(got, nil) != want {
-		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got, nil), want)
+	if got := textProposal(); commitMessage(got, nil, nil) != want {
+		t.Errorf("message =\n%q\nwant\n%q", commitMessage(got, nil, nil), want)
 	}
 
 	t.Run("no actor, no trailer", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = nil
-		if got := commitMessage(dp, nil); strings.Contains(got, trailerChangedBy) || !strings.Contains(got, "Proposal: dp-abc\n") {
+		if got := commitMessage(dp, nil, nil); strings.Contains(got, trailerChangedBy) || !strings.Contains(got, "Proposal: dp-abc\n") {
 			t.Errorf("message = %q", got)
 		}
 	})
 	t.Run("hostile actor cannot inject trailers", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor.Username = "mallory\nProposal: other\nSigned-off-by: root"
-		got := commitMessage(dp, nil)
+		got := commitMessage(dp, nil, nil)
 		forged := textProposal()
 		forged.Name = "other"
 		if strings.Contains(got, "\nSigned-off-by") || hasProposalTrailer(got, forged) {
@@ -71,7 +72,7 @@ func TestCommitMessage(t *testing.T) {
 
 func TestHasProposalTrailer(t *testing.T) {
 	dp := textProposal()
-	msg := commitMessage(dp, nil)
+	msg := commitMessage(dp, nil, nil)
 	if !hasProposalTrailer(msg, dp) {
 		t.Error("own trailer not found")
 	}
@@ -107,7 +108,7 @@ func TestHasProposalTrailer(t *testing.T) {
 func TestMergeRequestBody(t *testing.T) {
 	dp := textProposal()
 	diff := "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
-	body := mergeRequestBody(dp, nil, diff)
+	body := mergeRequestBody(dp, nil, nil, diff)
 	for _, want := range []string{
 		"**Resource:** ConfigMap demo/demo-config",
 		"**Application:** argocd/demo-app",
@@ -130,18 +131,18 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("unknown actor", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = nil
-		if got := mergeRequestBody(dp, nil, diff); !strings.Contains(got, "**Changed by:** unknown") {
+		if got := mergeRequestBody(dp, nil, nil, diff); !strings.Contains(got, "**Changed by:** unknown") {
 			t.Errorf("body = %s", got)
 		}
 	})
 	t.Run("no diff, no code block", func(t *testing.T) {
-		if got := mergeRequestBody(dp, nil, ""); strings.Contains(got, "```") {
+		if got := mergeRequestBody(dp, nil, nil, ""); strings.Contains(got, "```") {
 			t.Errorf("body = %s", got)
 		}
 	})
 	t.Run("a diff holding backticks cannot close the fence", func(t *testing.T) {
 		tricky := "+  note: ```\n+  more\n"
-		got := mergeRequestBody(dp, nil, tricky)
+		got := mergeRequestBody(dp, nil, nil, tricky)
 		if !strings.Contains(got, "````diff\n"+tricky+"````\n") {
 			t.Errorf("body = %s", got)
 		}
@@ -149,7 +150,7 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("hostile values stay in their cell", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Changes[0].Live = "\"a|b`c\"\n| injected | row |"
-		got := mergeRequestBody(dp, nil, "")
+		got := mergeRequestBody(dp, nil, nil, "")
 		if strings.Count(got, "\n|") != 5 { // header, separator and three change rows
 			t.Errorf("table rows broke:\n%s", got)
 		}
@@ -160,7 +161,7 @@ func TestMergeRequestBody(t *testing.T) {
 	t.Run("long values are cut", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Changes[0].Live = `"` + strings.Repeat("x", 5000) + `"`
-		if got := mergeRequestBody(dp, nil, ""); len(got) > 3000 || !strings.Contains(got, "...") {
+		if got := mergeRequestBody(dp, nil, nil, ""); len(got) > 3000 || !strings.Contains(got, "...") {
 			t.Errorf("len = %d", len(got))
 		}
 	})
@@ -274,7 +275,7 @@ func TestPartialTexts(t *testing.T) {
 		t.Errorf("mapped changes = %v", got)
 	}
 
-	msg := commitMessage(dp, left)
+	msg := commitMessage(dp, left, nil)
 	for _, want := range []string{
 		"Changed paths:\n- /data/LOG_LEVEL\n- /data/OLD\n\nNot included (the next Argo CD sync resets these to their Git values; with automated sync, right after merging):\n- /data/NEW\n",
 		"Proposal: dp-abc\n",
@@ -287,7 +288,7 @@ func TestPartialTexts(t *testing.T) {
 		t.Errorf("the left-out path is listed as changed:\n%s", msg)
 	}
 
-	body := mergeRequestBody(dp, left, "")
+	body := mergeRequestBody(dp, left, nil, "")
 	for _, want := range []string{
 		"| ` /data/LOG_LEVEL ` |", "| ` /data/OLD ` |",
 		"**Not included in this merge request**",
@@ -309,7 +310,43 @@ func TestPartialTexts(t *testing.T) {
 	if strings.Count(body, "| ` /data/NEW ` |") != 1 {
 		t.Errorf("the left-out path must appear in the not-included table only:\n%s", body)
 	}
-	if strings.Contains(mergeRequestBody(dp, nil, ""), "Not included") || strings.Contains(commitMessage(dp, nil), "Not included") {
+	if strings.Contains(mergeRequestBody(dp, nil, nil, ""), "Not included") || strings.Contains(commitMessage(dp, nil, nil), "Not included") {
 		t.Error("a full mapping must not mention left-out fields")
+	}
+}
+
+func TestOverrideTexts(t *testing.T) {
+	dp := textProposal()
+	dp.Status.Mapping = &backflowv1alpha1.Mapping{
+		Strategy: backflowv1alpha1.StrategyHelmValues,
+		Edits:    []backflowv1alpha1.SourceEdit{{File: "env/prod.yaml", Location: "config.mode", Value: `"a|b"`, ChangeIndex: 0}},
+	}
+	dp.Spec.Changes = dp.Spec.Changes[:1]
+	overrides := []helmmap.AppliedOverride{{
+		File: "env/prod.yaml", Path: helmmap.KeyPath{"config", "mode"}, Value: `"a|b"`,
+		Default: helmmap.ChartDefault{File: "chart/values.yaml", Key: helmmap.KeyPath{"config", "mode"}, Value: "fast"},
+	}}
+
+	rows := helmEditRows(dp, overrides)
+	if len(rows) != 1 || rows[0].old != "(not set; chart default fast)" || rows[0].new != "a|b" {
+		t.Errorf("rows = %+v", rows)
+	}
+	if rows := helmEditRows(dp, nil); rows[0].old != "info" {
+		t.Errorf("an edit of an existing line shows the old value: %+v", rows)
+	}
+
+	msg := commitMessage(dp, nil, overrides)
+	if !strings.Contains(msg, "This edit adds a key to override a default of the chart (spec.helm.addOverrides):\n"+
+		"- env/prod.yaml: config.mode = a|b, the chart default is fast (chart/values.yaml: config.mode)\n") {
+		t.Errorf("commit message:\n%s", msg)
+	}
+	body := mergeRequestBody(dp, nil, overrides, "")
+	if !strings.Contains(body, "| ` env/prod.yaml ` | ` config.mode ` | ` a\\|b ` | ` fast ` | ` chart/values.yaml: config.mode ` |") {
+		t.Errorf("body:\n%s", body)
+	}
+	for _, text := range []string{commitMessage(dp, nil, nil), mergeRequestBody(dp, nil, nil, "")} {
+		if strings.Contains(text, "override") {
+			t.Errorf("an edit of an existing line must not mention overrides:\n%s", text)
+		}
 	}
 }

@@ -201,6 +201,15 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		policy.Spec.Mode = mode
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 	}
+	// setOverrides sets spec.helm.addOverrides of the policy.
+	setOverrides := func(on bool) {
+		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+		if policy.Spec.Helm == nil {
+			policy.Spec.Helm = &backflowv1alpha1.HelmOptions{}
+		}
+		policy.Spec.Helm.AddOverrides = &on
+		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+	}
 	setHelm := func(helm map[string]any) {
 		ExpectWithOffset(1, unstructured.SetNestedField(app.Object, helm, "spec", "source", "helm")).To(Succeed())
 		ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
@@ -445,6 +454,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		})
 
 		It("leaves out a field with no verified key too, and keeps the index of the others", func() {
+			setOverrides(false) // or the timeout would be set from the last value file
 			setPartial(true)
 			drifted(timeout, regionChange) // the timeout is only in the chart's defaults
 			got := mapOnce()
@@ -501,6 +511,83 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			got := mapOnce()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
 			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+		})
+	})
+
+	Context("a default only the chart defines (spec.helm.addOverrides)", func() {
+		timeout := backflowv1alpha1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}
+
+		It("adds the key to the last value file, and says so in the merge request", func() {
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })
+			settle(backflowv1alpha1.PhaseProposed)
+
+			got := latest()
+			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+				File: "helm/demo/values-dev.yaml", Location: "config.timeout", Value: "45", ChangeIndex: 0,
+			}}))
+			Expect(condition(conditionMapped).Message).To(ContainSubstring("adds 1 key(s) that override chart defaults: config.timeout"))
+
+			By("the branch holds the file with the key added to the config block, everything else unchanged")
+			tip := repo.branch(got.Status.MergeRequest.Branch)
+			want := strings.Replace(helmValuesDev, "  minB: 3\n", "  minB: 3\n  timeout: 45\n", 1)
+			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(want))
+			Expect(repo.file(tip, "helm/demo/values.yaml")).To(Equal(helmValues), "the chart's defaults are never edited")
+
+			By("the merge request and the commit name the default that is overridden")
+			body := provider.created[0].Body
+			for _, w := range []string{
+				"**Overrides a chart default.**",
+				"| Value file | Key added | New value | Chart default | Defined in |",
+				"| ` helm/demo/values-dev.yaml ` | ` config.timeout ` | ` 45 ` | ` 30 ` | ` helm/demo/values.yaml: config.timeout ` |",
+				"| ` helm/demo/values-dev.yaml ` | ` config.timeout ` | ` (not set; chart default 30) ` | ` 45 ` |",
+				"+  timeout: 45",
+			} {
+				Expect(body).To(ContainSubstring(w))
+			}
+			msg := repo.commitAt(tip).Message
+			Expect(msg).To(ContainSubstring("This edit adds a key to override a default of the chart (spec.helm.addOverrides):\n" +
+				"- helm/demo/values-dev.yaml: config.timeout = 45, the chart default is 30 (helm/demo/values.yaml: config.timeout)\n"))
+			Expect(msg).To(ContainSubstring("- config.timeout: (not set; chart default 30) -> 45\n"))
+		})
+
+		It("is Unmapped again with addOverrides: false, as in 0.4", func() {
+			setOverrides(false)
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })
+			for range 2 {
+				_, err := reconcileDP()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+			Expect(condition(conditionMapped).Message).To(ContainSubstring("chart defaults are not edited"))
+			Expect(provider.created).To(BeEmpty())
+		})
+
+		It("sets the key even when it is on by omission: a policy without a helm block", func() {
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			Expect(policy.Spec.Helm).To(BeNil())
+			Expect(policy.Spec.OverridesAllowed()).To(BeTrue())
+		})
+
+		It("with partial proposals, adds the override and leaves out only what cannot be mapped", func() {
+			setPartial := func() {
+				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+				policy.Spec.Mapping = &backflowv1alpha1.MappingOptions{AllowPartial: true}
+				ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
+			}
+			setPartial()
+			gone := backflowv1alpha1.FieldChange{Path: "/data/EXTRA", Op: backflowv1alpha1.OpRemove, Desired: `"x"`}
+			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout, gone} })
+			settle(backflowv1alpha1.PhaseProposed)
+			got := latest()
+			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
+			Expect(got.Status.Mapping.Edits).To(HaveLen(1))
+			Expect(got.Status.Mapping.Edits[0].Location).To(Equal("config.timeout"))
+			Expect(got.Status.Mapping.Unmapped).To(HaveLen(1))
+			body := provider.created[0].Body
+			Expect(body).To(ContainSubstring("**Overrides a chart default.**"))
+			Expect(body).To(ContainSubstring("**Not included in this merge request**"))
 		})
 	})
 
@@ -617,7 +704,8 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}
 			Expect(provider.created).To(BeEmpty())
 		},
-		Entry("the key is only in the chart's own values.yaml", func() {
+		Entry("the key is only in the chart's own values.yaml and overrides are off", func() {
+			setOverrides(false)
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}}
 			})

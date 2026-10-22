@@ -21,6 +21,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -279,7 +280,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 	}
 
 	started = time.Now()
-	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut))
+	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res.leftOut, res.overrides))
 	logf.FromContext(ctx).Info("Commit built",
 		"proposal", dp.Name, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
 	if err != nil {
@@ -416,12 +417,12 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField, overrides []helmmap.AppliedOverride) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left), When: dp.Spec.DetectedAt.UTC()}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, left, overrides), When: dp.Spec.DetectedAt.UTC()}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -504,7 +505,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.diff()),
+		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.overrides, change.result.diff()),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {
