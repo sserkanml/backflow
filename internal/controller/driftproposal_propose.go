@@ -40,12 +40,12 @@ const (
 // still in Mapping is retried; the reasons that end in Failed or Superseded
 // are final.
 const (
-	reasonReportOnly           = "ReportOnly"
+	reasonReportOnly = "ReportOnly"
 	// reasonProposing is the Proposed condition while the change is mapped again
 	// at the target branch, committed and pushed. These steps talk to Argo CD
 	// and the Git host and can take minutes; the condition says what the
 	// proposal is doing until it has a merge request or a reason to wait.
-	reasonProposing = "Proposing"
+	reasonProposing            = "Proposing"
 	reasonMissingScmConnection = "MissingScmConnection"
 	reasonPolicyNotFound       = "PolicyNotFound"
 	reasonScmAuthFailed        = "ScmAuthFailed"

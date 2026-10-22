@@ -311,19 +311,8 @@ func argoFailure(err error) error {
 	return &heldError{reason: reasonArgoCDUnreachable, cause: err}
 }
 
-// scalarOf decodes a JSON value that is a string, number or bool. Anything
-// else (an object, null, invalid JSON) is not one.
-func scalarOf(raw string) (any, bool) {
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return nil, false
-	}
-	switch v.(type) {
-	case string, float64, bool:
-		return v, true
-	}
-	return nil, false
-}
+// scalarOf decodes a JSON value that is a string, number or bool.
+func scalarOf(raw string) (any, bool) { return helmmap.ScalarOf(raw) }
 
 // helmSourceProblem returns a *verdictError for a Helm Application whose
 // source cannot be mapped at all: several sources, or a chart that comes from a
@@ -368,28 +357,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		return nil, err
 	}
 
-	fields := make([]helmmap.Field, len(dp.Spec.Changes))
-	for i, ch := range dp.Spec.Changes {
-		found := &helmmap.Result{}
-		if old, ok := scalarOf(ch.Desired); ok && ch.Op == backflowv1alpha1.OpReplace {
-			if found, err = src.Find(files, old); err != nil {
-				return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
-			}
-		}
-		field := helmmap.Field{Index: i, Change: ch, Found: found}
-		// A string that changed may be a part of it that a key holds: the tag of an
-		// image, say. Those keys are tried only when no key holds the whole value.
-		if oldS, ok := scalarOf(ch.Desired); ok && ch.Op == backflowv1alpha1.OpReplace {
-			newV, newOK := scalarOf(ch.Live)
-			o, oIsString := oldS.(string)
-			n, nIsString := newV.(string)
-			if newOK && oIsString && nIsString {
-				if field.Fragments, err = src.FindFragments(files, o, n); err != nil {
-					return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
-				}
-			}
-		}
-		fields[i] = field
+	fields, err := helmmap.FieldsFor(src, files, dp.Spec.Changes)
+	if err != nil {
+		return nil, &verdictError{reason: helmmap.ReasonInvalidInlineValues, err: err}
 	}
 
 	policy, err := r.policyOf(ctx, dp)
