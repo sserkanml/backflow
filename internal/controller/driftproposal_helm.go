@@ -43,6 +43,8 @@ type mappedChange struct {
 	// overrides are the edits that add a key to a value file to override a
 	// default of the chart (spec.helm.addOverrides).
 	overrides []helmmap.AppliedOverride
+	// renders is the number of renders through Argo CD the mapping took (Helm).
+	renders int
 }
 
 // leftOutField is a drifted field a partial mapping leaves out.
@@ -407,7 +409,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	if !out.Mapped() {
 		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
 	}
-	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral, overrides: out.Overrides}
+	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral, overrides: out.Overrides, renders: out.Renders}
 	for _, l := range out.LeftOut {
 		change.leftOut = append(change.leftOut, leftOutField{path: l.Pointer, reason: l.Reason, message: l.Detail})
 	}

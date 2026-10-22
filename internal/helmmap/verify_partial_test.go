@@ -197,3 +197,42 @@ func TestVerifyPartialCollateralNeverTouchesALeftOutField(t *testing.T) {
 		}
 	})
 }
+
+func TestVerifyPartiallySharesRenders(t *testing.T) {
+	// LOG_LEVEL_UP derives from a value and has no key of its own: it is left out
+	// and the others are verified again. The second attempt must not render the
+	// unmodified files, or the edit of REGION, a second time.
+	env := newDemo(t, Spec{})
+	rend := &demoRenderer{src: env.src}
+	fields := []Field{
+		drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2"),
+		drift(t, env.src, env.files, 1, "LOG_LEVEL_UP", "DEBUG", "TRACE"),
+	}
+	out, err := Verify(context.Background(), rend, env.input(keyConfig, fields...), Options{AllowPartial: true})
+	if err != nil || !out.Mapped() || len(out.LeftOut) != 1 {
+		t.Fatalf("out = %+v, err = %v", out, err)
+	}
+	if out.Renders != 3 || rend.calls != 3 {
+		t.Errorf("renders = %d (calls %d), want 3: the unmodified files twice and the edit once", out.Renders, rend.calls)
+	}
+
+	t.Run("a field that changes on every render is still found in the later attempt", func(t *testing.T) {
+		rend := &demoRenderer{src: env.src, random: true}
+		fields := []Field{
+			drift(t, env.src, env.files, 0, "RANDOM", "r1", "x"),
+			drift(t, env.src, env.files, 1, "REGION", "eu-central-1", "us-west-2"),
+			drift(t, env.src, env.files, 2, "LOG_LEVEL_UP", "DEBUG", "TRACE"),
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, fields...), Options{AllowPartial: true})
+		if err != nil || !out.Mapped() || len(out.LeftOut) != 2 {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+		reasons := map[string]string{}
+		for _, f := range out.LeftOut {
+			reasons[f.Pointer] = f.Reason
+		}
+		if reasons["/data/RANDOM"] != ReasonNondeterministicField {
+			t.Errorf("left out = %v", reasons)
+		}
+	})
+}

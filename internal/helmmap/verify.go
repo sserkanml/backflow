@@ -2,6 +2,8 @@ package helmmap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -413,6 +415,35 @@ type run struct {
 
 	// overrides is set when edits that add a key are allowed.
 	overrides bool
+
+	// shared is what the attempts of one Verify keep for each other (see
+	// verifyPartially); nil for a run on its own.
+	shared *renderCache
+}
+
+// renderCache holds the renders of one Verify. An attempt after a field was
+// left out renders the same files again: the unmodified ones (twice, to find
+// what changes on every render) and the edits that were tried. Each render can
+// be seconds of Argo CD's time, so the attempts share them.
+type renderCache struct {
+	snaps map[string]snapshot
+	// base and again are the two renders of the unmodified files.
+	base, again snapshot
+	haveBase    bool
+}
+
+func filesKey(files map[string][]byte) string {
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	h := sha256.New()
+	for _, n := range names {
+		_, _ = fmt.Fprintf(h, "%d:%s%d:", len(n), n, len(files[n]))
+		_, _ = h.Write(files[n])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 var (
@@ -421,6 +452,22 @@ var (
 )
 
 func (v *run) render(files map[string][]byte) (snapshot, error) {
+	var key string
+	if v.shared != nil {
+		key = filesKey(files)
+		if snap, ok := v.shared.snaps[key]; ok {
+			return snap, nil
+		}
+	}
+	snap, err := v.renderFresh(files)
+	if err == nil && v.shared != nil {
+		v.shared.snaps[key] = snap
+	}
+	return snap, err
+}
+
+// renderFresh renders without looking at the cache.
+func (v *run) renderFresh(files map[string][]byte) (snapshot, error) {
 	if v.ctx.Err() != nil {
 		return nil, v.budgetOr(v.ctx.Err())
 	}
@@ -511,8 +558,9 @@ func (v *run) verifyPartially(opts Options) (*Outcome, error) {
 			return failure(left), nil
 		}
 	}
+	shared := &renderCache{snaps: map[string]snapshot{}}
 	for {
-		attempt := &run{ctx: v.ctx, r: v.r, in: in, leftOut: leftOutPointers(left), overrides: opts.AddOverrides}
+		attempt := &run{ctx: v.ctx, r: v.r, in: in, leftOut: leftOutPointers(left), overrides: opts.AddOverrides, shared: shared}
 		out, err := attempt.verify(fields, opts)
 		v.renders += attempt.renders
 		v.budget = v.budget || attempt.budget
@@ -845,15 +893,24 @@ func preflight(in []Field, opts Options) ([]parsedField, *Outcome) {
 // fields are what the render gives. It returns an Outcome when they are not.
 func (v *run) baseline(fields []parsedField) (snapshot, nondeterminism, *Outcome, error) {
 	in := v.in
-	base, err := v.render(in.Files)
-	if err != nil {
-		out, err := v.baseFailure(err)
-		return nil, nondeterminism{}, out, err
-	}
-	again, err := v.render(in.Files)
-	if err != nil {
-		out, err := v.baseFailure(err)
-		return nil, nondeterminism{}, out, err
+	var base, again snapshot
+	if v.shared != nil && v.shared.haveBase {
+		base, again = v.shared.base, v.shared.again
+	} else {
+		// Two renders of the same files, never taken from the cache: what
+		// differs between them is nondeterministic.
+		var err error
+		if base, err = v.renderFresh(in.Files); err != nil {
+			out, err := v.baseFailure(err)
+			return nil, nondeterminism{}, out, err
+		}
+		if again, err = v.renderFresh(in.Files); err != nil {
+			out, err := v.baseFailure(err)
+			return nil, nondeterminism{}, out, err
+		}
+		if v.shared != nil {
+			v.shared.base, v.shared.again, v.shared.haveBase = base, again, true
+		}
 	}
 	nd := findNondeterminism(base, again)
 

@@ -81,6 +81,10 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	meta.SetStatusCondition(&conn.Status.Conditions, cond)
 
 	if err := r.Status().Update(ctx, &conn); err != nil {
+		if apierrors.IsConflict(err) {
+			log.V(1).Info("The connection changed while its status was computed; reconciling again")
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		return ctrl.Result{}, err
 	}
 

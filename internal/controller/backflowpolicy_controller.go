@@ -13,6 +13,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -171,6 +172,13 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	meta.SetStatusCondition(&policy.Status.Conditions, cond)
 
 	if err := r.Status().Update(ctx, &policy); err != nil {
+		if apierrors.IsConflict(err) {
+			// The policy changed while its status was computed. Nothing was
+			// written, so the status never describes a spec it was not computed
+			// from; look again soon.
+			log.V(1).Info("The policy changed while its status was computed; reconciling again")
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		return ctrl.Result{}, err
 	}
 

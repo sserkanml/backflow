@@ -259,8 +259,12 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 
 	started := time.Now()
 	res, err := r.mapAt(ctx, dp, access, head)
+	renders := 0
+	if res != nil {
+		renders = res.renders
+	}
 	logf.FromContext(ctx).Info("Mapped again at the head of the target branch",
-		"proposal", dp.Name, "head", head, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
+		"proposal", dp.Name, "head", head, "took", time.Since(started).Round(time.Millisecond).String(), "renders", renders, "error", err)
 	if err != nil {
 		if held, ok := errors.AsType[*heldError](err); ok {
 			return stop(r.holdProposal(ctx, dp, held.reason, held.cause, 0))
