@@ -24,8 +24,12 @@
 #      config.colorA verifies.
 #   f. AMBIGUOUS is fed by two keys that give the same result: Unmapped
 #      (AmbiguousCandidates), naming minA and minB.
-#   g. TIMEOUT exists only in the chart's own values.yaml, and FEATURE is set by
-#      a helm parameter of the Application: both Unmapped (NoVerifiedCandidate).
+#   g. TIMEOUT exists only in the chart's own values.yaml: the merge request adds
+#      config.timeout to values-dev.yaml (an override of the chart default; only
+#      that line is added, the body and the commit name the default). With
+#      spec.helm.addOverrides: false it stays Unmapped (chart defaults, as before).
+#      FEATURE is set by a helm parameter of the Application: Unmapped
+#      (NoVerifiedCandidate), the Application decides it, not a value file.
 #   h. A Deployment: scaling demo-helm is mapped to replicaCount and stays an
 #      integer. Changing the container image with kubectl set image changes only
 #      a part of the image string ("repository:tag"); the key image.tag holds that
@@ -656,6 +660,19 @@ expect_branch_file() {
   fi
 }
 
+# expect_only_additions <branch> <file>: the file on the branch differs from the
+# file on main only by added lines: no line of main's file is changed or removed
+# (an override adds a key, and nothing else).
+expect_only_additions() {
+  local removed added
+  raw_file "$2" main >"$WORKDIR/main.txt"
+  raw_file "$2" "$1" >"$WORKDIR/branch.txt"
+  removed="$(diff "$WORKDIR/main.txt" "$WORKDIR/branch.txt" | grep -c '^<' || true)"
+  added="$(diff "$WORKDIR/main.txt" "$WORKDIR/branch.txt" | grep -c '^>' || true)"
+  expect_eq "lines of $2 changed or removed on the branch" "0" "$removed"
+  expect_eq "lines of $2 added on the branch" "1" "$added"
+}
+
 # expect_mapping <proposal> <file> <location>: the proposal is mapped with the
 # HelmValues strategy to exactly one edit.
 expect_mapping() {
@@ -1206,7 +1223,7 @@ fi
 
 # ---------------------------------------------------------------------------
 if section_wanted g; then
-step "g. TIMEOUT (chart defaults) and FEATURE (helm parameter) are Unmapped"
+step "g. TIMEOUT (chart defaults) becomes an override in values-dev.yaml; FEATURE (helm parameter) is Unmapped"
 GIT_TO="$(yaml_value helm/demo/values.yaml main timeout)"
 LIVE_TO="$(live_cm "$DEMO_NS" "$CM" TIMEOUT)"
 NEW_TO="$((GIT_TO + 15))"
@@ -1215,13 +1232,71 @@ GIT_FEATURE="$(k -n "$ARGOCD_NS" get application "$DEMO_APP" -o jsonpath='{.spec
 LIVE_FEATURE="$(live_cm "$DEMO_NS" "$CM" FEATURE)"
 NEW_FEATURE="gamma"
 require_drift g2 "$GIT_FEATURE" "$LIVE_FEATURE" "$NEW_FEATURE"
+
+echo "  g1. TIMEOUT exists only in the chart's values.yaml: the merge request adds config.timeout to $VALUES_DEV..."
 set_cm "$DEMO_NS" "$CM" "{\"TIMEOUT\":\"$NEW_TO\"}" "$DEMO_APP"
-wait_for "proposal is Unmapped (TIMEOUT $GIT_TO -> $NEW_TO)" has_proposal "$DEMO_APP" "$CM" Unmapped "/data/TIMEOUT:Replace:\"$GIT_TO\">\"$NEW_TO\""
+wait_for "proposal is Proposed (TIMEOUT $GIT_TO -> $NEW_TO)" has_proposal "$DEMO_APP" "$CM" Proposed "/data/TIMEOUT:Replace:\"$GIT_TO\">\"$NEW_TO\""
 remember_proposals
-P_G1="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_TO\"" | head -n 1)"
+P_G1="$(proposal_with "$DEMO_APP" "$CM" Proposed "\"$NEW_TO\"" | head -n 1)"
 if [[ -n "$P_G1" ]]; then
-  expect_unmapped "$P_G1" NoVerifiedCandidate "chart's own defaults" "config.timeout"
+  BRANCH_G1="$(branch_of "$P_G1")"
+  IFS='|' read -r IID_G1 STATE_G1 _ _ <<<"$(mr_info "$BRANCH_G1")"
+  expect_eq "merge request state" "opened" "$STATE_G1"
+  expect_mapping "$P_G1" "$VALUES_DEV" "config.timeout"
+  expect_eq "the value is an integer in the status (the default is one)" "$NEW_TO" "$(dp_field "$P_G1" '.status.mapping.edits[0].value')"
+  expect_contains "Mapped message" "override chart defaults: config.timeout" "$(condition "$P_G1" Mapped message)"
+  expect_only_additions "$BRANCH_G1" "$VALUES_DEV"
+  if raw_file "$VALUES_DEV" "$BRANCH_G1" | grep -q "^  timeout: $NEW_TO\$"; then
+    pass "  timeout: $NEW_TO is in the config block on the branch, as an unquoted integer"
+  else
+    fail "the branch has no '  timeout: $NEW_TO' line in $VALUES_DEV"
+  fi
+  if [[ "$(raw_file helm/demo/values.yaml main)" == "$(raw_file helm/demo/values.yaml "$BRANCH_G1")" ]]; then
+    pass "the chart's own values.yaml is the same on the branch and on main"
+  else
+    fail "helm/demo/values.yaml differs between the branch and main"
+  fi
+  BODY_G1="$(gl GET "$(project_path "/merge_requests/$IID_G1")" | jx 'd["description"]')"
+  expect_contains "description" "Overrides a chart default" "$BODY_G1"
+  expect_contains "description (key added)" "config.timeout" "$BODY_G1"
+  expect_contains "description (chart default)" "helm/demo/values.yaml: config.timeout" "$BODY_G1"
+  expect_contains "description (default value)" "| \` $GIT_TO \` |" "$BODY_G1"
+  expect_contains "description (new value)" "| \` $NEW_TO \` |" "$BODY_G1"
+  COMMIT_G1="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_G1")")" | jx 'd["message"]')"
+  expect_contains "commit message" "This edit adds a key to override a default of the chart" "$COMMIT_G1"
+  expect_contains "commit message" "config.timeout = $NEW_TO, the chart default is $GIT_TO (helm/demo/values.yaml: config.timeout)" "$COMMIT_G1"
+  close_and_reset "$IID_G1" "$P_G1"
 fi
+
+echo "  g1b. with spec.helm.addOverrides: false the same kind of drift stays Unmapped (chart defaults)..."
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"helm":{"addOverrides":false}}}' >/dev/null; then
+  pass "the policy does not add overrides"
+else
+  fail "could not set spec.helm.addOverrides"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+# Another value: the closed proposal above blocks the same change at this revision.
+NEW_TO2="$((GIT_TO + 16))"
+require_drift g1b "$GIT_TO" "$(live_cm "$DEMO_NS" "$CM" TIMEOUT)" "$NEW_TO2"
+set_cm "$DEMO_NS" "$CM" "{\"TIMEOUT\":\"$NEW_TO2\"}" "$DEMO_APP"
+wait_for "proposal is Unmapped (TIMEOUT $GIT_TO -> $NEW_TO2)" has_proposal "$DEMO_APP" "$CM" Unmapped "/data/TIMEOUT:Replace:\"$GIT_TO\">\"$NEW_TO2\""
+remember_proposals
+P_G1B="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_TO2\"" | head -n 1)"
+if [[ -n "$P_G1B" ]]; then
+  expect_unmapped "$P_G1B" NoVerifiedCandidate "chart's own defaults" "config.timeout"
+fi
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"helm":null}}' >/dev/null; then
+  pass "the policy is back to the default (overrides on)"
+else
+  fail "could not remove spec.helm from the policy"
+fi
+wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+set_cm "$DEMO_NS" "$CM" "{\"TIMEOUT\":\"$LIVE_TO\"}" "$DEMO_APP"
+if [[ -n "$P_G1B" ]]; then
+  wait_for "the unmapped proposal is retired once the live value goes back" phase_is "$P_G1B" Reverted
+fi
+
+echo "  g2. FEATURE is set by a helm parameter of the Application: no override is added..."
 set_cm "$DEMO_NS" "$CM" "{\"TIMEOUT\":\"$LIVE_TO\",\"FEATURE\":\"$NEW_FEATURE\"}" "$DEMO_APP"
 wait_for "proposal is Unmapped (FEATURE $GIT_FEATURE -> $NEW_FEATURE)" has_proposal "$DEMO_APP" "$CM" Unmapped "/data/FEATURE:Replace:\"$GIT_FEATURE\">\"$NEW_FEATURE\""
 remember_proposals
