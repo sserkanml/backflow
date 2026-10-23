@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -518,7 +519,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n",
 			changes: []v1alpha1.FieldChange{add("/data/new", `"y"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
-				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n  new: y\n",
+				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n  new: \"y\"\n",
 		},
 		{
 			name: "a comment indented more than the key but less than the content is not content",
@@ -550,7 +551,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n",
 			changes: []v1alpha1.FieldChange{add("/data/new", `"y"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
-				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n  new: y\n",
+				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n  new: \"y\"\n",
 		},
 	}
 	for _, tt := range tests {
@@ -563,5 +564,36 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 				t.Errorf("edited file differs\n--- got ---\n%s\n--- want ---\n%s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplyQuotesStringsYAML11ReadsAsOtherTypes(t *testing.T) {
+	// Helm, Argo CD and kubectl parse YAML 1.1: these plain scalars would not stay strings.
+	for _, s := range []string{"yes", "No", "ON", "off", "y", "N", "true", "null", "~", "1", "1.20", "0777", "1_000", "1:30", "0x1F", ".5", "-3", "1e3", ""} {
+		out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1alpha1.FieldChange{
+			{Path: "/data/k", Op: v1alpha1.OpAdd, Live: strconv.Quote(s)},
+		})
+		if err != nil {
+			t.Fatalf("%q: %v", s, err)
+		}
+		want := "data:\n  a: b\n  k: " + strconv.Quote(s) + "\n"
+		if s == "" {
+			want = "data:\n  a: b\n  k: \"\"\n"
+		}
+		if string(out) != want {
+			t.Errorf("%q: got %q, want %q", s, out, want)
+		}
+	}
+	for _, s := range []string{"plain", "nope", "yesterday", "v1", "a:b", "1a"} {
+		out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1alpha1.FieldChange{
+			{Path: "/data/k", Op: v1alpha1.OpAdd, Live: strconv.Quote(s)},
+		})
+		if err != nil || !strings.HasSuffix(string(out), "  k: "+s+"\n") {
+			t.Errorf("%q must stay plain: %q, %v", s, out, err)
+		}
+	}
+	out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1alpha1.FieldChange{{Path: "/data/no", Op: v1alpha1.OpAdd, Live: `"x"`}})
+	if err != nil || !strings.HasSuffix(string(out), "  \"no\": x\n") {
+		t.Errorf("a key that reads as a boolean is quoted: %q, %v", out, err)
 	}
 }
