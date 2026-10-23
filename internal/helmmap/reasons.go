@@ -19,16 +19,21 @@ const (
 	ReasonNondeterministicField = "NondeterministicField"
 	ReasonSecretNotVerifiable   = "SecretNotVerifiable"
 	ReasonNoVerifiedCandidate   = "NoVerifiedCandidate"
-	ReasonAmbiguousCandidates   = "AmbiguousCandidates"
-	ReasonEditsInteract         = "EditsInteract"
-	ReasonTooManyCandidates     = "TooManyCandidates"
-	ReasonRenderBudgetExceeded  = "RenderBudgetExceeded"
-	ReasonRenderFailed          = "RenderFailed"
-	ReasonFilesTooLarge         = "FilesTooLarge"
-	ReasonUnsupportedChange     = "UnsupportedChange"
-	ReasonSymlinkInChart        = "SymlinkInChart"
-	ReasonDependencyOutsideRepo = "DependencyOutsideRepository"
-	ReasonArgoSourceOverrides   = "ArgoSourceOverrides"
+	// ReasonValueAffectsOtherFields: every key of the value files that was tried
+	// reproduces the drifted field, and each also changes other fields, which the
+	// policy does not allow. The message names the nearest key and what else it
+	// changes.
+	ReasonValueAffectsOtherFields = "ValueAffectsOtherFields"
+	ReasonAmbiguousCandidates     = "AmbiguousCandidates"
+	ReasonEditsInteract           = "EditsInteract"
+	ReasonTooManyCandidates       = "TooManyCandidates"
+	ReasonRenderBudgetExceeded    = "RenderBudgetExceeded"
+	ReasonRenderFailed            = "RenderFailed"
+	ReasonFilesTooLarge           = "FilesTooLarge"
+	ReasonUnsupportedChange       = "UnsupportedChange"
+	ReasonSymlinkInChart          = "SymlinkInChart"
+	ReasonDependencyOutsideRepo   = "DependencyOutsideRepository"
+	ReasonArgoSourceOverrides     = "ArgoSourceOverrides"
 )
 
 // ReasonOf returns the reason for an error from NewSource, CollectFiles or a

@@ -267,7 +267,7 @@ func TestVerifyDemoCases(t *testing.T) {
 			// LOG_LEVEL alone.
 			name: "LOG_LEVEL, which LOG_LEVEL_UP derives from, is not mapped", res: keyConfig,
 			fields:     [][3]string{{"LOG_LEVEL", "debug", "trace"}},
-			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"config.logLevel", "also changes", "LOG_LEVEL_UP"},
+			wantReason: ReasonValueAffectsOtherFields, wantMsg: []string{"config.logLevel", "also changes", "LOG_LEVEL_UP"},
 		},
 		{
 			name: "REGION comes from global", res: keyConfig, fields: [][3]string{{"REGION", "eu-central-1", "us-west-2"}},
@@ -311,7 +311,7 @@ func TestVerifyDemoCases(t *testing.T) {
 		{
 			name: "a candidate that also changes another resource is rejected", res: keyConfig,
 			fields: [][3]string{{"REGION", "eu-central-1", "us-west-2"}}, rend: func(r *demoRenderer) { r.alsoOther = true },
-			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"also changes", "demo-helm-other"},
+			wantReason: ReasonValueAffectsOtherFields, wantMsg: []string{"also changes", "demo-helm-other"},
 		},
 		{
 			name: "two fields, mapped independently", res: keyConfig,
@@ -782,7 +782,7 @@ func TestVerifyNearMiss(t *testing.T) {
 		if err != nil || out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
-		if out.Unmapped.Reason != ReasonNoVerifiedCandidate || len(out.Unmapped.Fields) != 1 {
+		if out.Unmapped.Reason != ReasonValueAffectsOtherFields || len(out.Unmapped.Fields) != 1 {
 			t.Fatalf("unmapped = %+v", out.Unmapped)
 		}
 		nm := out.Unmapped.Fields[0].NearMiss
@@ -808,7 +808,7 @@ func TestVerifyNearMiss(t *testing.T) {
 		env := newDemo(t, Spec{})
 		f := drift(t, env.src, env.files, 0, "IMAGE_TAG", "1.27-alpine", "1.28-alpine")
 		out, err := Verify(context.Background(), &demoRenderer{src: env.src, tagLabel: true}, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonValueAffectsOtherFields {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
 		nm := out.Unmapped.Fields[0].NearMiss
@@ -981,7 +981,7 @@ func TestVerifyFragments(t *testing.T) {
 		frag, _ := env.src.FindFragments(env.files, "debug", "trace")
 		f.Fragments = frag
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonValueAffectsOtherFields {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
 	})
@@ -1104,7 +1104,7 @@ func TestVerifyCollateral(t *testing.T) {
 				}
 				return
 			}
-			if out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+			if out.Unmapped.Reason != ReasonValueAffectsOtherFields {
 				t.Fatalf("reason = %s: %s", out.Unmapped.Reason, out.Unmapped.Message)
 			}
 			nm := out.Unmapped.Fields[0].NearMiss
