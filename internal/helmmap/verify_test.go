@@ -193,20 +193,20 @@ func configMap(ns, name string, data map[string]any) *unstructured.Unstructured 
 
 var (
 	appDemo   = rendermap.App{Name: "demo-helm", Namespace: "argocd", Project: "default", DestNamespace: "demo"}
-	keyConfig = ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "demo-helm-config"}
-	keySide   = ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "demo-helm-sidecar"}
+	keyConfig = rendermap.ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "demo-helm-config"}
+	keySide   = rendermap.ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "demo-helm-sidecar"}
 )
 
 // drift builds a Field for data.<key> going from desired to live, with the
 // candidates found for desired.
-func drift(t *testing.T, src *Source, files map[string][]byte, index int, key, desired, live string) Field {
+func drift(t *testing.T, src *Source, files map[string][]byte, index int, key, desired, live string) rendermap.Field {
 	t.Helper()
 	d, l := strconv.Quote(desired), strconv.Quote(live)
 	found, err := src.Find(files, desired)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Field{
+	return rendermap.Field{
 		Index:  index,
 		Change: v1alpha1.FieldChange{Path: "/data/" + key, Op: v1alpha1.OpReplace, Desired: d, Live: l},
 		Found:  found.Found(),
@@ -236,8 +236,8 @@ func newDemo(t *testing.T, spec Spec) demoEnv {
 	return demoEnv{src, files}
 }
 
-func (e demoEnv) input(res ResourceKey, fields ...Field) Input {
-	return Input{App: appDemo, Resource: res, Fields: fields, Provider: e.src, Writer: ValuesWriter{}, Files: e.files}
+func (e demoEnv) input(res rendermap.ResourceKey, fields ...rendermap.Field) Input {
+	return Input{App: appDemo, Resource: res, Fields: fields, Source: e.src, Files: e.files}
 }
 
 func TestVerifyDemoCases(t *testing.T) {
@@ -248,7 +248,7 @@ func TestVerifyDemoCases(t *testing.T) {
 	tests := []struct {
 		name string
 		spec Spec
-		res  ResourceKey
+		res  rendermap.ResourceKey
 		// fields: key, desired, live
 		fields [][3]string
 		rend   func(r *demoRenderer)
@@ -268,7 +268,7 @@ func TestVerifyDemoCases(t *testing.T) {
 			// LOG_LEVEL alone.
 			name: "LOG_LEVEL, which LOG_LEVEL_UP derives from, is not mapped", res: keyConfig,
 			fields:     [][3]string{{"LOG_LEVEL", "debug", "trace"}},
-			wantReason: ReasonValueAffectsOtherFields, wantMsg: []string{"config.logLevel", "also changes", "LOG_LEVEL_UP"},
+			wantReason: rendermap.ReasonValueAffectsOtherFields, wantMsg: []string{"config.logLevel", "also changes", "LOG_LEVEL_UP"},
 		},
 		{
 			name: "REGION comes from global", res: keyConfig, fields: [][3]string{{"REGION", "eu-central-1", "us-west-2"}},
@@ -288,20 +288,20 @@ func TestVerifyDemoCases(t *testing.T) {
 		},
 		{
 			name: "AMBIGUOUS: both candidates verify", res: keyConfig, fields: [][3]string{{"AMBIGUOUS", "3", "5"}},
-			wantReason: ReasonAmbiguousCandidates,
+			wantReason: rendermap.ReasonAmbiguousCandidates,
 			wantMsg:    []string{"config.minA", "config.minB", "/data/AMBIGUOUS"},
 		},
 		{
 			name: "TIMEOUT is only in the chart defaults", res: keyConfig, fields: [][3]string{{"TIMEOUT", "30", "45"}},
-			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"chart's own defaults", "config.timeout"},
+			wantReason: rendermap.ReasonNoVerifiedCandidate, wantMsg: []string{"chart's own defaults", "config.timeout"},
 		},
 		{
 			name: "FEATURE is set by a parameter", res: keyConfig, spec: feature, fields: [][3]string{{"FEATURE", "beta", "gamma"}},
-			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"helm.parameters", "config.feature"},
+			wantReason: rendermap.ReasonNoVerifiedCandidate, wantMsg: []string{"helm.parameters", "config.feature"},
 		},
 		{
 			name: "LOG_LEVEL_UP is derived, no value matches", res: keyConfig, fields: [][3]string{{"LOG_LEVEL_UP", "DEBUG", "TRACE"}},
-			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"derived"},
+			wantReason: rendermap.ReasonNoVerifiedCandidate, wantMsg: []string{"derived"},
 		},
 		{
 			// Both fields come from config.logLevel, so one edit reproduces them.
@@ -312,7 +312,7 @@ func TestVerifyDemoCases(t *testing.T) {
 		{
 			name: "a candidate that also changes another resource is rejected", res: keyConfig,
 			fields: [][3]string{{"REGION", "eu-central-1", "us-west-2"}}, rend: func(r *demoRenderer) { r.alsoOther = true },
-			wantReason: ReasonValueAffectsOtherFields, wantMsg: []string{"also changes", "demo-helm-other"},
+			wantReason: rendermap.ReasonValueAffectsOtherFields, wantMsg: []string{"also changes", "demo-helm-other"},
 		},
 		{
 			name: "two fields, mapped independently", res: keyConfig,
@@ -322,12 +322,12 @@ func TestVerifyDemoCases(t *testing.T) {
 		{
 			name: "two fields, one cannot be mapped, the whole proposal is unmapped", res: keyConfig,
 			fields:     [][3]string{{"REGION", "eu-central-1", "us-west-2"}, {"TIMEOUT", "30", "45"}},
-			wantReason: ReasonNoVerifiedCandidate, wantMsg: []string{"/data/TIMEOUT"},
+			wantReason: rendermap.ReasonNoVerifiedCandidate, wantMsg: []string{"/data/TIMEOUT"},
 		},
 		{
 			name: "two fields that interact", res: keyConfig, rend: func(r *demoRenderer) { r.interact = true },
 			fields:     [][3]string{{"EQUAL_A", "green", "blue"}, {"REGION", "eu-central-1", "mars"}},
-			wantReason: ReasonEditsInteract, wantMsg: []string{"BOTH"},
+			wantReason: rendermap.ReasonEditsInteract, wantMsg: []string{"BOTH"},
 		},
 		{
 			name: "a nondeterministic key elsewhere does not matter", res: keyConfig,
@@ -342,20 +342,20 @@ func TestVerifyDemoCases(t *testing.T) {
 		{
 			name: "the drifted field is nondeterministic", res: keyConfig,
 			rend: func(r *demoRenderer) { r.random = true }, fields: [][3]string{{"RANDOM", "r1", "x"}},
-			wantReason: ReasonNondeterministicField,
+			wantReason: rendermap.ReasonNondeterministicField,
 		},
 		{
 			name: "the render does not give the old value", res: keyConfig, fields: [][3]string{{"LOG_LEVEL", "info", "trace"}},
-			wantReason: ReasonRenderMismatch, wantMsg: []string{"\"debug\""},
+			wantReason: rendermap.ReasonRenderMismatch, wantMsg: []string{"\"debug\""},
 		},
 		{
 			name: "the field is not in the render", res: keyConfig, fields: [][3]string{{"MISSING", "x", "y"}},
-			wantReason: ReasonRenderMismatch, wantMsg: []string{"no such field"},
+			wantReason: rendermap.ReasonRenderMismatch, wantMsg: []string{"no such field"},
 		},
 		{
-			name: "the resource is not in the render", res: ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "gone"},
+			name: "the resource is not in the render", res: rendermap.ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "gone"},
 			fields:     [][3]string{{"LOG_LEVEL", "debug", "trace"}},
-			wantReason: ReasonRenderMismatch,
+			wantReason: rendermap.ReasonRenderMismatch,
 		},
 	}
 	for _, tt := range tests {
@@ -365,11 +365,11 @@ func TestVerifyDemoCases(t *testing.T) {
 			if tt.rend != nil {
 				tt.rend(rend)
 			}
-			var fields []Field
+			var fields []rendermap.Field
 			for i, f := range tt.fields {
 				fields = append(fields, drift(t, env.src, env.files, i, f[0], f[1], f[2]))
 			}
-			out, err := Verify(context.Background(), rend, env.input(tt.res, fields...), Options{})
+			out, err := Verify(context.Background(), rend, env.input(tt.res, fields...), rendermap.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -420,7 +420,7 @@ func TestVerifyResultContent(t *testing.T) {
 	rend := &demoRenderer{src: env.src}
 	f1 := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
 	f2 := drift(t, env.src, env.files, 1, "EQUAL_A", "green", "blue")
-	out, err := Verify(context.Background(), rend, env.input(keyConfig, f1, f2), Options{})
+	out, err := Verify(context.Background(), rend, env.input(keyConfig, f1, f2), rendermap.Options{})
 	if err != nil || !out.Mapped() {
 		t.Fatalf("out = %+v, err = %v", out, err)
 	}
@@ -451,18 +451,18 @@ func TestVerifySecretIsNeverRendered(t *testing.T) {
 	env := newDemo(t, Spec{})
 	rend := &demoRenderer{src: env.src}
 	f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
-	in := env.input(ResourceKey{Kind: "Secret", Namespace: "demo", Name: "s"}, f)
-	out, err := Verify(context.Background(), rend, in, Options{})
+	in := env.input(rendermap.ResourceKey{Kind: "Secret", Namespace: "demo", Name: "s"}, f)
+	out, err := Verify(context.Background(), rend, in, rendermap.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Mapped() || out.Unmapped.Reason != ReasonSecretNotVerifiable || rend.calls != 0 {
+	if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonSecretNotVerifiable || rend.calls != 0 {
 		t.Errorf("out = %+v, renders = %d", out.Unmapped, rend.calls)
 	}
 	// A Secret of another API group is not a core Secret.
-	in.Resource = ResourceKey{Group: "example.com", Kind: "Secret", Namespace: "demo", Name: "s"}
-	out, _ = Verify(context.Background(), rend, in, Options{})
-	if out.Unmapped == nil || out.Unmapped.Reason == ReasonSecretNotVerifiable {
+	in.Resource = rendermap.ResourceKey{Group: "example.com", Kind: "Secret", Namespace: "demo", Name: "s"}
+	out, _ = Verify(context.Background(), rend, in, rendermap.Options{})
+	if out.Unmapped == nil || out.Unmapped.Reason == rendermap.ReasonSecretNotVerifiable {
 		t.Errorf("a Secret of another group was taken for a core Secret: %+v", out.Unmapped)
 	}
 }
@@ -479,11 +479,11 @@ func TestVerifyUnsupportedChanges(t *testing.T) {
 	}
 	for name, ch := range tests {
 		t.Run(name, func(t *testing.T) {
-			out, err := Verify(context.Background(), rend, env.input(keyConfig, Field{Change: ch, Found: &rendermap.Found{}}), Options{})
+			out, err := Verify(context.Background(), rend, env.input(keyConfig, rendermap.Field{Change: ch, Found: &rendermap.Found{}}), rendermap.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if out.Mapped() || out.Unmapped.Reason != ReasonUnsupportedChange {
+			if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonUnsupportedChange {
 				t.Errorf("out = %+v", out.Unmapped)
 			}
 		})
@@ -503,11 +503,11 @@ func TestVerifyBounds(t *testing.T) {
 		for i := range 11 {
 			f.Found.Candidates = append(f.Found.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates || rend.calls != 2 {
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonTooManyCandidates || rend.calls != 2 {
 			t.Errorf("out = %+v, renders = %d: none of the keys fits the field, and only the unmodified files are rendered", out.Unmapped, rend.calls)
 		}
 	})
@@ -519,8 +519,8 @@ func TestVerifyBounds(t *testing.T) {
 		for i := range 11 {
 			f.Found.Candidates = append(f.Found.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"logLevel" + strconv.Itoa(i)}})
 		}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonTooManyCandidates {
 			t.Errorf("out = %+v, err = %v: eleven keys fit equally well", out, err)
 		}
 	})
@@ -528,11 +528,11 @@ func TestVerifyBounds(t *testing.T) {
 	t.Run("the limit is configurable", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src}
 		f := drift(t, env.src, env.files, 0, "EQUAL_A", "green", "blue") // two candidates
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{MaxCandidates: 1})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{MaxCandidates: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonTooManyCandidates {
 			t.Errorf("out = %+v", out.Unmapped)
 		}
 	})
@@ -541,11 +541,11 @@ func TestVerifyBounds(t *testing.T) {
 		rend := &demoRenderer{src: env.src, delay: 40 * time.Millisecond}
 		f := drift(t, env.src, env.files, 0, "EQUAL_A", "green", "blue")
 		start := time.Now()
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{Budget: 100 * time.Millisecond})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{Budget: 100 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonRenderBudgetExceeded {
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonRenderBudgetExceeded {
 			t.Fatalf("out = %+v", out.Unmapped)
 		}
 		if time.Since(start) > time.Second {
@@ -561,7 +561,7 @@ func TestVerifyBounds(t *testing.T) {
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, err := Verify(ctx, rend, env.input(keyConfig, f), Options{}); !errors.Is(err, context.Canceled) {
+		if _, err := Verify(ctx, rend, env.input(keyConfig, f), rendermap.Options{}); !errors.Is(err, context.Canceled) {
 			t.Errorf("err = %v, want context.Canceled", err)
 		}
 	})
@@ -577,13 +577,13 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		e.files["helm/demo/templates/cm.yaml"] = []byte(text)
 		return e
 	}
-	narrowed := func(e demoEnv) *Outcome {
+	narrowed := func(e demoEnv) *rendermap.Outcome {
 		rend := &demoRenderer{src: e.src, noDerived: true}
 		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
 		for i := range 11 {
 			f.Found.Candidates = append(f.Found.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
-		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{})
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), rendermap.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -622,8 +622,8 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		for i := range 11 {
 			f.Found.Candidates = append(f.Found.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
-		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{MaxConfirmations: 5})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates ||
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), rendermap.Options{MaxConfirmations: 5})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonTooManyCandidates ||
 			!strings.Contains(out.Unmapped.Message, "more than the 5 that are rendered to check") {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
@@ -644,7 +644,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		for i := range 30 {
 			f.Fragments.Candidates = append(f.Fragments.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
 		}
-		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{MaxConfirmations: 1})
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), rendermap.Options{MaxConfirmations: 1})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v: fragments are only tried when no whole-value edit verifies", out, err)
 		}
@@ -657,7 +657,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		for i := range 11 {
 			f.Found.Candidates = append(f.Found.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
-		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{})
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), rendermap.Options{})
 		if err != nil || out.Mapped() || !strings.Contains(out.Unmapped.Message, "were not tried") {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
@@ -671,7 +671,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		for i := range 30 {
 			f.Fragments.Candidates = append(f.Fragments.Candidates, rendermap.Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
 		}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
 		if err != nil || !out.Mapped() || decodePointer(out.Results[0].Edits[0].Location) != "config.logLevel" {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
@@ -685,22 +685,22 @@ func TestVerifyRenderErrors(t *testing.T) {
 
 	t.Run("the chart does not render", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src, baseErr: fmt.Errorf("%w: nil pointer", rendermap.ErrRenderFailed)}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonRenderFailed {
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonRenderFailed {
 			t.Errorf("out = %+v, err = %v", out, err)
 		}
 	})
 	t.Run("files too large", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src, baseErr: rendermap.ErrFilesTooLarge}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonFilesTooLarge {
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonFilesTooLarge {
 			t.Errorf("out = %+v, err = %v", out, err)
 		}
 	})
 	t.Run("a transient error is returned, not turned into Unmapped", func(t *testing.T) {
 		boom := errors.New("argocd: unreachable")
 		rend := &demoRenderer{src: env.src, baseErr: boom}
-		if _, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{}); !errors.Is(err, boom) {
+		if _, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{}); !errors.Is(err, boom) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -712,78 +712,23 @@ func TestVerifyRenderErrors(t *testing.T) {
 			return nil
 		}}
 		ff := drift(t, env.src, env.files, 0, "EQUAL_A", "green", "blue")
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, ff), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate ||
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, ff), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNoVerifiedCandidate ||
 			!strings.Contains(out.Unmapped.Message, "does not render") {
 			t.Errorf("out = %+v, err = %v", out.Unmapped, err)
 		}
 	})
 }
 
-func TestConflicts(t *testing.T) {
-	mk := func(file, key, value string) *tryout {
-		return &tryout{cand: rendermap.Candidate{File: file, Path: rendermap.KeyPath{key}}, value: value}
-	}
-	if !conflicts(mk("f.yaml", "k", "x"), mk("f.yaml", "k", "y")) {
-		t.Error("one key set to two values was not reported")
-	}
-	for name, pair := range map[string][2]*tryout{
-		"the same value": {mk("f.yaml", "k", "x"), mk("f.yaml", "k", "x")},
-		"two keys":       {mk("f.yaml", "k", "x"), mk("f.yaml", "j", "y")},
-		"two files":      {mk("f.yaml", "k", "x"), mk("g.yaml", "k", "y")},
-	} {
-		if conflicts(pair[0], pair[1]) {
-			t.Errorf("%s reported as a conflict", name)
-		}
-	}
-}
-
-func TestCoverSets(t *testing.T) {
-	mk := func(key string, covers ...int) *tryout {
-		return &tryout{cand: rendermap.Candidate{File: "f.yaml", Path: rendermap.KeyPath{key}}, value: key, covers: covers}
-	}
-	tests := []struct {
-		name     string
-		n        int
-		accepted []*tryout
-		want     []string
-	}{
-		{"one edit", 1, []*tryout{mk("a", 0)}, []string{"f.yaml a"}},
-		{"two edits for one field are two sets", 1, []*tryout{mk("a", 0), mk("b", 0)}, []string{"f.yaml a", "f.yaml b"}},
-		{"one edit covers both fields", 2, []*tryout{mk("a", 0, 1)}, []string{"f.yaml a"}},
-		{"a smaller set wins over a bigger one", 2, []*tryout{mk("a", 0, 1), mk("b", 0), mk("c", 1)}, []string{"f.yaml a", "f.yaml b + f.yaml c"}},
-		{"a field nothing covers", 2, []*tryout{mk("a", 0)}, nil},
-		{"the same key with two values never go together", 2,
-			[]*tryout{{cand: rendermap.Candidate{File: "f.yaml", Path: rendermap.KeyPath{"k"}}, value: "x", covers: []int{0}},
-				{cand: rendermap.Candidate{File: "f.yaml", Path: rendermap.KeyPath{"k"}}, value: "y", covers: []int{1}}}, nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sets, tooMany := coverSets(tt.n, tt.accepted)
-			if tooMany {
-				t.Fatal("too many")
-			}
-			var got []string
-			for _, s := range sets {
-				got = append(got, describeSet(s))
-			}
-			slices.Sort(got)
-			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
-				t.Errorf("sets = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestVerifyNearMiss(t *testing.T) {
 	t.Run("a derived field moves with the edit", func(t *testing.T) {
 		env := newDemo(t, Spec{})
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
-		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), Options{})
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), rendermap.Options{})
 		if err != nil || out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
-		if out.Unmapped.Reason != ReasonValueAffectsOtherFields || len(out.Unmapped.Fields) != 1 {
+		if out.Unmapped.Reason != rendermap.ReasonValueAffectsOtherFields || len(out.Unmapped.Fields) != 1 {
 			t.Fatalf("unmapped = %+v", out.Unmapped)
 		}
 		nm := out.Unmapped.Fields[0].NearMiss
@@ -808,8 +753,8 @@ func TestVerifyNearMiss(t *testing.T) {
 	t.Run("image.tag also feeds the version label", func(t *testing.T) {
 		env := newDemo(t, Spec{})
 		f := drift(t, env.src, env.files, 0, "IMAGE_TAG", "1.27-alpine", "1.28-alpine")
-		out, err := Verify(context.Background(), &demoRenderer{src: env.src, tagLabel: true}, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonValueAffectsOtherFields {
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src, tagLabel: true}, env.input(keyConfig, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonValueAffectsOtherFields {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
 		nm := out.Unmapped.Fields[0].NearMiss
@@ -825,36 +770,12 @@ func TestVerifyNearMiss(t *testing.T) {
 	t.Run("no near miss when nothing reproduces the field", func(t *testing.T) {
 		env := newDemo(t, Spec{})
 		f := drift(t, env.src, env.files, 0, "TIMEOUT", "30", "45")
-		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), Options{})
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), rendermap.Options{})
 		if out.Unmapped.Fields[0].NearMiss != nil {
 			t.Errorf("near miss = %+v", out.Unmapped.Fields[0].NearMiss)
 		}
 	})
 
-}
-
-func TestNearMissReporting(t *testing.T) {
-	t.Run("only three collateral changes are listed", func(t *testing.T) {
-		nm := &NearMiss{File: "f.yaml", Path: rendermap.KeyPath{"k"}, Value: "v", Covers: []string{"/data/A"}, CollateralTotal: 5}
-		for i := range 3 {
-			nm.Collateral = append(nm.Collateral, Collateral{Resource: keyConfig, Pointer: "/data/X" + strconv.Itoa(i), Current: "1", After: "2"})
-		}
-		got := nm.String()
-		if !strings.Contains(got, "/data/X2") || !strings.Contains(got, "and 2 more") {
-			t.Errorf("String() = %s", got)
-		}
-	})
-
-	t.Run("the best near miss has the fewest other changes", func(t *testing.T) {
-		fields := []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/data/A"}, Found: &rendermap.Found{}}}}
-		cand := func(key string, n int) *tryout {
-			return &tryout{cand: rendermap.Candidate{File: "f.yaml", Path: rendermap.KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
-		}
-		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil, collateralRule{}, false)
-		if len(bad) != 1 || bad[0].NearMiss == nil || bad[0].NearMiss.Path.String() != "few" {
-			t.Errorf("bad = %+v", bad)
-		}
-	})
 }
 
 // deploymentObject renders the Deployment of the chart: its image is
@@ -896,7 +817,7 @@ func (d *demoRenderer) deploymentObject(app rendermap.App, values map[string]any
 	return &unstructured.Unstructured{Object: obj}
 }
 
-var keyDeploy = ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo-helm"}
+var keyDeploy = rendermap.ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo-helm"}
 
 const (
 	imagePointer = "/spec/template/spec/containers/0/image"
@@ -906,7 +827,7 @@ const (
 
 // imageDrift is the Field of a changed image: the keys that hold the whole
 // value, and those that hold a part of it.
-func imageDrift(t *testing.T, env demoEnv, live string) Field {
+func imageDrift(t *testing.T, env demoEnv, live string) rendermap.Field {
 	t.Helper()
 	f := drift(t, env.src, env.files, 0, "X", oldImage, live)
 	f.Change.Path = imagePointer
@@ -928,7 +849,7 @@ func TestVerifyFragments(t *testing.T) {
 		if len(f.Found.Candidates) != 0 {
 			t.Fatalf("no key holds the whole image, found %+v", f.Found.Candidates)
 		}
-		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), rendermap.Options{})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
@@ -948,8 +869,8 @@ func TestVerifyFragments(t *testing.T) {
 		env := newDemo(t, Spec{})
 		rend := &demoRenderer{src: env.src, deployment: true}
 		f := imageDrift(t, env, "other/nginx-unprivileged:1.27-alpine")
-		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate ||
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNoVerifiedCandidate ||
 			!strings.Contains(out.Unmapped.Message, "chart's own defaults") || !strings.Contains(out.Unmapped.Message, "image.repository") {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
@@ -961,7 +882,7 @@ func TestVerifyFragments(t *testing.T) {
 		f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
 		// A fragment candidate that would be rendered if it were tried.
 		f.Fragments = (&Result{Candidates: []rendermap.Candidate{{File: dev, Path: rendermap.KeyPath{"replicaCount"}, Fragment: true, NewValue: "x"}}}).Found()
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
@@ -981,8 +902,8 @@ func TestVerifyFragments(t *testing.T) {
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 		frag, _ := env.src.FindFragments(env.files, "debug", "trace")
 		f.Fragments = frag.Found()
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonValueAffectsOtherFields {
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonValueAffectsOtherFields {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
 	})
@@ -998,8 +919,8 @@ func TestVerifyFragments(t *testing.T) {
 		for i := range 3 {
 			f.Fragments.Candidates = append(f.Fragments.Candidates, rendermap.Candidate{File: dev, Path: rendermap.KeyPath{"f", strconv.Itoa(i)}, Fragment: true, NewValue: "x"})
 		}
-		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), rendermap.Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonTooManyCandidates {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
 		if rend.calls > 2+8 {
@@ -1008,7 +929,7 @@ func TestVerifyFragments(t *testing.T) {
 	})
 }
 
-func collateralPointers(c []Collateral) []string {
+func collateralPointers(c []rendermap.Collateral) []string {
 	out := make([]string, len(c))
 	for i, x := range c {
 		out[i] = x.Pointer
@@ -1023,8 +944,8 @@ func TestVerifyCollateral(t *testing.T) {
 		selectorKey  = "/spec/selector/matchLabels/app.kubernetes.io~1version"
 		annotation   = "/metadata/annotations/example.com~1version"
 	)
-	labels := []string{CollateralLabels}
-	both := []string{CollateralLabels, CollateralAnnotations}
+	labels := []string{rendermap.CollateralLabels}
+	both := []string{rendermap.CollateralLabels, rendermap.CollateralAnnotations}
 	tests := []struct {
 		name      string
 		rend      func(r *demoRenderer)
@@ -1067,7 +988,7 @@ func TestVerifyCollateral(t *testing.T) {
 		},
 		{
 			name: "annotations alone are not labels",
-			rend: func(r *demoRenderer) { r.tagLabel2 = true }, allow: []string{CollateralAnnotations},
+			rend: func(r *demoRenderer) { r.tagLabel2 = true }, allow: []string{rendermap.CollateralAnnotations},
 			nearMiss: []string{versionLabel, podLabel},
 		},
 	}
@@ -1077,7 +998,7 @@ func TestVerifyCollateral(t *testing.T) {
 			rend := &demoRenderer{src: env.src, deployment: true}
 			tt.rend(rend)
 			f := imageDrift(t, env, newImage)
-			out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{AllowCollateral: tt.allow})
+			out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), rendermap.Options{AllowCollateral: tt.allow})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1105,7 +1026,7 @@ func TestVerifyCollateral(t *testing.T) {
 				}
 				return
 			}
-			if out.Unmapped.Reason != ReasonValueAffectsOtherFields {
+			if out.Unmapped.Reason != rendermap.ReasonValueAffectsOtherFields {
 				t.Fatalf("reason = %s: %s", out.Unmapped.Reason, out.Unmapped.Message)
 			}
 			nm := out.Unmapped.Fields[0].NearMiss
@@ -1126,7 +1047,7 @@ func TestVerifyCollateral(t *testing.T) {
 		env := newDemo(t, Spec{})
 		rend := &demoRenderer{src: env.src}
 		f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{AllowCollateral: both})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), rendermap.Options{AllowCollateral: both})
 		if err != nil || !out.Mapped() || len(out.Collateral) != 0 {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
@@ -1140,8 +1061,8 @@ func TestVerifyCollateral(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f2 := Field{Index: 1, Found: found.Found(), Change: v1alpha1.FieldChange{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: "2", Live: "3"}}
-		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f1, f2), Options{AllowCollateral: labels})
+		f2 := rendermap.Field{Index: 1, Found: found.Found(), Change: v1alpha1.FieldChange{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: "2", Live: "3"}}
+		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f1, f2), rendermap.Options{AllowCollateral: labels})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
@@ -1159,49 +1080,4 @@ func TestVerifyCollateral(t *testing.T) {
 			t.Errorf("collateral = %v", got)
 		}
 	})
-}
-
-func TestCollateralRuleAllows(t *testing.T) {
-	res := ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "web"}
-	other := ResourceKey{Kind: "Service", Namespace: "demo", Name: "web"}
-	rule := newCollateralRule([]string{CollateralLabels, CollateralAnnotations}, res, []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/metadata/labels/x"}}}}, nil)
-	labelsOnly := newCollateralRule([]string{CollateralLabels}, res, nil, nil)
-	tests := []struct {
-		name string
-		rule collateralRule
-		c    Collateral
-		want bool
-	}{
-		{"a label", rule, Collateral{Resource: res, Pointer: "/metadata/labels/app"}, true},
-		{"a label of another resource", rule, Collateral{Resource: other, Pointer: "/metadata/labels/app"}, true},
-		{"a pod template label", rule, Collateral{Resource: res, Pointer: "/spec/template/metadata/labels/app"}, true},
-		{"an annotation", rule, Collateral{Resource: res, Pointer: "/metadata/annotations/a"}, true},
-		{"a pod template annotation", rule, Collateral{Resource: res, Pointer: "/spec/template/metadata/annotations/a"}, true},
-		{"an empty labels map", rule, Collateral{Resource: res, Pointer: "/metadata/labels"}, true},
-		{"a pod template label of a CronJob", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/metadata/labels/app"}, true},
-		{"a pod template annotation of a CronJob", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/metadata/annotations/a"}, true},
-		{"a CronJob pod template annotation when only labels are allowed", labelsOnly, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/metadata/annotations/a"}, false},
-		{"the selector of a CronJob's job", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/selector/matchLabels/app"}, false},
-		{"the pod spec of a CronJob", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/spec/template/spec/containers/0/image"}, false},
-		{"the labels of the job template itself are not a pod template", rule, Collateral{Resource: res, Pointer: "/spec/jobTemplate/metadata/labels/app"}, false},
-		{"an annotation when only labels are allowed", labelsOnly, Collateral{Resource: res, Pointer: "/metadata/annotations/a"}, false},
-		{"the selector of a Deployment", rule, Collateral{Resource: res, Pointer: "/spec/selector/matchLabels/app"}, false},
-		{"matchExpressions", rule, Collateral{Resource: res, Pointer: "/spec/selector/matchExpressions/0/key"}, false},
-		{"the selector of a Service", rule, Collateral{Resource: other, Pointer: "/spec/selector/app"}, false},
-		{"a label named like a selector is only a label", rule, Collateral{Resource: res, Pointer: "/metadata/labels/selector"}, true},
-		{"a field that is not metadata", rule, Collateral{Resource: res, Pointer: "/spec/replicas"}, false},
-		{"a field of the pod spec", rule, Collateral{Resource: res, Pointer: "/spec/template/spec/containers/0/image"}, false},
-		{"a drifted field that did not end at its live value", rule, Collateral{Resource: res, Pointer: "/metadata/labels/x"}, false},
-		{"the same pointer on another resource is not that drifted field", rule, Collateral{Resource: other, Pointer: "/metadata/labels/x"}, true},
-		{"a whole resource that appears", rule, Collateral{Resource: other}, false},
-		{"labels of a path that only begins like labels", rule, Collateral{Resource: res, Pointer: "/metadata/labelsX/a"}, false},
-		{"nothing is allowed by the zero rule", collateralRule{}, Collateral{Resource: res, Pointer: "/metadata/labels/app"}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.rule.allows(tt.c); got != tt.want {
-				t.Errorf("allows(%+v) = %v, want %v", tt.c, got, tt.want)
-			}
-		})
-	}
 }

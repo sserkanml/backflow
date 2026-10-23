@@ -37,13 +37,13 @@ type mappedChange struct {
 	results  []mapping.Result
 	// collateral are the changes beyond the drifted fields that the policy
 	// allowed (HelmValues only).
-	collateral []helmmap.Collateral
+	collateral []rendermap.Collateral
 	// leftOut are the changes of the proposal the edits do not make (a partial
 	// mapping, spec.mapping.allowPartial).
 	leftOut []leftOutField
 	// overrides are the edits that add a key to a value file to override a
 	// default of the chart (spec.helm.addOverrides).
-	overrides []helmmap.AppliedOverride
+	overrides []rendermap.AppliedOverride
 	// renders is the number of renders through Argo CD the mapping took (Helm).
 	renders int
 }
@@ -406,9 +406,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	res := dp.Spec.Resource
 	out, err := helmmap.Verify(ctx, rend, helmmap.Input{
 		App:      helmAppOf(app),
-		Resource: helmmap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
-		Fields:   fields, Provider: src, Writer: helmmap.ValuesWriter{}, Files: files,
-	}, helmmap.Options{
+		Resource: rendermap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
+		Fields:   fields, Source: src, Files: files,
+	}, rendermap.Options{
 		AllowCollateral: allowedCollateral(policy), AllowPartial: policy.Spec.PartialAllowed(),
 		AddOverrides: policy.Spec.OverridesAllowed(),
 	})

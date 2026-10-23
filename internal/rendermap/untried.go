@@ -1,12 +1,10 @@
-package helmmap
+package rendermap
 
 import (
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
-
-	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // The bound on the number of candidates and the ranking by names leave keys
@@ -28,7 +26,7 @@ const DefaultMaxConfirmations = 30
 
 // untriedKey is a candidate that was left out, with how well its key fit.
 type untriedKey struct {
-	cand  rendermap.Candidate
+	cand  Candidate
 	score int
 	field int
 	// rank is the stage the candidate would have been tried at, see stageRank.
@@ -54,7 +52,7 @@ func stageRank(fragments, overrides, ancestors bool) int {
 	return 0
 }
 
-func asUntried(cands []rendermap.Candidate) []untriedKey {
+func asUntried(cands []Candidate) []untriedKey {
 	out := make([]untriedKey, len(cands))
 	for i, c := range cands {
 		out[i] = untriedKey{cand: c}
@@ -120,7 +118,7 @@ func describeEdits(out *Outcome) string {
 	var parts []string
 	for _, r := range out.Results {
 		for _, e := range r.Edits {
-			parts = append(parts, r.File+" "+rendermap.KeyPathFromPointer(e.Location).String())
+			parts = append(parts, r.File+" "+KeyPathFromPointer(e.Location).String())
 		}
 	}
 	return strings.Join(parts, " + ")
@@ -168,7 +166,7 @@ func (v *run) checkUntried(out *Outcome, base snapshot, nd nondeterminism, field
 	// comes in a later stage, after strict edits.
 	rivals, err := v.confirm(base, nd, fields, live, v.mappedRule)
 	if err != nil {
-		if errors.Is(err, errBudget) || errors.Is(err, rendermap.ErrRenderFailed) || ctxDone(v) {
+		if errors.Is(err, errBudget) || errors.Is(err, ErrRenderFailed) || ctxDone(v) {
 			return tooMany("they could not be rendered to check within the render budget")
 		}
 		return tooMany("they could not be rendered to check: " + err.Error())
@@ -216,7 +214,7 @@ func (v *run) confirm(base snapshot, nd nondeterminism, fields []parsedField, ke
 }
 
 // valueOf is the value an edit of the candidate writes for the field.
-func (v *run) valueOf(f parsedField, c rendermap.Candidate) string {
+func (v *run) valueOf(f parsedField, c Candidate) string {
 	switch {
 	case c.Structured != nil:
 		return c.Structured.Text()

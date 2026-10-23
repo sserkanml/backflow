@@ -3,6 +3,8 @@ package helmmap
 import (
 	"encoding/json"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	v1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
 
@@ -26,8 +28,8 @@ func ScalarOf(raw string) (any, bool) {
 // (FindFragments), the image tag of "repository:tag" for example. Fragment
 // keys are tried only when no key holds the whole value. Other changes have no
 // candidates. files are the unmodified files of the render (CollectFiles).
-func FieldsFor(src *Source, files map[string][]byte, changes []v1alpha1.FieldChange) ([]Field, error) {
-	fields := make([]Field, len(changes))
+func FieldsFor(src *Source, files map[string][]byte, changes []v1alpha1.FieldChange) ([]rendermap.Field, error) {
+	fields := make([]rendermap.Field, len(changes))
 	for i, ch := range changes {
 		found := &Result{}
 		old, scalar := ScalarOf(ch.Desired)
@@ -38,7 +40,7 @@ func FieldsFor(src *Source, files map[string][]byte, changes []v1alpha1.FieldCha
 				return nil, err
 			}
 		}
-		field := Field{Index: i, Change: ch, Found: found.Found()}
+		field := rendermap.Field{Index: i, Change: ch, Found: found.Found()}
 		if replace {
 			newV, newOK := ScalarOf(ch.Live)
 			o, oIsString := old.(string)

@@ -12,12 +12,12 @@ import (
 
 // removed is a field Helm values cannot express: an element or a key that is
 // gone from the cluster.
-func removed(index int, path, was string) Field {
-	return Field{Index: index, Found: &rendermap.Found{},
+func removed(index int, path, was string) rendermap.Field {
+	return rendermap.Field{Index: index, Found: &rendermap.Found{},
 		Change: v1alpha1.FieldChange{Path: path, Op: v1alpha1.OpRemove, Desired: was}}
 }
 
-func pointersOfFailures(ff []FieldFailure) []string {
+func pointersOfFailures(ff []rendermap.FieldFailure) []string {
 	out := make([]string, len(ff))
 	for i, f := range ff {
 		out[i] = f.Pointer
@@ -31,18 +31,18 @@ func TestVerifyPartialLeavesOutFieldsTheRenderDoesNotHave(t *testing.T) {
 	gone := removed(1, "/data/EXTRA", `"x"`)
 
 	t.Run("without AllowPartial the whole proposal is unmapped", func(t *testing.T) {
-		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, gone), Options{})
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, gone), rendermap.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonRenderMismatch {
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonRenderMismatch {
 			t.Fatalf("out = %+v", out)
 		}
 	})
 
 	t.Run("with it the mappable field is proposed and the other is listed", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, region, gone), Options{AllowPartial: true})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, region, gone), rendermap.Options{AllowPartial: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func TestVerifyPartialLeavesOutFieldsTheRenderDoesNotHave(t *testing.T) {
 			decodePointer(out.Results[0].Edits[0].Location) != "global.region" {
 			t.Errorf("results = %+v", out.Results)
 		}
-		if len(out.LeftOut) != 1 || out.LeftOut[0].Pointer != "/data/EXTRA" || out.LeftOut[0].Reason != ReasonRenderMismatch {
+		if len(out.LeftOut) != 1 || out.LeftOut[0].Pointer != "/data/EXTRA" || out.LeftOut[0].Reason != rendermap.ReasonRenderMismatch {
 			t.Errorf("left out = %+v", out.LeftOut)
 		}
 		want := strings.Replace(string(env.files["helm/demo/values-dev.yaml"]), "region: eu-central-1", "region: us-west-2", 1)
@@ -66,11 +66,11 @@ func TestVerifyPartialLeavesOutFieldsTheRenderDoesNotHave(t *testing.T) {
 	})
 
 	t.Run("nothing mappable stays unmapped", func(t *testing.T) {
-		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, gone), Options{AllowPartial: true})
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, gone), rendermap.Options{AllowPartial: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonRenderMismatch || len(out.LeftOut) != 0 {
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonRenderMismatch || len(out.LeftOut) != 0 {
 			t.Errorf("out = %+v", out)
 		}
 	})
@@ -83,14 +83,14 @@ func TestVerifyPartialLeavesOutFieldsWithoutAVerifiedKey(t *testing.T) {
 	colorA := drift(t, env.src, env.files, 2, "EQUAL_A", "green", "blue")
 
 	t.Run("without AllowPartial the whole proposal is unmapped", func(t *testing.T) {
-		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, timeout, colorA), Options{})
-		if out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate {
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, timeout, colorA), rendermap.Options{})
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNoVerifiedCandidate {
 			t.Fatalf("out = %+v", out)
 		}
 	})
 
 	t.Run("with it the others are mapped and keep the index of their change", func(t *testing.T) {
-		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, timeout, colorA), Options{AllowPartial: true})
+		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, region, timeout, colorA), rendermap.Options{AllowPartial: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,14 +110,14 @@ func TestVerifyPartialLeavesOutFieldsWithoutAVerifiedKey(t *testing.T) {
 		if got := pointersOfFailures(out.LeftOut); !slices.Equal(got, []string{"/data/TIMEOUT"}) {
 			t.Fatalf("left out = %v", got)
 		}
-		if out.LeftOut[0].Reason != ReasonNoVerifiedCandidate || !strings.Contains(out.LeftOut[0].Detail, "chart's own defaults") {
+		if out.LeftOut[0].Reason != rendermap.ReasonNoVerifiedCandidate || !strings.Contains(out.LeftOut[0].Detail, "chart's own defaults") {
 			t.Errorf("left out = %+v", out.LeftOut[0])
 		}
 	})
 
 	t.Run("every field failing is unmapped, naming all of them", func(t *testing.T) {
 		gone := removed(1, "/data/EXTRA", `"x"`)
-		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, timeout, gone), Options{AllowPartial: true})
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, timeout, gone), rendermap.Options{AllowPartial: true})
 		if out.Mapped() {
 			t.Fatalf("mapped: %+v", out.Results)
 		}
@@ -134,8 +134,8 @@ func TestVerifyPartialDoesNotWorkAroundWhatIsNotAboutOneField(t *testing.T) {
 		a := drift(t, env.src, env.files, 0, "EQUAL_A", "green", "blue")
 		b := drift(t, env.src, env.files, 1, "REGION", "eu-central-1", "mars")
 		gone := removed(2, "/data/EXTRA", `"x"`)
-		out, _ := Verify(context.Background(), &demoRenderer{src: env.src, interact: true}, env.input(keyConfig, a, b, gone), Options{AllowPartial: true})
-		if out.Mapped() || out.Unmapped.Reason != ReasonEditsInteract {
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src, interact: true}, env.input(keyConfig, a, b, gone), rendermap.Options{AllowPartial: true})
+		if out.Mapped() || out.Unmapped.Reason != rendermap.ReasonEditsInteract {
 			t.Errorf("out = %+v", out)
 		}
 	})
@@ -143,7 +143,7 @@ func TestVerifyPartialDoesNotWorkAroundWhatIsNotAboutOneField(t *testing.T) {
 	t.Run("ambiguous candidates of several fields", func(t *testing.T) {
 		amb := drift(t, env.src, env.files, 0, "AMBIGUOUS", "3", "5")
 		region := drift(t, env.src, env.files, 1, "REGION", "eu-central-1", "us-west-2")
-		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, amb, region), Options{AllowPartial: true})
+		out, _ := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, amb, region), rendermap.Options{AllowPartial: true})
 		if out.Mapped() {
 			t.Fatalf("an ambiguous field is left out, not guessed: %+v", out.Results)
 		}
@@ -157,7 +157,7 @@ func TestVerifyPartialNeverChangesALeftOutField(t *testing.T) {
 	env := newDemo(t, Spec{})
 	logLevel := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 	derived := removed(1, "/data/LOG_LEVEL_UP", `"DEBUG"`)
-	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, logLevel, derived), Options{AllowPartial: true})
+	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, logLevel, derived), rendermap.Options{AllowPartial: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,13 +171,13 @@ func TestVerifyPartialNeverChangesALeftOutField(t *testing.T) {
 
 func TestVerifyPartialCollateralNeverTouchesALeftOutField(t *testing.T) {
 	const annotation = "/metadata/annotations/example.com~1version"
-	both := []string{CollateralLabels, CollateralAnnotations}
-	run := func(t *testing.T, fields func(f Field) []Field) *Outcome {
+	both := []string{rendermap.CollateralLabels, rendermap.CollateralAnnotations}
+	run := func(t *testing.T, fields func(f rendermap.Field) []rendermap.Field) *rendermap.Outcome {
 		t.Helper()
 		env := newDemo(t, Spec{})
 		rend := &demoRenderer{src: env.src, deployment: true, tagAnnot: true}
 		out, err := Verify(context.Background(), rend, env.input(keyDeploy, fields(imageDrift(t, env, newImage))...),
-			Options{AllowCollateral: both, AllowPartial: true})
+			rendermap.Options{AllowCollateral: both, AllowPartial: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,14 +185,16 @@ func TestVerifyPartialCollateralNeverTouchesALeftOutField(t *testing.T) {
 	}
 
 	t.Run("an annotation the tag also changes is allowed collateral", func(t *testing.T) {
-		out := run(t, func(f Field) []Field { return []Field{f} })
+		out := run(t, func(f rendermap.Field) []rendermap.Field { return []rendermap.Field{f} })
 		if !out.Mapped() || !slices.Contains(collateralPointers(out.Collateral), annotation) {
 			t.Fatalf("out = %+v", out)
 		}
 	})
 
 	t.Run("the same annotation, drifted and left out, is not", func(t *testing.T) {
-		out := run(t, func(f Field) []Field { return []Field{f, removed(1, annotation, `"1.27-alpine"`)} })
+		out := run(t, func(f rendermap.Field) []rendermap.Field {
+			return []rendermap.Field{f, removed(1, annotation, `"1.27-alpine"`)}
+		})
 		if out.Mapped() {
 			t.Fatalf("the edit changes a left-out field but was proposed: collateral %v", collateralPointers(out.Collateral))
 		}
@@ -205,11 +207,11 @@ func TestVerifyPartiallySharesRenders(t *testing.T) {
 	// unmodified files, or the edit of REGION, a second time.
 	env := newDemo(t, Spec{})
 	rend := &demoRenderer{src: env.src}
-	fields := []Field{
+	fields := []rendermap.Field{
 		drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2"),
 		drift(t, env.src, env.files, 1, "LOG_LEVEL_UP", "DEBUG", "TRACE"),
 	}
-	out, err := Verify(context.Background(), rend, env.input(keyConfig, fields...), Options{AllowPartial: true})
+	out, err := Verify(context.Background(), rend, env.input(keyConfig, fields...), rendermap.Options{AllowPartial: true})
 	if err != nil || !out.Mapped() || len(out.LeftOut) != 1 {
 		t.Fatalf("out = %+v, err = %v", out, err)
 	}
@@ -219,12 +221,12 @@ func TestVerifyPartiallySharesRenders(t *testing.T) {
 
 	t.Run("a field that changes on every render is still found in the later attempt", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src, random: true}
-		fields := []Field{
+		fields := []rendermap.Field{
 			drift(t, env.src, env.files, 0, "RANDOM", "r1", "x"),
 			drift(t, env.src, env.files, 1, "REGION", "eu-central-1", "us-west-2"),
 			drift(t, env.src, env.files, 2, "LOG_LEVEL_UP", "DEBUG", "TRACE"),
 		}
-		out, err := Verify(context.Background(), rend, env.input(keyConfig, fields...), Options{AllowPartial: true})
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, fields...), rendermap.Options{AllowPartial: true})
 		if err != nil || !out.Mapped() || len(out.LeftOut) != 2 {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}
@@ -232,7 +234,7 @@ func TestVerifyPartiallySharesRenders(t *testing.T) {
 		for _, f := range out.LeftOut {
 			reasons[f.Pointer] = f.Reason
 		}
-		if reasons["/data/RANDOM"] != ReasonNondeterministicField {
+		if reasons["/data/RANDOM"] != rendermap.ReasonNondeterministicField {
 			t.Errorf("left out = %v", reasons)
 		}
 	})

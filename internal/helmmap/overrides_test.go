@@ -304,8 +304,8 @@ func TestFindUnreadDependencies(t *testing.T) {
 	}
 
 	t.Run("the message says the defaults are not in the repository", func(t *testing.T) {
-		f := parsedField{Field: Field{Found: got.Found()}, desired: `"anything"`}
-		msg := noCandidateDetail(f, nil, true)
+		found := got.Found()
+		msg := strings.Join(got.ExplainEmpty(found), "; ")
 		for _, w := range []string{"cache, postgresql", "not in the repository", "downloads it when it renders", "cannot be overridden"} {
 			if !strings.Contains(msg, w) {
 				t.Errorf("message %q lacks %q", msg, w)
@@ -313,8 +313,8 @@ func TestFindUnreadDependencies(t *testing.T) {
 		}
 	})
 	t.Run("not when a key was found", func(t *testing.T) {
-		f := parsedField{Field: Field{Found: (&Result{UnreadDependencies: []string{"cache"}, Candidates: []rendermap.Candidate{{File: "x"}}}).Found()}, desired: `"x"`}
-		if msg := noCandidateDetail(f, []string{"x y: it does not reproduce the drift"}, true); strings.Contains(msg, "not in the repository") {
+		r := &Result{UnreadDependencies: []string{"cache"}, Candidates: []rendermap.Candidate{{File: "x"}}}
+		if msg := r.ExplainEmpty(r.Found()); len(msg) != 0 {
 			t.Errorf("message = %q", msg)
 		}
 	})
