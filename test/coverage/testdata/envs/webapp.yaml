@@ -12,3 +12,9 @@ service:
 
 store:
   maxMemory: 512 # the only subchart value the environment sets
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: apps
+    effect: NoSchedule

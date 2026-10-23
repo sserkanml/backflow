@@ -6,6 +6,8 @@ image:
   tag: "1.4.2"
   pullPolicy: IfNotPresent
 
+containerPort: 8080
+
 service:
   type: ClusterIP
   port: 80
@@ -27,6 +29,8 @@ resources:
     memory: 128Mi
 
 podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
 tolerations: []
 
 env:

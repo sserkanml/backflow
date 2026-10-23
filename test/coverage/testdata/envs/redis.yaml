@@ -6,8 +6,24 @@ auth:
 
 replica:
   replicaCount: 2
+  extraEnvVars:
+    - name: TZ
+      value: UTC
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: cache
+      effect: NoSchedule
 
 master:
   resourcesPreset: small
+  extraEnvVars:
+    - name: TZ
+      value: UTC
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: cache
+      effect: NoSchedule
   persistence:
     size: 8Gi
