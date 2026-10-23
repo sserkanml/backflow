@@ -6,114 +6,147 @@ Policies: **default** is a policy with no options (`spec.helm.addOverrides` is o
 
 | Policy | Mapped | Partial | Unmapped | Cases | Mapped % | Mapped or partial % |
 |---|---|---|---|---|---|---|
-| default | 20 | 0 | 56 | 76 | 26% | 26% |
-| permissive | 21 | 8 | 47 | 76 | 28% | 38% |
-| no-overrides | 5 | 0 | 71 | 76 | 7% | 7% |
+| default | 72 | 0 | 32 | 104 | 69% | 69% |
+| permissive | 73 | 5 | 26 | 104 | 70% | 75% |
+| no-overrides | 32 | 0 | 72 | 104 | 31% | 31% |
 
 ## By chart
 
 | Chart | Cases | Mapped % (default) | Mapped or partial % (permissive) |
 |---|---|---|---|
-| nginx | 12 | 33% | 50% |
-| postgresql | 13 | 23% | 23% |
-| redis | 28 | 14% | 21% |
-| webapp | 23 | 39% | 61% |
+| nginx | 17 | 82% | 82% |
+| postgresql | 18 | 78% | 78% |
+| redis | 38 | 63% | 71% |
+| webapp | 31 | 65% | 74% |
 
 ## By scenario
 
 | Scenario | Cases | Mapped % (default) | Mapped or partial % (permissive) |
 |---|---|---|---|
 | configmap-data | 4 | 25% | 25% |
-| env-add | 6 | 0% | 0% |
-| env-change | 5 | 0% | 0% |
+| env-add | 6 | 83% | 83% |
+| env-change | 5 | 100% | 100% |
+| env-remove | 5 | 100% | 100% |
 | image-tag | 6 | 50% | 67% |
-| pod-annotation | 6 | 0% | 0% |
+| label-add | 6 | 83% | 83% |
+| nodeselector-add | 6 | 83% | 83% |
+| pod-annotation | 6 | 83% | 83% |
+| port-change | 6 | 17% | 33% |
 | probe-delay | 5 | 100% | 100% |
 | pull-policy | 6 | 50% | 50% |
-| resources | 6 | 17% | 17% |
-| scale | 6 | 67% | 67% |
-| scale+pod-annotation | 6 | 0% | 67% |
-| scale+toleration | 6 | 0% | 67% |
+| resources | 6 | 50% | 50% |
+| scale | 6 | 83% | 83% |
+| scale+pod-annotation | 6 | 67% | 100% |
+| scale+toleration | 6 | 67% | 100% |
 | service-port | 8 | 38% | 38% |
-| toleration | 6 | 0% | 0% |
+| toleration | 6 | 83% | 83% |
+| toleration-remove | 5 | 100% | 100% |
 
 ## Cases
 
 | Chart | Resource | Scenario | Changed fields | default | permissive | no-overrides |
 |---|---|---|---|---|---|---|
-| nginx | Deployment nginx-prod | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| nginx | Deployment nginx-prod | env-change | `/spec/template/spec/containers/0/env/0/value` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
+| nginx | Deployment nginx-prod | env-add | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/nginx.yaml: extraEnvVars` | Mapped `envs/prod/nginx.yaml: extraEnvVars` | Mapped `envs/prod/nginx.yaml: extraEnvVars` |
+| nginx | Deployment nginx-prod | env-change | `/spec/template/spec/containers/0/env/4/value` | Mapped `envs/prod/nginx.yaml: extraEnvVars.0.value` | Mapped `envs/prod/nginx.yaml: extraEnvVars.0.value` | Mapped `envs/prod/nginx.yaml: extraEnvVars.0.value` |
+| nginx | Deployment nginx-prod | env-remove | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/nginx.yaml: extraEnvVars` | Mapped `envs/prod/nginx.yaml: extraEnvVars` | Mapped `envs/prod/nginx.yaml: extraEnvVars` |
 | nginx | Deployment nginx-prod | image-tag | `/spec/template/spec/containers/0/image`<br>`/spec/template/spec/initContainers/0/image` | Mapped `envs/prod/nginx.yaml: image.tag` | Mapped `envs/prod/nginx.yaml: image.tag` | Mapped `envs/prod/nginx.yaml: image.tag` |
-| nginx | Deployment nginx-prod | pod-annotation | `/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| nginx | Deployment nginx-prod | label-add | `/spec/template/metadata/labels/backflow.io~1test` | Mapped `envs/prod/nginx.yaml: podLabels.backflow\.io/test` | Mapped `envs/prod/nginx.yaml: podLabels.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| nginx | Deployment nginx-prod | nodeselector-add | `/spec/template/spec/nodeSelector` | Mapped `envs/prod/nginx.yaml: nodeSelector` | Mapped `envs/prod/nginx.yaml: nodeSelector` | Unmapped (NoVerifiedCandidate) |
+| nginx | Deployment nginx-prod | pod-annotation | `/spec/template/metadata/annotations/backflow.io~1test` | Mapped `envs/prod/nginx.yaml: podAnnotations.backflow\.io/test` | Mapped `envs/prod/nginx.yaml: podAnnotations.backflow\.io/test` | Mapped `envs/prod/nginx.yaml: podAnnotations.backflow\.io/test` |
+| nginx | Deployment nginx-prod | port-change | `/spec/template/spec/containers/0/env/1/value`<br>`/spec/template/spec/containers/0/ports/0/containerPort` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | nginx | Deployment nginx-prod | probe-delay | `/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds` | Mapped `envs/prod/nginx.yaml: livenessProbe.initialDelaySeconds` | Mapped `envs/prod/nginx.yaml: livenessProbe.initialDelaySeconds` | Unmapped (NoVerifiedCandidate) |
-| nginx | Deployment nginx-prod | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| nginx | Deployment nginx-prod | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| nginx | Deployment nginx-prod | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| nginx | Deployment nginx-prod | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | nginx | Deployment nginx-prod | scale | `/spec/replicas` | Mapped `envs/prod/nginx.yaml: replicaCount` | Mapped `envs/prod/nginx.yaml: replicaCount` | Mapped `envs/prod/nginx.yaml: replicaCount` |
-| nginx | Deployment nginx-prod | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (UnsupportedChange) | Partial `envs/prod/nginx.yaml: replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| nginx | Deployment nginx-prod | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `envs/prod/nginx.yaml: replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| nginx | Deployment nginx-prod | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| nginx | Deployment nginx-prod | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations/backflow.io~1test` | Mapped `envs/prod/nginx.yaml: podAnnotations.backflow\.io/test`<br>`envs/prod/nginx.yaml: replicaCount` | Mapped `envs/prod/nginx.yaml: podAnnotations.backflow\.io/test`<br>`envs/prod/nginx.yaml: replicaCount` | Mapped `envs/prod/nginx.yaml: podAnnotations.backflow\.io/test`<br>`envs/prod/nginx.yaml: replicaCount` |
+| nginx | Deployment nginx-prod | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Mapped `envs/prod/nginx.yaml: replicaCount`<br>`envs/prod/nginx.yaml: tolerations` | Mapped `envs/prod/nginx.yaml: replicaCount`<br>`envs/prod/nginx.yaml: tolerations` | Mapped `envs/prod/nginx.yaml: replicaCount`<br>`envs/prod/nginx.yaml: tolerations` |
+| nginx | Deployment nginx-prod | toleration | `/spec/template/spec/tolerations` | Mapped `envs/prod/nginx.yaml: tolerations` | Mapped `envs/prod/nginx.yaml: tolerations` | Mapped `envs/prod/nginx.yaml: tolerations` |
+| nginx | Deployment nginx-prod | toleration-remove | `/spec/template/spec/tolerations` | Mapped `envs/prod/nginx.yaml: tolerations` | Mapped `envs/prod/nginx.yaml: tolerations` | Mapped `envs/prod/nginx.yaml: tolerations` |
 | nginx | Service nginx-prod | service-port | `/spec/ports/0/port` | Mapped `envs/prod/nginx.yaml: service.ports.http` | Mapped `envs/prod/nginx.yaml: service.ports.http` | Unmapped (NoVerifiedCandidate) |
-| postgresql | Service hl | service-port | `/spec/ports/0/port` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| postgresql | Service postgresql-prod | service-port | `/spec/ports/0/port` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| postgresql | StatefulSet postgresql-prod | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| postgresql | StatefulSet postgresql-prod | env-change | `/spec/template/spec/containers/0/env/0/value` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
+| postgresql | Service hl | service-port | `/spec/ports/0/port` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| postgresql | Service postgresql-prod | service-port | `/spec/ports/0/port` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | env-add | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars` |
+| postgresql | StatefulSet postgresql-prod | env-change | `/spec/template/spec/containers/0/env/18/value` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars.0.value` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars.0.value` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars.0.value` |
+| postgresql | StatefulSet postgresql-prod | env-remove | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars` | Mapped `envs/prod/postgresql.yaml: primary.extraEnvVars` |
 | postgresql | StatefulSet postgresql-prod | image-tag | `/spec/template/spec/containers/0/image` | Mapped `envs/prod/postgresql.yaml: image.tag` | Mapped `envs/prod/postgresql.yaml: image.tag` | Unmapped (NoVerifiedCandidate) |
-| postgresql | StatefulSet postgresql-prod | pod-annotation | `/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| postgresql | StatefulSet postgresql-prod | label-add | `/spec/template/metadata/labels/backflow.io~1test` | Mapped `envs/prod/postgresql.yaml: primary.podLabels.backflow\.io/test` | Mapped `envs/prod/postgresql.yaml: primary.podLabels.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | nodeselector-add | `/spec/template/spec/nodeSelector` | Mapped `envs/prod/postgresql.yaml: primary.nodeSelector` | Mapped `envs/prod/postgresql.yaml: primary.nodeSelector` | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | pod-annotation | `/spec/template/metadata/annotations` | Mapped `envs/prod/postgresql.yaml: primary.podAnnotations` | Mapped `envs/prod/postgresql.yaml: primary.podAnnotations` | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | port-change | `/spec/template/spec/containers/0/env/1/value`<br>`/spec/template/spec/containers/0/ports/0/containerPort` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | postgresql | StatefulSet postgresql-prod | probe-delay | `/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds` | Mapped `envs/prod/postgresql.yaml: primary.livenessProbe.initialDelaySeconds` | Mapped `envs/prod/postgresql.yaml: primary.livenessProbe.initialDelaySeconds` | Unmapped (NoVerifiedCandidate) |
 | postgresql | StatefulSet postgresql-prod | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Mapped `envs/prod/postgresql.yaml: image.pullPolicy` | Mapped `envs/prod/postgresql.yaml: image.pullPolicy` | Unmapped (NoVerifiedCandidate) |
-| postgresql | StatefulSet postgresql-prod | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| postgresql | StatefulSet postgresql-prod | scale | `/spec/replicas` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
-| postgresql | StatefulSet postgresql-prod | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| postgresql | StatefulSet postgresql-prod | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| postgresql | StatefulSet postgresql-prod | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| postgresql | StatefulSet postgresql-prod | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | scale | `/spec/replicas` | Mapped `envs/prod/postgresql.yaml: primary.replicaCount` | Mapped `envs/prod/postgresql.yaml: primary.replicaCount` | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Mapped `envs/prod/postgresql.yaml: primary.podAnnotations`<br>`envs/prod/postgresql.yaml: primary.replicaCount` | Mapped `envs/prod/postgresql.yaml: primary.podAnnotations`<br>`envs/prod/postgresql.yaml: primary.replicaCount` | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Mapped `envs/prod/postgresql.yaml: primary.replicaCount`<br>`envs/prod/postgresql.yaml: primary.tolerations` | Mapped `envs/prod/postgresql.yaml: primary.replicaCount`<br>`envs/prod/postgresql.yaml: primary.tolerations` | Unmapped (NoVerifiedCandidate) |
+| postgresql | StatefulSet postgresql-prod | toleration | `/spec/template/spec/tolerations` | Mapped `envs/prod/postgresql.yaml: primary.tolerations` | Mapped `envs/prod/postgresql.yaml: primary.tolerations` | Mapped `envs/prod/postgresql.yaml: primary.tolerations` |
+| postgresql | StatefulSet postgresql-prod | toleration-remove | `/spec/template/spec/tolerations` | Mapped `envs/prod/postgresql.yaml: primary.tolerations` | Mapped `envs/prod/postgresql.yaml: primary.tolerations` | Mapped `envs/prod/postgresql.yaml: primary.tolerations` |
 | redis | ConfigMap configuration | configmap-data | `/data/master.conf` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
 | redis | ConfigMap health | configmap-data | `/data/ping_liveness_local.sh` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
 | redis | ConfigMap scripts | configmap-data | `/data/start-master.sh` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | Service headless | service-port | `/spec/ports/0/port` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | Service master | service-port | `/spec/ports/0/port` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| redis | Service headless | service-port | `/spec/ports/0/port` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | Service master | service-port | `/spec/ports/0/port` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | redis | Service replicas | service-port | `/spec/ports/0/port` | Mapped `envs/prod/redis.yaml: replica.service.ports.redis` | Mapped `envs/prod/redis.yaml: replica.service.ports.redis` | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet master | env-change | `/spec/template/spec/containers/0/env/0/value` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | pod-annotation | `/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| redis | StatefulSet master | env-add | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/redis.yaml: master.extraEnvVars` | Mapped `envs/prod/redis.yaml: master.extraEnvVars` | Mapped `envs/prod/redis.yaml: master.extraEnvVars` |
+| redis | StatefulSet master | env-change | `/spec/template/spec/containers/0/env/7/value` | Mapped `envs/prod/redis.yaml: master.extraEnvVars.0.value` | Mapped `envs/prod/redis.yaml: master.extraEnvVars.0.value` | Mapped `envs/prod/redis.yaml: master.extraEnvVars.0.value` |
+| redis | StatefulSet master | env-remove | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/redis.yaml: master.extraEnvVars` | Mapped `envs/prod/redis.yaml: master.extraEnvVars` | Mapped `envs/prod/redis.yaml: master.extraEnvVars` |
+| redis | StatefulSet master | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | label-add | `/spec/template/metadata/labels/backflow.io~1test` | Mapped `envs/prod/redis.yaml: master.podLabels.backflow\.io/test` | Mapped `envs/prod/redis.yaml: master.podLabels.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | nodeselector-add | `/spec/template/spec/nodeSelector` | Mapped `envs/prod/redis.yaml: master.nodeSelector` | Mapped `envs/prod/redis.yaml: master.nodeSelector` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | pod-annotation | `/spec/template/metadata/annotations/backflow.io~1test` | Mapped `envs/prod/redis.yaml: master.podAnnotations.backflow\.io/test` | Mapped `envs/prod/redis.yaml: master.podAnnotations.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | port-change | `/spec/template/spec/containers/0/env/6/value`<br>`/spec/template/spec/containers/0/ports/0/containerPort` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | redis | StatefulSet master | probe-delay | `/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds` | Mapped `envs/prod/redis.yaml: master.livenessProbe.initialDelaySeconds` | Mapped `envs/prod/redis.yaml: master.livenessProbe.initialDelaySeconds` | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | scale | `/spec/replicas` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet master | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet master | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet master | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet replicas | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet replicas | env-change | `/spec/template/spec/containers/0/env/0/value` | Unmapped (TooManyCandidates) | Unmapped (TooManyCandidates) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet replicas | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet replicas | pod-annotation | `/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| redis | StatefulSet master | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Mapped `envs/prod/redis.yaml: master.resources` | Mapped `envs/prod/redis.yaml: master.resources` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | scale | `/spec/replicas` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (ValueAffectsOtherFields) | Partial `envs/prod/redis.yaml: master.podAnnotations.backflow\.io/test` (left out: ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (ValueAffectsOtherFields) | Partial `envs/prod/redis.yaml: master.tolerations` (left out: ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet master | toleration | `/spec/template/spec/tolerations` | Mapped `envs/prod/redis.yaml: master.tolerations` | Mapped `envs/prod/redis.yaml: master.tolerations` | Mapped `envs/prod/redis.yaml: master.tolerations` |
+| redis | StatefulSet master | toleration-remove | `/spec/template/spec/tolerations` | Mapped `envs/prod/redis.yaml: master.tolerations` | Mapped `envs/prod/redis.yaml: master.tolerations` | Mapped `envs/prod/redis.yaml: master.tolerations` |
+| redis | StatefulSet replicas | env-add | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars` |
+| redis | StatefulSet replicas | env-change | `/spec/template/spec/containers/0/env/10/value` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars.0.value` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars.0.value` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars.0.value` |
+| redis | StatefulSet replicas | env-remove | `/spec/template/spec/containers/0/env` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars` | Mapped `envs/prod/redis.yaml: replica.extraEnvVars` |
+| redis | StatefulSet replicas | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | label-add | `/spec/template/metadata/labels/backflow.io~1test` | Mapped `envs/prod/redis.yaml: replica.podLabels.backflow\.io/test` | Mapped `envs/prod/redis.yaml: replica.podLabels.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | nodeselector-add | `/spec/template/spec/nodeSelector` | Mapped `envs/prod/redis.yaml: replica.nodeSelector` | Mapped `envs/prod/redis.yaml: replica.nodeSelector` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | pod-annotation | `/spec/template/metadata/annotations/backflow.io~1test` | Mapped `envs/prod/redis.yaml: replica.podAnnotations.backflow\.io/test` | Mapped `envs/prod/redis.yaml: replica.podAnnotations.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | port-change | `/spec/template/spec/containers/0/env/3/value`<br>`/spec/template/spec/containers/0/env/9/value`<br>`/spec/template/spec/containers/0/ports/0/containerPort` | Unmapped (ValueAffectsOtherFields) | Partial `envs/prod/redis.yaml: replica.containerPorts.redis` (left out: ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | redis | StatefulSet replicas | probe-delay | `/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds` | Mapped `envs/prod/redis.yaml: replica.livenessProbe.initialDelaySeconds` | Mapped `envs/prod/redis.yaml: replica.livenessProbe.initialDelaySeconds` | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet replicas | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| redis | StatefulSet replicas | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Mapped `envs/prod/redis.yaml: replica.resources` | Mapped `envs/prod/redis.yaml: replica.resources` | Unmapped (NoVerifiedCandidate) |
 | redis | StatefulSet replicas | scale | `/spec/replicas` | Mapped `envs/prod/redis.yaml: replica.replicaCount` | Mapped `envs/prod/redis.yaml: replica.replicaCount` | Mapped `envs/prod/redis.yaml: replica.replicaCount` |
-| redis | StatefulSet replicas | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations/backflow.io~1test` | Unmapped (UnsupportedChange) | Partial `envs/prod/redis.yaml: replica.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet replicas | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `envs/prod/redis.yaml: replica.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| redis | StatefulSet replicas | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| redis | StatefulSet replicas | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations/backflow.io~1test` | Mapped `envs/prod/redis.yaml: replica.podAnnotations.backflow\.io/test`<br>`envs/prod/redis.yaml: replica.replicaCount` | Mapped `envs/prod/redis.yaml: replica.podAnnotations.backflow\.io/test`<br>`envs/prod/redis.yaml: replica.replicaCount` | Unmapped (NoVerifiedCandidate) |
+| redis | StatefulSet replicas | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Mapped `envs/prod/redis.yaml: replica.replicaCount`<br>`envs/prod/redis.yaml: replica.tolerations` | Mapped `envs/prod/redis.yaml: replica.replicaCount`<br>`envs/prod/redis.yaml: replica.tolerations` | Mapped `envs/prod/redis.yaml: replica.replicaCount`<br>`envs/prod/redis.yaml: replica.tolerations` |
+| redis | StatefulSet replicas | toleration | `/spec/template/spec/tolerations` | Mapped `envs/prod/redis.yaml: replica.tolerations` | Mapped `envs/prod/redis.yaml: replica.tolerations` | Mapped `envs/prod/redis.yaml: replica.tolerations` |
+| redis | StatefulSet replicas | toleration-remove | `/spec/template/spec/tolerations` | Mapped `envs/prod/redis.yaml: replica.tolerations` | Mapped `envs/prod/redis.yaml: replica.tolerations` | Mapped `envs/prod/redis.yaml: replica.tolerations` |
 | webapp | ConfigMap webapp | configmap-data | `/data/CACHE_TTL` | Mapped `charts/webapp/values-prod.yaml: config.cacheTTL` | Mapped `charts/webapp/values-prod.yaml: config.cacheTTL` | Unmapped (NoVerifiedCandidate) |
-| webapp | Deployment kvstore | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | env-add | `/spec/template/spec/containers/0/env` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment kvstore | image-tag | `/spec/template/spec/containers/0/image` | Mapped `charts/webapp/values-prod.yaml: store.image.tag` | Mapped `charts/webapp/values-prod.yaml: store.image.tag` | Unmapped (NoVerifiedCandidate) |
-| webapp | Deployment kvstore | pod-annotation | `/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | label-add | `/spec/template/metadata/labels/backflow.io~1test` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | nodeselector-add | `/spec/template/spec/nodeSelector` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | pod-annotation | `/spec/template/metadata/annotations` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | port-change | `/spec/template/spec/containers/0/ports/0/containerPort` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment kvstore | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Mapped `charts/webapp/values-prod.yaml: store.image.pullPolicy` | Mapped `charts/webapp/values-prod.yaml: store.image.pullPolicy` | Unmapped (NoVerifiedCandidate) |
-| webapp | Deployment kvstore | resources | `/spec/template/spec/containers/0/resources` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | resources | `/spec/template/spec/containers/0/resources` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment kvstore | scale | `/spec/replicas` | Mapped `charts/webapp/values-prod.yaml: store.replicaCount` | Mapped `charts/webapp/values-prod.yaml: store.replicaCount` | Unmapped (NoVerifiedCandidate) |
-| webapp | Deployment kvstore | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: store.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Deployment kvstore | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: store.replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Deployment kvstore | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Deployment webapp | env-add | `/spec/template/spec/containers/0/env` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Deployment webapp | env-change | `/spec/template/spec/containers/0/env/0/value` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
-| webapp | Deployment webapp | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (NoVerifiedCandidate) | Mapped `charts/webapp/values-prod.yaml: image.tag` | Unmapped (NoVerifiedCandidate) |
-| webapp | Deployment webapp | pod-annotation | `/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
+| webapp | Deployment kvstore | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Unmapped (NoVerifiedCandidate) | Partial `charts/webapp/values-prod.yaml: store.replicaCount` (left out: NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (NoVerifiedCandidate) | Partial `charts/webapp/values-prod.yaml: store.replicaCount` (left out: NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment kvstore | toleration | `/spec/template/spec/tolerations` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | env-add | `/spec/template/spec/containers/0/env` | Mapped `charts/webapp/values-prod.yaml: env` | Mapped `charts/webapp/values-prod.yaml: env` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | env-change | `/spec/template/spec/containers/0/env/1/value` | Mapped `charts/webapp/values-prod.yaml: env` | Mapped `charts/webapp/values-prod.yaml: env` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | env-remove | `/spec/template/spec/containers/0/env` | Mapped `charts/webapp/values-prod.yaml: env` | Mapped `charts/webapp/values-prod.yaml: env` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | image-tag | `/spec/template/spec/containers/0/image` | Unmapped (ValueAffectsOtherFields) | Mapped `charts/webapp/values-prod.yaml: image.tag` | Unmapped (ValueAffectsOtherFields) |
+| webapp | Deployment webapp | label-add | `/spec/template/metadata/labels/backflow.io~1test` | Mapped `charts/webapp/values-prod.yaml: podLabels.backflow\.io/test` | Mapped `charts/webapp/values-prod.yaml: podLabels.backflow\.io/test` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | nodeselector-add | `/spec/template/spec/nodeSelector` | Mapped `charts/webapp/values-prod.yaml: nodeSelector` | Mapped `charts/webapp/values-prod.yaml: nodeSelector` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | pod-annotation | `/spec/template/metadata/annotations` | Mapped `charts/webapp/values-prod.yaml: podAnnotations` | Mapped `charts/webapp/values-prod.yaml: podAnnotations` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | port-change | `/spec/template/spec/containers/0/env/0/value`<br>`/spec/template/spec/containers/0/ports/0/containerPort` | Mapped `charts/webapp/values-prod.yaml: containerPort` | Mapped `charts/webapp/values-prod.yaml: containerPort` | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment webapp | probe-delay | `/spec/template/spec/containers/0/livenessProbe/initialDelaySeconds` | Mapped `charts/webapp/values-prod.yaml: probes.initialDelaySeconds` | Mapped `charts/webapp/values-prod.yaml: probes.initialDelaySeconds` | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment webapp | pull-policy | `/spec/template/spec/containers/0/imagePullPolicy` | Mapped `charts/webapp/values-prod.yaml: image.pullPolicy` | Mapped `charts/webapp/values-prod.yaml: image.pullPolicy` | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment webapp | resources | `/spec/template/spec/containers/0/resources/limits/memory` | Mapped `charts/webapp/values-prod.yaml: resources.limits.memory` | Mapped `charts/webapp/values-prod.yaml: resources.limits.memory` | Unmapped (NoVerifiedCandidate) |
 | webapp | Deployment webapp | scale | `/spec/replicas` | Mapped `charts/webapp/values-prod.yaml: replicaCount` | Mapped `charts/webapp/values-prod.yaml: replicaCount` | Mapped `charts/webapp/values-prod.yaml: replicaCount` |
-| webapp | Deployment webapp | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Deployment webapp | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Partial `charts/webapp/values-prod.yaml: replicaCount` (left out: UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Deployment webapp | toleration | `/spec/template/spec/tolerations` | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) | Unmapped (UnsupportedChange) |
-| webapp | Service kvstore | service-port | `/spec/ports/0/port` | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | scale+pod-annotation | `/spec/replicas`<br>`/spec/template/metadata/annotations` | Mapped `charts/webapp/values-prod.yaml: podAnnotations`<br>`charts/webapp/values-prod.yaml: replicaCount` | Mapped `charts/webapp/values-prod.yaml: podAnnotations`<br>`charts/webapp/values-prod.yaml: replicaCount` | Unmapped (NoVerifiedCandidate) |
+| webapp | Deployment webapp | scale+toleration | `/spec/replicas`<br>`/spec/template/spec/tolerations` | Mapped `charts/webapp/values-prod.yaml: replicaCount`<br>`charts/webapp/values-prod.yaml: tolerations` | Mapped `charts/webapp/values-prod.yaml: replicaCount`<br>`charts/webapp/values-prod.yaml: tolerations` | Mapped `charts/webapp/values-prod.yaml: replicaCount`<br>`charts/webapp/values-prod.yaml: tolerations` |
+| webapp | Deployment webapp | toleration | `/spec/template/spec/tolerations` | Mapped `charts/webapp/values-prod.yaml: tolerations` | Mapped `charts/webapp/values-prod.yaml: tolerations` | Mapped `charts/webapp/values-prod.yaml: tolerations` |
+| webapp | Deployment webapp | toleration-remove | `/spec/template/spec/tolerations` | Mapped `charts/webapp/values-prod.yaml: tolerations` | Mapped `charts/webapp/values-prod.yaml: tolerations` | Mapped `charts/webapp/values-prod.yaml: tolerations` |
+| webapp | Service kvstore | service-port | `/spec/ports/0/port` | Unmapped (ValueAffectsOtherFields) | Unmapped (ValueAffectsOtherFields) | Unmapped (NoVerifiedCandidate) |
 | webapp | Service webapp | service-port | `/spec/ports/0/port` | Mapped `charts/webapp/values-prod.yaml: service.port` | Mapped `charts/webapp/values-prod.yaml: service.port` | Mapped `charts/webapp/values-prod.yaml: service.port` |

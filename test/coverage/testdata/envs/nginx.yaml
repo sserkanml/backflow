@@ -11,3 +11,13 @@ service:
 
 podAnnotations:
   team: platform
+
+extraEnvVars:
+  - name: TZ
+    value: UTC
+
+tolerations:
+  - key: dedicated
+    operator: Equal
+    value: web
+    effect: NoSchedule

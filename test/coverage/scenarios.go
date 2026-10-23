@@ -4,6 +4,7 @@ package coverage
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -54,9 +55,9 @@ var scenarios = []scenario{
 		spec["replicas"] = n + 1
 		return true
 	}},
-	{id: "env-change", desc: "change an env value", kinds: workloadKinds, apply: func(o map[string]any) bool {
+	{id: "env-change", desc: "change the value of the last env var that has one", kinds: workloadKinds, apply: func(o map[string]any) bool {
 		env, _ := container(o)["env"].([]any)
-		for _, e := range env {
+		for _, e := range slices.Backward(env) {
 			item, _ := e.(map[string]any)
 			if v, ok := item["value"].(string); ok {
 				item["value"] = "bf-" + v
@@ -106,6 +107,73 @@ var scenarios = []scenario{
 		spec := podTemplate(o, "spec")
 		tol, _ := spec["tolerations"].([]any)
 		spec["tolerations"] = append(tol, map[string]any{"key": "dedicated", "operator": "Equal", "value": "bf", "effect": "NoSchedule"})
+		return true
+	}},
+	{id: "label-add", desc: "add a pod label", kinds: workloadKinds, apply: func(o map[string]any) bool {
+		meta := podTemplate(o, "metadata")
+		labels, _ := meta["labels"].(map[string]any)
+		if labels == nil {
+			labels = map[string]any{}
+			meta["labels"] = labels
+		}
+		labels["backflow.io/test"] = "1"
+		return true
+	}},
+	{id: "nodeselector-add", desc: "add a node selector", kinds: workloadKinds, apply: func(o map[string]any) bool {
+		spec := podTemplate(o, "spec")
+		sel, _ := spec["nodeSelector"].(map[string]any)
+		if sel == nil {
+			sel = map[string]any{}
+			spec["nodeSelector"] = sel
+		}
+		sel["backflow.io/test"] = "1"
+		return true
+	}},
+	{id: "env-remove", desc: "remove the last env var", kinds: workloadKinds, apply: func(o map[string]any) bool {
+		c := container(o)
+		env, _ := c["env"].([]any)
+		if len(env) == 0 {
+			return false
+		}
+		if len(env) == 1 {
+			delete(c, "env") // the API server does not keep an empty list
+		} else {
+			c["env"] = env[:len(env)-1]
+		}
+		return true
+	}},
+	{id: "toleration-remove", desc: "remove the last toleration", kinds: workloadKinds, apply: func(o map[string]any) bool {
+		spec := podTemplate(o, "spec")
+		tol, _ := spec["tolerations"].([]any)
+		if len(tol) == 0 {
+			return false
+		}
+		if len(tol) == 1 {
+			delete(spec, "tolerations")
+		} else {
+			spec["tolerations"] = tol[:len(tol)-1]
+		}
+		return true
+	}},
+	{id: "port-change", desc: "change the container port and the env var that carries it", kinds: workloadKinds, apply: func(o map[string]any) bool {
+		c := container(o)
+		ports, _ := c["ports"].([]any)
+		if len(ports) == 0 {
+			return false
+		}
+		p, _ := ports[0].(map[string]any)
+		n, ok := p["containerPort"].(float64)
+		if !ok {
+			return false
+		}
+		old := fmt.Sprint(int64(n))
+		p["containerPort"] = n + 1
+		env, _ := c["env"].([]any)
+		for _, e := range env {
+			if item, _ := e.(map[string]any); item != nil && item["value"] == old {
+				item["value"] = fmt.Sprint(int64(n) + 1)
+			}
+		}
 		return true
 	}},
 	{id: "pull-policy", desc: "change imagePullPolicy", kinds: workloadKinds, apply: func(o map[string]any) bool {
