@@ -350,3 +350,14 @@ func TestOverrideTexts(t *testing.T) {
 		}
 	}
 }
+
+func TestBoundedEditValue(t *testing.T) {
+	if got := boundedEditValue(`{"a":"b"}`); got != `{"a":"b"}` {
+		t.Errorf("a short value is kept: %q", got)
+	}
+	long := `["` + strings.Repeat("x", maxEditValue) + `"]`
+	got := boundedEditValue(long)
+	if len(got) > 100 || !strings.HasPrefix(got, `"`) || !strings.HasSuffix(got, `"`) {
+		t.Errorf("a long value is replaced by a JSON string: %q", got)
+	}
+}

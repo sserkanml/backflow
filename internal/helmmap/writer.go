@@ -125,7 +125,7 @@ func lookup(doc *yaml.Node, key KeyPath) (*yaml.Node, error) {
 		case yaml.MappingNode:
 			var next *yaml.Node
 			for j := 0; j+1 < len(cur.Content); j += 2 {
-				if cur.Content[j].Kind == yaml.ScalarNode && cur.Content[j].Value == seg && cur.Content[j].Tag != "!!merge" {
+				if cur.Content[j].Kind == yaml.ScalarNode && cur.Content[j].Value == seg && cur.Content[j].Tag != mergeTag {
 					next = cur.Content[j+1]
 				}
 			}

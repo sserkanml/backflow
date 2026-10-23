@@ -498,6 +498,7 @@ func TestVerifyBounds(t *testing.T) {
 	t.Run("too many candidates", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src}
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+		f.Found.Candidates = nil
 		for i := range 11 {
 			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
 		}
@@ -505,8 +506,21 @@ func TestVerifyBounds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates || rend.calls != 0 {
-			t.Errorf("out = %+v, renders = %d", out.Unmapped, rend.calls)
+		if out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates || rend.calls != 2 {
+			t.Errorf("out = %+v, renders = %d: none of the keys fits the field, and only the unmodified files are rendered", out.Unmapped, rend.calls)
+		}
+	})
+
+	t.Run("a tie at the top is not cut", func(t *testing.T) {
+		rend := &demoRenderer{src: env.src}
+		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+		f.Found.Candidates = nil
+		for i := range 11 {
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"logLevel" + strconv.Itoa(i)}})
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
+			t.Errorf("out = %+v, err = %v: eleven keys fit equally well", out, err)
 		}
 	})
 
@@ -550,6 +564,118 @@ func TestVerifyBounds(t *testing.T) {
 			t.Errorf("err = %v, want context.Canceled", err)
 		}
 	})
+}
+
+// TestVerifyBoundsUntried: keys left out by the bound on their number.
+func TestVerifyBoundsUntried(t *testing.T) {
+	// The keys the tests leave out are k.0 ... k.10. A template reads the one
+	// that the test names, or none of them.
+	withTemplate := func(t *testing.T, text string) demoEnv {
+		t.Helper()
+		e := newDemo(t, Spec{})
+		e.files["helm/demo/templates/cm.yaml"] = []byte(text)
+		return e
+	}
+	narrowed := func(e demoEnv) *Outcome {
+		rend := &demoRenderer{src: e.src, noDerived: true}
+		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
+		for i := range 11 {
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+		}
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	t.Run("too many candidates are narrowed down by the names of the keys, when the ones left out are not read", func(t *testing.T) {
+		out := narrowed(withTemplate(t, "level: {{ .Values.config.logLevel }}\n"))
+		if !out.Mapped() {
+			t.Fatalf("out = %+v", out.Unmapped)
+		}
+		if decodePointer(out.Results[0].Edits[0].Location) != "config.logLevel" || out.Renders != 3 {
+			t.Errorf("edits = %+v, renders = %d: only the key that fits the field is rendered", out.Results[0].Edits, out.Renders)
+		}
+	})
+
+	t.Run("keys left out that a template may read are rendered to check, and none of these verifies", func(t *testing.T) {
+		// The keys k.N are not in the file: an edit of them cannot even be written.
+		out := narrowed(withTemplate(t, "level: {{ .Values.config.logLevel }}\nother: {{ .Values.k.3 }}\n"))
+		if !out.Mapped() || decodePointer(out.Results[0].Edits[0].Location) != "config.logLevel" {
+			t.Fatalf("out = %+v", out.Unmapped)
+		}
+	})
+
+	t.Run("a template that reads every key proves nothing, so the keys left out are checked by rendering", func(t *testing.T) {
+		out := narrowed(withTemplate(t, "all: {{ toYaml .Values }}\n"))
+		if !out.Mapped() {
+			t.Fatalf("out = %+v", out.Unmapped)
+		}
+	})
+
+	t.Run("more keys to check than may be rendered: too many candidates", func(t *testing.T) {
+		e := withTemplate(t, "all: {{ toYaml .Values }}\n")
+		rend := &demoRenderer{src: e.src, noDerived: true}
+		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
+		for i := range 11 {
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+		}
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{MaxConfirmations: 5})
+		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates ||
+			!strings.Contains(out.Unmapped.Message, "more than the 5 that are rendered to check") {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+	})
+
+	t.Run("without templates nothing is proven either, the keys are checked by rendering", func(t *testing.T) {
+		out := narrowed(newDemo(t, Spec{}))
+		if !out.Mapped() {
+			t.Fatalf("out = %+v", out.Unmapped)
+		}
+	})
+
+	t.Run("a key of a later stage left out does not compete with an edit of an earlier one", func(t *testing.T) {
+		e := withTemplate(t, "level: {{ .Values.config.logLevel }}\nother: {{ .Values.x.3 }}\n")
+		rend := &demoRenderer{src: e.src, noDerived: true}
+		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
+		f.Fragments = &Result{}
+		for i := range 30 {
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
+		}
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{MaxConfirmations: 1})
+		if err != nil || !out.Mapped() {
+			t.Fatalf("out = %+v, err = %v: fragments are only tried when no whole-value edit verifies", out, err)
+		}
+	})
+
+	t.Run("a field that no tried key explains does not claim that none exists", func(t *testing.T) {
+		e := withTemplate(t, "x: {{ .Values.k.3 }}\n")
+		rend := &demoRenderer{src: e.src}
+		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace") // config.logLevel also moves LOG_LEVEL_UP
+		for i := range 11 {
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+		}
+		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{})
+		if err != nil || out.Mapped() || !strings.Contains(out.Unmapped.Message, "were not tried") {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+	})
+
+	t.Run("many keys that hold a part of the value do not fail a field that has a key for the whole value", func(t *testing.T) {
+		env := withTemplate(t, "level: {{ .Values.config.logLevel }}\n")
+		rend := &demoRenderer{src: env.src, noDerived: true}
+		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+		f.Fragments = &Result{}
+		for i := range 30 {
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
+		}
+		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
+		if err != nil || !out.Mapped() || decodePointer(out.Results[0].Edits[0].Location) != "config.logLevel" {
+			t.Fatalf("out = %+v, err = %v", out, err)
+		}
+	})
+
 }
 
 func TestVerifyRenderErrors(t *testing.T) {

@@ -1,6 +1,7 @@
 package helmmap
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -48,6 +49,10 @@ type Options struct {
 	// edits are tried only when no edit of a key the value files already define
 	// verifies, and are verified like any other edit.
 	AddOverrides bool
+	// MaxConfirmations is the most renders spent, when an edit verifies, on keys
+	// that were left out because too many keys fit the field and that some
+	// template may read. Zero means DefaultMaxConfirmations.
+	MaxConfirmations int
 }
 
 // The kinds of collateral changes an edit may be allowed to make.
@@ -516,6 +521,19 @@ type run struct {
 	// overrides is set when edits that add a key are allowed.
 	overrides bool
 
+	// untried are the candidates left out for each field by the bound on their
+	// number, and refs what the templates read (built when needed).
+	untried map[int][]untriedKey
+	refs    *valueRefs
+	// mappedRank is the rank of the stage that found the mapping (see stageRank),
+	// mappedRule the collateral rule it was found under.
+	mappedRank int
+	mappedRule collateralRule
+
+	// structured are the candidates for maps and lists, made after the
+	// baseline (they compare the value files with the render).
+	structured *structuredSet
+
 	// shared is what the attempts of one Verify keep for each other (see
 	// verifyPartially); nil for a run on its own.
 	shared *renderCache
@@ -715,7 +733,7 @@ func leftOutPointers(left []FieldFailure) []string {
 
 // verify verifies some fields of the input, all of which must be mapped.
 func (v *run) verify(in []Field, opts Options) (*Outcome, error) {
-	fields, fail := preflight(in, opts)
+	fields, fail := preflight(in)
 	if fail != nil {
 		return fail, nil
 	}
@@ -726,8 +744,18 @@ func (v *run) verify(in []Field, opts Options) (*Outcome, error) {
 	if out != nil || err != nil {
 		return out, err
 	}
+	// Too many keys hold the value: the keys whose names fit the field best are
+	// tried, if that narrows them down (see rankCandidates).
+	fields, out = v.bound(fields, base[v.in.Resource], opts)
+	if out != nil {
+		return out, nil
+	}
 
-	return v.stages(base, nd, fields, opts)
+	out, err = v.stages(base, nd, fields, opts)
+	if err != nil || out == nil {
+		return out, err
+	}
+	return v.checkUntried(out, base, nd, fields, opts), nil
 }
 
 // A stage is one way of looking for an edit: with the keys that hold the whole
@@ -739,70 +767,126 @@ type stage struct {
 	// overrides: the candidates are the keys added to the last value file to
 	// override a chart default, not the keys the value files define.
 	overrides bool
-	rule      collateralRule
+	// own: the edits for structured fields themselves go with the first stage;
+	// ancestors: the edits of an ancestor of a field (the resources of a
+	// container for a drifted limit) come after every edit of a key that holds
+	// the field's own value.
+	own, ancestors bool
+	rule           collateralRule
 }
 
 func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opts Options) (*Outcome, error) {
-	hasFragments := false
-	for _, f := range fields {
-		hasFragments = hasFragments || (f.Fragments != nil && len(f.Fragments.Candidates) > 0)
+	v.structured = v.structuredCandidates(base, fields, opts)
+	for i, cut := range v.structured.untried {
+		for _, u := range cut {
+			if v.untried == nil {
+				v.untried = map[int][]untriedKey{}
+			}
+			u.field = i
+			v.untried[i] = append(v.untried[i], u)
+		}
 	}
-	stages := []stage{{}}
-	if hasFragments {
-		stages = append(stages, stage{fragments: true})
+	if len(v.structured.failures) > 0 {
+		return failure(v.structured.failures), nil
 	}
 	rule := newCollateralRule(opts.AllowCollateral, v.in.Resource, fields, v.leftOut)
-	if rule.any() {
-		// Only when nothing verified without them. The edits have been rendered
-		// already; what changes is which of their other changes are accepted.
-		stages = append(stages, stage{fragments: hasFragments, rule: rule})
-	}
-	if v.overrides {
-		// The last resort: keys that only the chart defines are set from the
-		// Application's last value file. The edits of existing lines come first,
-		// whole values before parts of them, and so do the stricter rules.
-		if hasOverrides(fields, false) {
-			stages = append(stages, stage{overrides: true})
-		}
-		if hasOverrides(fields, true) {
-			stages = append(stages, stage{overrides: true, fragments: true})
-		}
-		if rule.any() && (hasOverrides(fields, false) || hasOverrides(fields, true)) {
-			stages = append(stages, stage{overrides: true, fragments: hasOverrides(fields, true), rule: rule})
-		}
-	}
-
 	var last *Outcome
-	for _, st := range stages {
+	for _, st := range v.planStages(fields, rule) {
 		if st.fragments {
 			if bad := tooManyWithFragments(fields, opts); bad != nil {
 				return failure(bad), nil
 			}
 		}
-		if st.overrides {
+		if st.overrides && !st.ancestors {
 			if bad := tooManyOverrides(fields, opts); bad != nil {
 				return failure(bad), nil
 			}
-			// A later stage with the same candidates adds nothing new; the first
-			// of them already tried the whole values, the next the fragments.
-			if err := v.addTries(base, nd, fields, false, true); err != nil {
-				return v.renderErr(err)
-			}
-			if st.fragments {
-				if err := v.addTries(base, nd, fields, true, true); err != nil {
-					return v.renderErr(err)
-				}
-			}
-		} else if err := v.addTries(base, nd, fields, st.fragments, false); err != nil {
+		}
+		if err := v.addStage(base, nd, fields, st); err != nil {
 			return v.renderErr(err)
 		}
 		out, escalate, err := v.evaluate(base, nd, fields, st.rule)
 		if err != nil || !escalate {
+			v.mappedRank = stageRank(st.fragments, st.overrides, st.ancestors)
+			v.mappedRule = st.rule
 			return out, err
 		}
 		last = out
 	}
 	return last, nil
+}
+
+// planStages lists the stages in the order they are tried: the strictest first,
+// and the next only when the one before verifies no edit set.
+func (v *run) planStages(fields []parsedField, rule collateralRule) []stage {
+	hasFragments := false
+	for _, f := range fields {
+		hasFragments = hasFragments || (f.Fragments != nil && len(f.Fragments.Candidates) > 0)
+	}
+	stages := []stage{{own: true}}
+	if hasFragments {
+		stages = append(stages, stage{fragments: true})
+	}
+	// withRule adds a stage and, when the policy allows collateral changes, the
+	// same stage under that rule. The edits have been rendered already; what
+	// changes is which of their other changes are accepted.
+	withRule := func(st stage) {
+		stages = append(stages, st)
+		if rule.any() {
+			st.rule = rule
+			stages = append(stages, st)
+		}
+	}
+	if rule.any() {
+		stages = append(stages, stage{fragments: hasFragments, rule: rule})
+	}
+	if v.overrides {
+		// Keys that only the chart defines are set from the Application's last
+		// value file. The edits of existing lines come first, whole values
+		// before parts of them, and so do the stricter rules.
+		if hasOverrides(fields, false) || v.structured.any(0, true) {
+			withRule(stage{overrides: true})
+		}
+		if hasOverrides(fields, true) {
+			withRule(stage{overrides: true, fragments: true})
+		}
+	}
+	// The edits of an ancestor of a field (the resources of a container for a
+	// drifted limit) come last: they say more than the field did.
+	if v.structured.any(1, false) {
+		withRule(stage{ancestors: true})
+	}
+	if v.overrides && v.structured.any(1, true) {
+		withRule(stage{ancestors: true, overrides: true})
+	}
+	return stages
+}
+
+// addStage renders the candidates a stage adds to the ones tried before.
+func (v *run) addStage(base snapshot, nd nondeterminism, fields []parsedField, st stage) error {
+	switch {
+	case st.overrides && st.ancestors:
+		return v.addStructured(base, nd, fields, 1, true)
+	case st.overrides:
+		// A later stage with the same candidates adds nothing new; the first of
+		// them already tried the whole values, the next the fragments.
+		if err := v.addTries(base, nd, fields, st.fragments, true); err != nil {
+			return err
+		}
+		if !st.fragments {
+			return v.addStructured(base, nd, fields, 0, true)
+		}
+	case st.ancestors:
+		return v.addStructured(base, nd, fields, 1, false)
+	default:
+		if err := v.addTries(base, nd, fields, st.fragments, false); err != nil {
+			return err
+		}
+		if st.own {
+			return v.addStructured(base, nd, fields, 0, false)
+		}
+	}
+	return nil
 }
 
 // tooManyWithFragments applies the bound on candidates to whole-value and
@@ -908,6 +992,13 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 			}
 			collateral = allowed
 		}
+		// Edits that give the same files are one way of mapping, however they
+		// were found.
+		if slices.ContainsFunc(verified, func(o verifiedSet) bool {
+			return maps.EqualFunc(o.final, files, func(a, b []byte) bool { return bytes.Equal(a, b) })
+		}) {
+			continue
+		}
 		verified = append(verified, verifiedSet{set, files, applied, collateral})
 	}
 	switch {
@@ -967,7 +1058,7 @@ func overridesOf(edits []appliedEdit) []AppliedOverride {
 }
 
 // preflight parses the fields and applies the limits that need no render.
-func preflight(in []Field, opts Options) ([]parsedField, *Outcome) {
+func preflight(in []Field) ([]parsedField, *Outcome) {
 	fields := make([]parsedField, len(in))
 	var bad []FieldFailure
 	for i, f := range in {
@@ -979,12 +1070,6 @@ func preflight(in []Field, opts Options) ([]parsedField, *Outcome) {
 	}
 	if len(bad) > 0 {
 		return nil, failure(bad)
-	}
-	for _, f := range fields {
-		if n := len(f.Found.Candidates); n > opts.MaxCandidates {
-			return nil, failure([]FieldFailure{{Pointer: f.Change.Path, Reason: ReasonTooManyCandidates,
-				Detail: fmt.Sprintf("%d value file keys hold %s, at most %d are tried", n, f.desired, opts.MaxCandidates)}})
-		}
 	}
 	return fields, nil
 }
@@ -1159,6 +1244,19 @@ func (r collateralRule) allows(c Collateral) bool {
 	return false
 }
 
+// shown is the value of the edit for a message: the new value of a key, or
+// what a structured edit does, bounded.
+func (t *tryout) shown() string {
+	if e := t.cand.Structured; e != nil {
+		if e.Kind == editRemoveKey {
+			return "(removed)"
+		}
+		text, _ := jsonText(e.Value)
+		return textOf(text)
+	}
+	return t.value
+}
+
 func (t *tryout) key() string {
 	if t.cand.Override {
 		return t.cand.File + " " + t.cand.Path.String() + " (a new key)"
@@ -1210,6 +1308,39 @@ func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, f
 			added = append(added, t)
 		}
 	}
+	return v.tryAll(base, nd, fields, added)
+}
+
+// addStructured adds the structured candidates of a level, and tries them.
+func (v *run) addStructured(base snapshot, nd nondeterminism, fields []parsedField, level int, overrides bool) error {
+	if v.index == nil {
+		v.index = map[editKey]*tryout{}
+	}
+	list := v.structured.edits[level]
+	if overrides {
+		list = v.structured.overrides[level]
+	}
+	var added []*tryout
+	for _, sc := range list {
+		k := editKey{sc.cand.File, sc.cand.Path.String(), sc.value}
+		if t, ok := v.index[k]; ok {
+			for _, o := range sc.origin {
+				if !slices.Contains(t.origin, o) {
+					t.origin = append(t.origin, o)
+				}
+			}
+			continue
+		}
+		t := &tryout{cand: sc.cand, value: sc.value, origin: slices.Clone(sc.origin)}
+		v.index[k] = t
+		v.tries = append(v.tries, t)
+		added = append(added, t)
+	}
+	return v.tryAll(base, nd, fields, added)
+}
+
+// tryAll renders each new edit on its own and records what it changed.
+func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, added []*tryout) error {
 	byPointer := map[string]int{}
 	for i, f := range fields {
 		if !f.structured {
@@ -1306,16 +1437,24 @@ func uncovered(fields []parsedField, tries, accepted []*tryout, rule collateralR
 		}
 		ff := FieldFailure{Pointer: f.Change.Path, Reason: ReasonNoVerifiedCandidate}
 		if near != nil {
+			// A key reproduces the field and also changes other fields, which the
+			// policy does not allow: that is what to tell, however the other keys
+			// that were tried failed.
+			ff.Reason = ReasonValueAffectsOtherFields
 			rest := near.disallowed(rule)
-			nm := &NearMiss{File: near.cand.File, Path: near.cand.Path, Value: near.value, CollateralTotal: len(rest)}
+			nm := &NearMiss{File: near.cand.File, Path: near.cand.Path, Value: near.shown(), CollateralTotal: len(rest)}
 			for _, c := range near.covers {
 				nm.Covers = append(nm.Covers, fields[c].Change.Path)
 			}
 			nm.Collateral = rest[:min(len(rest), MaxCollateralShown)]
 			ff.NearMiss = nm
-			others = append(others, nm.String())
+			ff.Detail = nm.String()
+			if len(others) > 0 {
+				ff.Detail += fmt.Sprintf(" (%d other candidate(s) were rejected for other reasons)", len(others))
+			}
+		} else {
+			ff.Detail = noCandidateDetail(f, others, overrides)
 		}
-		ff.Detail = noCandidateDetail(f, others, overrides)
 		bad = append(bad, ff)
 	}
 	return bad
@@ -1446,6 +1585,12 @@ func failure(fields []FieldFailure) *Outcome {
 // writeCandidate sets the key of a candidate in the content of its file, or
 // adds it when the candidate overrides a chart default.
 func writeCandidate(c Candidate, content []byte, value string) (*Written, error) {
+	if e := c.Structured; e != nil {
+		if e.Kind == editRemoveKey {
+			return RemoveKey(c.File, content, c.Path)
+		}
+		return SetNode(c.File, content, c.Path, e.Value)
+	}
 	if c.Override {
 		tag := ""
 		if c.Default != nil {
