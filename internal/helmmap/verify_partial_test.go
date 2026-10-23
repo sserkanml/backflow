@@ -24,7 +24,7 @@ func pointersOfFailures(ff []FieldFailure) []string {
 	return out
 }
 
-func TestVerifyPartialLeavesOutUnsupportedChanges(t *testing.T) {
+func TestVerifyPartialLeavesOutFieldsTheRenderDoesNotHave(t *testing.T) {
 	env := newDemo(t, Spec{})
 	region := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
 	gone := removed(1, "/data/EXTRA", `"x"`)
@@ -34,7 +34,7 @@ func TestVerifyPartialLeavesOutUnsupportedChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonUnsupportedChange {
+		if out.Mapped() || out.Unmapped.Reason != ReasonRenderMismatch {
 			t.Fatalf("out = %+v", out)
 		}
 	})
@@ -52,7 +52,7 @@ func TestVerifyPartialLeavesOutUnsupportedChanges(t *testing.T) {
 			decodePointer(out.Results[0].Edits[0].Location) != "global.region" {
 			t.Errorf("results = %+v", out.Results)
 		}
-		if len(out.LeftOut) != 1 || out.LeftOut[0].Pointer != "/data/EXTRA" || out.LeftOut[0].Reason != ReasonUnsupportedChange {
+		if len(out.LeftOut) != 1 || out.LeftOut[0].Pointer != "/data/EXTRA" || out.LeftOut[0].Reason != ReasonRenderMismatch {
 			t.Errorf("left out = %+v", out.LeftOut)
 		}
 		want := strings.Replace(string(env.files["helm/demo/values-dev.yaml"]), "region: eu-central-1", "region: us-west-2", 1)
@@ -69,7 +69,7 @@ func TestVerifyPartialLeavesOutUnsupportedChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Mapped() || out.Unmapped.Reason != ReasonUnsupportedChange || len(out.LeftOut) != 0 {
+		if out.Mapped() || out.Unmapped.Reason != ReasonRenderMismatch || len(out.LeftOut) != 0 {
 			t.Errorf("out = %+v", out)
 		}
 	})

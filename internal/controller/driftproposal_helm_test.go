@@ -430,7 +430,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			drifted(regionChange, gone)
 			got := mapOnce()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonRenderMismatch))
 			Expect(got.Status.Mapping.Unmapped).To(BeEmpty())
 		})
 
@@ -442,7 +442,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
 			Expect(condition(conditionMapped).Message).To(And(ContainSubstring("1 of 2"), ContainSubstring("/data/REGION"),
-				ContainSubstring("/data/EXTRA"), ContainSubstring(helmmap.ReasonUnsupportedChange)))
+				ContainSubstring("/data/EXTRA"), ContainSubstring(helmmap.ReasonRenderMismatch)))
 			m := got.Status.Mapping
 			Expect(m.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
 			Expect(m.Verified).To(BeTrue())
@@ -451,7 +451,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}}))
 			Expect(m.Unmapped).To(HaveLen(1))
 			Expect(m.Unmapped[0].Path).To(Equal("/data/EXTRA"))
-			Expect(m.Unmapped[0].Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+			Expect(m.Unmapped[0].Reason).To(Equal(helmmap.ReasonRenderMismatch))
 			Expect(m.Unmapped[0].Message).NotTo(BeEmpty())
 			Expect(got.Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{regionChange, gone}), "the spec lists every change")
 		})
@@ -513,7 +513,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			drifted(gone)
 			got := mapOnce()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonUnsupportedChange))
+			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonRenderMismatch))
 		})
 	})
 

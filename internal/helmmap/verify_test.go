@@ -470,11 +470,11 @@ func TestVerifyUnsupportedChanges(t *testing.T) {
 	env := newDemo(t, Spec{})
 	rend := &demoRenderer{src: env.src}
 	tests := map[string]v1alpha1.FieldChange{
-		"remove":       {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpRemove, Desired: `"debug"`},
-		"add":          {Path: "/data/NEW", Op: v1alpha1.OpAdd, Live: `"x"`},
-		"object value": {Path: "/data", Op: v1alpha1.OpReplace, Desired: `{"a":"b"}`, Live: `{"a":"c"}`},
-		"null":         {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `null`, Live: `"x"`},
-		"not json":     {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `debug`, Live: `"x"`},
+		"null":           {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `null`, Live: `"x"`},
+		"null live":      {Path: "/data/NEW", Op: v1alpha1.OpAdd, Live: `null`},
+		"not json":       {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `debug`, Live: `"x"`},
+		"whole resource": {Path: "", Op: v1alpha1.OpAdd, Live: `{"a":"b"}`},
+		"unknown op":     {Path: "/data/LOG_LEVEL", Op: "Move", Desired: `"debug"`, Live: `"x"`},
 	}
 	for name, ch := range tests {
 		t.Run(name, func(t *testing.T) {
