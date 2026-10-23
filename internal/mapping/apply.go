@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -504,7 +505,30 @@ func assign(old, nw *yaml.Node) *yaml.Node {
 }
 
 func strNode(s string) *yaml.Node {
-	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+	n := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: s}
+	if readsAsNonString(s) {
+		n.Style = yaml.DoubleQuotedStyle
+	}
+	return n
+}
+
+// yaml11Words are the plain scalars YAML 1.1 reads as booleans or null. Helm
+// (and Argo CD, and kubectl) parse YAML with a 1.1 parser, so a string that is
+// one of them must be quoted, although the YAML 1.2 encoder used here leaves it
+// plain.
+var yaml11Words = map[string]bool{
+	"y": true, "n": true, "yes": true, "no": true, "on": true, "off": true,
+	"true": true, "false": true, "null": true, "~": true,
+}
+
+// numberish matches the plain scalars that look like a number in some YAML
+// version: decimals, octal, binary and hex, thousands separators and base 60.
+var numberish = regexp.MustCompile(`^[-+]?(\.?[0-9][0-9_.:]*([eE][-+]?[0-9]+)?|0[xX][0-9a-fA-F_]+|0[bBoO][0-9_]+|\.(inf|Inf|INF)|\.(nan|NaN|NAN))$`)
+
+// readsAsNonString reports whether a string written as a plain scalar could be
+// read as something else, so it is written quoted.
+func readsAsNonString(s string) bool {
+	return yaml11Words[strings.ToLower(s)] || numberish.MatchString(s) || s == ""
 }
 
 // jsonNode converts JSON text to a YAML node tree, keeping object key order.
