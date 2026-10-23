@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.7.0](https://github.com/sserkanml/backflow/compare/v0.6.0...v0.7.0) (2026-10-23)
+
+
+### Features
+
+* **drift:** git-ahead check for kustomize sources ([b78a8ae](https://github.com/sserkanml/backflow/commit/b78a8aeaab7a878c85058453eba4bd80dfce00a3))
+
+
+### Refactoring
+
+* **drift:** move KeyPath and RenderValue into internal/rendermap ([539c016](https://github.com/sserkanml/backflow/commit/539c0169f68db989b4bf448e8c4f9f27442984f2))
+* **drift:** move the Argo CD renderer into internal/rendermap ([004151b](https://github.com/sserkanml/backflow/commit/004151b7ee6979e7e057d410459eb8570eeaec65))
+* **drift:** move the verification engine into internal/rendermap ([57d6a2a](https://github.com/sserkanml/backflow/commit/57d6a2ad47fe9ac9b997faf772a84ea9df64f30b))
+* **drift:** put the engine behind a candidate provider and a file writer ([f5c74ac](https://github.com/sserkanml/backflow/commit/f5c74acf756710c2100651b079576e9ad85c071a))
+
+
+### Documentation
+
+* **drift:** kustomize mapping design ([f553c44](https://github.com/sserkanml/backflow/commit/f553c447e6d7b6fc70426a42fd46d1dcfd9d323b))
+
 ## [0.6.0](https://github.com/sserkanml/backflow/compare/v0.5.1...v0.6.0) (2026-10-23)
 
 
