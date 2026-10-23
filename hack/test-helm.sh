@@ -493,17 +493,58 @@ app_state() {
   echo "revision=$(app_field "$1" '{.status.sync.revision}') sync=$(app_sync_status "$1") phase=$(app_field "$1" '{.status.operationState.phase}') operation=$(app_field "$1" '{.operation}') finishedAt=$(app_field "$1" '{.status.operationState.finishedAt}') reconciledAt=$(app_field "$1" '{.status.reconciledAt}')"
 }
 
-# sync_app <app>: run one sync of the Application and wait until it is Synced.
-# A sync operation also records the revision as the last synced one, which the
-# Git-ahead check compares against; a Synced Application that only saw a new
+# app_idle_at <app> <sha>: the Application is Synced at the commit
+# and has no operation requested or running. This is the state a
+# section needs before it commits to the demo repository and expects the
+# Application to become "Git ahead": a sync that is still pending would pick the
+# new commit up and the Application would never be ahead.
+app_idle_at() {
+  local phase
+  refresh_app "$1"
+  [[ "$(app_sync_status "$1")" == "Synced" ]] || return 1
+  [[ "$(app_field "$1" '{.status.sync.revision}')" == "$2" ]] || return 1
+  [[ -z "$(app_field "$1" '{.operation}')" ]] || return 1
+  phase="$(app_field "$1" '{.status.operationState.phase}')"
+  [[ "$phase" != "Running" && "$phase" != "Terminating" ]]
+}
+# wait_all_idle_at <sha> [app...]: every Application (default: all) idle at the
+# commit, within WAIT.
+wait_all_idle_at() {
+  local a waited=0 sha="$1" apps
+  shift
+  apps="${*:-$APPS}"
+  for a in $apps; do
+    while ! app_idle_at "$a" "$sha"; do
+      waited=$((waited + 2))
+      (( waited > WAIT )) && return 1
+      sleep 2
+    done
+  done
+}
+
+# sync_app <app> [sha]: run one sync of the Application at a commit and wait
+# until it is Synced at it. The revision is always pinned (operation.sync.revision):
+# sha, else $SYNC_SHA, else the head of main now. An implicit revision would be
+# resolved when Argo CD starts the operation, and a commit made in between would
+# be synced instead. A sync that is already requested or running is waited for
+# first. A sync operation also records the revision as the last synced one, which
+# the Git-ahead check compares against; a Synced Application that only saw a new
 # commit has no such record yet.
 sync_app() {
+  local sha="${2:-${SYNC_SHA:-}}" i
+  [[ -n "$sha" ]] || sha="$(main_sha 2>/dev/null || true)"
+  [[ -n "$sha" ]] || sha="$(app_field "$1" '{.status.sync.revision}')"
+  [[ -n "$sha" ]] || return 1
+  for i in $(seq 1 30); do
+    [[ -z "$(app_field "$1" '{.operation}')" && "$(app_field "$1" '{.status.operationState.phase}')" != "Running" ]] && break
+    sleep 2
+  done
   k -n "$ARGOCD_NS" patch application "$1" --type merge \
-    -p '{"operation":{"initiatedBy":{"username":"backflow-test"},"sync":{}}}' >/dev/null 2>&1 || true
-  local i
+    -p "{\"operation\":{\"initiatedBy\":{\"username\":\"backflow-test\"},\"sync\":{\"revision\":\"$sha\"}}}" >/dev/null 2>&1 || true
   for i in $(seq 1 60); do
     refresh_app "$1" hard
-    [[ "$(app_sync_status "$1")" == "Synced" && -z "$(app_field "$1" '{.operation}')" ]] && return 0
+    [[ "$(app_sync_status "$1")" == "Synced" && -z "$(app_field "$1" '{.operation}')" &&
+       "$(app_field "$1" '{.status.operationState.syncResult.revision}')" == "$sha" ]] && return 0
     sleep 2
   done
   return 1
@@ -523,7 +564,7 @@ reset_cluster() {
   head="$(main_sha)"
   for a in $apps; do refresh_app "$a" hard; done
   sleep 3
-  sync_all $apps || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
+  SYNC_SHA="$head" sync_all $apps || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
   wait_all_settled "$head" $apps || fail "Argo CD did not settle at ${head:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
 }
 
@@ -921,7 +962,7 @@ refresh_all hard
 sleep 3
 if ! wait_all_settled "$MAIN_ORIG_SHA"; then
   echo "  an Application is not settled yet; syncing them first..."
-  sync_all || die "an Application did not become Synced: $(app_state "$DEMO_APP")"
+  SYNC_SHA="$MAIN_ORIG_SHA" sync_all || die "an Application did not become Synced: $(app_state "$DEMO_APP")"
   wait_all_settled "$MAIN_ORIG_SHA" || die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
 fi
 [[ "$(main_sha)" == "$MAIN_ORIG_SHA" ]] || die "main moved while this test was starting; run it again"
@@ -939,7 +980,7 @@ for a in $APPS; do
   SYNCED_AT="$(app_field "$a" '{.status.operationState.syncResult.revision}')"
   if [[ "$SYNCED_AT" != "$MAIN_ORIG_SHA" ]]; then
     echo "  the last sync of $a was of ${SYNCED_AT:0:8}, not of main; syncing it once so that its automated sync does not reset the first drift..."
-    sync_app "$a" || die "$a did not become Synced: $(app_state "$a")"
+    sync_app "$a" "$MAIN_ORIG_SHA" || die "$a did not become Synced: $(app_state "$a")"
   fi
 done
 wait_all_settled "$MAIN_ORIG_SHA" || die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} after the syncs within ${WAIT}s: $(app_state "$DEMO_APP")"
@@ -1427,6 +1468,9 @@ for a in $APPS; do
 done
 
 echo "  i1. a commit to another service's values file (helm/shared/services/beta/dev.yaml)..."
+# No sync may be pending when the commit is made, or it would apply the commit
+# and the Application would never be ahead of its last sync.
+wait_all_idle_at "$(main_sha)" || fail "an Application is not idle and synced at main before the commit: $(app_state "$BETA_APP")"
 # The Events are counted before the commit: the operator reports shared-beta as
 # soon as Argo CD compares it against the commit, which is what the next waits
 # are for, so a count taken after them can already include the Event.
@@ -1466,6 +1510,7 @@ wait_all_settled "$SHA_I1" || fail "Argo CD did not settle at ${SHA_I1:0:8}: $(a
 fi
 
 echo "  i2. a commit to another environment's values file (helm/demo/values-prod.yaml)..."
+wait_all_idle_at "$(main_sha)" || fail "an Application is not idle and synced at main before the commit: $(app_state "$DEMO_APP")"
 DEMO_EVENTS="$(git_ahead_count "$DEMO_APP")"
 GIT_PROD="$(yaml_value "$VALUES_PROD" main region)"
 NEW_PROD="us-east-2"
@@ -1494,6 +1539,7 @@ wait_all_settled "$SHA_I2" || fail "Argo CD did not settle at ${SHA_I2:0:8}: $(a
 fi
 
 echo "  i3. a commit to the Application's own values file (helm/demo/values-dev.yaml)..."
+wait_all_idle_at "$(main_sha)" || fail "an Application is not idle and synced at main before the commit: $(app_state "$DEMO_APP")"
 DEMO_EVENTS="$(git_ahead_count "$DEMO_APP")"
 DEMO_PROPOSALS="$(proposal_count "$DEMO_APP")"
 OPEN_I3="$(open_mrs)"
