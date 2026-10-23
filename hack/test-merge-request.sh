@@ -322,20 +322,61 @@ set_log_level() {
   refresh_app
 }
 
-# sync_app: run one sync of the Application and wait until it is Synced. The
-# demo Application has automated sync (without selfHeal), which applies each new
-# Git commit once, the first time the Application is OutOfSync at it. After
-# scenario c the merge commit has not been applied by a sync operation yet, so
-# the next drift would be reset by that automated sync straight away. Spending
-# it here keeps the drifts of scenarios d and e visible until the test itself
-# resets them (d) or pushes a new commit (e).
-sync_app() {
+# app_idle_at <sha>: the Application is Synced at the commit
+# and has no operation requested or running: the state needed before a
+# commit that the Application is expected to be "ahead" of. A pending sync would
+# pick the new commit up.
+app_idle_at() {
+  local phase
+  refresh_app
+  [[ "$(app_sync_status)" == "Synced" ]] || return 1
+  [[ "$(app_field '{.status.sync.revision}')" == "$1" ]] || return 1
+  [[ -z "$(app_field '{.operation}')" ]] || return 1
+  phase="$(app_field '{.status.operationState.phase}')"
+  [[ "$phase" != "Running" && "$phase" != "Terminating" ]]
+}
+# wait_idle_at <sha>: wait up to WAIT seconds for app_idle_at.
+wait_idle_at() {
+  local waited=0
+  while ! app_idle_at "$1"; do
+    waited=$((waited + 2))
+    (( waited > WAIT )) && return 1
+    sleep 2
+  done
+}
+
+# start_sync [sha]: request one sync of the Application at a commit: sha, else the
+# head of main now, never an implicit revision (that is resolved when Argo CD
+# starts the operation, and a commit made in between would be synced instead).
+# A sync that is already requested or running is waited for first.
+start_sync() {
+  local sha="${1:-}" i
+  [[ -n "$sha" ]] || sha="$(main_sha 2>/dev/null || true)"
+  [[ -n "$sha" ]] || sha="$(app_field '{.status.sync.revision}')"
+  [[ -n "$sha" ]] || return 1
+  for i in $(seq 1 30); do
+    [[ -z "$(app_field '{.operation}')" && "$(app_field '{.status.operationState.phase}')" != "Running" ]] && break
+    sleep 2
+  done
   k -n "$ARGOCD_NS" patch application "$APP" --type merge \
-    -p '{"operation":{"initiatedBy":{"username":"backflow-test"},"sync":{}}}' >/dev/null 2>&1 || true
+    -p "{\"operation\":{\"initiatedBy\":{\"username\":\"backflow-test\"},\"sync\":{\"revision\":\"$sha\"}}}" >/dev/null 2>&1 || true
+  SYNC_PINNED="$sha"
+}
+
+# sync_app [sha]: run one sync of the Application at a commit (see start_sync) and
+# wait until it is Synced at it. The demo Application has automated sync (without
+# selfHeal), which applies each new Git commit once, the first time the
+# Application is OutOfSync at it. After scenario c the merge commit has not been
+# applied by a sync operation yet, so the next drift would be reset by that
+# automated sync straight away. Spending it here keeps the drifts of scenarios d
+# and e visible until the test itself resets them (d) or pushes a new commit (e).
+sync_app() {
+  start_sync "${1:-}" || return 1
   local i
   for i in $(seq 1 45); do
     refresh_app
-    [[ "$(app_sync_status)" == "Synced" ]] && return 0
+    [[ "$(app_sync_status)" == "Synced" && -z "$(app_field '{.operation}')" &&
+       "$(app_field '{.status.operationState.syncResult.revision}')" == "$SYNC_PINNED" ]] && return 0
     sleep 2
   done
   return 1
@@ -356,12 +397,11 @@ restore_demo() {
   k -n "$DEMO_NS" patch configmap demo-config --type merge \
     -p "{\"data\":{\"LOG_LEVEL\":\"$ORIG_LOG_LEVEL\"}}" >/dev/null 2>&1 || true
   k -n "$DEMO_NS" scale deployment demo --replicas="$ORIG_REPLICAS" >/dev/null 2>&1 || true
-  k -n "$ARGOCD_NS" patch application "$APP" --type merge \
-    -p '{"operation":{"initiatedBy":{"username":"backflow-test"},"sync":{}}}' >/dev/null 2>&1 || true
+  start_sync "$want" || return 1
   local i
   for i in $(seq 1 60); do
     refresh_app hard
-    [[ "$(app_sync_status)" == "Synced" ]] && return 0
+    [[ "$(app_sync_status)" == "Synced" && -z "$(app_field '{.operation}')" ]] && return 0
     sleep 2
   done
   return 1
@@ -1009,6 +1049,9 @@ if [[ -z "$AUTOMATED_ORIG" ]]; then
   note "skipped: $APP has no automated sync to switch off"
 else
   if disable_autosync; then pass "automated sync switched off"; else fail "could not switch automated sync off"; fi
+  # No sync may be pending when the commit is made, or it would apply the commit
+  # and the Application would never be ahead of its last sync.
+  wait_idle_at "$(main_sha)" || fail "$APP is not idle and synced at main before the commit: $(app_state)"
 
   echo "  a commit outside apps/demo (the repository has other content too)..."
   python3 - "$WORKDIR" "$(raw_file README.md main)" >"$WORKDIR/outside.json" <<'PY'
