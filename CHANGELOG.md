@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.6.0](https://github.com/sserkanml/backflow/compare/v0.5.1...v0.6.0) (2026-10-23)
+
+
+### Features
+
+* **helmmap:** accept structured field changes ([8a46541](https://github.com/sserkanml/backflow/commit/8a465411ea8f9dec59a258557ad80d1ba06038fa))
+* **helmmap:** report values that affect other fields ([9c3c08d](https://github.com/sserkanml/backflow/commit/9c3c08d8bc7cf5f32086be3fd6430fb1f1affe7c))
+* **helmmap:** subtree candidates for maps and lists ([76ba1ed](https://github.com/sserkanml/backflow/commit/76ba1eddf8e51a84ac6ccca2ddfd03c03b23074d))
+* **helmmap:** write maps and lists to values files ([b094118](https://github.com/sserkanml/backflow/commit/b094118f26344f9e25b4d31497a7c5a03720169c))
+
+
+### Documentation
+
+* **helmmap:** live-only additions are not reported by Argo CD ([b48b6f2](https://github.com/sserkanml/backflow/commit/b48b6f26ea2642c6322db47b1e02ee9768e62792))
+* **helmmap:** structured values mapping ([0cb21a6](https://github.com/sserkanml/backflow/commit/0cb21a6f82d2019d6ef90eb647d4692bab31409f))
+
 ## [0.5.1](https://github.com/sserkanml/backflow/compare/v0.5.0...v0.5.1) (2026-10-22)
 
 
