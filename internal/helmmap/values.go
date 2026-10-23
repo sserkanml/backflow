@@ -8,8 +8,11 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// nullTag is the YAML tag of null.
-const nullTag = "!!null"
+// nullTag is the YAML tag of null, mergeTag that of a merge key (<<).
+const (
+	nullTag  = "!!null"
+	mergeTag = "!!merge"
+)
 
 // defKind is what a definition puts at its key path.
 type defKind int
@@ -103,7 +106,7 @@ func mapEntries(m *yaml.Node) []mapEntry {
 	var merged []*yaml.Node
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		k, v := m.Content[i], m.Content[i+1]
-		if k.Tag == "!!merge" {
+		if k.Tag == mergeTag {
 			switch rv := resolve(v); rv.Kind {
 			case yaml.MappingNode:
 				merged = append(merged, rv)

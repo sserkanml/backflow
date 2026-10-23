@@ -106,3 +106,23 @@ func TestVerifyStructuredBaseline(t *testing.T) {
 		}
 	})
 }
+
+func TestVerifyValueAffectsOtherFieldsWinsOverOtherRejections(t *testing.T) {
+	env := newDemo(t, Spec{})
+	f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
+	// config.logLevel reproduces the field but also moves LOG_LEVEL_UP; the other
+	// key does not reproduce it at all.
+	f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"config", "minA"}})
+	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), Options{})
+	if err != nil || out.Mapped() {
+		t.Fatalf("out = %+v, err = %v", out, err)
+	}
+	if out.Unmapped.Reason != ReasonValueAffectsOtherFields {
+		t.Fatalf("reason = %s: a key that reproduces the field and moves others decides the reason", out.Unmapped.Reason)
+	}
+	for _, want := range []string{"config.logLevel", "would reproduce /data/LOG_LEVEL", "LOG_LEVEL_UP", "1 other candidate(s) were rejected for other reasons"} {
+		if !strings.Contains(out.Unmapped.Message, want) {
+			t.Errorf("message %q lacks %q", out.Unmapped.Message, want)
+		}
+	}
+}

@@ -25,6 +25,9 @@ type Candidate struct {
 	// key to override a default of the chart. Default says which.
 	Override bool
 	Default  *ChartDefault
+	// Structured is set when the candidate is not the change of one scalar:
+	// a map or a list set at Path, or a key removed.
+	Structured *StructuredEdit
 }
 
 // ChartDefault is a default of the chart, or of one of its dependencies, that

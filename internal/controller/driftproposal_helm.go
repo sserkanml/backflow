@@ -164,6 +164,17 @@ func (m *mappedChange) diff() string {
 
 // edits are the edits as the status records them. For Helm values the
 // location is the dotted key path.
+// maxEditValue bounds the value of an edit kept in the status: a map or a list
+// written to a value file can be long, and it is in the diff anyway.
+const maxEditValue = 2048
+
+func boundedEditValue(v string) string {
+	if len(v) <= maxEditValue {
+		return v
+	}
+	return `"(too long to keep here: see status.mapping.diff)"`
+}
+
 func (m *mappedChange) edits() []backflowv1alpha1.SourceEdit {
 	var out []backflowv1alpha1.SourceEdit
 	for _, r := range m.results {
@@ -172,7 +183,7 @@ func (m *mappedChange) edits() []backflowv1alpha1.SourceEdit {
 			if m.strategy == backflowv1alpha1.StrategyHelmValues {
 				loc = helmmap.KeyPathFromPointer(e.Location).String()
 			}
-			out = append(out, backflowv1alpha1.SourceEdit{File: e.File, Location: loc, Value: e.Value, ChangeIndex: int32(e.ChangeIndex)}) //nolint:gosec // an index into spec.changes
+			out = append(out, backflowv1alpha1.SourceEdit{File: e.File, Location: loc, Value: boundedEditValue(e.Value), ChangeIndex: int32(e.ChangeIndex)}) //nolint:gosec // an index into spec.changes
 		}
 	}
 	return out
