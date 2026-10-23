@@ -40,7 +40,7 @@ type structRenderer struct {
 
 func (r *structRenderer) Render(_ context.Context, app rendermap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
 	r.calls++
-	layers, err := r.src.treeLayers(files)
+	layers, err := r.src.Layers(files)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func (c *structCase) drift(mutate func(live map[string]any), opts Options) *Outc
 		c.t.Fatal(err)
 	}
 	c.fields = fields
-	out, err := Verify(context.Background(), c.rend, Input{App: appStruct, Resource: keyWeb, Fields: fields, Source: c.src, Files: c.files}, opts)
+	out, err := Verify(context.Background(), c.rend, Input{App: appStruct, Resource: keyWeb, Fields: fields, Provider: c.src, Writer: ValuesWriter{}, Files: c.files}, opts)
 	if err != nil {
 		c.t.Fatal(err)
 	}

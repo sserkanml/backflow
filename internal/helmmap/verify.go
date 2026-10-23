@@ -88,12 +88,12 @@ type Field struct {
 	// Change is a Replace of a scalar: Desired is the value the render gives,
 	// Live the value in the cluster.
 	Change v1alpha1.FieldChange
-	// Found is Source.Find for Desired.
-	Found *Result
-	// Fragments is Source.FindFragments for Desired and Live, when both are
+	// Found is the result of the source's Find for Desired.
+	Found *rendermap.Found
+	// Fragments is the result of the source's FindFragments for Desired and Live, when both are
 	// strings; nil otherwise. Its candidates are tried only when no edit of
 	// the keys in Found, alone or together with the others, verifies.
-	Fragments *Result
+	Fragments *rendermap.Found
 }
 
 // Input is a proposal to verify: some fields of one resource.
@@ -101,7 +101,8 @@ type Input struct {
 	App      rendermap.App
 	Resource ResourceKey
 	Fields   []Field
-	Source   *Source
+	Provider rendermap.Provider
+	Writer   rendermap.Writer
 	// Files are the unmodified files of the render (CollectFiles).
 	Files map[string][]byte
 }
@@ -208,7 +209,7 @@ type AppliedOverride struct {
 	Path  rendermap.KeyPath
 	Value string
 	// Default is the chart default it overrides.
-	Default ChartDefault
+	Default rendermap.Default
 }
 
 // Mapped reports whether the edits are verified.
@@ -525,7 +526,7 @@ type run struct {
 	// untried are the candidates left out for each field by the bound on their
 	// number, and refs what the templates read (built when needed).
 	untried map[int][]untriedKey
-	refs    *valueRefs
+	refs    rendermap.References
 	// mappedRank is the rank of the stage that found the mapping (see stageRank),
 	// mappedRule the collateral rule it was found under.
 	mappedRank int
@@ -927,7 +928,7 @@ func tooManyOverrides(fields []parsedField, opts Options) []FieldFailure {
 	var bad []FieldFailure
 	for _, f := range fields {
 		n := 0
-		for _, found := range []*Result{f.Found, f.Fragments} {
+		for _, found := range []*rendermap.Found{f.Found, f.Fragments} {
 			if found != nil {
 				n += len(found.Overrides)
 			}
@@ -967,7 +968,7 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 	var verified []verifiedSet
 	var interacted []string
 	for _, set := range sets {
-		files, applied, err := applySet(v.in.Files, fields, set)
+		files, applied, err := applySet(v.in.Writer, v.in.Files, fields, set)
 		if err != nil {
 			interacted = append(interacted, fmt.Sprintf("%s: %v", describeSet(set), err))
 			continue
@@ -1133,7 +1134,7 @@ type editKey struct{ File, Path, Value string }
 
 // tryout is one edit and what a render with only that edit showed.
 type tryout struct {
-	cand  Candidate
+	cand  rendermap.Candidate
 	value string // the live value as a template renders it
 	// fragment is set when the key holds only a part of the drifted value.
 	fragment bool
@@ -1249,10 +1250,10 @@ func (r collateralRule) allows(c Collateral) bool {
 // what a structured edit does, bounded.
 func (t *tryout) shown() string {
 	if e := t.cand.Structured; e != nil {
-		if e.Kind == editRemoveKey {
+		if e.Kind == rendermap.EditRemoveKey {
 			return "(removed)"
 		}
-		text, _ := jsonText(e.Value)
+		text, _ := rendermap.JSONText(e.Value)
 		return textOf(text)
 	}
 	return t.value
@@ -1349,7 +1350,7 @@ func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, add
 		}
 	}
 	for _, t := range added {
-		files, why := tryEdit(v.in.Files, t.cand, t.value)
+		files, why := tryEdit(v.in.Writer, v.in.Files, t.cand, t.value)
 		if why != "" {
 			t.why = why
 			continue
@@ -1583,37 +1584,18 @@ func failure(fields []FieldFailure) *Outcome {
 	return &Outcome{Unmapped: &Unmapped{Reason: reason, Message: msg, Fields: fields}}
 }
 
-// writeCandidate sets the key of a candidate in the content of its file, or
-// adds it when the candidate overrides a chart default.
-func writeCandidate(c Candidate, content []byte, value string) (*Written, error) {
-	if e := c.Structured; e != nil {
-		if e.Kind == editRemoveKey {
-			return RemoveKey(c.File, content, c.Path)
-		}
-		return SetNode(c.File, content, c.Path, e.Value)
-	}
-	if c.Override {
-		tag := ""
-		if c.Default != nil {
-			tag = c.Default.Tag
-		}
-		return AddValue(c.File, content, c.Path, value, tag)
-	}
-	return SetValue(c.File, content, c.Path, value)
-}
-
 // tryEdit applies one candidate's edit to a copy of the files.
-func tryEdit(base map[string][]byte, c Candidate, value string) (files map[string][]byte, why string) {
+func tryEdit(w rendermap.Writer, base map[string][]byte, c rendermap.Candidate, value string) (files map[string][]byte, why string) {
 	content, ok := base[c.File]
 	if !ok {
 		return nil, "the file was not provided"
 	}
-	w, err := writeCandidate(c, content, value)
+	written, err := w.Write(c, content, value)
 	if err != nil {
 		return nil, err.Error()
 	}
 	files = maps.Clone(base)
-	files[c.File] = w.Edited
+	files[c.File] = written.Edited
 	return files, ""
 }
 
@@ -1676,18 +1658,18 @@ func judgeChanges(base, edited snapshot, changes []change, res ResourceKey, fiel
 
 // appliedEdit is a written edit, kept for the result.
 type appliedEdit struct {
-	cand        Candidate
-	w           *Written
+	cand        rendermap.Candidate
+	w           *rendermap.Written
 	changeIndex int
 }
 
 // applySet applies the edits of a set one after the other to a copy of the
 // files.
-func applySet(base map[string][]byte, fields []parsedField, set []*tryout) (map[string][]byte, []appliedEdit, error) {
+func applySet(wr rendermap.Writer, base map[string][]byte, fields []parsedField, set []*tryout) (map[string][]byte, []appliedEdit, error) {
 	files := maps.Clone(base)
 	var applied []appliedEdit
 	for _, t := range set {
-		w, err := writeCandidate(t.cand, files[t.cand.File], t.value)
+		w, err := wr.Write(t.cand, files[t.cand.File], t.value)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1720,15 +1702,6 @@ func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.
 	return out
 }
 
-func hasOverrideFor(r *Result, p rendermap.KeyPath) bool {
-	for _, c := range r.Overrides {
-		if c.Path.Equal(p) {
-			return true
-		}
-	}
-	return false
-}
-
 // noCandidateDetail explains why a field has no verified candidate.
 func noCandidateDetail(f parsedField, rejected []string, overrides bool) string {
 	var parts []string
@@ -1740,37 +1713,20 @@ func noCandidateDetail(f parsedField, rejected []string, overrides bool) string 
 		}
 	}
 	// What the whole value and a part of it were found in, said once.
-	for _, found := range []*Result{f.Found, f.Fragments} {
-		if found == nil {
+	for _, found := range []*rendermap.Found{f.Found, f.Fragments} {
+		if found == nil || found.Diagnostics == nil {
 			continue
 		}
-		for _, p := range found.ChartDefaults {
-			switch {
-			case !overrides:
-				say(fmt.Sprintf("the value comes from the chart's own defaults (%s); chart defaults are not edited", p))
-			case hasOverrideFor(found, p):
-				say(fmt.Sprintf("the value comes from the chart's own defaults (%s)", p))
-			default:
-				reason := "it cannot be overridden"
-				for _, n := range found.NoOverride {
-					if n.Path.Equal(p) {
-						reason = n.Reason
-					}
-				}
-				say(fmt.Sprintf("the value comes from the chart's own defaults (%s); %s", p, reason))
-			}
-		}
-		for _, c := range found.Controlled {
-			say(fmt.Sprintf("the value is set by %s at %s in the Application, not by a value file", c.Layer, c.Path))
-		}
-		if len(found.RemoteValueFiles) > 0 {
-			say("it may come from a remote value file: " + strings.Join(found.RemoteValueFiles, ", "))
+		for _, msg := range found.Diagnostics.Explain(found, overrides) {
+			say(msg)
 		}
 	}
-	for _, found := range []*Result{f.Found, f.Fragments} {
-		if found != nil && len(found.UnreadDependencies) > 0 && len(found.Candidates) == 0 && len(found.Overrides) == 0 {
-			say(fmt.Sprintf("the chart depends on %s, whose defaults are not in the repository (Argo CD downloads it when it renders), so the value may come from them and cannot be overridden",
-				strings.Join(found.UnreadDependencies, ", ")))
+	for _, found := range []*rendermap.Found{f.Found, f.Fragments} {
+		if found == nil || found.Diagnostics == nil {
+			continue
+		}
+		for _, msg := range found.Diagnostics.ExplainEmpty(found) {
+			say(msg)
 		}
 	}
 	parts = append(parts, rejected...)

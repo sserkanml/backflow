@@ -1,13 +1,9 @@
 package helmmap
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"reflect"
-	"strconv"
 	"strings"
 
 	"github.com/sserkanml/backflow/internal/rendermap"
@@ -27,7 +23,7 @@ import (
 // The key must not go through a list. The result is checked: the file must
 // parse, hold exactly the value at the key, and define everything else the
 // file defined before, unchanged.
-func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*Written, error) {
+func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*rendermap.Written, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
 	}
@@ -40,7 +36,7 @@ func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*Wr
 			return nil, fmt.Errorf("%w: %s: %s goes through the list at %s", ErrCannotSet, file, key, d.path)
 		}
 	}
-	text, err := jsonText(value)
+	text, err := rendermap.JSONText(value)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCannotSet, err)
 	}
@@ -69,7 +65,7 @@ func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*Wr
 // RemoveKey removes a key of a value file, with everything below it. The key
 // must exist in the file and not be a list item. The result is checked like
 // the one of SetNode.
-func RemoveKey(file string, content []byte, key rendermap.KeyPath) (*Written, error) {
+func RemoveKey(file string, content []byte, key rendermap.KeyPath) (*rendermap.Written, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
 	}
@@ -95,8 +91,8 @@ func RemoveKey(file string, content []byte, key rendermap.KeyPath) (*Written, er
 	return written(file, content, edited, key, pointer, ""), nil
 }
 
-func written(file string, content, edited []byte, key rendermap.KeyPath, pointer, text string) *Written {
-	w := &Written{Result: mapping.Result{
+func written(file string, content, edited []byte, key rendermap.KeyPath, pointer, text string) *rendermap.Written {
+	w := &rendermap.Written{Result: mapping.Result{
 		File: file, Document: 0, Edited: edited, Diff: mapping.UnifiedDiff(file, content, edited),
 		Edits: []mapping.Edit{{File: file, Location: pointer, Value: text}},
 	}}
@@ -134,40 +130,6 @@ func lookupNode(doc *yaml.Node, key rendermap.KeyPath) (*yaml.Node, bool) {
 		cur = resolve(next)
 	}
 	return cur, true
-}
-
-// jsonText is the JSON of a value for the YAML editor: whole numbers without an
-// exponent, no HTML escaping.
-func jsonText(v any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(normalizeNumbers(v)); err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(buf.String()), nil
-}
-
-func normalizeNumbers(v any) any {
-	switch x := v.(type) {
-	case float64:
-		if x == math.Trunc(x) && math.Abs(x) < 1<<53 {
-			return json.Number(strconv.FormatInt(int64(x), 10))
-		}
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, c := range x {
-			out[k] = normalizeNumbers(c)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, c := range x {
-			out[i] = normalizeNumbers(c)
-		}
-		return out
-	}
-	return v
 }
 
 // checkNodeSet verifies an edit of one key: the file parses, the key holds
@@ -222,7 +184,7 @@ func checkNodeSet(before []definition, edited []byte, key rendermap.KeyPath, wan
 }
 
 func jsonOf(v any) string {
-	t, err := jsonText(toJSONValue(v))
+	t, err := rendermap.JSONText(rendermap.ToJSONValue(v))
 	if err != nil {
 		return fmt.Sprint(v)
 	}
@@ -232,38 +194,5 @@ func jsonOf(v any) string {
 // sameJSON compares two decoded values the way JSON does: YAML decodes whole
 // numbers as ints and maps with any key type; JSON as float64 and string keys.
 func sameJSON(a, b any) bool {
-	return reflect.DeepEqual(toJSONValue(a), toJSONValue(b))
-}
-
-func toJSONValue(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, c := range x {
-			out[k] = toJSONValue(c)
-		}
-		return out
-	case map[any]any:
-		out := make(map[string]any, len(x))
-		for k, c := range x {
-			out[fmt.Sprint(k)] = toJSONValue(c)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, c := range x {
-			out[i] = toJSONValue(c)
-		}
-		return out
-	case int:
-		return float64(x)
-	case int64:
-		return float64(x)
-	case uint64:
-		return float64(x)
-	case json.Number:
-		f, _ := x.Float64()
-		return f
-	}
-	return v
+	return reflect.DeepEqual(rendermap.ToJSONValue(a), rendermap.ToJSONValue(b))
 }

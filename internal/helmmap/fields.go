@@ -38,16 +38,17 @@ func FieldsFor(src *Source, files map[string][]byte, changes []v1alpha1.FieldCha
 				return nil, err
 			}
 		}
-		field := Field{Index: i, Change: ch, Found: found}
+		field := Field{Index: i, Change: ch, Found: found.Found()}
 		if replace {
 			newV, newOK := ScalarOf(ch.Live)
 			o, oIsString := old.(string)
 			n, nIsString := newV.(string)
 			if newOK && oIsString && nIsString {
-				var err error
-				if field.Fragments, err = src.FindFragments(files, o, n); err != nil {
+				frags, err := src.FindFragments(files, o, n)
+				if err != nil {
 					return nil, err
 				}
+				field.Fragments = frags.Found()
 			}
 		}
 		fields[i] = field

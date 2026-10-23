@@ -24,12 +24,12 @@ func load(t *testing.T, fsys fs.FS, src *Source) map[string][]byte {
 	return out
 }
 
-func cand(file, path string) Candidate {
+func cand(file, path string) rendermap.Candidate {
 	p, err := rendermap.ParseKeyPath(path)
 	if err != nil {
 		panic(err)
 	}
-	return Candidate{File: file, Path: p}
+	return rendermap.Candidate{File: file, Path: p}
 }
 
 func TestFindInDemoRepository(t *testing.T) {
@@ -42,24 +42,24 @@ func TestFindInDemoRepository(t *testing.T) {
 		name           string
 		spec           Spec
 		old            any
-		want           []Candidate
+		want           []rendermap.Candidate
 		wantDefaults   []string
 		wantControlled []string // "layer path"
 	}{
-		{name: "LOG_LEVEL", spec: devSpec, old: "debug", want: []Candidate{cand(dev, "config.logLevel")}},
-		{name: "REGION in global", spec: devSpec, old: "eu-central-1", want: []Candidate{cand(dev, "global.region")}},
-		{name: "subchart key", spec: devSpec, old: float64(45), want: []Candidate{cand(dev, "demo-sidecar.timeoutSeconds")}},
+		{name: "LOG_LEVEL", spec: devSpec, old: "debug", want: []rendermap.Candidate{cand(dev, "config.logLevel")}},
+		{name: "REGION in global", spec: devSpec, old: "eu-central-1", want: []rendermap.Candidate{cand(dev, "global.region")}},
+		{name: "subchart key", spec: devSpec, old: float64(45), want: []rendermap.Candidate{cand(dev, "demo-sidecar.timeoutSeconds")}},
 		{
 			name: "two candidates with an equal value", spec: devSpec, old: "green",
-			want: []Candidate{cand(dev, "config.colorA"), cand(dev, "config.colorB")},
+			want: []rendermap.Candidate{cand(dev, "config.colorA"), cand(dev, "config.colorB")},
 		},
 		{
 			name: "two candidates for a derived value", spec: devSpec, old: float64(3),
-			want: []Candidate{cand(dev, "config.minA"), cand(dev, "config.minB")},
+			want: []rendermap.Candidate{cand(dev, "config.minA"), cand(dev, "config.minB")},
 		},
 		{name: "only in the chart defaults", spec: devSpec, old: float64(30), wantDefaults: []string{"config.timeout"}},
 		{name: "default overridden by the value file", spec: devSpec, old: "info"},
-		{name: "number matches its string form", spec: devSpec, old: "2", want: []Candidate{cand(dev, "replicaCount")}},
+		{name: "number matches its string form", spec: devSpec, old: "2", want: []rendermap.Candidate{cand(dev, "replicaCount")}},
 		{
 			name: "controlled by a parameter", spec: withParam, old: "beta",
 			wantControlled: []string{"helm.parameters config.feature"},
@@ -80,13 +80,13 @@ func TestFindInDemoRepository(t *testing.T) {
 			name: "two value files, shadowing is by key",
 			spec: Spec{Path: "helm/demo", ValueFiles: []string{"values-dev.yaml", "values-prod.yaml"}},
 			old:  "warn",
-			want: []Candidate{cand("helm/demo/values-prod.yaml", "config.logLevel")},
+			want: []rendermap.Candidate{cand("helm/demo/values-prod.yaml", "config.logLevel")},
 		},
 		{
 			name: "glob over the services, beta comes after alpha and shadows it",
 			spec: Spec{Path: "helm/shared", ValueFiles: []string{"services/*/dev.yaml"}},
 			old:  "warn",
-			want: []Candidate{cand("helm/shared/services/beta/dev.yaml", "logLevel")},
+			want: []rendermap.Candidate{cand("helm/shared/services/beta/dev.yaml", "logLevel")},
 		},
 		{
 			name: "glob over the services, the shadowed value is no candidate",
@@ -97,7 +97,7 @@ func TestFindInDemoRepository(t *testing.T) {
 			name: "slash prefixed value file",
 			spec: Spec{Path: "helm/shared", ValueFiles: []string{"/helm/shared/services/alpha/dev.yaml"}},
 			old:  "debug",
-			want: []Candidate{cand("helm/shared/services/alpha/dev.yaml", "logLevel")},
+			want: []rendermap.Candidate{cand("helm/shared/services/alpha/dev.yaml", "logLevel")},
 		},
 	}
 	fsys := demoRepo(t)
@@ -138,7 +138,7 @@ func TestFindSynthetic(t *testing.T) {
 		files          map[string]string // chart/values.yaml is the chart default
 		spec           Spec
 		old            any
-		want           []Candidate
+		want           []rendermap.Candidate
 		wantDefaults   []string
 		wantControlled []string
 	}{
@@ -147,21 +147,21 @@ func TestFindSynthetic(t *testing.T) {
 			files: map[string]string{"c/a.yaml": "x: 1\ny: 1\n", "c/b.yaml": "x: 2\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml", "b.yaml"}},
 			old:   float64(1),
-			want:  []Candidate{cand("c/a.yaml", "y")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "y")},
 		},
 		{
 			name:  "same value in both files, only the later is effective",
 			files: map[string]string{"c/a.yaml": "x: 1\n", "c/b.yaml": "x: 1\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml", "b.yaml"}},
 			old:   float64(1),
-			want:  []Candidate{cand("c/b.yaml", "x")},
+			want:  []rendermap.Candidate{cand("c/b.yaml", "x")},
 		},
 		{
 			name:  "order of the value files decides, not the file names",
 			files: map[string]string{"c/a.yaml": "x: 1\n", "c/b.yaml": "x: 2\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"b.yaml", "a.yaml"}},
 			old:   float64(1),
-			want:  []Candidate{cand("c/a.yaml", "x")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "x")},
 		},
 		{
 			name:  "a later list replaces the earlier list as a whole",
@@ -174,7 +174,7 @@ func TestFindSynthetic(t *testing.T) {
 			files: map[string]string{"c/a.yaml": "m: {p: 1, q: 2}\n", "c/b.yaml": "m: {q: 3}\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml", "b.yaml"}},
 			old:   float64(1),
-			want:  []Candidate{cand("c/a.yaml", "m.p")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "m.p")},
 		},
 		{
 			name:  "a later scalar replaces an earlier map",
@@ -199,35 +199,35 @@ func TestFindSynthetic(t *testing.T) {
 			files: map[string]string{"c/a.yaml": "podLabels:\n  app.kubernetes.io/name: demo\n  a.b: demo\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml"}},
 			old:   "demo",
-			want:  []Candidate{cand("c/a.yaml", `podLabels.app\.kubernetes\.io/name`), cand("c/a.yaml", `podLabels.a\.b`)},
+			want:  []rendermap.Candidate{cand("c/a.yaml", `podLabels.app\.kubernetes\.io/name`), cand("c/a.yaml", `podLabels.a\.b`)},
 		},
 		{
 			name:  "list items, at any depth",
 			files: map[string]string{"c/a.yaml": "env:\n  - name: A\n    value: v1\n  - name: B\n    value: v2\nports: [80, 443]\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml"}},
 			old:   "v2",
-			want:  []Candidate{cand("c/a.yaml", "env.1.value")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "env.1.value")},
 		},
 		{
 			name:  "number in a list",
 			files: map[string]string{"c/a.yaml": "ports: [80, 443]\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml"}},
 			old:   float64(443),
-			want:  []Candidate{cand("c/a.yaml", "ports.1")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "ports.1")},
 		},
 		{
 			name:  "bool matches its string form",
 			files: map[string]string{"c/a.yaml": "debug: true\nname: \"true\"\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml"}},
 			old:   true,
-			want:  []Candidate{cand("c/a.yaml", "debug"), cand("c/a.yaml", "name")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "debug"), cand("c/a.yaml", "name")},
 		},
 		{
 			name:  "global and subchart keys are plain keys",
 			files: map[string]string{"c/a.yaml": "global:\n  region: x\nsub:\n  inner:\n    region: x\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml"}},
 			old:   "x",
-			want:  []Candidate{cand("c/a.yaml", "global.region"), cand("c/a.yaml", "sub.inner.region")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "global.region"), cand("c/a.yaml", "sub.inner.region")},
 		},
 		{
 			name:         "chart defaults are reported, never candidates",
@@ -241,7 +241,7 @@ func TestFindSynthetic(t *testing.T) {
 			files: map[string]string{"c/values.yaml": "x: 1\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"values.yaml"}},
 			old:   float64(1),
-			want:  []Candidate{cand("c/values.yaml", "x")},
+			want:  []rendermap.Candidate{cand("c/values.yaml", "x")},
 		},
 		{
 			name:           "valuesObject controls the key",
@@ -290,7 +290,7 @@ func TestFindSynthetic(t *testing.T) {
 			files: map[string]string{"c/a.yaml": "base: &b\n  size: 9\nd:\n  <<: *b\n"},
 			spec:  Spec{Path: "c", ValueFiles: []string{"a.yaml"}},
 			old:   float64(9),
-			want:  []Candidate{cand("c/a.yaml", "base.size")},
+			want:  []rendermap.Candidate{cand("c/a.yaml", "base.size")},
 		},
 	}
 	for _, tt := range tests {
