@@ -304,3 +304,41 @@ func TestChangedUnderPathHelmIsRemembered(t *testing.T) {
 		t.Errorf("a new value file list did not cause a new look (%d)", git.calls)
 	}
 }
+
+// shared-beta of the demo repository: one chart in helm/shared, and a values
+// file per service under it, named by the Application with a path relative to
+// the chart (services/beta/dev.yaml).
+func TestChangedUnderPathHelmSharedChartPerServiceValues(t *testing.T) {
+	tree := map[string]string{
+		"helm/shared/Chart.yaml": chartYAML, "helm/shared/values.yaml": "logLevel: info\n",
+		"helm/shared/templates/cm.yaml":       "kind: ConfigMap\n",
+		"helm/shared/services/alpha/dev.yaml": "logLevel: debug\n", "helm/shared/services/beta/dev.yaml": "logLevel: warn\n",
+		"helm/demo/values-dev.yaml": "a: 1\n", "README.md": "docs\n",
+	}
+	tests := []struct {
+		name    string
+		changed []string
+		want    int
+	}{
+		{"a commit to the Application's own values file", []string{"helm/shared/services/beta/dev.yaml"}, 1},
+		{"a commit to another service's values file", []string{"helm/shared/services/alpha/dev.yaml"}, 0},
+		{"a template of the shared chart", []string{"helm/shared/templates/cm.yaml"}, 1},
+		{"a file elsewhere in the repository", []string{"helm/demo/values-dev.yaml", "README.md"}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synced, compared := files(tree), files(with(tree, map[string]string{"helm/shared/services/beta/dev.yaml": "logLevel: error\n"}))
+			git := &treeDiffer{
+				fakeDiffer: fakeDiffer{paths: tt.changed},
+				trees:      map[string]fstest.MapFS{shaSynced: synced, shaCompared: compared},
+			}
+			r := &DriftReconciler{Git: git}
+			app, summary := helmApp("helm/shared", map[string]any{"valueFiles": []any{"services/beta/dev.yaml"}})
+			st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
+			changed, checked := r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, summary, app, st)
+			if !checked || changed != tt.want {
+				t.Errorf("changed = %d, checked = %v, want %d, true", changed, checked, tt.want)
+			}
+		})
+	}
+}
