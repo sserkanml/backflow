@@ -269,9 +269,11 @@ and the `Mapped` condition says why (`NoVerifiedCandidate`,
 `AmbiguousCandidates`, `EditsInteract`, `RenderMismatch`,
 `NondeterministicField`, `SecretNotVerifiable`, `TooManyCandidates`,
 `RenderBudgetExceeded`, `RenderFailed`, `SymlinkedValueFile`, `MissingValueFile`
-and others). When an edit reproduces the drifted field but also changes other
-fields, the message names the nearest one with the fields it would move (path,
-current value, value after the edit) so a person can decide.
+and others). When a key reproduces the drifted field but also changes other
+fields, the reason is `ValueAffectsOtherFields`, even if other keys failed for
+other reasons: the message names the nearest key with the fields it would move
+(path, current value, value after the edit) and says how many other candidates
+were rejected, so a person can decide.
 
 Argo CD must allow the `applications, get` permission to Backflow's account (the
 read-only account in the install steps has it) and must be reachable over
@@ -318,6 +320,76 @@ spec:
   key added, new value, chart default, and the file that defines it), the commit
   message says the same, and the table of Helm values shows the old value as
   `(not set; chart default ...)`.
+
+### Maps and lists
+
+Annotations, labels, tolerations, a node selector, env vars and resources are
+maps and lists in the rendered resource, and the value files hold them under
+keys such as `podAnnotations`, `tolerations`, `extraEnvVars` or `resources`.
+Which key feeds which field is written in the templates, not in the values, so
+Backflow compares: it merges the layers of values the way Helm does, and looks
+for keys whose content fits what the resource has in Git (its base render).
+Every candidate is then verified by a render, exactly like a scalar edit: it
+must produce the live state of the field and change nothing else.
+
+What is found:
+
+- **A key that holds what Git renders**: `tolerations` that equals the rendered
+  list is set to the live list.
+- **A stretch of a longer list**: a chart builds `env` from entries of its own
+  and the user's `extraEnvVars`. The values list is the stretch of the rendered
+  list it feeds (an empty one sits at the end or at the start), and the edit
+  changes only that stretch: adding or removing an env var edits `extraEnvVars`.
+- **A key added to or removed from a map**: a pod annotation or label, a node
+  selector. The key is added to the values map that is a part of the rendered
+  map (`podAnnotations`, `podLabels`, `nodeSelector`), or removed from it when a
+  value file defines it.
+- **An empty key that takes the place of what the chart generates**: `resources:
+  {}` next to `resourcesPreset`. A drifted limit is brought to the live state by
+  setting the whole `resources` map to what is live.
+
+Where the key goes follows the scalar rules: edits of keys a value file already
+defines come first; a key that only the chart's defaults hold is an override in
+the Application's last value file (or `spec.helm.targetValuesFile`), which
+needs `spec.helm.addOverrides`. Maps and lists are written in block style, the
+rest of the file (comments, order, siblings, quoting) stays, and the result is
+checked to parse back to exactly the intended value. Strings that YAML 1.1
+reads as other types (`yes`, `no`, `on`, `y`, `0777`, `1:30`) are quoted,
+because Helm parses with a 1.1 parser.
+
+Names decide which keys are rendered first, never which one is right: a key is
+a candidate when its name fits the field (the words of the field and of the
+resource's name, and `count` for replicas), and a field with more than ten
+candidates is narrowed to the best-fitting ones only when that leaves a clear
+tier. The keys that are left out are not forgotten, because a proposal is only
+mapped when no other key could have worked too:
+
+- a key that no template, helper or value file of the chart (and of its
+  dependencies, packaged ones included) reads cannot be the one, and is dropped;
+- when an edit verifies, the other keys that a template may read and that
+  compete with it are rendered too, up to 30 renders and within the render
+  budget; if one of them verifies as well, the proposal is `AmbiguousCandidates`;
+- if there are more than can be rendered, or the render budget runs out, the
+  proposal is `TooManyCandidates` and names the best keys that were not tried.
+
+If two edits verify and give different files, the proposal is
+`AmbiguousCandidates` however the keys were found; only edits that write the
+same bytes to the same files are one mapping.
+
+Limits:
+
+- **Hardcoded in a template.** A list or map that a template writes itself, with
+  no value behind it, has no key to edit (`NoVerifiedCandidate`).
+- **Entries a helper generates.** An env var, annotation or label that the
+  chart generates cannot be changed from the values: only the user's part of a
+  list or map is editable.
+- **A value that feeds more than the drifted field.** The same `containerPorts`
+  key may feed a NetworkPolicy, or `master.count` the env of the replicas: the
+  proposal is `Unmapped` with `ValueAffectsOtherFields`, naming what else moves.
+- **A key removed that only the defaults define** cannot be removed from the
+  Application; setting it to null is not proposed.
+- **Ambiguous subtrees.** Two keys that both reproduce the change and give
+  different files are never picked between.
 
 ### Label and annotation changes beside an edit
 
@@ -388,8 +460,8 @@ Limits of Helm mapping:
   as `1.1`, so the new tag `1.20` is written as `"1.20"`, not as `1.20`, which
   would render as `1.2`. YAML anchors and merge keys are read, but
   a key that exists only through a merge key (`<<: *base`) cannot be edited. A
-  list is replaced by a later file as a whole, as Helm does, and items cannot be
-  added to or removed from lists.
+  list is replaced by a later file as a whole, as Helm does; an item is added
+  to or removed from a list by setting the list (see Maps and lists).
 - **Bounded work.** At most 10 candidate keys per field and two minutes of
   rendering per proposal. A symbolic link in the chart, a value file or a
   `file://` dependency makes the Application unmappable and pauses detection
