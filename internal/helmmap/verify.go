@@ -143,7 +143,7 @@ func (c Collateral) String() string {
 // why.
 type NearMiss struct {
 	File string
-	Path KeyPath
+	Path rendermap.KeyPath
 	// Value is the value the key would be set to, as rendered text.
 	Value string
 	// Covers are the pointers of the drifted fields the edit reproduces.
@@ -205,7 +205,7 @@ type Outcome struct {
 type AppliedOverride struct {
 	// File and Path are where the key was added; Value is the JSON written.
 	File  string
-	Path  KeyPath
+	Path  rendermap.KeyPath
 	Value string
 	// Default is the chart default it overrides.
 	Default ChartDefault
@@ -467,7 +467,7 @@ func parseField(f Field) (parsedField, error) {
 		*sd.dst, *sd.val, *sd.has = string(b), x, true
 	}
 	if f.Change.Op == v1alpha1.OpReplace && isScalar(p.desiredV) && isScalar(p.liveV) {
-		p.newValue = RenderValue(p.liveV)
+		p.newValue = rendermap.RenderValue(p.liveV)
 		return p, nil
 	}
 	p.structured = true
@@ -1710,7 +1710,7 @@ func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.
 			order = append(order, e.cand.File)
 		}
 		r.Edits = append(r.Edits, mapping.Edit{
-			File: e.cand.File, Location: e.cand.Path.pointer(), Value: e.w.Edits[0].Value, ChangeIndex: e.changeIndex,
+			File: e.cand.File, Location: e.cand.Path.Pointer(), Value: e.w.Edits[0].Value, ChangeIndex: e.changeIndex,
 		})
 	}
 	out := make([]mapping.Result, 0, len(order))
@@ -1720,7 +1720,7 @@ func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.
 	return out
 }
 
-func hasOverrideFor(r *Result, p KeyPath) bool {
+func hasOverrideFor(r *Result, p rendermap.KeyPath) bool {
 	for _, c := range r.Overrides {
 		if c.Path.Equal(p) {
 			return true

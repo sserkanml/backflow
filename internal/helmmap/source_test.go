@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"testing"
 	"testing/fstest"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // demoRepo is a copy of the Helm part of the demo repository.
@@ -221,21 +223,21 @@ func TestNewSourceInline(t *testing.T) {
 		{
 			name: "parameters",
 			spec: Spec{Path: "c", Parameters: []Parameter{{Name: "config.feature", Value: "beta"}}},
-			want: []InlineValue{{Layer: LayerParameters, Path: KeyPath{"config", "feature"}, Value: "beta", HasValue: true}},
+			want: []InlineValue{{Layer: LayerParameters, Path: rendermap.KeyPath{"config", "feature"}, Value: "beta", HasValue: true}},
 		},
 		{
 			name: "values string",
 			spec: Spec{Path: "c", Values: "a:\n  b: 3\n  c: [1, 2]\n  d: null\n"},
 			want: []InlineValue{
-				{Layer: LayerValues, Path: KeyPath{"a", "b"}, Value: "3", HasValue: true},
-				{Layer: LayerValues, Path: KeyPath{"a", "c"}},
-				{Layer: LayerValues, Path: KeyPath{"a", "d"}},
+				{Layer: LayerValues, Path: rendermap.KeyPath{"a", "b"}, Value: "3", HasValue: true},
+				{Layer: LayerValues, Path: rendermap.KeyPath{"a", "c"}},
+				{Layer: LayerValues, Path: rendermap.KeyPath{"a", "d"}},
 			},
 		},
 		{
 			name: "valuesObject wins over values",
 			spec: Spec{Path: "c", Values: "x: 1\n", ValuesObject: []byte(`{"y": true}`)},
-			want: []InlineValue{{Layer: LayerValuesObject, Path: KeyPath{"y"}, Value: "true", HasValue: true}},
+			want: []InlineValue{{Layer: LayerValuesObject, Path: rendermap.KeyPath{"y"}, Value: "true", HasValue: true}},
 		},
 		{
 			name: "order is values, set, set-string, set-file",
@@ -244,16 +246,16 @@ func TestNewSourceInline(t *testing.T) {
 				Parameters:     []Parameter{{Name: "s", Value: "1", ForceString: true}, {Name: "p", Value: "2"}},
 				FileParameters: []FileParameter{{Name: "f", Path: "f.txt"}}},
 			want: []InlineValue{
-				{Layer: LayerValues, Path: KeyPath{"v"}, Value: "1", HasValue: true},
-				{Layer: LayerParameters, Path: KeyPath{"p"}, Value: "2", HasValue: true},
-				{Layer: LayerParameters, Path: KeyPath{"s"}, Value: "1", HasValue: true},
-				{Layer: LayerFileParameters, Path: KeyPath{"f"}},
+				{Layer: LayerValues, Path: rendermap.KeyPath{"v"}, Value: "1", HasValue: true},
+				{Layer: LayerParameters, Path: rendermap.KeyPath{"p"}, Value: "2", HasValue: true},
+				{Layer: LayerParameters, Path: rendermap.KeyPath{"s"}, Value: "1", HasValue: true},
+				{Layer: LayerFileParameters, Path: rendermap.KeyPath{"f"}},
 			},
 		},
 		{
 			name: "parameter name with escaped dots",
 			spec: Spec{Path: "c", Parameters: []Parameter{{Name: `labels.app\.io/name`, Value: "x"}}},
-			want: []InlineValue{{Layer: LayerParameters, Path: KeyPath{"labels", "app.io/name"}, Value: "x", HasValue: true}},
+			want: []InlineValue{{Layer: LayerParameters, Path: rendermap.KeyPath{"labels", "app.io/name"}, Value: "x", HasValue: true}},
 		},
 		{
 			name:    "bad parameter name",

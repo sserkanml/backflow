@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"github.com/bmatcuk/doublestar/v4"
 )
 
@@ -84,7 +86,7 @@ type Spec struct {
 // InlineValue is what one inline layer sets at a key path.
 type InlineValue struct {
 	Layer string
-	Path  KeyPath
+	Path  rendermap.KeyPath
 	// Value is the rendered scalar, when HasValue is set. Lists, nulls and
 	// file parameters have none.
 	Value    string

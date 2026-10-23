@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // load reads the chart values and the value files of src from fsys.
@@ -23,7 +25,7 @@ func load(t *testing.T, fsys fs.FS, src *Source) map[string][]byte {
 }
 
 func cand(file, path string) Candidate {
-	p, err := ParseKeyPath(path)
+	p, err := rendermap.ParseKeyPath(path)
 	if err != nil {
 		panic(err)
 	}

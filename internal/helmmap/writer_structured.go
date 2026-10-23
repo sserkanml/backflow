@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"go.yaml.in/yaml/v3"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
@@ -25,7 +27,7 @@ import (
 // The key must not go through a list. The result is checked: the file must
 // parse, hold exactly the value at the key, and define everything else the
 // file defined before, unchanged.
-func SetNode(file string, content []byte, key KeyPath, value any) (*Written, error) {
+func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*Written, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
 	}
@@ -50,7 +52,7 @@ func SetNode(file string, content []byte, key KeyPath, value any) (*Written, err
 	if _, found := lookupNode(&doc, key); found {
 		op = v1alpha1.OpReplace
 	}
-	pointer := key.pointer()
+	pointer := key.Pointer()
 	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{{Path: pointer, Op: op, Live: text}})
 	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) {
 		edited, err = appendKey(content, key, value)
@@ -67,7 +69,7 @@ func SetNode(file string, content []byte, key KeyPath, value any) (*Written, err
 // RemoveKey removes a key of a value file, with everything below it. The key
 // must exist in the file and not be a list item. The result is checked like
 // the one of SetNode.
-func RemoveKey(file string, content []byte, key KeyPath) (*Written, error) {
+func RemoveKey(file string, content []byte, key rendermap.KeyPath) (*Written, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
 	}
@@ -82,7 +84,7 @@ func RemoveKey(file string, content []byte, key KeyPath) (*Written, error) {
 	if _, found := lookupNode(&doc, key); !found {
 		return nil, fmt.Errorf("%w: %s: the key %s does not exist", ErrCannotSet, file, key)
 	}
-	pointer := key.pointer()
+	pointer := key.Pointer()
 	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{{Path: pointer, Op: v1alpha1.OpRemove}})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCannotSet, err)
@@ -93,7 +95,7 @@ func RemoveKey(file string, content []byte, key KeyPath) (*Written, error) {
 	return written(file, content, edited, key, pointer, ""), nil
 }
 
-func written(file string, content, edited []byte, key KeyPath, pointer, text string) *Written {
+func written(file string, content, edited []byte, key rendermap.KeyPath, pointer, text string) *Written {
 	w := &Written{Result: mapping.Result{
 		File: file, Document: 0, Edited: edited, Diff: mapping.UnifiedDiff(file, content, edited),
 		Edits: []mapping.Edit{{File: file, Location: pointer, Value: text}},
@@ -111,7 +113,7 @@ func written(file string, content, edited []byte, key KeyPath, pointer, text str
 }
 
 // lookupNode finds the node at a key path of a parsed document, of any kind.
-func lookupNode(doc *yaml.Node, key KeyPath) (*yaml.Node, bool) {
+func lookupNode(doc *yaml.Node, key rendermap.KeyPath) (*yaml.Node, bool) {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return nil, false
 	}
@@ -171,7 +173,7 @@ func normalizeNumbers(v any) any {
 // checkNodeSet verifies an edit of one key: the file parses, the key holds
 // exactly want (or does not exist, for nil), and no definition outside the key
 // changed.
-func checkNodeSet(before []definition, edited []byte, key KeyPath, want any) error {
+func checkNodeSet(before []definition, edited []byte, key rendermap.KeyPath, want any) error {
 	after, err := parseValues(edited)
 	if err != nil {
 		return fmt.Errorf("the edited file does not parse: %w", err)

@@ -66,7 +66,7 @@ func deepMerge(dst, src map[string]any) {
 	}
 }
 
-func setPath(m map[string]any, p KeyPath, v any) {
+func setPath(m map[string]any, p rendermap.KeyPath, v any) {
 	for _, k := range p[:len(p)-1] {
 		next, ok := m[k].(map[string]any)
 		if !ok {
@@ -501,7 +501,7 @@ func TestVerifyBounds(t *testing.T) {
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 		f.Found.Candidates = nil
 		for i := range 11 {
-			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
 		if err != nil {
@@ -517,7 +517,7 @@ func TestVerifyBounds(t *testing.T) {
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 		f.Found.Candidates = nil
 		for i := range 11 {
-			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"logLevel" + strconv.Itoa(i)}})
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"logLevel" + strconv.Itoa(i)}})
 		}
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {
@@ -581,7 +581,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		rend := &demoRenderer{src: e.src, noDerived: true}
 		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
 		for i := range 11 {
-			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
 		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{})
 		if err != nil {
@@ -620,7 +620,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		rend := &demoRenderer{src: e.src, noDerived: true}
 		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
 		for i := range 11 {
-			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
 		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{MaxConfirmations: 5})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates ||
@@ -642,7 +642,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace")
 		f.Fragments = &Result{}
 		for i := range 30 {
-			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
 		}
 		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{MaxConfirmations: 1})
 		if err != nil || !out.Mapped() {
@@ -655,7 +655,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		rend := &demoRenderer{src: e.src}
 		f := drift(t, e.src, e.files, 0, "LOG_LEVEL", "debug", "trace") // config.logLevel also moves LOG_LEVEL_UP
 		for i := range 11 {
-			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"k", strconv.Itoa(i)}})
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
 		out, err := Verify(context.Background(), rend, e.input(keyConfig, f), Options{})
 		if err != nil || out.Mapped() || !strings.Contains(out.Unmapped.Message, "were not tried") {
@@ -669,7 +669,7 @@ func TestVerifyBoundsUntried(t *testing.T) {
 		f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 		f.Fragments = &Result{}
 		for i := range 30 {
-			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"x", strconv.Itoa(i)}, Fragment: true, NewValue: "t"})
 		}
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
 		if err != nil || !out.Mapped() || decodePointer(out.Results[0].Edits[0].Location) != "config.logLevel" {
@@ -722,7 +722,7 @@ func TestVerifyRenderErrors(t *testing.T) {
 
 func TestConflicts(t *testing.T) {
 	mk := func(file, key, value string) *tryout {
-		return &tryout{cand: Candidate{File: file, Path: KeyPath{key}}, value: value}
+		return &tryout{cand: Candidate{File: file, Path: rendermap.KeyPath{key}}, value: value}
 	}
 	if !conflicts(mk("f.yaml", "k", "x"), mk("f.yaml", "k", "y")) {
 		t.Error("one key set to two values was not reported")
@@ -740,7 +740,7 @@ func TestConflicts(t *testing.T) {
 
 func TestCoverSets(t *testing.T) {
 	mk := func(key string, covers ...int) *tryout {
-		return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, value: key, covers: covers}
+		return &tryout{cand: Candidate{File: "f.yaml", Path: rendermap.KeyPath{key}}, value: key, covers: covers}
 	}
 	tests := []struct {
 		name     string
@@ -754,8 +754,8 @@ func TestCoverSets(t *testing.T) {
 		{"a smaller set wins over a bigger one", 2, []*tryout{mk("a", 0, 1), mk("b", 0), mk("c", 1)}, []string{"f.yaml a", "f.yaml b + f.yaml c"}},
 		{"a field nothing covers", 2, []*tryout{mk("a", 0)}, nil},
 		{"the same key with two values never go together", 2,
-			[]*tryout{{cand: Candidate{File: "f.yaml", Path: KeyPath{"k"}}, value: "x", covers: []int{0}},
-				{cand: Candidate{File: "f.yaml", Path: KeyPath{"k"}}, value: "y", covers: []int{1}}}, nil},
+			[]*tryout{{cand: Candidate{File: "f.yaml", Path: rendermap.KeyPath{"k"}}, value: "x", covers: []int{0}},
+				{cand: Candidate{File: "f.yaml", Path: rendermap.KeyPath{"k"}}, value: "y", covers: []int{1}}}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -835,7 +835,7 @@ func TestVerifyNearMiss(t *testing.T) {
 
 func TestNearMissReporting(t *testing.T) {
 	t.Run("only three collateral changes are listed", func(t *testing.T) {
-		nm := &NearMiss{File: "f.yaml", Path: KeyPath{"k"}, Value: "v", Covers: []string{"/data/A"}, CollateralTotal: 5}
+		nm := &NearMiss{File: "f.yaml", Path: rendermap.KeyPath{"k"}, Value: "v", Covers: []string{"/data/A"}, CollateralTotal: 5}
 		for i := range 3 {
 			nm.Collateral = append(nm.Collateral, Collateral{Resource: keyConfig, Pointer: "/data/X" + strconv.Itoa(i), Current: "1", After: "2"})
 		}
@@ -848,7 +848,7 @@ func TestNearMissReporting(t *testing.T) {
 	t.Run("the best near miss has the fewest other changes", func(t *testing.T) {
 		fields := []parsedField{{Field: Field{Change: v1alpha1.FieldChange{Path: "/data/A"}, Found: &Result{}}}}
 		cand := func(key string, n int) *tryout {
-			return &tryout{cand: Candidate{File: "f.yaml", Path: KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
+			return &tryout{cand: Candidate{File: "f.yaml", Path: rendermap.KeyPath{key}}, origin: []int{0}, covers: []int{0}, collateral: make([]Collateral, n)}
 		}
 		bad := uncovered(fields, []*tryout{cand("many", 3), cand("few", 1), cand("some", 2)}, nil, collateralRule{}, false)
 		if len(bad) != 1 || bad[0].NearMiss == nil || bad[0].NearMiss.Path.String() != "few" {
@@ -960,7 +960,7 @@ func TestVerifyFragments(t *testing.T) {
 		rend := &demoRenderer{src: env.src}
 		f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
 		// A fragment candidate that would be rendered if it were tried.
-		f.Fragments = &Result{Candidates: []Candidate{{File: dev, Path: KeyPath{"replicaCount"}, Fragment: true, NewValue: "x"}}}
+		f.Fragments = &Result{Candidates: []Candidate{{File: dev, Path: rendermap.KeyPath{"replicaCount"}, Fragment: true, NewValue: "x"}}}
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
@@ -993,10 +993,10 @@ func TestVerifyFragments(t *testing.T) {
 		f := imageDrift(t, env, newImage)
 		f.Found = &Result{}
 		for i := range 8 {
-			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: dev, Path: KeyPath{"k", strconv.Itoa(i)}})
+			f.Found.Candidates = append(f.Found.Candidates, Candidate{File: dev, Path: rendermap.KeyPath{"k", strconv.Itoa(i)}})
 		}
 		for i := range 3 {
-			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: dev, Path: KeyPath{"f", strconv.Itoa(i)}, Fragment: true, NewValue: "x"})
+			f.Fragments.Candidates = append(f.Fragments.Candidates, Candidate{File: dev, Path: rendermap.KeyPath{"f", strconv.Itoa(i)}, Fragment: true, NewValue: "x"})
 		}
 		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f), Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonTooManyCandidates {

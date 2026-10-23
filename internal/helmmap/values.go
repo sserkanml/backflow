@@ -1,9 +1,10 @@
 package helmmap
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -25,7 +26,7 @@ const (
 
 // definition is one place a values document sets something.
 type definition struct {
-	path  KeyPath
+	path  rendermap.KeyPath
 	kind  defKind
 	value string // rendered form of a scalar
 	// viaMerge is set for entries that come in through a YAML merge key
@@ -39,7 +40,7 @@ type definition struct {
 	inList bool
 	// local is the path in the file the definition is read from, when path was
 	// moved into the namespace of a parent chart (dependency defaults).
-	local KeyPath
+	local rendermap.KeyPath
 }
 
 // parseValues returns the definitions of a values document in document order.
@@ -68,7 +69,7 @@ func parseValues(data []byte) ([]definition, error) {
 // maxDepth bounds the walk, so a self-referencing alias cannot loop forever.
 const maxDepth = 64
 
-func collect(out *[]definition, path KeyPath, n *yaml.Node, viaMerge, inList bool, depth int) {
+func collect(out *[]definition, path rendermap.KeyPath, n *yaml.Node, viaMerge, inList bool, depth int) {
 	if depth > maxDepth {
 		return
 	}
@@ -76,12 +77,12 @@ func collect(out *[]definition, path KeyPath, n *yaml.Node, viaMerge, inList boo
 	switch n.Kind {
 	case yaml.MappingNode:
 		for _, e := range mapEntries(n) {
-			collect(out, path.child(e.key), e.value, viaMerge || e.merged, inList, depth+1)
+			collect(out, path.Child(e.key), e.value, viaMerge || e.merged, inList, depth+1)
 		}
 	case yaml.SequenceNode:
 		*out = append(*out, definition{path: path, kind: defList, viaMerge: viaMerge, inList: inList})
 		for i, item := range n.Content {
-			collect(out, path.child(strconv.Itoa(i)), item, viaMerge, true, depth+1)
+			collect(out, path.Child(strconv.Itoa(i)), item, viaMerge, true, depth+1)
 		}
 	case yaml.ScalarNode:
 		if n.Tag == nullTag {
@@ -159,47 +160,13 @@ func renderScalar(n *yaml.Node) (string, bool) {
 	case "!!int":
 		var v any
 		if n.Decode(&v) == nil {
-			return RenderValue(v), true
+			return rendermap.RenderValue(v), true
 		}
 	case "!!float":
 		var f float64
 		if n.Decode(&f) == nil {
-			return RenderValue(f), true
+			return rendermap.RenderValue(f), true
 		}
 	}
 	return n.Value, true
-}
-
-// RenderValue returns the string form a template prints for a decoded value:
-// 3, 3.0 and "3" all render as 3, true as true. Maps, lists and nil have no
-// scalar form and render as the empty string.
-func RenderValue(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case bool:
-		return strconv.FormatBool(x)
-	case json.Number:
-		if i, err := x.Int64(); err == nil {
-			return strconv.FormatInt(i, 10)
-		}
-		if f, err := x.Float64(); err == nil {
-			return strconv.FormatFloat(f, 'f', -1, 64)
-		}
-		return x.String()
-	case float64:
-		return strconv.FormatFloat(x, 'f', -1, 64)
-	case float32:
-		return strconv.FormatFloat(float64(x), 'f', -1, 32)
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return fmt.Sprint(x)
-	}
-	return ""
-}
-
-func (p KeyPath) child(seg string) KeyPath {
-	c := make(KeyPath, len(p)+1)
-	copy(c, p)
-	c[len(p)] = seg
-	return c
 }

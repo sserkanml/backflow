@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"strings"
 	"testing"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 func TestSetValue(t *testing.T) {
@@ -56,7 +58,7 @@ ports: [80, 443]
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key, err := ParseKeyPath(tt.key)
+			key, err := rendermap.ParseKeyPath(tt.key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +99,7 @@ func TestSetValueKeepsCommentsAndOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := SetValue("helm/demo/values-dev.yaml", data, KeyPath{"config", "logLevel"}, "info")
+	w, err := SetValue("helm/demo/values-dev.yaml", data, rendermap.KeyPath{"config", "logLevel"}, "info")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +120,7 @@ func TestSetValueMapValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := SetValue("v.yaml", data, KeyPath{"demo-sidecar", "timeoutSeconds"}, "60")
+	w, err := SetValue("v.yaml", data, rendermap.KeyPath{"demo-sidecar", "timeoutSeconds"}, "60")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,16 +134,16 @@ func TestSetValueErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		file string
-		key  KeyPath
+		key  rendermap.KeyPath
 	}{
-		{"missing key", "v.yaml", KeyPath{"a", "c"}},
-		{"missing parent", "v.yaml", KeyPath{"x", "y"}},
-		{"a map is not a scalar", "v.yaml", KeyPath{"a"}},
-		{"a list is not a scalar", "v.yaml", KeyPath{"l"}},
-		{"list index out of range", "v.yaml", KeyPath{"l", "2"}},
-		{"key below a scalar", "v.yaml", KeyPath{"a", "b", "c"}},
-		{"entry that only exists through a merge key", "v.yaml", KeyPath{"d", "s"}},
-		{"json files are not edited", "values.json", KeyPath{"a", "b"}},
+		{"missing key", "v.yaml", rendermap.KeyPath{"a", "c"}},
+		{"missing parent", "v.yaml", rendermap.KeyPath{"x", "y"}},
+		{"a map is not a scalar", "v.yaml", rendermap.KeyPath{"a"}},
+		{"a list is not a scalar", "v.yaml", rendermap.KeyPath{"l"}},
+		{"list index out of range", "v.yaml", rendermap.KeyPath{"l", "2"}},
+		{"key below a scalar", "v.yaml", rendermap.KeyPath{"a", "b", "c"}},
+		{"entry that only exists through a merge key", "v.yaml", rendermap.KeyPath{"d", "s"}},
+		{"json files are not edited", "values.json", rendermap.KeyPath{"a", "b"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -154,7 +156,7 @@ func TestSetValueErrors(t *testing.T) {
 			}
 		})
 	}
-	if _, err := SetValue("v.yaml", []byte("a: [1\n"), KeyPath{"a"}, "1"); !errors.Is(err, ErrCannotSet) {
+	if _, err := SetValue("v.yaml", []byte("a: [1\n"), rendermap.KeyPath{"a"}, "1"); !errors.Is(err, ErrCannotSet) {
 		t.Errorf("invalid YAML: err = %v", err)
 	}
 }
@@ -178,7 +180,7 @@ func TestSetValueFloatRoundTrip(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
-			key, _ := ParseKeyPath(tt.key)
+			key, _ := rendermap.ParseKeyPath(tt.key)
 			w, err := SetValue("v.yaml", []byte(doc), key, tt.value)
 			if err != nil {
 				t.Fatal(err)

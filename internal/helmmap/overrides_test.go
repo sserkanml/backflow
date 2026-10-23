@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // chartFiles builds a repository with a chart at c and the given files.
@@ -45,8 +47,8 @@ func TestFindOverridesInLastValueFile(t *testing.T) {
 		t.Errorf("candidates = %v, want none: no value file defines the key", got.Candidates)
 	}
 	want := []Candidate{{
-		File: "c/prod.yaml", Path: KeyPath{"config", "timeout"}, Override: true,
-		Default: &ChartDefault{File: "c/values.yaml", Key: KeyPath{"config", "timeout"}, Value: "30", Tag: "!!int"},
+		File: "c/prod.yaml", Path: rendermap.KeyPath{"config", "timeout"}, Override: true,
+		Default: &ChartDefault{File: "c/values.yaml", Key: rendermap.KeyPath{"config", "timeout"}, Value: "30", Tag: "!!int"},
 	}}
 	if !reflect.DeepEqual(got.Overrides, want) {
 		t.Errorf("overrides = %+v, want %+v", got.Overrides[0], want[0])

@@ -120,7 +120,7 @@ func describeEdits(out *Outcome) string {
 	var parts []string
 	for _, r := range out.Results {
 		for _, e := range r.Edits {
-			parts = append(parts, r.File+" "+KeyPathFromPointer(e.Location).String())
+			parts = append(parts, r.File+" "+rendermap.KeyPathFromPointer(e.Location).String())
 		}
 	}
 	return strings.Join(parts, " + ")

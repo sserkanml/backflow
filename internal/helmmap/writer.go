@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"go.yaml.in/yaml/v3"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
@@ -36,7 +38,7 @@ type Written struct {
 // int stays an int if value is "4", a bool stays a bool for "false". Otherwise
 // it is written as a string, so no value is ever converted to a type it did
 // not have. The key must exist and hold a scalar.
-func SetValue(file string, content []byte, key KeyPath, value string) (*Written, error) {
+func SetValue(file string, content []byte, key rendermap.KeyPath, value string) (*Written, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
@@ -51,14 +53,14 @@ func SetValue(file string, content []byte, key KeyPath, value string) (*Written,
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCannotSet, err)
 	}
-	pointer := key.pointer()
+	pointer := key.Pointer()
 	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{
 		{Path: pointer, Op: v1alpha1.OpReplace, Live: string(live)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCannotSet, err)
 	}
-	if err := checkOnlyChanged(content, edited, key, RenderValue(nv)); err != nil {
+	if err := checkOnlyChanged(content, edited, key, rendermap.RenderValue(nv)); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
 	}
 
@@ -102,7 +104,7 @@ func typed(tag, value string) any {
 	case "!!float":
 		// A JSON number that renders back as written: no leading +, no bare dot,
 		// no trailing zero, no exponent.
-		if _, err := strconv.ParseFloat(value, 64); err == nil && json.Valid([]byte(value)) && RenderValue(json.Number(value)) == value {
+		if _, err := strconv.ParseFloat(value, 64); err == nil && json.Valid([]byte(value)) && rendermap.RenderValue(json.Number(value)) == value {
 			return json.Number(value)
 		}
 	case "!!bool":
@@ -115,7 +117,7 @@ func typed(tag, value string) any {
 
 // lookup finds the scalar at key in a parsed document. Map entries are found
 // by key and list items by index.
-func lookup(doc *yaml.Node, key KeyPath) (*yaml.Node, error) {
+func lookup(doc *yaml.Node, key rendermap.KeyPath) (*yaml.Node, error) {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return nil, errors.New("the file is empty")
 	}
@@ -158,7 +160,7 @@ func lookup(doc *yaml.Node, key KeyPath) (*yaml.Node, error) {
 // checkOnlyChanged verifies that the edit changed the one key and nothing
 // else: the same definitions in the same order, with only the value at key
 // different, and rendering as want.
-func checkOnlyChanged(before, after []byte, key KeyPath, want string) error {
+func checkOnlyChanged(before, after []byte, key rendermap.KeyPath, want string) error {
 	b, err := parseValues(before)
 	if err != nil {
 		return err
@@ -202,7 +204,7 @@ func checkOnlyChanged(before, after []byte, key KeyPath, want string) error {
 // !!float, or !!str); the value keeps that type when it reads as that type, as
 // for SetValue. The file must not define the key, nor anything above or below
 // it: an override is only ever added where the file has nothing to say.
-func AddValue(file string, content []byte, key KeyPath, value, defaultTag string) (*Written, error) {
+func AddValue(file string, content []byte, key rendermap.KeyPath, value, defaultTag string) (*Written, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
 	}
@@ -211,7 +213,7 @@ func AddValue(file string, content []byte, key KeyPath, value, defaultTag string
 		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
 	}
 	for _, d := range before {
-		if related(d.path, key) {
+		if rendermap.Related(d.path, key) {
 			return nil, fmt.Errorf("%w: %s already defines %s", ErrCannotSet, file, d.path)
 		}
 	}
@@ -221,7 +223,7 @@ func AddValue(file string, content []byte, key KeyPath, value, defaultTag string
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCannotSet, err)
 	}
-	pointer := key.pointer()
+	pointer := key.Pointer()
 	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{
 		{Path: pointer, Op: v1alpha1.OpAdd, Live: string(live)},
 	})
@@ -231,7 +233,7 @@ func AddValue(file string, content []byte, key KeyPath, value, defaultTag string
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCannotSet, err)
 	}
-	if err := checkOnlyAdded(before, edited, key, RenderValue(nv)); err != nil {
+	if err := checkOnlyAdded(before, edited, key, rendermap.RenderValue(nv)); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
 	}
 
@@ -273,7 +275,7 @@ func hasMapRoot(content []byte) bool {
 
 // appendKey writes the key at the end of a file that has no map yet (empty, or
 // comments only).
-func appendKey(content []byte, key KeyPath, value any) ([]byte, error) {
+func appendKey(content []byte, key rendermap.KeyPath, value any) ([]byte, error) {
 	var node any
 	node = value
 	if n, ok := value.(json.Number); ok {
@@ -305,7 +307,7 @@ func appendKey(content []byte, key KeyPath, value any) ([]byte, error) {
 // checkOnlyAdded verifies that the edit added the one key and nothing else:
 // every definition of the file is still there with the same value, and the key
 // is a new scalar rendering as want.
-func checkOnlyAdded(before []definition, edited []byte, key KeyPath, want string) error {
+func checkOnlyAdded(before []definition, edited []byte, key rendermap.KeyPath, want string) error {
 	after, err := parseValues(edited)
 	if err != nil {
 		return fmt.Errorf("the edited file does not parse: %w", err)

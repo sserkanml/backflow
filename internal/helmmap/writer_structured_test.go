@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 func TestSetNode(t *testing.T) {
@@ -88,7 +90,7 @@ image:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key, err := ParseKeyPath(tt.key)
+			key, err := rendermap.ParseKeyPath(tt.key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +101,7 @@ image:
 			if got := string(w.Edited); got != tt.want {
 				t.Errorf("file =\n%s\nwant\n%s", got, tt.want)
 			}
-			if w.File != "v.yaml" || len(w.Edits) != 1 || w.Edits[0].Location != key.pointer() || w.Diff == "" || w.Line == 0 {
+			if w.File != "v.yaml" || len(w.Edits) != 1 || w.Edits[0].Location != key.Pointer() || w.Diff == "" || w.Line == 0 {
 				t.Errorf("result = %+v line %d", w.Result, w.Line)
 			}
 		})
@@ -117,7 +119,7 @@ func TestSetNodeRefuses(t *testing.T) {
 		"an empty key":   {"", "x"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			key, _ := ParseKeyPath(tt.key)
+			key, _ := rendermap.ParseKeyPath(tt.key)
 			if tt.key == "" {
 				key = nil
 			}
@@ -127,7 +129,7 @@ func TestSetNodeRefuses(t *testing.T) {
 		})
 	}
 	t.Run("a file that does not parse", func(t *testing.T) {
-		if _, err := SetNode("v.yaml", []byte("a: [1\n"), KeyPath{"b"}, "x"); !errors.Is(err, ErrCannotSet) {
+		if _, err := SetNode("v.yaml", []byte("a: [1\n"), rendermap.KeyPath{"b"}, "x"); !errors.Is(err, ErrCannotSet) {
 			t.Errorf("err = %v", err)
 		}
 	})
@@ -136,7 +138,7 @@ func TestSetNodeRefuses(t *testing.T) {
 func TestRemoveKey(t *testing.T) {
 	const doc = "# Values.\npodAnnotations:\n  # team\n  team: platform\n  extra: \"1\"\nreplicaCount: 2\n"
 	t.Run("a key of a map", func(t *testing.T) {
-		w, err := RemoveKey("v.yaml", []byte(doc), KeyPath{"podAnnotations", "extra"})
+		w, err := RemoveKey("v.yaml", []byte(doc), rendermap.KeyPath{"podAnnotations", "extra"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +147,7 @@ func TestRemoveKey(t *testing.T) {
 		}
 	})
 	t.Run("a whole map", func(t *testing.T) {
-		w, err := RemoveKey("v.yaml", []byte(doc), KeyPath{"podAnnotations"})
+		w, err := RemoveKey("v.yaml", []byte(doc), rendermap.KeyPath{"podAnnotations"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +156,7 @@ func TestRemoveKey(t *testing.T) {
 		}
 	})
 	t.Run("a key the file does not have", func(t *testing.T) {
-		if _, err := RemoveKey("v.yaml", []byte(doc), KeyPath{"nope"}); !errors.Is(err, ErrCannotSet) {
+		if _, err := RemoveKey("v.yaml", []byte(doc), rendermap.KeyPath{"nope"}); !errors.Is(err, ErrCannotSet) {
 			t.Errorf("err = %v", err)
 		}
 	})
