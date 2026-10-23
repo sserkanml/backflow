@@ -15,7 +15,7 @@
 #   b. LOG_LEVEL and LOG_LEVEL_UP changed together (one key feeds both): the
 #      merge request edits config.logLevel. Closing it makes the proposal
 #      Rejected; a sync reverts the cluster.
-#   c. LOG_LEVEL alone is Unmapped (NoVerifiedCandidate): the only candidate,
+#   c. LOG_LEVEL alone is Unmapped (ValueAffectsOtherFields): the only candidate,
 #      config.logLevel, also moves LOG_LEVEL_UP, which did not drift. The
 #      message names that near miss.
 #   d. A key of the subchart: TIMEOUT_SECONDS in demo-helm-sidecar is mapped to
@@ -1146,7 +1146,7 @@ wait_for "proposal is Unmapped (LOG_LEVEL $GIT_LEVEL -> $NEW_LEVEL)" has_proposa
 remember_proposals
 P_C="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_LEVEL\"" | head -n 1)"
 if [[ -n "$P_C" ]]; then
-  expect_unmapped "$P_C" NoVerifiedCandidate "config.logLevel" "would reproduce /data/LOG_LEVEL" "/data/LOG_LEVEL_UP"
+  expect_unmapped "$P_C" ValueAffectsOtherFields "config.logLevel" "would reproduce /data/LOG_LEVEL" "/data/LOG_LEVEL_UP"
   expect_eq "strategy" "Unmapped" "$(dp_field "$P_C" .status.mapping.strategy)"
   expect_eq "no merge request" "" "$(dp_field "$P_C" .status.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
@@ -1348,7 +1348,7 @@ if [[ -n "$P_H2" ]]; then
   # No key holds the whole image. The key image.tag holds the part that changed,
   # so it is the nearest edit; the tag also goes to the labels, which the default
   # policy does not accept.
-  expect_unmapped "$P_H2" NoVerifiedCandidate "image.tag" "to $NEW_TAG" "would reproduce" "containers/0/image" "$VERSION_LABEL" "$POD_LABEL"
+  expect_unmapped "$P_H2" ValueAffectsOtherFields "image.tag" "to $NEW_TAG" "would reproduce" "containers/0/image" "$VERSION_LABEL" "$POD_LABEL"
 fi
 reset_cluster "$DEMO_APP"
 if [[ -n "$P_H2" ]]; then
@@ -1405,7 +1405,7 @@ P_H3="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "\"$GIT_TAG\">\"$NEW_TAG\
 if [[ -n "$P_H3" ]]; then
   # The tag feeds both the label and the image, so editing image.tag is a near
   # miss: it reproduces the label, and the image changes with it.
-  expect_unmapped "$P_H3" NoVerifiedCandidate "image.tag" "would reproduce" "containers/0/image"
+  expect_unmapped "$P_H3" ValueAffectsOtherFields "image.tag" "would reproduce" "containers/0/image"
 fi
 reset_cluster "$DEMO_APP"
 
@@ -1565,7 +1565,7 @@ wait_for "proposal is Unmapped (replicas $J_GIT_REPLICAS -> $J_NEW_REPLICAS and 
 remember_proposals
 P_J1="$(proposal_with "$DEMO_APP" "$DEMO_APP" Unmapped "/spec/replicas:Replace:$J_GIT_REPLICAS>$J_NEW_REPLICAS" | head -n 1)"
 if [[ -n "$P_J1" ]]; then
-  expect_unmapped "$P_J1" NoVerifiedCandidate "image.tag"
+  expect_unmapped "$P_J1" ValueAffectsOtherFields "image.tag"
   expect_eq "nothing is listed as left out" "" "$(dp_field "$P_J1" '.status.mapping.unmapped[*].path')"
 fi
 reset_cluster "$DEMO_APP"
@@ -1592,7 +1592,7 @@ if [[ -n "$P_J2" ]]; then
   expect_eq "Mapped reason" "PartiallyMapped" "$(condition "$P_J2" Mapped reason)"
   expect_mapping "$P_J2" "$VALUES_DEV" "replicaCount"
   expect_eq "left out: path" "$IMAGE_PATH" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].path')"
-  expect_eq "left out: reason" "NoVerifiedCandidate" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].reason')"
+  expect_eq "left out: reason" "ValueAffectsOtherFields" "$(dp_field "$P_J2" '.status.mapping.unmapped[*].reason')"
   expect_eq "the spec still lists both changes" "2" "$(dp_field "$P_J2" '.spec.changes[*].path' | wc -w | tr -d ' ')"
   expect_branch_file "$BRANCH_J2" "$VALUES_DEV" "s/^replicaCount: $J_GIT_REPLICAS/replicaCount: $J_NEW_REPLICAS/"
   MR_J2="$(gl GET "$(project_path "/merge_requests/$IID_J2")")"

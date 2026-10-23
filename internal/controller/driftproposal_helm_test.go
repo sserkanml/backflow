@@ -673,7 +673,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
 			c := condition(conditionMapped)
-			Expect(c.Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+			Expect(c.Reason).To(Equal(helmmap.ReasonValueAffectsOtherFields))
 			for _, want := range []string{"image.tag", "1.28-alpine", "would reproduce " + imagePath, verLabel, podLabel} {
 				Expect(c.Message).To(ContainSubstring(want))
 			}
@@ -767,7 +767,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"debug"`, Live: `"trace"`}}
 			})
-		}, helmmap.ReasonNoVerifiedCandidate, "config.logLevel", "would reproduce /data/LOG_LEVEL", "/data/LOG_LEVEL_UP", `current "DEBUG"`),
+		}, helmmap.ReasonValueAffectsOtherFields, "config.logLevel", "would reproduce /data/LOG_LEVEL", "/data/LOG_LEVEL_UP", `current "DEBUG"`),
 		Entry("two keys give the same result", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/AMBIGUOUS", Op: backflowv1alpha1.OpReplace, Desired: `"3"`, Live: `"5"`}}
