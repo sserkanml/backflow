@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 func TestAddValue(t *testing.T) {
@@ -90,7 +92,7 @@ service:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			key, err := ParseKeyPath(tt.key)
+			key, err := rendermap.ParseKeyPath(tt.key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -104,7 +106,7 @@ service:
 			if w.Line != tt.line {
 				t.Errorf("line = %d, want %d (%q)", w.Line, tt.line, w.Text)
 			}
-			if w.File != "v.yaml" || len(w.Edits) != 1 || w.Edits[0].Location != key.pointer() || w.Diff == "" {
+			if w.File != "v.yaml" || len(w.Edits) != 1 || w.Edits[0].Location != key.Pointer() || w.Diff == "" {
 				t.Errorf("result = %+v", w.Result)
 			}
 			// The new file defines the key and everything the old one did.
@@ -134,19 +136,19 @@ func TestAddValueRefuses(t *testing.T) {
 		"above a list":                  "env",
 	} {
 		t.Run(name, func(t *testing.T) {
-			k, _ := ParseKeyPath(key)
+			k, _ := rendermap.ParseKeyPath(key)
 			if _, err := AddValue("v.yaml", []byte(doc), k, "x", "!!str"); !errors.Is(err, ErrCannotSet) {
 				t.Errorf("err = %v, want ErrCannotSet", err)
 			}
 		})
 	}
 	t.Run("a file that does not parse", func(t *testing.T) {
-		if _, err := AddValue("v.yaml", []byte("a: [1\n"), KeyPath{"b"}, "x", "!!str"); !errors.Is(err, ErrCannotSet) {
+		if _, err := AddValue("v.yaml", []byte("a: [1\n"), rendermap.KeyPath{"b"}, "x", "!!str"); !errors.Is(err, ErrCannotSet) {
 			t.Errorf("err = %v", err)
 		}
 	})
 	t.Run("a file that is not a map", func(t *testing.T) {
-		if _, err := AddValue("v.yaml", []byte("- a\n- b\n"), KeyPath{"b"}, "x", "!!str"); err == nil {
+		if _, err := AddValue("v.yaml", []byte("- a\n- b\n"), rendermap.KeyPath{"b"}, "x", "!!str"); err == nil {
 			t.Error("a list at the top level must not be edited")
 		}
 	})

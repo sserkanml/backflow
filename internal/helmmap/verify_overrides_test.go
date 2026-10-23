@@ -71,8 +71,8 @@ func TestVerifyOverridesAfterExistingEdits(t *testing.T) {
 	env := newDemo(t, Spec{})
 	f := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
 	// An override candidate that would be rendered if it were tried.
-	f.Found.Overrides = []Candidate{{File: ovDev, Path: KeyPath{"config", "timeout"}, Override: true,
-		Default: &ChartDefault{File: ovDefaults, Key: KeyPath{"config", "timeout"}, Value: "30", Tag: "!!int"}}}
+	f.Found.Overrides = []Candidate{{File: ovDev, Path: rendermap.KeyPath{"config", "timeout"}, Override: true,
+		Default: &ChartDefault{File: ovDefaults, Key: rendermap.KeyPath{"config", "timeout"}, Value: "30", Tag: "!!int"}}}
 	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), ovOn)
 	if err != nil || !out.Mapped() {
 		t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
@@ -114,8 +114,8 @@ func TestVerifyOverrideShadowed(t *testing.T) {
 	// The chart also reads region from a top level key that only its defaults
 	// know. Both edits reproduce REGION; the edit of the existing line wins.
 	region := drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2")
-	region.Found.Overrides = []Candidate{{File: ovDev, Path: KeyPath{"region"}, Override: true,
-		Default: &ChartDefault{File: ovDefaults, Key: KeyPath{"region"}, Value: "eu-central-1", Tag: "!!str"}}}
+	region.Found.Overrides = []Candidate{{File: ovDev, Path: rendermap.KeyPath{"region"}, Override: true,
+		Default: &ChartDefault{File: ovDefaults, Key: rendermap.KeyPath{"region"}, Value: "eu-central-1", Tag: "!!str"}}}
 	timeout := drift(t, env.src, env.files, 1, "TIMEOUT", "30", "45")
 	out, err := Verify(context.Background(), &demoRenderer{src: env.src, altRegion: true}, env.input(keyConfig, region, timeout), ovOn)
 	if err != nil || !out.Mapped() {

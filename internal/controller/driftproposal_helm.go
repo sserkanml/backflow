@@ -182,7 +182,7 @@ func (m *mappedChange) edits() []backflowv1alpha1.SourceEdit {
 		for _, e := range r.Edits {
 			loc := e.Location
 			if m.strategy == backflowv1alpha1.StrategyHelmValues {
-				loc = helmmap.KeyPathFromPointer(e.Location).String()
+				loc = rendermap.KeyPathFromPointer(e.Location).String()
 			}
 			out = append(out, backflowv1alpha1.SourceEdit{File: e.File, Location: loc, Value: boundedEditValue(e.Value), ChangeIndex: int32(e.ChangeIndex)}) //nolint:gosec // an index into spec.changes
 		}

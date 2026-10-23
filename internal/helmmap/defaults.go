@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -140,7 +142,7 @@ func moveInto(defs []definition, prefix string) []definition {
 		if len(d.path) > 0 && d.path[0] == "global" {
 			continue
 		}
-		out[i].path = append(KeyPath{prefix}, d.path...)
+		out[i].path = append(rendermap.KeyPath{prefix}, d.path...)
 	}
 	return out
 }

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // Candidate is a scalar in a value file whose effective value equals the old
@@ -14,7 +16,7 @@ import (
 type Candidate struct {
 	// File is the repository path of the value file.
 	File string
-	Path KeyPath
+	Path rendermap.KeyPath
 	// Fragment is set when only part of the drifted value is the key's value:
 	// the key holds the "1.27-alpine" of "nginx:1.27-alpine". NewValue is then
 	// what the key must become. A candidate for the whole value has neither;
@@ -37,7 +39,7 @@ type ChartDefault struct {
 	File string
 	// Key is the key path in that file. For a dependency it is the path in the
 	// dependency's own values, without its name or alias.
-	Key KeyPath
+	Key rendermap.KeyPath
 	// Value is the default as a template renders it.
 	Value string
 	// Tag is the YAML tag of the default (!!str, !!int, !!float, !!bool).
@@ -46,7 +48,7 @@ type ChartDefault struct {
 
 // NoOverride is a chart default that cannot be overridden from a value file.
 type NoOverride struct {
-	Path   KeyPath
+	Path   rendermap.KeyPath
 	Reason string
 }
 
@@ -56,7 +58,7 @@ type Controlled struct {
 	// Layer is one of LayerValues, LayerValuesObject, LayerParameters and
 	// LayerFileParameters.
 	Layer string
-	Path  KeyPath
+	Path  rendermap.KeyPath
 }
 
 // Result is what Find reports.
@@ -67,7 +69,7 @@ type Result struct {
 	// ChartDefaults are matches found only in the chart's own values.yaml.
 	// That file is not edited; the value comes from the chart, not from the
 	// Application's repository configuration.
-	ChartDefaults []KeyPath
+	ChartDefaults []rendermap.KeyPath
 	// Overrides are the ways to set a chart default from the Application: the
 	// key added to the last value file, with the value the field has to get.
 	// They are only tried when no key a value file already defines works.
@@ -106,7 +108,7 @@ func (s *Source) Find(files map[string][]byte, old any) (*Result, error) {
 	if old == nil {
 		return &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}, nil
 	}
-	want := RenderValue(old)
+	want := rendermap.RenderValue(old)
 	if _, ok := old.(string); !ok && want == "" {
 		return &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}, nil // a map or list has no scalar form to compare
 	}
@@ -256,7 +258,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 
 	target, targetWhy := s.overrideFile()
 	seen := map[string]bool{}
-	control := func(layer string, p KeyPath) {
+	control := func(layer string, p rendermap.KeyPath) {
 		key := layer + "\x00" + p.String()
 		if !seen[key] {
 			seen[key] = true
@@ -312,7 +314,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 		}
 		shadowed := false
 		for _, u := range s.Inline[i+1:] {
-			if related(u.Path, v.Path) {
+			if rendermap.Related(u.Path, v.Path) {
 				shadowed = true
 				break
 			}
@@ -331,7 +333,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 func overridden(d definition, later [][]definition) bool {
 	for _, defs := range later {
 		for _, e := range defs {
-			if related(e.path, d.path) {
+			if rendermap.Related(e.path, d.path) {
 				return true
 			}
 		}
@@ -342,9 +344,9 @@ func overridden(d definition, later [][]definition) bool {
 // inlineFor returns the last inline setting that decides a value file key
 // path: one at the path itself, above it (it replaces a list or map) or below
 // it (it turns the key into a map).
-func (s *Source) inlineFor(p KeyPath) (InlineValue, bool) {
+func (s *Source) inlineFor(p rendermap.KeyPath) (InlineValue, bool) {
 	for _, v := range slices.Backward(s.Inline) {
-		if related(v.Path, p) {
+		if rendermap.Related(v.Path, p) {
 			return v, true
 		}
 	}

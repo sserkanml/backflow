@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -158,7 +160,7 @@ func deepCopy(v any) any {
 }
 
 // getAt returns the value at a key path through maps.
-func getAt(tree any, path KeyPath) (any, bool) {
+func getAt(tree any, path rendermap.KeyPath) (any, bool) {
 	cur := tree
 	for _, seg := range path {
 		m, ok := cur.(map[string]any)
@@ -174,17 +176,17 @@ func getAt(tree any, path KeyPath) (any, bool) {
 
 // valueNode is a map or list of the merged values.
 type valueNode struct {
-	path  KeyPath
+	path  rendermap.KeyPath
 	value any
 }
 
 // valueNodes lists the maps and lists of the merged values, outside lists.
 func valueNodes(merged map[string]any) []valueNode {
 	var out []valueNode
-	var walk func(path KeyPath, m map[string]any)
-	walk = func(path KeyPath, m map[string]any) {
+	var walk func(path rendermap.KeyPath, m map[string]any)
+	walk = func(path rendermap.KeyPath, m map[string]any) {
 		for _, k := range slices.Sorted(maps.Keys(m)) {
-			p := path.child(k)
+			p := path.Child(k)
 			switch v := m[k].(type) {
 			case map[string]any:
 				out = append(out, valueNode{p, v})
@@ -492,7 +494,7 @@ type structGen struct {
 }
 
 // definedIn returns the last value file (not a default) that has the key.
-func (g *structGen) definedIn(path KeyPath) (string, bool) {
+func (g *structGen) definedIn(path rendermap.KeyPath) (string, bool) {
 	for _, l := range slices.Backward(g.layers) {
 		if l.isDefault {
 			continue
@@ -505,7 +507,7 @@ func (g *structGen) definedIn(path KeyPath) (string, bool) {
 }
 
 // defaultOf describes the chart default that holds the key.
-func (g *structGen) defaultOf(path KeyPath) *ChartDefault {
+func (g *structGen) defaultOf(path rendermap.KeyPath) *ChartDefault {
 	for _, l := range slices.Backward(g.layers) {
 		if !l.isDefault {
 			continue
@@ -528,7 +530,7 @@ func (g *structGen) defaultOf(path KeyPath) *ChartDefault {
 // emit records an edit: an edit of the file that defines the anchor (the key
 // itself, or the map a key is added to), or when no value file does, an override
 // in the file that receives overrides.
-func (g *structGen) emit(kind string, path, anchor KeyPath, value any, level, score int, origin []int, mustBeDefined bool) {
+func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any, level, score int, origin []int, mustBeDefined bool) {
 	var file string
 	var def *ChartDefault
 	override := false
@@ -605,7 +607,7 @@ func (g *structGen) generate(target string, level int, origin []int) {
 
 	for _, n := range g.nodes {
 		nt := tokens(n.path.String())
-		gate := affinity(tokensOf, tokens(lastNames(n.path.pointer(), 2)...))
+		gate := affinity(tokensOf, tokens(lastNames(n.path.Pointer(), 2)...))
 		g.rules(ruleInput{n: n, aff: gate, score: gate*10 + affinity(g.resTokens, nt), level: level, origin: origin,
 			d: d, l: l, hasD: hasD, hasL: hasL, f0: f0})
 	}
@@ -731,7 +733,7 @@ func (g *structGen) ruleKey(in ruleInput) {
 	if !ok || !isMap || !nIsMap || !subsetOf(nm, pmap) {
 		return
 	}
-	pAff := affinity(targetTokens(parent), tokens(lastNames(in.n.path.pointer(), 2)...))
+	pAff := affinity(targetTokens(parent), tokens(lastNames(in.n.path.Pointer(), 2)...))
 	if pAff == 0 && (len(nm) == 0 || !sameValue(nm, pmap)) {
 		return
 	}
@@ -739,9 +741,9 @@ func (g *structGen) ruleKey(in ruleInput) {
 	_, has := nm[key]
 	switch {
 	case in.f0.hasLive && !in.f0.hasDesired && !has: // a key appears
-		g.emit(editSet, in.n.path.child(key), in.n.path, in.f0.liveV, in.level, score, in.origin, false)
+		g.emit(editSet, in.n.path.Child(key), in.n.path, in.f0.liveV, in.level, score, in.origin, false)
 	case in.f0.hasDesired && !in.f0.hasLive && has: // a key disappears
-		g.emit(editRemoveKey, in.n.path.child(key), in.n.path.child(key), nil, in.level, score, in.origin, true)
+		g.emit(editRemoveKey, in.n.path.Child(key), in.n.path.Child(key), nil, in.level, score, in.origin, true)
 	}
 }
 

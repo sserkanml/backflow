@@ -13,6 +13,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 func textProposal() *backflowv1alpha1.DriftProposal {
@@ -323,8 +324,8 @@ func TestOverrideTexts(t *testing.T) {
 	}
 	dp.Spec.Changes = dp.Spec.Changes[:1]
 	overrides := []helmmap.AppliedOverride{{
-		File: "env/prod.yaml", Path: helmmap.KeyPath{"config", "mode"}, Value: `"a|b"`,
-		Default: helmmap.ChartDefault{File: "chart/values.yaml", Key: helmmap.KeyPath{"config", "mode"}, Value: "fast"},
+		File: "env/prod.yaml", Path: rendermap.KeyPath{"config", "mode"}, Value: `"a|b"`,
+		Default: helmmap.ChartDefault{File: "chart/values.yaml", Key: rendermap.KeyPath{"config", "mode"}, Value: "fast"},
 	}}
 
 	rows := helmEditRows(dp, overrides)

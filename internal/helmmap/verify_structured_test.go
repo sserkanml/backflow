@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"github.com/sserkanml/backflow/api/v1alpha1"
 )
 
@@ -112,7 +114,7 @@ func TestVerifyValueAffectsOtherFieldsWinsOverOtherRejections(t *testing.T) {
 	f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 	// config.logLevel reproduces the field but also moves LOG_LEVEL_UP; the other
 	// key does not reproduce it at all.
-	f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: KeyPath{"config", "minA"}})
+	f.Found.Candidates = append(f.Found.Candidates, Candidate{File: "helm/demo/values-dev.yaml", Path: rendermap.KeyPath{"config", "minA"}})
 	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), Options{})
 	if err != nil || out.Mapped() {
 		t.Fatalf("out = %+v, err = %v", out, err)

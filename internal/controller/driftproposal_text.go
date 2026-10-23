@@ -7,6 +7,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 const (
@@ -290,7 +291,7 @@ func helmEditRows(dp *backflowv1alpha1.DriftProposal, overrides []helmmap.Applie
 	}
 	rendered := func(raw string) string {
 		if v, ok := scalarOf(raw); ok {
-			return helmmap.RenderValue(v)
+			return rendermap.RenderValue(v)
 		}
 		return raw
 	}
@@ -322,7 +323,7 @@ func overrideOf(overrides []helmmap.AppliedOverride, file, key string) *helmmap.
 // overrideValue is the value an override writes, as a template renders it.
 func overrideValue(o helmmap.AppliedOverride) string {
 	if v, ok := scalarOf(o.Value); ok {
-		return helmmap.RenderValue(v)
+		return rendermap.RenderValue(v)
 	}
 	return o.Value
 }

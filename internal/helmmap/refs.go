@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"go.yaml.in/yaml/v3"
 )
 
@@ -19,7 +21,7 @@ import (
 
 // valueRefs are the places of .Values the files of a chart read.
 type valueRefs struct {
-	paths []KeyPath
+	paths []rendermap.KeyPath
 	// all is set when some template uses .Values as a whole (passes it on, assigns
 	// it to a variable, indexes it with a computed key): any key may be read. It
 	// is also set when no template was found at all: nothing can be said then.
@@ -146,7 +148,7 @@ func (r *valueRefs) scanText(text string) {
 	for _, loc := range valuesWord.FindAllStringIndex(text, -1) {
 		rest := text[loc[1]:]
 		if m := dotPath.FindString(rest); m != "" {
-			r.paths = append(r.paths, KeyPath(strings.Split(strings.TrimPrefix(m, "."), ".")))
+			r.paths = append(r.paths, rendermap.KeyPath(strings.Split(strings.TrimPrefix(m, "."), ".")))
 			continue
 		}
 		// index .Values "a" "b" or get .Values "a"
@@ -154,7 +156,7 @@ func (r *valueRefs) scanText(text string) {
 		if strings.HasSuffix(strings.TrimRight(before, " ("), "index") || strings.HasSuffix(strings.TrimRight(before, " ("), "get") {
 			if m := quotedKeys.FindStringSubmatch(rest); m != nil {
 				quoted := oneQuoted.FindAllStringSubmatch(m[1], -1)
-				p := make(KeyPath, 0, len(quoted))
+				p := make(rendermap.KeyPath, 0, len(quoted))
 				for _, q := range quoted {
 					p = append(p, q[1])
 				}
@@ -170,12 +172,12 @@ func (r *valueRefs) scanText(text string) {
 // above it (the map it is in) or a key below it. When the first segment is the
 // name or alias of a dependency, the dependency's templates read the key
 // without it.
-func (r *valueRefs) mentions(key KeyPath) bool {
+func (r *valueRefs) mentions(key rendermap.KeyPath) bool {
 	if r.all {
 		return true
 	}
 	for _, p := range r.paths {
-		if related(p, key) || (len(key) > 1 && r.prefixes[key[0]] && related(p, key[1:])) {
+		if rendermap.Related(p, key) || (len(key) > 1 && r.prefixes[key[0]] && rendermap.Related(p, key[1:])) {
 			return true
 		}
 	}
