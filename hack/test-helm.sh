@@ -56,6 +56,13 @@
 #      Event) and makes no proposal; a sync then resets the image to its Git
 #      value, the proposal stays Merged and no proposal appears. With automated
 #      sync the reset follows the merge at once, with the same outcome.
+#   k. Maps and lists: the demo chart takes podAnnotations and extraEnvVars (the
+#      section commits that to main, restored on exit). Removing a pod annotation
+#      removes the key from podAnnotations; removing an env var writes extraEnvVars
+#      back without it. The branch keeps every comment of values-dev.yaml, writes
+#      the list in block style and quotes `on`, which YAML 1.1 reads as a boolean.
+#      (Argo CD does not report what is only added in the cluster, so the drifts
+#      are removals of what the chart sets.)
 #
 # Requires the environment from ./hack/dev-up.sh (the Applications demo-helm,
 # shared-alpha and shared-beta, label env=helm-test) and GITLAB_TOKEN with the
@@ -141,9 +148,9 @@ section_needs() {
 check_sections() {
   local s n
   for s in ${SECTIONS//,/ }; do
-    case " a b c d e f g h i j " in
+    case " a b c d e f g h i j k " in
       *" $s "*) ;;
-      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h,i,j)" >&2; exit 1 ;;
+      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h,i,j,k)" >&2; exit 1 ;;
     esac
     for n in $(section_needs "$s"); do
       section_wanted "$n" || { echo "SECTIONS: section $s needs section $n, before it (see the notes at SECTIONS); add it to the list, for example SECTIONS=$n,$s, or leave SECTIONS out" >&2; exit 1; }
@@ -1691,6 +1698,116 @@ fi
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 reset_cluster "$DEMO_APP"
 WAIT="$J_WAIT_SAVED"
+
+fi
+
+# ---------------------------------------------------------------------------
+if section_wanted k; then
+step "k. Maps and lists: a pod annotation and an env var of the demo Deployment come from values"
+# The demo chart does not take podAnnotations or extraEnvVars yet. This section
+# commits that to main (with the values of the development environment) and the
+# cleanup restores main like for every other commit of the test.
+cat >"$WORKDIR/structured.py" <<'PY'
+import json, os, subprocess, sys, urllib.parse
+
+pid = sys.argv[1]
+gl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gl.py")
+
+def call(*args):
+    r = subprocess.run(["python3", gl, *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.stderr.write(r.stderr)
+        sys.exit(1)
+    return r.stdout
+
+def raw(path):
+    return call("GET", "/projects/%s/repository/files/%s/raw?ref=main" % (pid, urllib.parse.quote(path, safe="")))
+
+def once(text, old, new, where):
+    if text.count(old) != 1:
+        sys.stderr.write("%s: expected exactly one %r\n" % (where, old))
+        sys.exit(1)
+    return text.replace(old, new)
+
+actions = []
+dep_path, values_path, dev_path = "helm/demo/templates/deployment.yaml", "helm/demo/values.yaml", "helm/demo/values-dev.yaml"
+dep, values, dev = raw(dep_path), raw(values_path), raw(dev_path)
+if ".Values.podAnnotations" not in dep:
+    dep = once(dep, "        app.kubernetes.io/version: {{ .Values.image.tag | quote }}\n    spec:\n",
+               "        app.kubernetes.io/version: {{ .Values.image.tag | quote }}\n"
+               "      {{- with .Values.podAnnotations }}\n      annotations:\n        {{- toYaml . | nindent 8 }}\n      {{- end }}\n    spec:\n", dep_path)
+    dep = once(dep, "          ports:\n",
+               "          {{- with .Values.extraEnvVars }}\n          env:\n            {{- toYaml . | nindent 12 }}\n          {{- end }}\n          ports:\n", dep_path)
+    values = once(values, "global:\n", "podAnnotations: {}\nextraEnvVars: []\n\nglobal:\n", values_path)
+    actions += [{"action": "update", "file_path": dep_path, "content": dep}, {"action": "update", "file_path": values_path, "content": values}]
+if "DEMO_MODE" not in dev:
+    dev = dev.rstrip("\n") + (
+        "\n\n# Pod annotations and extra env vars of the development environment.\n"
+        "podAnnotations:\n  team: platform\n  tier: web\n"
+        "extraEnvVars:\n  - name: DEMO_MODE\n    value: \"on\"\n  - name: DEMO_LEVEL\n    value: \"3\"\n")
+    actions.append({"action": "update", "file_path": dev_path, "content": dev})
+if not actions:
+    print(json.loads(call("GET", "/projects/%s/repository/branches/main" % pid))["commit"]["id"])
+    sys.exit(0)
+body = json.dumps({"branch": "main", "commit_message": "test: pod annotations and extra env vars from values (Backflow e2e)", "actions": actions})
+print(json.loads(call("POST", "/projects/%s/repository/commits" % pid, body))["id"])
+PY
+K_SHA="$(python3 "$WORKDIR/structured.py" "$PID_ENC")" || K_SHA=""
+expect_nonempty "commit with podAnnotations and extraEnvVars in the demo chart" "$K_SHA"
+if [[ -n "$K_SHA" ]]; then
+wait_for "$DEMO_APP is Synced at the commit" app_synced_at "$DEMO_APP" "$K_SHA"
+reset_cluster "$DEMO_APP"
+
+# expect_comments_kept <branch> <file>: every comment line of main's file is still there.
+expect_comments_kept() {
+  local line missing=0
+  raw_file "$2" main >"$WORKDIR/main.txt"
+  raw_file "$2" "$1" >"$WORKDIR/branch.txt"
+  while IFS= read -r line; do
+    grep -qxF -- "$line" "$WORKDIR/branch.txt" || { missing=$((missing + 1)); note "comment lost: $line"; }
+  done < <(grep -E '^ *#' "$WORKDIR/main.txt")
+  expect_eq "comment lines of $2 lost on the branch" "0" "$missing"
+}
+
+echo "  k1. a pod annotation removed: the key is removed from podAnnotations..."
+k -n "$DEMO_NS" patch deployment "$DEMO_APP" --type json -p '[{"op":"remove","path":"/spec/template/metadata/annotations/tier"}]' >/dev/null
+refresh_app "$DEMO_APP"
+wait_for "proposal is Proposed (annotation tier removed)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "/spec/template/metadata/annotations/tier:Remove:"
+remember_proposals
+P_K1="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "/spec/template/metadata/annotations/tier:Remove:" | head -n 1)"
+if [[ -n "$P_K1" ]]; then
+  BRANCH_K1="$(branch_of "$P_K1")"
+  IFS='|' read -r IID_K1 STATE_K1 _ _ <<<"$(mr_info "$BRANCH_K1")"
+  expect_eq "merge request state" "opened" "$STATE_K1"
+  expect_mapping "$P_K1" "$VALUES_DEV" "podAnnotations.tier"
+  raw_file "$VALUES_DEV" "$BRANCH_K1" >"$WORKDIR/branch.txt"
+  if grep -qE '^  tier:' "$WORKDIR/branch.txt"; then fail "the branch still has the annotation tier"; else pass "the annotation tier is gone from the branch"; fi
+  if grep -qxF '  team: platform' "$WORKDIR/branch.txt"; then pass "the other annotation stays, in block style"; else fail "the annotation team is not on the branch as a block entry"; fi
+  expect_comments_kept "$BRANCH_K1" "$VALUES_DEV"
+  close_and_reset "$IID_K1" "$P_K1"
+fi
+
+echo "  k2. an env var removed: the list is written back without it..."
+k -n "$DEMO_NS" set env "deployment/$DEMO_APP" DEMO_LEVEL- >/dev/null
+refresh_app "$DEMO_APP"
+wait_for "proposal is Proposed (env var DEMO_LEVEL removed)" has_proposal "$DEMO_APP" "$DEMO_APP" Proposed "/spec/template/spec/containers/0/env:Replace:"
+remember_proposals
+P_K2="$(proposal_with "$DEMO_APP" "$DEMO_APP" Proposed "/spec/template/spec/containers/0/env:Replace:" | head -n 1)"
+if [[ -n "$P_K2" ]]; then
+  BRANCH_K2="$(branch_of "$P_K2")"
+  IFS='|' read -r IID_K2 STATE_K2 _ _ <<<"$(mr_info "$BRANCH_K2")"
+  expect_eq "merge request state" "opened" "$STATE_K2"
+  expect_mapping "$P_K2" "$VALUES_DEV" "extraEnvVars"
+  raw_file "$VALUES_DEV" "$BRANCH_K2" >"$WORKDIR/branch.txt"
+  if grep -qxF '  - name: DEMO_MODE' "$WORKDIR/branch.txt"; then pass "the list is in block style"; else fail "the branch has no block style '  - name: DEMO_MODE'"; fi
+  if grep -qxF '    value: "on"' "$WORKDIR/branch.txt"; then pass "on stays a quoted string (YAML 1.1 reads a plain on as a boolean)"; else fail "the branch has no '    value: \"on\"'"; fi
+  if grep -q 'DEMO_LEVEL' "$WORKDIR/branch.txt"; then fail "the env var DEMO_LEVEL is still on the branch"; else pass "the env var DEMO_LEVEL is gone from the branch"; fi
+  expect_comments_kept "$BRANCH_K2" "$VALUES_DEV"
+  BODY_K2="$(gl GET "$(project_path "/merge_requests/$IID_K2")" | jx 'd["description"]')"
+  expect_contains "description" "extraEnvVars" "$BODY_K2"
+  close_and_reset "$IID_K2" "$P_K2"
+fi
+fi
 
 fi
 
