@@ -136,6 +136,18 @@ func tally(results []caseResult, policy string) (mapped, partial, total int) {
 	return
 }
 
+// addOnly are the scenarios that only add something the live object has and Git
+// does not. Argo CD does not report such fields on its own.
+var addOnly = map[string]bool{"env-add": true, "label-add": true, "nodeselector-add": true, "pod-annotation": true, "toleration": true}
+
+// scenarioLabel is the name of a scenario in the report.
+func scenarioLabel(id string) string {
+	if addOnly[id] {
+		return id + " *"
+	}
+	return id
+}
+
 // report is REPORT.md.
 func report(results []caseResult) string {
 	var b strings.Builder
@@ -161,7 +173,9 @@ func report(results []caseResult) string {
 		m2, pa2, _ := tally(byChart[n], "permissive")
 		fmt.Fprintf(&b, "| %s | %d | %.0f%% | %.0f%% |\n", n, total, pct(m, total), pct(m2+pa2, total))
 	}
-	b.WriteString("\n## By scenario\n\n| Scenario | Cases | Mapped % (default) | Mapped or partial % (permissive) |\n|---|---|---|---|\n")
+	b.WriteString("\n## By scenario\n\n")
+	b.WriteString("\\* Add-only scenarios (`env-add`, `label-add`, `nodeselector-add`, `pod-annotation`, `toleration`) measure the mapping capability; they are not detected alone in a live cluster. Argo CD does not report fields that exist only in the live object (added with `kubectl edit` or `patch` and absent from Git), so such an addition is mapped only when the same resource also has a reported drift. Removals and value changes are always detected.\n\n")
+	b.WriteString("| Scenario | Cases | Mapped % (default) | Mapped or partial % (permissive) |\n|---|---|---|---|\n")
 	byScenario := map[string][]caseResult{}
 	var sids []string
 	for _, r := range results {
@@ -174,7 +188,7 @@ func report(results []caseResult) string {
 	for _, s := range sids {
 		m, _, total := tally(byScenario[s], "default")
 		m2, pa2, _ := tally(byScenario[s], "permissive")
-		fmt.Fprintf(&b, "| %s | %d | %.0f%% | %.0f%% |\n", s, total, pct(m, total), pct(m2+pa2, total))
+		fmt.Fprintf(&b, "| %s | %d | %.0f%% | %.0f%% |\n", scenarioLabel(s), total, pct(m, total), pct(m2+pa2, total))
 	}
 	b.WriteString("\n## Cases\n\n| Chart | Resource | Scenario | Changed fields | default | permissive | no-overrides |\n|---|---|---|---|---|---|---|\n")
 	for _, r := range results {
@@ -182,7 +196,7 @@ func report(results []caseResult) string {
 		for _, c := range r.Changes {
 			paths = append(paths, "`"+c.Path+"`")
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s |\n", r.Chart, r.Resource, r.Scenario, strings.Join(paths, "<br>"),
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s |\n", r.Chart, r.Resource, scenarioLabel(r.Scenario), strings.Join(paths, "<br>"),
 			cellOf(r.ByPolicy["default"]), cellOf(r.ByPolicy["permissive"]), cellOf(r.ByPolicy["no-overrides"]))
 	}
 	return b.String()

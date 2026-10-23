@@ -427,6 +427,11 @@ after the edit, so the reviewer sees them before merging.
 
 Limits of Helm mapping:
 
+- **Live-only additions are not reported by Argo CD.** A field that exists
+  only in the live object (added with `kubectl edit` or `patch` and absent from
+  Git) is not detected on its own, because Argo CD's diff preserves it. Such an
+  addition is mapped when the same resource also has a reported drift. Removals
+  and value changes are always detected.
 - **Single source, chart in Git.** A Helm chart from a Helm repository or an
   OCI registry, and Applications with `spec.sources` (for example a chart plus
   `$values` references), are `Unmapped` (`UnsupportedSourceType`). Value files
