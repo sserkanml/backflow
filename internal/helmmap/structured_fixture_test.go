@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	driftdiff "github.com/sserkanml/backflow/internal/drift"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 const structDefaults = `# Defaults of the chart.
@@ -37,7 +38,7 @@ type structRenderer struct {
 	calls int
 }
 
-func (r *structRenderer) Render(_ context.Context, app App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
+func (r *structRenderer) Render(_ context.Context, app rendermap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
 	r.calls++
 	layers, err := r.src.treeLayers(files)
 	if err != nil {
@@ -127,7 +128,7 @@ resources: {{- if .Values.resources }}{{ toYaml .Values.resources | nindent 2 }}
 `
 
 var (
-	appStruct = App{Name: "web-prod", Namespace: "argocd", Project: "default", DestNamespace: "prod"}
+	appStruct = rendermap.App{Name: "web-prod", Namespace: "argocd", Project: "default", DestNamespace: "prod"}
 	keyWeb    = ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "web"}
 )
 

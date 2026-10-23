@@ -15,6 +15,7 @@ import (
 	"github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/drift"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // Results of one mapping attempt.
@@ -88,7 +89,7 @@ type loaded struct {
 	files  map[string][]byte // CollectFiles
 	src    *helmmap.Source
 	rend   *helmRenderer
-	app    helmmap.App
+	app    rendermap.App
 	base   []*unstructured.Unstructured
 	policy []policySet
 }
@@ -108,7 +109,7 @@ func load(ctx context.Context, c chartCase, slots chan struct{}) (*loaded, error
 		return nil, fmt.Errorf("%s: files: %w", c.name, err)
 	}
 	rend := &helmRenderer{chartDir: c.chartPath(), valueFiles: src.ValueFiles, release: c.release, namespace: c.namespace, slots: slots}
-	app := helmmap.App{Name: c.release, Namespace: "argocd", Project: "default", DestNamespace: c.namespace, ReleaseName: c.release}
+	app := rendermap.App{Name: c.release, Namespace: "argocd", Project: "default", DestNamespace: c.namespace, ReleaseName: c.release}
 	base, err := rend.Render(ctx, app, files)
 	if err != nil {
 		return nil, fmt.Errorf("%s: render: %w", c.name, err)

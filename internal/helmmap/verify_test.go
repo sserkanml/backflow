@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // demoRenderer stands in for Argo CD: it renders the demo chart of
@@ -91,7 +92,7 @@ func get(m map[string]any, path ...string) any {
 
 func str(v any) string { return fmt.Sprint(v) }
 
-func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
+func (d *demoRenderer) Render(ctx context.Context, app rendermap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
 	d.mu.Lock()
 	d.calls++
 	n := d.calls
@@ -114,7 +115,7 @@ func (d *demoRenderer) Render(ctx context.Context, app App, files map[string][]b
 		}
 		var layer map[string]any
 		if err := yaml.Unmarshal(data, &layer); err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", ErrRenderFailed, name, err)
+			return nil, fmt.Errorf("%w: %s: %v", rendermap.ErrRenderFailed, name, err)
 		}
 		deepMerge(values, layer)
 	}
@@ -191,7 +192,7 @@ func configMap(ns, name string, data map[string]any) *unstructured.Unstructured 
 }
 
 var (
-	appDemo   = App{Name: "demo-helm", Namespace: "argocd", Project: "default", DestNamespace: "demo"}
+	appDemo   = rendermap.App{Name: "demo-helm", Namespace: "argocd", Project: "default", DestNamespace: "demo"}
 	keyConfig = ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "demo-helm-config"}
 	keySide   = ResourceKey{Kind: "ConfigMap", Namespace: "demo", Name: "demo-helm-sidecar"}
 )
@@ -683,14 +684,14 @@ func TestVerifyRenderErrors(t *testing.T) {
 	f := drift(t, env.src, env.files, 0, "LOG_LEVEL", "debug", "trace")
 
 	t.Run("the chart does not render", func(t *testing.T) {
-		rend := &demoRenderer{src: env.src, baseErr: fmt.Errorf("%w: nil pointer", ErrRenderFailed)}
+		rend := &demoRenderer{src: env.src, baseErr: fmt.Errorf("%w: nil pointer", rendermap.ErrRenderFailed)}
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonRenderFailed {
 			t.Errorf("out = %+v, err = %v", out, err)
 		}
 	})
 	t.Run("files too large", func(t *testing.T) {
-		rend := &demoRenderer{src: env.src, baseErr: ErrFilesTooLarge}
+		rend := &demoRenderer{src: env.src, baseErr: rendermap.ErrFilesTooLarge}
 		out, err := Verify(context.Background(), rend, env.input(keyConfig, f), Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonFilesTooLarge {
 			t.Errorf("out = %+v, err = %v", out, err)
@@ -706,7 +707,7 @@ func TestVerifyRenderErrors(t *testing.T) {
 	t.Run("a candidate the chart cannot render is rejected, not fatal", func(t *testing.T) {
 		rend := &demoRenderer{src: env.src, failWhen: func(v map[string]any) error {
 			if get(v, "config", "colorA") == "blue" {
-				return fmt.Errorf("%w: bad color", ErrRenderFailed)
+				return fmt.Errorf("%w: bad color", rendermap.ErrRenderFailed)
 			}
 			return nil
 		}}
@@ -858,7 +859,7 @@ func TestNearMissReporting(t *testing.T) {
 
 // deploymentObject renders the Deployment of the chart: its image is
 // "repository:tag", and the tag goes to other places by the flags.
-func (d *demoRenderer) deploymentObject(app App, values map[string]any) *unstructured.Unstructured {
+func (d *demoRenderer) deploymentObject(app rendermap.App, values map[string]any) *unstructured.Unstructured {
 	tag := str(get(values, "image", "tag"))
 	replicas := int64(2)
 	if n, ok := get(values, "replicaCount").(int); ok {

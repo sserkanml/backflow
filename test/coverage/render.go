@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
-	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // clusterScoped kinds keep an empty namespace, as Argo CD reports them.
@@ -25,7 +25,7 @@ var clusterScoped = map[string]bool{
 	"MutatingWebhookConfiguration": true, "ValidatingWebhookConfiguration": true,
 }
 
-// helmRenderer is a test-only helmmap.Renderer that shells out to `helm
+// helmRenderer is a test-only rendermap.Renderer that shells out to `helm
 // template`. In production Argo CD renders; this only stands in for it so the
 // suite needs no cluster. It never caches: Verify renders the unmodified files
 // twice to find fields that change on every render (generated certificates,
@@ -39,10 +39,10 @@ type helmRenderer struct {
 	slots chan struct{}
 }
 
-var _ helmmap.Renderer = (*helmRenderer)(nil)
+var _ rendermap.Renderer = (*helmRenderer)(nil)
 
-// Render implements helmmap.Renderer.
-func (r *helmRenderer) Render(ctx context.Context, _ helmmap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
+// Render implements rendermap.Renderer.
+func (r *helmRenderer) Render(ctx context.Context, _ rendermap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
 	select {
 	case r.slots <- struct{}{}:
 		defer func() { <-r.slots }()
@@ -75,7 +75,7 @@ func (r *helmRenderer) helm(ctx context.Context, files map[string][]byte) ([]*un
 	cmd := exec.CommandContext(ctx, "helm", args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w: helm template: %v: %s", helmmap.ErrRenderFailed, err, stderr.String())
+		return nil, fmt.Errorf("%w: helm template: %v: %s", rendermap.ErrRenderFailed, err, stderr.String())
 	}
 	return parseManifests(stdout.Bytes(), r.namespace)
 }

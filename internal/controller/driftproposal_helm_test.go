@@ -26,6 +26,7 @@ import (
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -40,7 +41,7 @@ type fakeHelmRenderer struct {
 	// err is returned by every render when set.
 	err error
 	// lastApp is the Application of the last render.
-	lastApp helmmap.App
+	lastApp rendermap.App
 }
 
 func deepMergeValues(dst, src map[string]any) {
@@ -67,7 +68,7 @@ func nested(m map[string]any, path ...string) string {
 	return fmt.Sprint(cur)
 }
 
-func (f *fakeHelmRenderer) Render(_ context.Context, app helmmap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
+func (f *fakeHelmRenderer) Render(_ context.Context, app rendermap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -84,7 +85,7 @@ func (f *fakeHelmRenderer) Render(_ context.Context, app helmmap.App, files map[
 	for _, name := range []string{"helm/demo/values.yaml", "helm/demo/values-dev.yaml", "helm/demo/values-extra.yaml"} {
 		var layer map[string]any
 		if err := yaml.Unmarshal(files[name], &layer); err != nil {
-			return nil, fmt.Errorf("%w: %s: %v", helmmap.ErrRenderFailed, name, err)
+			return nil, fmt.Errorf("%w: %s: %v", rendermap.ErrRenderFailed, name, err)
 		}
 		deepMergeValues(values, layer)
 	}
@@ -232,7 +233,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		r = &DriftProposalReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(), Repos: CacheReader{Cache: cache}, Writer: cache,
 			NewProvider: func(scm.Config) (scm.Provider, error) { return provider, nil },
-			NewRenderer: func(argocd.Config) (helmmap.Renderer, error) { return renderer, nil },
+			NewRenderer: func(argocd.Config) (rendermap.Renderer, error) { return renderer, nil },
 		}
 
 		for _, name := range []string{"helm-token", "argo-token"} {
@@ -781,7 +782,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Entry("the drifted resource is a Secret", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Resource.Kind, s.Resource.Name = "Secret", "tls" })
 		}, helmmap.ReasonSecretNotVerifiable, "Secret"),
-		Entry("the chart does not render", func() { renderer.err = fmt.Errorf("%w: template: bad", helmmap.ErrRenderFailed) },
+		Entry("the chart does not render", func() { renderer.err = fmt.Errorf("%w: template: bad", rendermap.ErrRenderFailed) },
 			helmmap.ReasonRenderFailed, "does not render"),
 		Entry("a value file does not exist", func() { setHelm(map[string]any{"valueFiles": []any{"values-gone.yaml"}}) },
 			helmmap.ReasonMissingValueFile, "values-gone.yaml"),

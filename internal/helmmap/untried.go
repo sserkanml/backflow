@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // The bound on the number of candidates and the ranking by names leave keys
@@ -166,7 +168,7 @@ func (v *run) checkUntried(out *Outcome, base snapshot, nd nondeterminism, field
 	// comes in a later stage, after strict edits.
 	rivals, err := v.confirm(base, nd, fields, live, v.mappedRule)
 	if err != nil {
-		if errors.Is(err, errBudget) || errors.Is(err, ErrRenderFailed) || ctxDone(v) {
+		if errors.Is(err, errBudget) || errors.Is(err, rendermap.ErrRenderFailed) || ctxDone(v) {
 			return tooMany("they could not be rendered to check within the render budget")
 		}
 		return tooMany("they could not be rendered to check: " + err.Error())
