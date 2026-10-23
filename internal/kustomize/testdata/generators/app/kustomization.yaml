@@ -1,0 +1,19 @@
+resources: [cm.yaml]
+configMapGenerator:
+  - name: conf
+    files:
+      - app.properties
+      - renamed=config/settings.json
+    envs:
+      - app.env
+secretGenerator:
+  - name: sec
+    env: secret.env
+replacements:
+  - path: repl.yaml
+openapi:
+  path: schema.json
+crds:
+  - crd.yaml
+configurations:
+  - nameref.yaml

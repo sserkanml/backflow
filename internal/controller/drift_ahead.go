@@ -363,8 +363,9 @@ type aheadKey struct {
 	repo, from, to, path string
 	recurse              bool
 	// helm fingerprints what decides the files of a Helm source (value files,
-	// file parameters, the variables they may use); empty for other sources.
-	helm string
+	// file parameters, the variables they may use), kustomize those of a
+	// Kustomize source (components, patch files); empty for other sources.
+	helm, kustomize string
 }
 
 type aheadCheck struct {
@@ -388,14 +389,15 @@ func (r *DriftReconciler) now() time.Time {
 // changed between the last synced revision and the revision Argo CD compares
 // against. checked is false when that cannot be told, and the pause then
 // applies: only a Directory source of a single-source Application is looked
-// at (Kustomize can depend on files elsewhere), both revisions must
-// be commits, and the repository must be readable. A Directory source counts
-// the files below its directory; a Helm source counts the files its render
-// depends on, wherever they are (see lookAtHelm).
+// at, both revisions must be commits, and the repository must be readable. A
+// Directory source counts the files below its directory; a Helm or Kustomize
+// source counts the files its render depends on, wherever they are (see
+// lookAtHelm and lookAtKustomize).
 func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured, st aheadState) (changed int, checked bool) {
 	helm := summary.SourceType == string(backflowv1alpha1.SourceHelm)
-	if r.Git == nil || (!helm && summary.SourceType != string(backflowv1alpha1.SourceDirectory)) || summary.RepoURL == "" ||
+	kust := summary.SourceType == string(backflowv1alpha1.SourceKustomize)
+	if r.Git == nil || (!helm && !kust && summary.SourceType != string(backflowv1alpha1.SourceDirectory)) || summary.RepoURL == "" ||
 		!isFullSHA(st.compared) || !isFullSHA(st.synced) {
 		return 0, false
 	}
@@ -414,6 +416,9 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 	if helm {
 		key.helm = helmFingerprint(app, summary)
 	}
+	if kust {
+		key.kustomize = kustomizeFingerprint(app, summary)
+	}
 
 	r.aheadMu.Lock()
 	hit, ok := r.aheadChecks[key]
@@ -424,9 +429,13 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		if err == nil && access != nil {
 			auth = access.auth
 		}
-		if err == nil && helm {
+		switch {
+		case err != nil:
+		case helm:
 			hit, err = r.lookAtHelm(ctx, summary, app, st, auth)
-		} else if err == nil {
+		case kust:
+			hit, err = r.lookAtKustomize(ctx, summary, app, st, auth)
+		default:
 			hit, err = r.lookAtRepository(ctx, summary, st, recurse, auth)
 		}
 		if err != nil {
@@ -444,7 +453,11 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		if hit.err != nil {
 			cause = redactText(hit.err.Error())
 		}
-		logf.FromContext(ctx).Info("Cannot tell whether Git changed what the Application is made of; pausing drift detection",
+		log := logf.FromContext(ctx)
+		if kust && hit.err == nil {
+			log = log.V(1) // a kustomization that cannot be followed stays so until it is changed
+		}
+		log.Info("Cannot tell whether Git changed what the Application is made of; pausing drift detection",
 			"application", summary.Name, "cause", cause)
 		return 0, false
 	}

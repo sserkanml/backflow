@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
+	"slices"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -79,6 +81,30 @@ func helmFingerprint(app *unstructured.Unstructured, summary backflowv1alpha1.Ap
 // tree that cannot be read is an error, tried again later.
 func (r *DriftReconciler) lookAtHelm(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
 	app *unstructured.Unstructured, st aheadState, auth *gitrepo.Auth) (aheadCheck, error) {
+	return r.countRelevant(ctx, summary, st, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
+		rel, err := helmmap.RelevantFiles(fsys, helmSpecAt(app, summary.RepoURL, summary.Path, sha))
+		if err != nil {
+			if helmmap.ReasonOf(err) != "" || errors.Is(err, helmmap.ErrNotAChart) {
+				return nil, fmt.Sprintf("%v (at %s)", err, shortRevision(sha)), nil
+			}
+			return nil, "", err
+		}
+		return rel, "", nil
+	})
+}
+
+// relevantFiles tells whether a changed path is one a render depends on.
+type relevantFiles interface {
+	Matches(path string) bool
+}
+
+// countRelevant counts the changed files that a render depends on, at either
+// revision (a file the Application stopped using still counts, as does one it
+// started to use). at works out the files for the tree of one revision; it
+// returns a reason when they cannot be told, which gives no answer for good
+// (unchecked); a tree that cannot be read is an error, tried again later.
+func (r *DriftReconciler) countRelevant(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
+	st aheadState, auth *gitrepo.Auth, at func(fsys fs.FS, sha string) (rel relevantFiles, unchecked string, err error)) (aheadCheck, error) {
 	opener, ok := r.Git.(TreeOpener)
 	if !ok {
 		return aheadCheck{unchecked: "the repository's files cannot be read"}, nil
@@ -88,29 +114,25 @@ func (r *DriftReconciler) lookAtHelm(ctx context.Context, summary backflowv1alph
 		return aheadCheck{}, err
 	}
 
-	var relevance *helmmap.Relevance
+	var relevant []relevantFiles
 	for _, sha := range []string{st.synced, st.compared} {
 		fsys, release, err := opener.OpenTree(ctx, summary.RepoURL, sha, auth)
 		if err != nil {
 			return aheadCheck{}, err
 		}
-		rel, err := helmmap.RelevantFiles(fsys, helmSpecAt(app, summary.RepoURL, summary.Path, sha))
+		rel, unchecked, err := at(fsys, sha)
 		release()
 		if err != nil {
-			if helmmap.ReasonOf(err) != "" || errors.Is(err, helmmap.ErrNotAChart) {
-				return aheadCheck{unchecked: fmt.Sprintf("%v (at %s)", err, shortRevision(sha))}, nil
-			}
 			return aheadCheck{}, err
 		}
-		if relevance == nil {
-			relevance = rel
-		} else {
-			relevance.Merge(rel)
+		if unchecked != "" {
+			return aheadCheck{unchecked: unchecked}, nil
 		}
+		relevant = append(relevant, rel)
 	}
 	n := 0
 	for _, p := range paths {
-		if relevance.Matches(p) {
+		if slices.ContainsFunc(relevant, func(rel relevantFiles) bool { return rel.Matches(p) }) {
 			n++
 		}
 	}
