@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 const (
@@ -172,7 +174,7 @@ func TestVerifyOverrideRejected(t *testing.T) {
 	f := drift(t, env.src, env.files, 0, "TIMEOUT", "30", "45")
 	rend := &demoRenderer{src: env.src, failWhen: func(values map[string]any) error {
 		if get(values, "config", "timeout") == 45 || str(get(values, "config", "timeout")) == "45" {
-			return ErrRenderFailed
+			return rendermap.ErrRenderFailed
 		}
 		return nil
 	}}

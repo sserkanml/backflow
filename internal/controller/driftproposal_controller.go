@@ -34,7 +34,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
-	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -66,11 +66,11 @@ type DriftProposalReconciler struct {
 	// Recorder emits Events about proposals. Optional.
 	Recorder events.EventRecorder
 	// NewRenderer builds the renderer of Helm sources from the Argo CD
-	// connection of a policy. Defaults to a helmmap.ArgoRenderer over argocd.New.
-	NewRenderer func(argocd.Config) (helmmap.Renderer, error)
+	// connection of a policy. Defaults to a rendermap.ArgoRenderer over argocd.New.
+	NewRenderer func(argocd.Config) (rendermap.Renderer, error)
 
-	renderers argoClientCache[helmmap.Renderer] // per policy, so connections are reused
-	memos     mappingMemos                      // the mapping of a proposal, for the push (see mapForHead)
+	renderers argoClientCache[rendermap.Renderer] // per policy, so connections are reused
+	memos     mappingMemos                        // the mapping of a proposal, for the push (see mapForHead)
 }
 
 // trackEvery is how often an open merge request is polled.

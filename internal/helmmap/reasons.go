@@ -1,6 +1,10 @@
 package helmmap
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
+)
 
 // Reasons are machine-readable causes for a proposal that stays unmapped. They
 // are meant for a condition reason, so they are CamelCase constants.
@@ -56,9 +60,9 @@ func ReasonOf(err error) string {
 		return ReasonDependencyOutsideRepo
 	case errors.Is(err, ErrArgoSourceOverrides):
 		return ReasonArgoSourceOverrides
-	case errors.Is(err, ErrRenderFailed):
+	case errors.Is(err, rendermap.ErrRenderFailed):
 		return ReasonRenderFailed
-	case errors.Is(err, ErrFilesTooLarge):
+	case errors.Is(err, rendermap.ErrFilesTooLarge):
 		return ReasonFilesTooLarge
 	}
 	return ""

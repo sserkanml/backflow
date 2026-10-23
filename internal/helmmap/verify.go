@@ -17,6 +17,7 @@ import (
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/mapping"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // Defaults of Options.
@@ -97,7 +98,7 @@ type Field struct {
 
 // Input is a proposal to verify: some fields of one resource.
 type Input struct {
-	App      App
+	App      rendermap.App
 	Resource ResourceKey
 	Fields   []Field
 	Source   *Source
@@ -504,7 +505,7 @@ func (f parsedField) reached(l leaves) bool {
 // run holds the state of one Verify.
 type run struct {
 	ctx     context.Context //nolint:containedctx // scoped to one call
-	r       Renderer
+	r       rendermap.Renderer
 	in      Input
 	renders int
 	// budget is set once the time budget ran out.
@@ -614,7 +615,7 @@ func (v *run) budgetOr(err error) error {
 // live value. It returns an error for failures a retry can fix (Argo CD
 // unreachable, say); everything else about the proposal is an Unmapped
 // Outcome.
-func Verify(ctx context.Context, r Renderer, in Input, opts Options) (*Outcome, error) {
+func Verify(ctx context.Context, r rendermap.Renderer, in Input, opts Options) (*Outcome, error) {
 	if opts.MaxCandidates <= 0 {
 		opts.MaxCandidates = DefaultMaxCandidates
 	}
@@ -978,7 +979,7 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 		if len(set) > 1 {
 			snap, err := v.render(files)
 			switch {
-			case errors.Is(err, ErrRenderFailed):
+			case errors.Is(err, rendermap.ErrRenderFailed):
 				interacted = append(interacted, describeSet(set)+": the chart does not render with all the edits together")
 				continue
 			case err != nil:
@@ -1355,7 +1356,7 @@ func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, add
 		}
 		snap, err := v.render(files)
 		switch {
-		case errors.Is(err, ErrRenderFailed):
+		case errors.Is(err, rendermap.ErrRenderFailed):
 			t.why = "the chart does not render with it"
 			continue
 		case err != nil:
@@ -1552,9 +1553,9 @@ func pointers(fields []parsedField) string {
 // Outcome when it is about the chart, and into an error when a retry may help.
 func (v *run) baseFailure(err error) (*Outcome, error) {
 	switch {
-	case errors.Is(err, ErrRenderFailed):
+	case errors.Is(err, rendermap.ErrRenderFailed):
 		return unmapped(ReasonRenderFailed, "the chart does not render: %v", err), nil
-	case errors.Is(err, ErrFilesTooLarge):
+	case errors.Is(err, rendermap.ErrFilesTooLarge):
 		return unmapped(ReasonFilesTooLarge, "%v", err), nil
 	case errors.Is(err, errDuplicateResource):
 		return unmapped(ReasonRenderMismatch, "%v", err), nil
@@ -1563,7 +1564,7 @@ func (v *run) baseFailure(err error) (*Outcome, error) {
 }
 
 func (v *run) renderErr(err error) (*Outcome, error) {
-	if errors.Is(err, ErrFilesTooLarge) {
+	if errors.Is(err, rendermap.ErrFilesTooLarge) {
 		return unmapped(ReasonFilesTooLarge, "%v", err), nil
 	}
 	return nil, err

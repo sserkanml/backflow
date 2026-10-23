@@ -18,6 +18,7 @@ import (
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/mapping"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // Reasons of the Mapped condition for Helm sources that come from the
@@ -258,12 +259,12 @@ func fullHelmSpec(app *unstructured.Unstructured, repoURL, path, sha string) hel
 }
 
 // helmAppOf describes the Application to the renderer.
-func helmAppOf(app *unstructured.Unstructured) helmmap.App {
+func helmAppOf(app *unstructured.Unstructured) rendermap.App {
 	str := func(path ...string) string {
 		v, _, _ := unstructured.NestedString(app.Object, path...)
 		return v
 	}
-	out := helmmap.App{
+	out := rendermap.App{
 		Name: app.GetName(), Namespace: app.GetNamespace(), Project: str("spec", "project"),
 		DestNamespace: str("spec", "destination", "namespace"),
 		ReleaseName:   str("spec", "source", "helm", "releaseName"),
@@ -273,7 +274,7 @@ func helmAppOf(app *unstructured.Unstructured) helmmap.App {
 	}
 	if res, known := appResources(app); known {
 		for _, a := range res {
-			out.Resources = append(out.Resources, helmmap.ListedResource{Group: a.Group, Kind: a.Kind, Namespace: a.Namespace, Name: a.Name})
+			out.Resources = append(out.Resources, rendermap.ListedResource{Group: a.Group, Kind: a.Kind, Namespace: a.Namespace, Name: a.Name})
 		}
 	}
 	return out
@@ -281,7 +282,7 @@ func helmAppOf(app *unstructured.Unstructured) helmmap.App {
 
 // renderer returns the proposal's policy's renderer: it talks to Argo CD with
 // the policy's URL, token and TLS settings, the same as the drift controller.
-func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (helmmap.Renderer, error) {
+func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (rendermap.Renderer, error) {
 	if policy.Spec.ArgoCD == nil {
 		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD", policy.Name)}
 	}
@@ -291,12 +292,12 @@ func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflow
 	}
 	build := r.NewRenderer
 	if build == nil {
-		build = func(c argocd.Config) (helmmap.Renderer, error) {
+		build = func(c argocd.Config) (rendermap.Renderer, error) {
 			cl, err := argocd.New(c)
 			if err != nil {
 				return nil, err
 			}
-			return &helmmap.ArgoRenderer{Client: cl}, nil
+			return &rendermap.ArgoRenderer{Client: cl}, nil
 		}
 	}
 	return r.renderers.get(policy.Namespace+"/"+policy.Name, cfg, build)
