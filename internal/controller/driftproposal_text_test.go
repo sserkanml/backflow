@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
-	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -323,7 +322,7 @@ func TestOverrideTexts(t *testing.T) {
 		Edits:    []backflowv1alpha1.SourceEdit{{File: "env/prod.yaml", Location: "config.mode", Value: `"a|b"`, ChangeIndex: 0}},
 	}
 	dp.Spec.Changes = dp.Spec.Changes[:1]
-	overrides := []helmmap.AppliedOverride{{
+	overrides := []rendermap.AppliedOverride{{
 		File: "env/prod.yaml", Path: rendermap.KeyPath{"config", "mode"}, Value: `"a|b"`,
 		Default: rendermap.Default{File: "chart/values.yaml", Key: rendermap.KeyPath{"config", "mode"}, Value: "fast"},
 	}}

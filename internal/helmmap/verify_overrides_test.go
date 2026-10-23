@@ -13,7 +13,7 @@ const (
 	ovDefaults = "helm/demo/values.yaml"
 )
 
-var ovOn = Options{AddOverrides: true}
+var ovOn = rendermap.Options{AddOverrides: true}
 
 // A default only the chart defines is overridden in the last value file.
 func TestVerifyOverrideInLastValueFile(t *testing.T) {
@@ -54,9 +54,9 @@ func TestVerifyOverrideInLastValueFile(t *testing.T) {
 func TestVerifyOverridesOffKeepsUnmapped(t *testing.T) {
 	env := newDemo(t, Spec{})
 	f := drift(t, env.src, env.files, 0, "TIMEOUT", "30", "45")
-	for name, opts := range map[string]Options{"zero value": {}, "explicitly off": {AddOverrides: false}} {
+	for name, opts := range map[string]rendermap.Options{"zero value": {}, "explicitly off": {AddOverrides: false}} {
 		out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, f), opts)
-		if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate ||
+		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNoVerifiedCandidate ||
 			!strings.Contains(out.Unmapped.Message, "chart defaults are not edited") {
 			t.Errorf("%s: out = %+v, err = %v", name, out.Unmapped, err)
 		}
@@ -88,7 +88,7 @@ func TestVerifyOverridesAfterExistingEdits(t *testing.T) {
 // One field edits a line, the other adds an override.
 func TestVerifyOverrideNextToEdit(t *testing.T) {
 	env := newDemo(t, Spec{})
-	fields := []Field{
+	fields := []rendermap.Field{
 		drift(t, env.src, env.files, 0, "REGION", "eu-central-1", "us-west-2"),
 		drift(t, env.src, env.files, 1, "TIMEOUT", "30", "45"),
 	}
@@ -179,7 +179,7 @@ func TestVerifyOverrideRejected(t *testing.T) {
 		return nil
 	}}
 	out, err := Verify(context.Background(), rend, env.input(keyConfig, f), ovOn)
-	if err != nil || out.Mapped() || out.Unmapped.Reason != ReasonNoVerifiedCandidate ||
+	if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNoVerifiedCandidate ||
 		!strings.Contains(out.Unmapped.Message, "(a new key)") || !strings.Contains(out.Unmapped.Message, "does not render") {
 		t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 	}
@@ -188,12 +188,12 @@ func TestVerifyOverrideRejected(t *testing.T) {
 // With partial proposals the override covers its field and the others stay left out.
 func TestVerifyOverridePartial(t *testing.T) {
 	env := newDemo(t, Spec{})
-	fields := []Field{
+	fields := []rendermap.Field{
 		drift(t, env.src, env.files, 0, "TIMEOUT", "30", "45"),
 		drift(t, env.src, env.files, 1, "LOG_LEVEL_UP", "DEBUG", "TRACE"), // derived: no key holds it
 	}
 	out, err := Verify(context.Background(), &demoRenderer{src: env.src}, env.input(keyConfig, fields...),
-		Options{AddOverrides: true, AllowPartial: true})
+		rendermap.Options{AddOverrides: true, AllowPartial: true})
 	if err != nil || !out.Mapped() {
 		t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 	}

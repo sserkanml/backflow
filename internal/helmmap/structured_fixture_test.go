@@ -44,7 +44,7 @@ func (r *structRenderer) Render(_ context.Context, app rendermap.App, files map[
 	if err != nil {
 		return nil, err
 	}
-	v := mergeValues(layers)
+	v := rendermap.MergeLayers(layers)
 	mapOf := func(key string) map[string]any { m, _ := v[key].(map[string]any); return m }
 	listOf := func(key string) []any { l, _ := v[key].([]any); return l }
 
@@ -129,7 +129,7 @@ resources: {{- if .Values.resources }}{{ toYaml .Values.resources | nindent 2 }}
 
 var (
 	appStruct = rendermap.App{Name: "web-prod", Namespace: "argocd", Project: "default", DestNamespace: "prod"}
-	keyWeb    = ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "web"}
+	keyWeb    = rendermap.ResourceKey{Group: "apps", Kind: "Deployment", Namespace: "prod", Name: "web"}
 )
 
 type structCase struct {
@@ -139,7 +139,7 @@ type structCase struct {
 	files  map[string][]byte
 	rend   *structRenderer
 	base   *unstructured.Unstructured
-	fields []Field
+	fields []rendermap.Field
 }
 
 // newStructCase builds the repository with the given environment values and
@@ -170,7 +170,7 @@ func newStructCase(t *testing.T, env string) *structCase {
 
 // drift patches the live state of the Deployment and returns the outcome of
 // mapping what changed.
-func (c *structCase) drift(mutate func(live map[string]any), opts Options) *Outcome {
+func (c *structCase) drift(mutate func(live map[string]any), opts rendermap.Options) *rendermap.Outcome {
 	c.t.Helper()
 	live := c.base.DeepCopy()
 	mutate(live.Object)
@@ -183,7 +183,7 @@ func (c *structCase) drift(mutate func(live map[string]any), opts Options) *Outc
 		c.t.Fatal(err)
 	}
 	c.fields = fields
-	out, err := Verify(context.Background(), c.rend, Input{App: appStruct, Resource: keyWeb, Fields: fields, Provider: c.src, Writer: ValuesWriter{}, Files: c.files}, opts)
+	out, err := Verify(context.Background(), c.rend, Input{App: appStruct, Resource: keyWeb, Fields: fields, Source: c.src, Files: c.files}, opts)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func containerOf(o map[string]any) map[string]any {
 }
 
 // edited returns the new content of the one edited file.
-func edited(t *testing.T, out *Outcome) string {
+func edited(t *testing.T, out *rendermap.Outcome) string {
 	t.Helper()
 	if !out.Mapped() {
 		t.Fatalf("unmapped: %s: %s", out.Unmapped.Reason, out.Unmapped.Message)

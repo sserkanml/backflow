@@ -6,7 +6,6 @@ import (
 	"unicode"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
-	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -81,7 +80,7 @@ func mappedChanges(dp *backflowv1alpha1.DriftProposal, left []leftOutField) []ba
 // commitMessage lists the changed paths and names the proposal. The actor is
 // recorded as a trailer: the Kubernetes user has no Git identity, so the
 // commit is authored by the committer.
-func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []helmmap.AppliedOverride) string {
+func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride) string {
 	var b strings.Builder
 	b.WriteString(commitSubject(dp, left))
 	b.WriteString("\n\nChanged paths:\n")
@@ -183,7 +182,7 @@ func fenceFor(text string) string {
 // mergeRequestBody explains the change to the reviewer: what changed, who
 // changed it, the diff, which proposal it belongs to, and what merging or
 // closing means.
-func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []helmmap.AppliedOverride, diff string) string {
+func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, diff string) string {
 	var b strings.Builder
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.Resource)))
@@ -284,7 +283,7 @@ type helmRow struct{ file, key, old, new string }
 // strategy: the value file, the key path, and the value before and after. The
 // old value is the one the change expected in Git, which is the value the key
 // held (candidates are found by that value). Empty for other strategies.
-func helmEditRows(dp *backflowv1alpha1.DriftProposal, overrides []helmmap.AppliedOverride) []helmRow {
+func helmEditRows(dp *backflowv1alpha1.DriftProposal, overrides []rendermap.AppliedOverride) []helmRow {
 	m := dp.Status.Mapping
 	if m == nil || m.Strategy != backflowv1alpha1.StrategyHelmValues {
 		return nil
@@ -311,7 +310,7 @@ func helmEditRows(dp *backflowv1alpha1.DriftProposal, overrides []helmmap.Applie
 
 // overrideOf returns the override an edit of file at a key (as shown in the
 // status) is, or nil for an edit of an existing line.
-func overrideOf(overrides []helmmap.AppliedOverride, file, key string) *helmmap.AppliedOverride {
+func overrideOf(overrides []rendermap.AppliedOverride, file, key string) *rendermap.AppliedOverride {
 	for i := range overrides {
 		if overrides[i].File == file && overrides[i].Path.String() == key {
 			return &overrides[i]
@@ -321,7 +320,7 @@ func overrideOf(overrides []helmmap.AppliedOverride, file, key string) *helmmap.
 }
 
 // overrideValue is the value an override writes, as a template renders it.
-func overrideValue(o helmmap.AppliedOverride) string {
+func overrideValue(o rendermap.AppliedOverride) string {
 	if v, ok := scalarOf(o.Value); ok {
 		return rendermap.RenderValue(v)
 	}

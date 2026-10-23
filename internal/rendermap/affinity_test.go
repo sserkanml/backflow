@@ -1,4 +1,4 @@
-package helmmap
+package rendermap
 
 import "testing"
 

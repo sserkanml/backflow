@@ -1,4 +1,4 @@
-package helmmap
+package rendermap
 
 import (
 	"encoding/json"
@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-
-	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // Structured candidates are the edits of value files that can bring a map or a
@@ -21,9 +19,9 @@ import (
 // resource has in Git (its base render), and a render decides, as for scalars.
 
 // Kinds of structured edits.
-// mergeValues merges the layers the way Helm does: maps key by key, anything
+// MergeLayers merges the layers the way Helm does: maps key by key, anything
 // else replaced by the later layer, null removes the key.
-func mergeValues(layers []rendermap.Layer) map[string]any {
+func MergeLayers(layers []Layer) map[string]any {
 	out := map[string]any{}
 	for _, l := range layers {
 		mergeInto(out, l.Tree)
@@ -68,7 +66,7 @@ func deepCopy(v any) any {
 }
 
 // getAt returns the value at a key path through maps.
-func getAt(tree any, path rendermap.KeyPath) (any, bool) {
+func getAt(tree any, path KeyPath) (any, bool) {
 	cur := tree
 	for _, seg := range path {
 		m, ok := cur.(map[string]any)
@@ -84,15 +82,15 @@ func getAt(tree any, path rendermap.KeyPath) (any, bool) {
 
 // valueNode is a map or list of the merged values.
 type valueNode struct {
-	path  rendermap.KeyPath
+	path  KeyPath
 	value any
 }
 
 // valueNodes lists the maps and lists of the merged values, outside lists.
 func valueNodes(merged map[string]any) []valueNode {
 	var out []valueNode
-	var walk func(path rendermap.KeyPath, m map[string]any)
-	walk = func(path rendermap.KeyPath, m map[string]any) {
+	var walk func(path KeyPath, m map[string]any)
+	walk = func(path KeyPath, m map[string]any) {
 		for _, k := range slices.Sorted(maps.Keys(m)) {
 			p := path.Child(k)
 			switch v := m[k].(type) {
@@ -290,12 +288,12 @@ func removeAtRel(root any, rel []string) {
 }
 
 func sameValue(a, b any) bool {
-	return reflect.DeepEqual(rendermap.ToJSONValue(a), rendermap.ToJSONValue(b))
+	return reflect.DeepEqual(ToJSONValue(a), ToJSONValue(b))
 }
 
 // structCand is a structured edit and the fields it is proposed for.
 type structCand struct {
-	cand   rendermap.Candidate
+	cand   Candidate
 	value  string
 	origin []int
 	score  int
@@ -335,7 +333,7 @@ func (v *run) structuredCandidates(base snapshot, fields []parsedField, opts Opt
 	if err != nil {
 		return ss
 	}
-	merged := mergeValues(layers)
+	merged := MergeLayers(layers)
 	nodes := valueNodes(merged)
 	res := base[v.in.Resource]
 	g := &structGen{run: v, provider: p, layers: layers, nodes: nodes, base: res, fields: fields, seen: map[string]*structCand{},
@@ -388,8 +386,8 @@ func escapeSegments(segs []string) []string {
 // structGen collects the candidates of one Verify.
 type structGen struct {
 	run      *run
-	provider rendermap.Provider
-	layers   []rendermap.Layer
+	provider Provider
+	layers   []Layer
 	nodes    []valueNode
 	base     leaves
 	fields   []parsedField
@@ -404,7 +402,7 @@ type structGen struct {
 }
 
 // definedIn returns the last value file (not a default) that has the key.
-func (g *structGen) definedIn(path rendermap.KeyPath) (string, bool) {
+func (g *structGen) definedIn(path KeyPath) (string, bool) {
 	for _, l := range slices.Backward(g.layers) {
 		if l.IsDefault {
 			continue
@@ -417,7 +415,7 @@ func (g *structGen) definedIn(path rendermap.KeyPath) (string, bool) {
 }
 
 // defaultOf describes the chart default that holds the key.
-func (g *structGen) defaultOf(path rendermap.KeyPath) *rendermap.Default {
+func (g *structGen) defaultOf(path KeyPath) *Default {
 	for _, l := range slices.Backward(g.layers) {
 		if !l.IsDefault {
 			continue
@@ -427,11 +425,11 @@ func (g *structGen) defaultOf(path rendermap.KeyPath) *rendermap.Default {
 			if l.Prefix != "" && len(path) > 0 && path[0] == l.Prefix {
 				key = path[1:]
 			}
-			text, _ := rendermap.JSONText(val)
+			text, _ := JSONText(val)
 			if len(text) > 80 {
 				text = text[:77] + "..."
 			}
-			return &rendermap.Default{File: l.Name, Key: key, Value: text}
+			return &Default{File: l.Name, Key: key, Value: text}
 		}
 	}
 	return nil
@@ -440,9 +438,9 @@ func (g *structGen) defaultOf(path rendermap.KeyPath) *rendermap.Default {
 // emit records an edit: an edit of the file that defines the anchor (the key
 // itself, or the map a key is added to), or when no value file does, an override
 // in the file that receives overrides.
-func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any, level, score int, origin []int, mustBeDefined bool) {
+func (g *structGen) emit(kind string, path, anchor KeyPath, value any, level, score int, origin []int, mustBeDefined bool) {
 	var file string
-	var def *rendermap.Default
+	var def *Default
 	override := false
 	if f, ok := g.definedIn(anchor); ok {
 		file = f
@@ -463,7 +461,7 @@ func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any,
 			return
 		}
 	}
-	edit := &rendermap.StructuredEdit{Kind: kind, Value: value}
+	edit := &StructuredEdit{Kind: kind, Value: value}
 	k := fmt.Sprintf("%s\x00%s\x00%s\x00%v", file, path, edit.Text(), override)
 	if prev, ok := g.seen[k]; ok {
 		for _, o := range origin {
@@ -475,7 +473,7 @@ func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any,
 		return
 	}
 	c := &structCand{
-		cand:   rendermap.Candidate{File: file, Path: path, Override: override, Default: def, Structured: edit},
+		cand:   Candidate{File: file, Path: path, Override: override, Default: def, Structured: edit},
 		value:  edit.Text(),
 		origin: slices.Clone(origin),
 		score:  score,
@@ -564,7 +562,7 @@ func (g *structGen) rules(in ruleInput) {
 }
 
 func (g *structGen) set(in ruleInput, value any, score int) {
-	g.emit(rendermap.EditSet, in.n.path, in.n.path, value, in.level, score, in.origin, false)
+	g.emit(EditSet, in.n.path, in.n.path, value, in.level, score, in.origin, false)
 }
 
 // ruleSameValue: the key holds what the resource has in Git, so it is set to
@@ -651,9 +649,9 @@ func (g *structGen) ruleKey(in ruleInput) {
 	_, has := nm[key]
 	switch {
 	case in.f0.hasLive && !in.f0.hasDesired && !has: // a key appears
-		g.emit(rendermap.EditSet, in.n.path.Child(key), in.n.path, in.f0.liveV, in.level, score, in.origin, false)
+		g.emit(EditSet, in.n.path.Child(key), in.n.path, in.f0.liveV, in.level, score, in.origin, false)
 	case in.f0.hasDesired && !in.f0.hasLive && has: // a key disappears
-		g.emit(rendermap.EditRemoveKey, in.n.path.Child(key), in.n.path.Child(key), nil, in.level, score, in.origin, true)
+		g.emit(EditRemoveKey, in.n.path.Child(key), in.n.path.Child(key), nil, in.level, score, in.origin, true)
 	}
 }
 

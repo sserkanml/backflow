@@ -21,7 +21,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
-	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -422,7 +422,7 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField, overrides []helmmap.AppliedOverride) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, left []leftOutField, overrides []rendermap.AppliedOverride) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}

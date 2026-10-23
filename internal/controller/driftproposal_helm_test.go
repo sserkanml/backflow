@@ -431,7 +431,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			drifted(regionChange, gone)
 			got := mapOnce()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonRenderMismatch))
+			Expect(condition(conditionMapped).Reason).To(Equal(rendermap.ReasonRenderMismatch))
 			Expect(got.Status.Mapping.Unmapped).To(BeEmpty())
 		})
 
@@ -443,7 +443,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
 			Expect(condition(conditionMapped).Message).To(And(ContainSubstring("1 of 2"), ContainSubstring("/data/REGION"),
-				ContainSubstring("/data/EXTRA"), ContainSubstring(helmmap.ReasonRenderMismatch)))
+				ContainSubstring("/data/EXTRA"), ContainSubstring(rendermap.ReasonRenderMismatch)))
 			m := got.Status.Mapping
 			Expect(m.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
 			Expect(m.Verified).To(BeTrue())
@@ -452,7 +452,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}}))
 			Expect(m.Unmapped).To(HaveLen(1))
 			Expect(m.Unmapped[0].Path).To(Equal("/data/EXTRA"))
-			Expect(m.Unmapped[0].Reason).To(Equal(helmmap.ReasonRenderMismatch))
+			Expect(m.Unmapped[0].Reason).To(Equal(rendermap.ReasonRenderMismatch))
 			Expect(m.Unmapped[0].Message).NotTo(BeEmpty())
 			Expect(got.Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{regionChange, gone}), "the spec lists every change")
 		})
@@ -467,7 +467,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(got.Status.Mapping.Edits[0].ChangeIndex).To(Equal(int32(1)))
 			Expect(got.Status.Mapping.Unmapped).To(HaveLen(1))
 			Expect(got.Status.Mapping.Unmapped[0].Path).To(Equal("/data/TIMEOUT"))
-			Expect(got.Status.Mapping.Unmapped[0].Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+			Expect(got.Status.Mapping.Unmapped[0].Reason).To(Equal(rendermap.ReasonNoVerifiedCandidate))
 		})
 
 		It("opens a merge request that says it is partial and lists what it leaves out", func() {
@@ -514,7 +514,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			drifted(gone)
 			got := mapOnce()
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonRenderMismatch))
+			Expect(condition(conditionMapped).Reason).To(Equal(rendermap.ReasonRenderMismatch))
 		})
 	})
 
@@ -613,7 +613,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-			Expect(condition(conditionMapped).Reason).To(Equal(helmmap.ReasonNoVerifiedCandidate))
+			Expect(condition(conditionMapped).Reason).To(Equal(rendermap.ReasonNoVerifiedCandidate))
 			Expect(condition(conditionMapped).Message).To(ContainSubstring("chart defaults are not edited"))
 			Expect(provider.created).To(BeEmpty())
 		})
@@ -674,7 +674,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}
 			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
 			c := condition(conditionMapped)
-			Expect(c.Reason).To(Equal(helmmap.ReasonValueAffectsOtherFields))
+			Expect(c.Reason).To(Equal(rendermap.ReasonValueAffectsOtherFields))
 			for _, want := range []string{"image.tag", "1.28-alpine", "would reproduce " + imagePath, verLabel, podLabel} {
 				Expect(c.Message).To(ContainSubstring(want))
 			}
@@ -763,27 +763,27 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}}
 			})
-		}, helmmap.ReasonNoVerifiedCandidate, "chart's own defaults", "config.timeout"),
+		}, rendermap.ReasonNoVerifiedCandidate, "chart's own defaults", "config.timeout"),
 		Entry("a derived field: the nearest edit also moves another field", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"debug"`, Live: `"trace"`}}
 			})
-		}, helmmap.ReasonValueAffectsOtherFields, "config.logLevel", "would reproduce /data/LOG_LEVEL", "/data/LOG_LEVEL_UP", `current "DEBUG"`),
+		}, rendermap.ReasonValueAffectsOtherFields, "config.logLevel", "would reproduce /data/LOG_LEVEL", "/data/LOG_LEVEL_UP", `current "DEBUG"`),
 		Entry("two keys give the same result", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/AMBIGUOUS", Op: backflowv1alpha1.OpReplace, Desired: `"3"`, Live: `"5"`}}
 			})
-		}, helmmap.ReasonAmbiguousCandidates, "config.minA", "config.minB"),
+		}, rendermap.ReasonAmbiguousCandidates, "config.minA", "config.minB"),
 		Entry("the render does not give the value Git is expected to", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
 				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/REGION", Op: backflowv1alpha1.OpReplace, Desired: `"mars"`, Live: `"venus"`}}
 			})
-		}, helmmap.ReasonRenderMismatch, `"eu-central-1"`),
+		}, rendermap.ReasonRenderMismatch, `"eu-central-1"`),
 		Entry("the drifted resource is a Secret", func() {
 			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Resource.Kind, s.Resource.Name = "Secret", "tls" })
-		}, helmmap.ReasonSecretNotVerifiable, "Secret"),
+		}, rendermap.ReasonSecretNotVerifiable, "Secret"),
 		Entry("the chart does not render", func() { renderer.err = fmt.Errorf("%w: template: bad", rendermap.ErrRenderFailed) },
-			helmmap.ReasonRenderFailed, "does not render"),
+			rendermap.ReasonRenderFailed, "does not render"),
 		Entry("a value file does not exist", func() { setHelm(map[string]any{"valueFiles": []any{"values-gone.yaml"}}) },
 			helmmap.ReasonMissingValueFile, "values-gone.yaml"),
 		Entry("a value file leaves the repository", func() { setHelm(map[string]any{"valueFiles": []any{"../../../x.yaml"}}) },
@@ -934,7 +934,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonSourceChanged))
 			Expect(got.Status.Message).To(ContainSubstring(sourceChangedMessage))
-			Expect(got.Status.Message).To(ContainSubstring(helmmap.ReasonRenderMismatch))
+			Expect(got.Status.Message).To(ContainSubstring(rendermap.ReasonRenderMismatch))
 			Expect(provider.created).To(BeEmpty())
 		})
 

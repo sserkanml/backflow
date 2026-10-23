@@ -28,7 +28,7 @@ const (
 // policySet is a set of the policy options the mapping runs with.
 type policySet struct {
 	name string
-	opts helmmap.Options
+	opts rendermap.Options
 }
 
 // The suite maps every case under three policies: the defaults of a
@@ -38,13 +38,13 @@ type policySet struct {
 // overrides existed.
 func policySets() []policySet {
 	return []policySet{
-		{name: "default", opts: helmmap.Options{AddOverrides: true}},
-		{name: "permissive", opts: helmmap.Options{
+		{name: "default", opts: rendermap.Options{AddOverrides: true}},
+		{name: "permissive", opts: rendermap.Options{
 			AddOverrides:    true,
 			AllowPartial:    true,
-			AllowCollateral: []string{helmmap.CollateralLabels, helmmap.CollateralAnnotations},
+			AllowCollateral: []string{rendermap.CollateralLabels, rendermap.CollateralAnnotations},
 		}},
-		{name: "no-overrides", opts: helmmap.Options{}},
+		{name: "no-overrides", opts: rendermap.Options{}},
 	}
 }
 
@@ -180,7 +180,7 @@ func (l *loaded) runAll(ctx context.Context) ([]caseResult, error) {
 // mapChanges is the production path of mapping a Helm proposal: the fields of
 // the changes, then Verify (which renders).
 func (l *loaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured, changes []v1alpha1.FieldChange,
-	opts helmmap.Options) (outcome, error) {
+	opts rendermap.Options) (outcome, error) {
 	fields, err := helmmap.FieldsFor(l.src, l.files, changes)
 	if err != nil {
 		return outcome{Result: Unmapped, Reason: helmmap.ReasonInvalidInlineValues}, nil //nolint:nilerr // a verdict
@@ -188,8 +188,8 @@ func (l *loaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured,
 	gv := obj.GroupVersionKind()
 	out, err := helmmap.Verify(ctx, l.rend, helmmap.Input{
 		App:      l.app,
-		Resource: helmmap.ResourceKey{Group: gv.Group, Kind: obj.GetKind(), Namespace: obj.GetNamespace(), Name: obj.GetName()},
-		Fields:   fields, Provider: l.src, Writer: helmmap.ValuesWriter{}, Files: l.files,
+		Resource: rendermap.ResourceKey{Group: gv.Group, Kind: obj.GetKind(), Namespace: obj.GetNamespace(), Name: obj.GetName()},
+		Fields:   fields, Source: l.src, Files: l.files,
 	}, opts)
 	if err != nil {
 		return outcome{}, err
@@ -209,7 +209,7 @@ func (l *loaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured,
 	return o, nil
 }
 
-func editedKeys(out *helmmap.Outcome) string {
+func editedKeys(out *rendermap.Outcome) string {
 	var keys []string
 	for _, r := range out.Results {
 		for _, e := range r.Edits {
