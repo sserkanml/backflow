@@ -19,16 +19,6 @@ import (
 // ErrCannotSet means a value file cannot be edited with certainty.
 var ErrCannotSet = errors.New("cannot set the value")
 
-// Written is the outcome of SetValue.
-type Written struct {
-	// Result holds the edited file and its diff. Document is 0.
-	mapping.Result
-	// Line is the 1-based line of the edited key in the new file.
-	Line int
-	// Text is that line as it reads in the new file.
-	Text string
-}
-
 // SetValue sets one scalar in a value file and returns the whole new file.
 // Everything outside the edited entry stays as it was, including comments, key
 // order and the quoting style of the value (the YAML editor of
@@ -38,7 +28,7 @@ type Written struct {
 // int stays an int if value is "4", a bool stays a bool for "false". Otherwise
 // it is written as a string, so no value is ever converted to a type it did
 // not have. The key must exist and hold a scalar.
-func SetValue(file string, content []byte, key rendermap.KeyPath, value string) (*Written, error) {
+func SetValue(file string, content []byte, key rendermap.KeyPath, value string) (*rendermap.Written, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
@@ -77,7 +67,7 @@ func SetValue(file string, content []byte, key rendermap.KeyPath, value string) 
 	if node.Line >= 1 && node.Line <= len(lines) {
 		text = strings.TrimRight(lines[node.Line-1], "\r")
 	}
-	return &Written{
+	return &rendermap.Written{
 		Result: mapping.Result{
 			File:     file,
 			Document: 0,
@@ -204,7 +194,7 @@ func checkOnlyChanged(before, after []byte, key rendermap.KeyPath, want string) 
 // !!float, or !!str); the value keeps that type when it reads as that type, as
 // for SetValue. The file must not define the key, nor anything above or below
 // it: an override is only ever added where the file has nothing to say.
-func AddValue(file string, content []byte, key rendermap.KeyPath, value, defaultTag string) (*Written, error) {
+func AddValue(file string, content []byte, key rendermap.KeyPath, value, defaultTag string) (*rendermap.Written, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("%w: %s: an empty key path", ErrCannotSet, file)
 	}
@@ -250,7 +240,7 @@ func AddValue(file string, content []byte, key rendermap.KeyPath, value, default
 	if node.Line >= 1 && node.Line <= len(lines) {
 		text = strings.TrimRight(lines[node.Line-1], "\r")
 	}
-	return &Written{
+	return &rendermap.Written{
 		Result: mapping.Result{
 			File:     file,
 			Document: 0,

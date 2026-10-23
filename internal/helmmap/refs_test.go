@@ -51,7 +51,7 @@ image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
 		"tolerations":          false,
 	} {
 		k, _ := rendermap.ParseKeyPath(key)
-		if got := r.mentions(k); got != want {
+		if got := r.Mentions(k); got != want {
 			t.Errorf("mentions(%s) = %v, want %v", key, got, want)
 		}
 	}
@@ -65,7 +65,7 @@ func TestValueRefsBareValuesMakesEveryKeyRead(t *testing.T) {
 		"toYaml":         `{{ toYaml .Values }}`,
 	} {
 		r := refsOf(t, tpl)
-		if !r.all || !r.mentions(rendermap.KeyPath{"anything"}) {
+		if !r.all || !r.Mentions(rendermap.KeyPath{"anything"}) {
 			t.Errorf("%s: all = %v", name, r.all)
 		}
 	}
@@ -81,7 +81,7 @@ func TestValueRefsReadsPackagedCharts(t *testing.T) {
 	_ = tw.Close()
 	_ = gz.Close()
 	r := scanValueRefs(map[string][]byte{"c/charts/sub-1.0.0.tgz": buf.Bytes()})
-	if !r.mentions(rendermap.KeyPath{"sub", "setting"}) || r.mentions(rendermap.KeyPath{"other"}) {
+	if !r.Mentions(rendermap.KeyPath{"sub", "setting"}) || r.Mentions(rendermap.KeyPath{"other"}) {
 		t.Errorf("refs = %+v", r)
 	}
 	// What cannot be read could read anything.
@@ -92,14 +92,14 @@ func TestValueRefsReadsPackagedCharts(t *testing.T) {
 
 func TestValueRefsReadsTplStringsInValueFiles(t *testing.T) {
 	r := scanValueRefs(map[string][]byte{"c/values.yaml": []byte("greeting: \"{{ .Values.name }}\"\n")})
-	if !r.mentions(rendermap.KeyPath{"name"}) {
+	if !r.Mentions(rendermap.KeyPath{"name"}) {
 		t.Error("a tpl string in a value file reads .Values.name")
 	}
 }
 
 func TestValueRefsWithoutTemplatesProveNothing(t *testing.T) {
 	r := scanValueRefs(map[string][]byte{"c/values.yaml": []byte("a: 1\n")})
-	if !r.all || !r.mentions(rendermap.KeyPath{"a"}) || !r.mentions(rendermap.KeyPath{"b"}) {
+	if !r.all || !r.Mentions(rendermap.KeyPath{"a"}) || !r.Mentions(rendermap.KeyPath{"b"}) {
 		t.Errorf("no template was found: every key may be read, refs = %+v", r)
 	}
 }

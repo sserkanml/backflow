@@ -46,9 +46,9 @@ func TestFindOverridesInLastValueFile(t *testing.T) {
 	if len(got.Candidates) != 0 {
 		t.Errorf("candidates = %v, want none: no value file defines the key", got.Candidates)
 	}
-	want := []Candidate{{
+	want := []rendermap.Candidate{{
 		File: "c/prod.yaml", Path: rendermap.KeyPath{"config", "timeout"}, Override: true,
-		Default: &ChartDefault{File: "c/values.yaml", Key: rendermap.KeyPath{"config", "timeout"}, Value: "30", Tag: "!!int"},
+		Default: &rendermap.Default{File: "c/values.yaml", Key: rendermap.KeyPath{"config", "timeout"}, Value: "30", Tag: "!!int"},
 	}}
 	if !reflect.DeepEqual(got.Overrides, want) {
 		t.Errorf("overrides = %+v, want %+v", got.Overrides[0], want[0])
@@ -304,7 +304,7 @@ func TestFindUnreadDependencies(t *testing.T) {
 	}
 
 	t.Run("the message says the defaults are not in the repository", func(t *testing.T) {
-		f := parsedField{Field: Field{Found: got}, desired: `"anything"`}
+		f := parsedField{Field: Field{Found: got.Found()}, desired: `"anything"`}
 		msg := noCandidateDetail(f, nil, true)
 		for _, w := range []string{"cache, postgresql", "not in the repository", "downloads it when it renders", "cannot be overridden"} {
 			if !strings.Contains(msg, w) {
@@ -313,7 +313,7 @@ func TestFindUnreadDependencies(t *testing.T) {
 		}
 	})
 	t.Run("not when a key was found", func(t *testing.T) {
-		f := parsedField{Field: Field{Found: &Result{UnreadDependencies: []string{"cache"}, Candidates: []Candidate{{File: "x"}}}}, desired: `"x"`}
+		f := parsedField{Field: Field{Found: (&Result{UnreadDependencies: []string{"cache"}, Candidates: []rendermap.Candidate{{File: "x"}}}).Found()}, desired: `"x"`}
 		if msg := noCandidateDetail(f, []string{"x y: it does not reproduce the drift"}, true); strings.Contains(msg, "not in the repository") {
 			t.Errorf("message = %q", msg)
 		}

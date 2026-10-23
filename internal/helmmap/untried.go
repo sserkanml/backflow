@@ -28,7 +28,7 @@ const DefaultMaxConfirmations = 30
 
 // untriedKey is a candidate that was left out, with how well its key fit.
 type untriedKey struct {
-	cand  Candidate
+	cand  rendermap.Candidate
 	score int
 	field int
 	// rank is the stage the candidate would have been tried at, see stageRank.
@@ -54,7 +54,7 @@ func stageRank(fragments, overrides, ancestors bool) int {
 	return 0
 }
 
-func asUntried(cands []Candidate) []untriedKey {
+func asUntried(cands []rendermap.Candidate) []untriedKey {
 	out := make([]untriedKey, len(cands))
 	for i, c := range cands {
 		out[i] = untriedKey{cand: c}
@@ -87,13 +87,13 @@ func (v *run) liveUntried(field, maxRank int) []untriedKey {
 		return nil
 	}
 	if v.refs == nil {
-		v.refs = scanValueRefs(v.in.Files)
+		v.refs = v.in.Provider.References(v.in.Files)
 	}
 	seen := map[string]bool{}
 	var out []untriedKey
 	for _, u := range list {
 		k := fmt.Sprintf("%s %s %d", u.cand.File, u.cand.Path, u.rank)
-		if u.rank > maxRank || seen[k] || !v.refs.mentions(u.cand.Path) {
+		if u.rank > maxRank || seen[k] || !v.refs.Mentions(u.cand.Path) {
 			continue
 		}
 		seen[k] = true
@@ -216,10 +216,10 @@ func (v *run) confirm(base snapshot, nd nondeterminism, fields []parsedField, ke
 }
 
 // valueOf is the value an edit of the candidate writes for the field.
-func (v *run) valueOf(f parsedField, c Candidate) string {
+func (v *run) valueOf(f parsedField, c rendermap.Candidate) string {
 	switch {
 	case c.Structured != nil:
-		return c.Structured.text()
+		return c.Structured.Text()
 	case c.Fragment:
 		return c.NewValue
 	}

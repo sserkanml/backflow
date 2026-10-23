@@ -189,7 +189,7 @@ func (l *loaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured,
 	out, err := helmmap.Verify(ctx, l.rend, helmmap.Input{
 		App:      l.app,
 		Resource: helmmap.ResourceKey{Group: gv.Group, Kind: obj.GetKind(), Namespace: obj.GetNamespace(), Name: obj.GetName()},
-		Fields:   fields, Source: l.src, Files: l.files,
+		Fields:   fields, Provider: l.src, Writer: helmmap.ValuesWriter{}, Files: l.files,
 	}, opts)
 	if err != nil {
 		return outcome{}, err
@@ -213,7 +213,7 @@ func editedKeys(out *helmmap.Outcome) string {
 	var keys []string
 	for _, r := range out.Results {
 		for _, e := range r.Edits {
-			keys = append(keys, e.File+": "+helmmap.KeyPathFromPointer(e.Location).String())
+			keys = append(keys, e.File+": "+rendermap.KeyPathFromPointer(e.Location).String())
 		}
 	}
 	sort.Strings(keys)

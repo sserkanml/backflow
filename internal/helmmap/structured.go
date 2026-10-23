@@ -10,8 +10,6 @@ import (
 	"strings"
 
 	"github.com/sserkanml/backflow/internal/rendermap"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // Structured candidates are the edits of value files that can bring a map or a
@@ -23,102 +21,12 @@ import (
 // resource has in Git (its base render), and a render decides, as for scalars.
 
 // Kinds of structured edits.
-const (
-	// editSet sets a key to a map, a list or a scalar, creating it when the
-	// file does not have it.
-	editSet = "set"
-	// editRemoveKey removes a key from the file.
-	editRemoveKey = "removeKey"
-)
-
-// StructuredEdit is the edit of a Candidate that is not the change of one
-// scalar.
-type StructuredEdit struct {
-	Kind string
-	// Value is the decoded JSON to set; nil for editRemoveKey.
-	Value any
-}
-
-// text is the edit as one comparable string.
-func (e *StructuredEdit) text() string {
-	t, _ := jsonText(e.Value)
-	return e.Kind + ":" + t
-}
-
-// treeLayer is one layer of values as a decoded tree.
-type treeLayer struct {
-	name      string
-	tree      map[string]any
-	isDefault bool
-	// prefix is the key the layer's keys have in the parent chart, for a
-	// dependency's defaults; empty otherwise.
-	prefix string
-}
-
-// treeLayers decodes the layers of values, lowest precedence first (the same
-// layers as find reads): the defaults of the dependencies in the files, the
-// chart's own values.yaml, then the value files in order.
-func (s *Source) treeLayers(files map[string][]byte) ([]treeLayer, error) {
-	decode := func(name string, data []byte) (map[string]any, error) {
-		var m map[string]any
-		if err := yaml.Unmarshal(data, &m); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		if m == nil {
-			m = map[string]any{}
-		}
-		out, _ := toJSONValue(m).(map[string]any)
-		return out, nil
-	}
-	var layers []treeLayer
-	deps, _ := dependencyDefaults(files, s.ChartDir)
-	for _, dd := range deps {
-		m, err := decode(dd.file, dd.data)
-		if err != nil {
-			return nil, err
-		}
-		moved := map[string]any{}
-		for k, v := range m {
-			if k == "global" {
-				moved[k] = v
-			} else {
-				sub, _ := moved[dd.prefix].(map[string]any)
-				if sub == nil {
-					sub = map[string]any{}
-					moved[dd.prefix] = sub
-				}
-				sub[k] = v
-			}
-		}
-		layers = append(layers, treeLayer{name: dd.file, tree: moved, isDefault: true, prefix: dd.prefix})
-	}
-	if data, ok := files[s.ChartValues]; ok {
-		m, err := decode(s.ChartValues, data)
-		if err != nil {
-			return nil, err
-		}
-		layers = append(layers, treeLayer{name: s.ChartValues, tree: m, isDefault: true})
-	}
-	for _, name := range s.ValueFiles {
-		data, ok := files[name]
-		if !ok {
-			return nil, fmt.Errorf("value file %s was not provided", name)
-		}
-		m, err := decode(name, data)
-		if err != nil {
-			return nil, err
-		}
-		layers = append(layers, treeLayer{name: name, tree: m})
-	}
-	return layers, nil
-}
-
 // mergeValues merges the layers the way Helm does: maps key by key, anything
 // else replaced by the later layer, null removes the key.
-func mergeValues(layers []treeLayer) map[string]any {
+func mergeValues(layers []rendermap.Layer) map[string]any {
 	out := map[string]any{}
 	for _, l := range layers {
-		mergeInto(out, l.tree)
+		mergeInto(out, l.Tree)
 	}
 	return out
 }
@@ -381,11 +289,13 @@ func removeAtRel(root any, rel []string) {
 	}
 }
 
-func sameValue(a, b any) bool { return reflect.DeepEqual(toJSONValue(a), toJSONValue(b)) }
+func sameValue(a, b any) bool {
+	return reflect.DeepEqual(rendermap.ToJSONValue(a), rendermap.ToJSONValue(b))
+}
 
 // structCand is a structured edit and the fields it is proposed for.
 type structCand struct {
-	cand   Candidate
+	cand   rendermap.Candidate
 	value  string
 	origin []int
 	score  int
@@ -417,18 +327,18 @@ func (ss *structuredSet) any(level int, overrides bool) bool {
 // live state, from what the value files hold and what the resource has in Git.
 func (v *run) structuredCandidates(base snapshot, fields []parsedField, opts Options) *structuredSet {
 	ss := &structuredSet{}
-	src := v.in.Source
-	if src == nil {
+	p := v.in.Provider
+	if p == nil {
 		return ss
 	}
-	layers, err := src.treeLayers(v.in.Files)
+	layers, err := p.Layers(v.in.Files)
 	if err != nil {
 		return ss
 	}
 	merged := mergeValues(layers)
 	nodes := valueNodes(merged)
 	res := base[v.in.Resource]
-	g := &structGen{run: v, src: src, layers: layers, nodes: nodes, base: res, fields: fields, seen: map[string]*structCand{},
+	g := &structGen{run: v, provider: p, layers: layers, nodes: nodes, base: res, fields: fields, seen: map[string]*structCand{},
 		resTokens: tokens(v.in.Resource.Name)}
 
 	type target struct {
@@ -477,12 +387,12 @@ func escapeSegments(segs []string) []string {
 
 // structGen collects the candidates of one Verify.
 type structGen struct {
-	run    *run
-	src    *Source
-	layers []treeLayer
-	nodes  []valueNode
-	base   leaves
-	fields []parsedField
+	run      *run
+	provider rendermap.Provider
+	layers   []rendermap.Layer
+	nodes    []valueNode
+	base     leaves
+	fields   []parsedField
 	// resTokens are the words of the resource's name: redis-prod-master prefers
 	// master.podAnnotations over replica.podAnnotations.
 	resTokens map[string]bool
@@ -496,32 +406,32 @@ type structGen struct {
 // definedIn returns the last value file (not a default) that has the key.
 func (g *structGen) definedIn(path rendermap.KeyPath) (string, bool) {
 	for _, l := range slices.Backward(g.layers) {
-		if l.isDefault {
+		if l.IsDefault {
 			continue
 		}
-		if _, ok := getAt(l.tree, path); ok {
-			return l.name, true
+		if _, ok := getAt(l.Tree, path); ok {
+			return l.Name, true
 		}
 	}
 	return "", false
 }
 
 // defaultOf describes the chart default that holds the key.
-func (g *structGen) defaultOf(path rendermap.KeyPath) *ChartDefault {
+func (g *structGen) defaultOf(path rendermap.KeyPath) *rendermap.Default {
 	for _, l := range slices.Backward(g.layers) {
-		if !l.isDefault {
+		if !l.IsDefault {
 			continue
 		}
-		if val, ok := getAt(l.tree, path); ok {
+		if val, ok := getAt(l.Tree, path); ok {
 			key := path
-			if l.prefix != "" && len(path) > 0 && path[0] == l.prefix {
+			if l.Prefix != "" && len(path) > 0 && path[0] == l.Prefix {
 				key = path[1:]
 			}
-			text, _ := jsonText(val)
+			text, _ := rendermap.JSONText(val)
 			if len(text) > 80 {
 				text = text[:77] + "..."
 			}
-			return &ChartDefault{File: l.name, Key: key, Value: text}
+			return &rendermap.Default{File: l.Name, Key: key, Value: text}
 		}
 	}
 	return nil
@@ -532,7 +442,7 @@ func (g *structGen) defaultOf(path rendermap.KeyPath) *ChartDefault {
 // in the file that receives overrides.
 func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any, level, score int, origin []int, mustBeDefined bool) {
 	var file string
-	var def *ChartDefault
+	var def *rendermap.Default
 	override := false
 	if f, ok := g.definedIn(anchor); ok {
 		file = f
@@ -540,7 +450,7 @@ func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any,
 		if mustBeDefined {
 			return
 		}
-		target, why := g.src.overrideFile()
+		target, why := g.provider.OverrideFile()
 		if why != "" {
 			return
 		}
@@ -553,8 +463,8 @@ func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any,
 			return
 		}
 	}
-	edit := &StructuredEdit{Kind: kind, Value: value}
-	k := fmt.Sprintf("%s\x00%s\x00%s\x00%v", file, path, edit.text(), override)
+	edit := &rendermap.StructuredEdit{Kind: kind, Value: value}
+	k := fmt.Sprintf("%s\x00%s\x00%s\x00%v", file, path, edit.Text(), override)
 	if prev, ok := g.seen[k]; ok {
 		for _, o := range origin {
 			if !slices.Contains(prev.origin, o) {
@@ -565,8 +475,8 @@ func (g *structGen) emit(kind string, path, anchor rendermap.KeyPath, value any,
 		return
 	}
 	c := &structCand{
-		cand:   Candidate{File: file, Path: path, Override: override, Default: def, Structured: edit},
-		value:  edit.text(),
+		cand:   rendermap.Candidate{File: file, Path: path, Override: override, Default: def, Structured: edit},
+		value:  edit.Text(),
 		origin: slices.Clone(origin),
 		score:  score,
 	}
@@ -641,7 +551,7 @@ type ruleInput struct {
 
 // rules proposes the edits of one values node for a target.
 func (g *structGen) rules(in ruleInput) {
-	if _, controlled := g.src.inlineFor(in.n.path); controlled {
+	if g.provider.Controlled(in.n.path) {
 		return
 	}
 	g.ruleSameValue(in)
@@ -654,7 +564,7 @@ func (g *structGen) rules(in ruleInput) {
 }
 
 func (g *structGen) set(in ruleInput, value any, score int) {
-	g.emit(editSet, in.n.path, in.n.path, value, in.level, score, in.origin, false)
+	g.emit(rendermap.EditSet, in.n.path, in.n.path, value, in.level, score, in.origin, false)
 }
 
 // ruleSameValue: the key holds what the resource has in Git, so it is set to
@@ -741,9 +651,9 @@ func (g *structGen) ruleKey(in ruleInput) {
 	_, has := nm[key]
 	switch {
 	case in.f0.hasLive && !in.f0.hasDesired && !has: // a key appears
-		g.emit(editSet, in.n.path.Child(key), in.n.path, in.f0.liveV, in.level, score, in.origin, false)
+		g.emit(rendermap.EditSet, in.n.path.Child(key), in.n.path, in.f0.liveV, in.level, score, in.origin, false)
 	case in.f0.hasDesired && !in.f0.hasLive && has: // a key disappears
-		g.emit(editRemoveKey, in.n.path.Child(key), in.n.path.Child(key), nil, in.level, score, in.origin, true)
+		g.emit(rendermap.EditRemoveKey, in.n.path.Child(key), in.n.path.Child(key), nil, in.level, score, in.origin, true)
 	}
 }
 

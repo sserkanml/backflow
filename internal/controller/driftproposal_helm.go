@@ -407,7 +407,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	out, err := helmmap.Verify(ctx, rend, helmmap.Input{
 		App:      helmAppOf(app),
 		Resource: helmmap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
-		Fields:   fields, Source: src, Files: files,
+		Fields:   fields, Provider: src, Writer: helmmap.ValuesWriter{}, Files: files,
 	}, helmmap.Options{
 		AllowCollateral: allowedCollateral(policy), AllowPartial: policy.Spec.PartialAllowed(),
 		AddOverrides: policy.Spec.OverridesAllowed(),

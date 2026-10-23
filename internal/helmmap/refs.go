@@ -168,11 +168,11 @@ func (r *valueRefs) scanText(text string) {
 	}
 }
 
-// mentions reports whether a key may be read: a template reads the key, a key
+// Mentions reports whether a key may be read: a template reads the key, a key
 // above it (the map it is in) or a key below it. When the first segment is the
 // name or alias of a dependency, the dependency's templates read the key
 // without it.
-func (r *valueRefs) mentions(key rendermap.KeyPath) bool {
+func (r *valueRefs) Mentions(key rendermap.KeyPath) bool {
 	if r.all {
 		return true
 	}

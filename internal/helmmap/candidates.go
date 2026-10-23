@@ -9,43 +9,6 @@ import (
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
-// Candidate is a scalar in a value file whose effective value equals the old
-// value of a drifted field. It is only a candidate: the same value can feed
-// several fields, and a template may derive the field from it. Re-rendering
-// decides.
-type Candidate struct {
-	// File is the repository path of the value file.
-	File string
-	Path rendermap.KeyPath
-	// Fragment is set when only part of the drifted value is the key's value:
-	// the key holds the "1.27-alpine" of "nginx:1.27-alpine". NewValue is then
-	// what the key must become. A candidate for the whole value has neither;
-	// the value to write is the new value of the field.
-	Fragment bool
-	NewValue string
-	// Override is set when File does not define Path: the candidate adds the
-	// key to override a default of the chart. Default says which.
-	Override bool
-	Default  *ChartDefault
-	// Structured is set when the candidate is not the change of one scalar:
-	// a map or a list set at Path, or a key removed.
-	Structured *StructuredEdit
-}
-
-// ChartDefault is a default of the chart, or of one of its dependencies, that
-// feeds a drifted field.
-type ChartDefault struct {
-	// File is the values.yaml that defines it.
-	File string
-	// Key is the key path in that file. For a dependency it is the path in the
-	// dependency's own values, without its name or alias.
-	Key rendermap.KeyPath
-	// Value is the default as a template renders it.
-	Value string
-	// Tag is the YAML tag of the default (!!str, !!int, !!float, !!bool).
-	Tag string
-}
-
 // NoOverride is a chart default that cannot be overridden from a value file.
 type NoOverride struct {
 	Path   rendermap.KeyPath
@@ -65,7 +28,7 @@ type Controlled struct {
 type Result struct {
 	// Candidates are the editable matches, in the order of the value files
 	// and of the keys in each file.
-	Candidates []Candidate
+	Candidates []rendermap.Candidate
 	// ChartDefaults are matches found only in the chart's own values.yaml.
 	// That file is not edited; the value comes from the chart, not from the
 	// Application's repository configuration.
@@ -73,7 +36,7 @@ type Result struct {
 	// Overrides are the ways to set a chart default from the Application: the
 	// key added to the last value file, with the value the field has to get.
 	// They are only tried when no key a value file already defines works.
-	Overrides []Candidate
+	Overrides []rendermap.Candidate
 	// NoOverride says, for chart defaults that Overrides does not cover, why
 	// they cannot be overridden: a key under a list, or no value file to add to.
 	NoOverride []NoOverride
@@ -291,9 +254,9 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 					if key == nil {
 						key = d.path
 					}
-					def := &ChartDefault{File: l.name, Key: key, Value: d.value, Tag: d.tag}
+					def := &rendermap.Default{File: l.name, Key: key, Value: d.value, Tag: d.tag}
 					for _, o := range occurrences {
-						res.Overrides = append(res.Overrides, Candidate{
+						res.Overrides = append(res.Overrides, rendermap.Candidate{
 							File: target, Path: d.path, Fragment: fragments, NewValue: o.newValue,
 							Override: true, Default: def,
 						})
@@ -302,7 +265,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 				continue
 			}
 			for _, o := range occurrences {
-				res.Candidates = append(res.Candidates, Candidate{File: l.name, Path: d.path, Fragment: fragments, NewValue: o.newValue})
+				res.Candidates = append(res.Candidates, rendermap.Candidate{File: l.name, Path: d.path, Fragment: fragments, NewValue: o.newValue})
 			}
 		}
 	}

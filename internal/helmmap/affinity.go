@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // Path affinity ranks value keys by how well their names fit what drifted: the
@@ -101,11 +103,11 @@ func (v *run) fieldTokens(f parsedField, res leaves) (gate, resource map[string]
 // their scores: they are untried, and the caller must not forget it. ok is
 // false when the names do not narrow them down; the field then has too many
 // candidates, and nothing is cut.
-func rankCandidates(cands []Candidate, gate, resource map[string]bool, limit int) (kept []Candidate, cut []untriedKey, ok bool) {
+func rankCandidates(cands []rendermap.Candidate, gate, resource map[string]bool, limit int) (kept []rendermap.Candidate, cut []untriedKey, ok bool) {
 	if len(cands) <= limit {
 		return cands, nil, true
 	}
-	score := func(c Candidate) int {
+	score := func(c rendermap.Candidate) int {
 		kt := tokens(c.Path.String())
 		return 10*affinity(gate, kt) + affinity(resource, kt)
 	}

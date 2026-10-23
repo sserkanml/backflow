@@ -325,7 +325,7 @@ func TestOverrideTexts(t *testing.T) {
 	dp.Spec.Changes = dp.Spec.Changes[:1]
 	overrides := []helmmap.AppliedOverride{{
 		File: "env/prod.yaml", Path: rendermap.KeyPath{"config", "mode"}, Value: `"a|b"`,
-		Default: helmmap.ChartDefault{File: "chart/values.yaml", Key: rendermap.KeyPath{"config", "mode"}, Value: "fast"},
+		Default: rendermap.Default{File: "chart/values.yaml", Key: rendermap.KeyPath{"config", "mode"}, Value: "fast"},
 	}}
 
 	rows := helmEditRows(dp, overrides)

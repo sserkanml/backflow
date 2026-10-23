@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // removed is a field Helm values cannot express: an element or a key that is
 // gone from the cluster.
 func removed(index int, path, was string) Field {
-	return Field{Index: index, Found: &Result{},
+	return Field{Index: index, Found: &rendermap.Found{},
 		Change: v1alpha1.FieldChange{Path: path, Op: v1alpha1.OpRemove, Desired: was}}
 }
 
