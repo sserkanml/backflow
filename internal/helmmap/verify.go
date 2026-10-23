@@ -254,6 +254,40 @@ func takeSnapshot(objs []*unstructured.Unstructured) (snapshot, error) {
 	return s, nil
 }
 
+// hasUnder reports whether a leaf of the field is nondeterministic: the leaf
+// itself, or for a structured field any leaf below it.
+func (nd nondeterminism) hasUnder(res ResourceKey, pointer string, tree bool) bool {
+	if !tree {
+		return nd.paths[res][pointer]
+	}
+	for p := range nd.paths[res] {
+		if under(pointer, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// leavesText shows leaves for a message, bounded.
+func leavesText(l leaves) string {
+	if len(l) == 0 {
+		return absentJSON
+	}
+	keys := slices.Sorted(maps.Keys(l))
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, k+"="+l[k])
+		if len(parts) == 3 {
+			break
+		}
+	}
+	text := strings.Join(parts, ", ")
+	if len(keys) > 3 {
+		text += fmt.Sprintf(" and %d more", len(keys)-3)
+	}
+	return text
+}
+
 // class groups resources that could be the same one under a random name.
 type class struct{ Group, Kind, Namespace string }
 
@@ -365,35 +399,101 @@ func unionSnap(a, b snapshot) map[ResourceKey]bool {
 // parsedField is a field with its values decoded.
 type parsedField struct {
 	Field
-	desired, live string // canonical JSON
-	newValue      string // the live value as a template renders it
+	desired, live string // canonical JSON, "(absent)" for a side that has no value
+	newValue      string // the live value as a template renders it (scalar fields)
+
+	// structured is set for a change that is not the replacement of one scalar
+	// by another: a map or list, or a field that appears or disappears. It is
+	// judged on the leaves under its pointer: the render must have exactly
+	// liveLeaves there after the edit, and desiredLeaves before it.
+	structured    bool
+	desiredV      any // decoded; nil when the side is absent
+	liveV         any
+	hasDesired    bool
+	hasLive       bool
+	desiredLeaves leaves
+	liveLeaves    leaves
+}
+
+const absentJSON = "(absent)"
+
+func isScalar(x any) bool {
+	switch x.(type) {
+	case string, float64, bool:
+		return true
+	}
+	return false
 }
 
 func parseField(f Field) (parsedField, error) {
 	p := parsedField{Field: f}
-	if f.Change.Op != v1alpha1.OpReplace {
-		return p, fmt.Errorf("%s of %s is not a replaced value", f.Change.Op, f.Change.Path)
+	switch f.Change.Op {
+	case v1alpha1.OpReplace, v1alpha1.OpAdd, v1alpha1.OpRemove:
+	default:
+		return p, fmt.Errorf("%s of %s is not a change of a value", f.Change.Op, f.Change.Path)
 	}
-	for _, v := range []struct {
-		raw string
-		dst *string
-	}{{f.Change.Desired, &p.desired}, {f.Change.Live, &p.live}} {
+	if f.Change.Path == "" {
+		return p, errors.New("a change of the whole resource is not a change of a field")
+	}
+	type side struct {
+		raw     string
+		present bool
+		dst     *string
+		val     *any
+		has     *bool
+	}
+	for _, sd := range []side{
+		{f.Change.Desired, f.Change.Op != v1alpha1.OpAdd, &p.desired, &p.desiredV, &p.hasDesired},
+		{f.Change.Live, f.Change.Op != v1alpha1.OpRemove, &p.live, &p.liveV, &p.hasLive},
+	} {
+		if !sd.present {
+			*sd.dst = absentJSON
+			continue
+		}
 		var x any
-		if err := json.Unmarshal([]byte(v.raw), &x); err != nil {
+		if err := json.Unmarshal([]byte(sd.raw), &x); err != nil {
 			return p, fmt.Errorf("%s: %w", f.Change.Path, err)
 		}
-		switch x.(type) {
-		case string, float64, bool:
-		default:
-			return p, fmt.Errorf("%s is not a string, number or bool", f.Change.Path)
+		if x == nil {
+			return p, fmt.Errorf("%s is null: Helm reads null as the removal of a key", f.Change.Path)
 		}
 		b, _ := json.Marshal(x)
-		*v.dst = string(b)
-		if v.dst == &p.live {
-			p.newValue = RenderValue(x)
-		}
+		*sd.dst, *sd.val, *sd.has = string(b), x, true
+	}
+	if f.Change.Op == v1alpha1.OpReplace && isScalar(p.desiredV) && isScalar(p.liveV) {
+		p.newValue = RenderValue(p.liveV)
+		return p, nil
+	}
+	p.structured = true
+	p.desiredLeaves, p.liveLeaves = leaves{}, leaves{}
+	if p.hasDesired {
+		flatten(f.Change.Path, p.desiredV, p.desiredLeaves)
+	}
+	if p.hasLive {
+		flatten(f.Change.Path, p.liveV, p.liveLeaves)
 	}
 	return p, nil
+}
+
+// leavesUnder returns the leaves of a resource at the pointer or below it.
+func leavesUnder(l leaves, pointer string) leaves {
+	out := leaves{}
+	for k, v := range l {
+		if k == pointer || strings.HasPrefix(k, pointer+"/") {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func sameLeaves(a, b leaves) bool { return maps.Equal(a, b) }
+
+// under reports whether pointer is the path or a path below it.
+func under(path, pointer string) bool { return pointer == path || strings.HasPrefix(pointer, path+"/") }
+
+// reached reports whether the render has exactly the live state at the field.
+func (f parsedField) reached(l leaves) bool {
+	return sameLeaves(leavesUnder(l, f.Change.Path), f.liveLeaves)
 }
 
 // run holds the state of one Verify.
@@ -920,9 +1020,14 @@ func (v *run) baseline(fields []parsedField) (snapshot, nondeterminism, *Outcome
 	}
 	var bad []FieldFailure
 	for _, f := range fields {
-		if nd.paths[in.Resource][f.Change.Path] {
+		if nd.hasUnder(in.Resource, f.Change.Path, f.structured) {
 			bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonNondeterministicField,
 				Detail: "the rendered value differs between two renders of the same files"})
+		} else if f.structured {
+			if got := leavesUnder(res, f.Change.Path); !sameLeaves(got, f.desiredLeaves) {
+				bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonRenderMismatch,
+					Detail: fmt.Sprintf("the render gives %s, the proposal expects %s", leavesText(got), leavesText(f.desiredLeaves))})
+			}
 		} else if got, has := res[f.Change.Path]; !has || got != f.desired {
 			detail := fmt.Sprintf("the render gives %s, the proposal expects %s", got, f.desired)
 			if !has {
@@ -980,6 +1085,7 @@ type collateralRule struct {
 	labels, annotations bool
 	resource            ResourceKey     // the drifted resource
 	drifted             map[string]bool // its drifted fields, by pointer
+	driftedTrees        []string        // the pointers of its structured fields: everything below is drifted too
 	leftOut             []string        // its fields a partial mapping leaves out
 }
 
@@ -995,6 +1101,9 @@ func newCollateralRule(kinds []string, res ResourceKey, fields []parsedField, le
 	}
 	for _, f := range fields {
 		r.drifted[f.Change.Path] = true
+		if f.structured {
+			r.driftedTrees = append(r.driftedTrees, f.Change.Path)
+		}
 	}
 	return r
 }
@@ -1008,6 +1117,13 @@ func (r collateralRule) any() bool { return r.labels || r.annotations }
 func (r collateralRule) allows(c Collateral) bool {
 	if c.Pointer == "" || (c.Resource == r.resource && r.drifted[c.Pointer]) {
 		return false
+	}
+	if c.Resource == r.resource {
+		for _, p := range r.driftedTrees {
+			if under(p, c.Pointer) {
+				return false
+			}
+		}
 	}
 	// A field a partial mapping leaves out stays as it is, or the merge request
 	// would change what it says it does not.
@@ -1096,7 +1212,9 @@ func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, f
 	}
 	byPointer := map[string]int{}
 	for i, f := range fields {
-		byPointer[f.Change.Path] = i
+		if !f.structured {
+			byPointer[f.Change.Path] = i
+		}
 	}
 	for _, t := range added {
 		files, why := tryEdit(v.in.Files, t.cand, t.value)
@@ -1112,9 +1230,19 @@ func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, f
 		case err != nil:
 			return err
 		}
+		var reached []string // the structured fields the edit brought to their live state
+		for i, f := range fields {
+			if f.structured && f.reached(snap[v.in.Resource]) && !f.reached(base[v.in.Resource]) {
+				t.covers = append(t.covers, i)
+				reached = append(reached, f.Change.Path)
+			}
+		}
 		for _, ch := range diff(base, snap, nd) {
 			if i, ok := byPointer[ch.Pointer]; ok && ch.Key == v.in.Resource && snap[ch.Key][ch.Pointer] == fields[i].live {
 				t.covers = append(t.covers, i)
+				continue
+			}
+			if ch.Key == v.in.Resource && slices.ContainsFunc(reached, func(p string) bool { return under(p, ch.Pointer) }) {
 				continue
 			}
 			t.collateral = append(t.collateral, collateralOf(base, snap, ch))
@@ -1348,16 +1476,29 @@ func tryEdit(base map[string][]byte, c Candidate, value string) (files map[strin
 // allows. It returns why not, or the allowed changes beyond the drifted fields.
 func judgeChanges(base, edited snapshot, changes []change, res ResourceKey, fields []parsedField, rule collateralRule) (string, []Collateral) {
 	want := map[string]parsedField{}
+	var trees []parsedField
 	for _, f := range fields {
-		want[f.Change.Path] = f
+		if f.structured {
+			trees = append(trees, f)
+		} else {
+			want[f.Change.Path] = f
+		}
 	}
 	var extra []string
 	var allowed []Collateral
 	seen := map[string]bool{}
+	for _, f := range trees {
+		if f.reached(edited[res]) {
+			seen[f.Change.Path] = true
+		}
+	}
 	for _, ch := range changes {
 		if ch.Key == res {
 			if f, ok := want[ch.Pointer]; ok && edited[res][ch.Pointer] == f.live {
 				seen[ch.Pointer] = true
+				continue
+			}
+			if slices.ContainsFunc(trees, func(f parsedField) bool { return seen[f.Change.Path] && under(f.Change.Path, ch.Pointer) }) {
 				continue
 			}
 		}
@@ -1377,6 +1518,11 @@ func judgeChanges(base, edited snapshot, changes []change, res ResourceKey, fiel
 	for p := range want {
 		if !seen[p] {
 			return fmt.Sprintf("it does not change %s", p), nil
+		}
+	}
+	for _, f := range trees {
+		if !seen[f.Change.Path] {
+			return fmt.Sprintf("it does not change %s", f.Change.Path), nil
 		}
 	}
 	return "", allowed
