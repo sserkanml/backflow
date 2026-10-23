@@ -1,0 +1,4 @@
+resources:
+  - ../local
+  - github.com/org/repo//base?ref=v1
+  - https://example.com/x.yaml

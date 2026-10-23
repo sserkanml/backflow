@@ -1,0 +1,12 @@
+resources:
+  - ../../base
+patches:
+  - path: replicas.yaml
+  - target: {kind: Deployment}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+images:
+  - name: nginx
+    newTag: "1.26"
