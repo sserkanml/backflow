@@ -1,7 +1,8 @@
 # Kustomize mapping (roadmap B4)
 
-Status: design, prepared by the `rendermap` refactor. Kustomize mapping itself
-is not implemented yet.
+Status: implemented (`internal/kustomize`, wired in `driftproposal_kustomize.go`).
+The spike findings below are unchanged; the design section was adjusted where the
+implementation differs, see "As implemented".
 
 Backflow maps a live change of a Kustomize Application to the file that owns
 it the way it does for Helm: it edits a copy of the repository files, renders
@@ -125,3 +126,45 @@ files and envs, `replacements`, `openapi`, `crds`) and whether the set is
 closed. It is used by the render upload and by the Git-ahead check, so a
 commit that touches a file outside the Application path but inside the closure
 is seen as a change of the source.
+
+## As implemented
+
+Differences from the design above, and what was added:
+
+- **Candidate order has five tiers**, in `internal/rendermap` as `Found.Later`:
+  (1) settings of the Application's kustomization, (2) values inside existing patches,
+  (3) the resource file in the path, (4) files outside the path with `editBases`,
+  (5) a new Backflow patch with `addPatches`. A later tier is rendered only when no
+  edit of an earlier one verifies, so a value held by both a patch and the base is
+  edited in the patch and never ambiguous.
+- **Shared bases.** A tier 4 file that another Application of any BackflowPolicy builds
+  is tried after tier 5 (`Policy.OtherUsers`, computed from the `RelevantFiles` of the
+  Applications in the policies' status). A file nobody else builds stays before tier 5.
+  Applications outside every policy cannot be known; the text says so.
+- **Components and shared files outside the path** are tier 4 whatever they hold
+  (patch, setting or resource), because editing them is editing a shared file.
+- **Application options** (`spec.source.kustomize`) are parsed (`kustomize.Options`)
+  and a field they set is blocked before any render: reason `SetByApplication`, naming
+  the option. The renderer used by the tests applies them with `kustomize edit`.
+- **Hashed generators** are blocked with `ValueAffectsOtherFields` (the message names
+  the name hash); unhashed ones are tier 1 (literals, env-file lines).
+- **Origin is lost** when a patch replaces `metadata.annotations`. The resource file
+  is then unknown (no tier 3/4 candidate) and a new patch is tried for the rendered
+  name and the name without the prefixes and suffixes of the kustomizations.
+- **New patches keep list order.** kustomize places the items of a patch first, so the
+  patch lists the items before the changed one by merge key. A whole-list replacement
+  (a removed env var) is a patch with the items of the live list plus `$patch: delete`
+  for the missing ones; a list without a merge key (tolerations) is the whole live list.
+- **Writers** build on `mapping.Apply`; a replaced scalar is replaced in place (which
+  keeps the layout of lists), inline patches are rewritten inside their block scalar,
+  JSON 6902 patches that are JSON strings are re-written as compact JSON. The Helm YAML
+  editor was not moved: it is tied to Helm's value parsing.
+- **Engine hooks** added for this: `Candidate.Variant/Meta/NewFile`, `Written.Also`
+  (a new patch file is listed in the kustomization), `ContextWriter` (the writer sees
+  the files of the set so far), `Outcome.Applied`, `Found.Blocked`, `ErrRenderFailed`
+  worded for any source.
+- **Git.** `gitrepo.CommitMeta.Create` lists the files a commit may add; the controller
+  passes the new patch file, so it and the edited `kustomization.yaml` are one commit.
+- **Fingerprint** of a mapping includes `spec.kustomize` of the policy and the whole
+  `spec.source` of the Application (so `spec.source.kustomize` too). At a moved head the
+  mapping is reused when none of the files the build reads (at either revision) changed.
