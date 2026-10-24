@@ -3,7 +3,9 @@ package kustomize
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -133,15 +135,14 @@ func editJSONText(text string, e *Edit, live string) (string, error) {
 // writeNewPatch adds the drifted fields to the Backflow patch file of a
 // resource, creating the file, and lists it in the kustomization.
 func writeNewPatch(c rendermap.Candidate, e *Edit, files map[string][]byte) (*rendermap.Written, error) {
-	patch := map[string]any{}
+	var out []byte
+	var err error
 	if existing := files[c.File]; len(existing) > 0 {
-		if err := yaml.Unmarshal(existing, &patch); err != nil {
-			return nil, fmt.Errorf("%s does not parse: %w", c.File, err)
+		out, err = mergeIntoFile(existing, e.Patch)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", c.File, err)
 		}
-	}
-	mergePatch(patch, e.Patch)
-	out, err := marshalPatch(patch)
-	if err != nil {
+	} else if out, err = marshalPatch(e.Patch); err != nil {
 		return nil, err
 	}
 	kfile := e.Kustomization
@@ -153,6 +154,89 @@ func writeNewPatch(c rendermap.Candidate, e *Edit, files map[string][]byte) (*re
 	w.Also = []mapping.Result{{File: kfile, Edited: registered,
 		Edits: []mapping.Edit{{File: kfile, Location: "/patches/-", Value: fmt.Sprintf("%q", relativeTo(kfile, c.File))}}}}
 	return w, nil
+}
+
+// mergeIntoFile merges a patch into the content of an existing patch file,
+// keeping the comments of the file.
+func mergeIntoFile(content []byte, add map[string]any) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, fmt.Errorf("does not parse: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("is not a mapping")
+	}
+	mergeNode(doc.Content[0], add)
+	return encodeNode(&doc)
+}
+
+func encodeNode(n *yaml.Node) ([]byte, error) {
+	var b strings.Builder
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(n); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return []byte(b.String()), nil
+}
+
+func valueNode(v any) *yaml.Node {
+	var n yaml.Node
+	_ = n.Encode(v)
+	return &n
+}
+
+// mergeNode merges the strategic merge patch add into a mapping node: maps are
+// merged, lists of mappings by their merge key, anything else is replaced.
+func mergeNode(dst *yaml.Node, add map[string]any) {
+	for _, k := range slices.Sorted(maps.Keys(add)) {
+		v := add[k]
+		cur := mapValue(dst, k)
+		if cur == nil {
+			dst.Content = append(dst.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}, valueNode(v))
+			continue
+		}
+		switch av := v.(type) {
+		case map[string]any:
+			if cur.Kind == yaml.MappingNode {
+				mergeNode(cur, av)
+				continue
+			}
+		case []any:
+			if cur.Kind == yaml.SequenceNode {
+				mergeSeq(cur, av)
+				continue
+			}
+		}
+		repl := valueNode(v)
+		repl.HeadComment, repl.LineComment, repl.FootComment = cur.HeadComment, cur.LineComment, cur.FootComment
+		*cur = *repl
+	}
+}
+
+func mergeSeq(dst *yaml.Node, add []any) {
+	for _, a := range add {
+		am, ok := a.(map[string]any)
+		if !ok {
+			dst.Content = valueNode(add).Content // a list without a merge key is replaced
+			return
+		}
+		key := listKey(am)
+		merged := false
+		for _, item := range dst.Content {
+			if v, _ := scalarText(mapValue(item, key)); key != "" && item.Kind == yaml.MappingNode && v == fmt.Sprint(am[key]) {
+				mergeNode(item, am)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			dst.Content = append(dst.Content, valueNode(a))
+		}
+	}
 }
 
 func relativeTo(kustomization, file string) string {

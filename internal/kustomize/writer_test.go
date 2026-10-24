@@ -217,3 +217,22 @@ func TestRegisterPatch(t *testing.T) {
 		})
 	}
 }
+
+func TestExistingPatchFileKeepsItsComments(t *testing.T) {
+	existing := "# Backflow patch for web\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  template:\n    spec:\n      containers:\n        - name: web # main\n          imagePullPolicy: Always # why\n"
+	add := map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": "web"},
+		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{"containers": []any{
+			map[string]any{"name": "web", "imagePullPolicy": "Never", "env": []any{map[string]any{"name": "A", "value": "1"}}}}}}}}
+	got, err := mergeIntoFile([]byte(existing), add)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# Backflow patch for web", "# main", "# why", "imagePullPolicy: Never", "- name: A"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Count(string(got), "name: web") != 2 {
+		t.Errorf("the container must be merged by name:\n%s", got)
+	}
+}

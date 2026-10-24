@@ -28,6 +28,9 @@ func kustomizeBin(t *testing.T) string {
 	}
 	if _, err := exec.LookPath(bin); err != nil {
 		if _, err := os.Stat(bin); err != nil {
+			if os.Getenv("CI") == "true" {
+				t.Fatalf("no kustomize binary (CI=true): %v", err)
+			}
 			t.Skip("no kustomize binary; run `make kustomize`")
 		}
 	}
@@ -360,7 +363,7 @@ func TestDescribe(t *testing.T) {
 		if d.Strategy != "KustomizePatch" || len(d.Tiers) != 1 || d.Tiers[0] != kustomize.TierSetting || len(d.SharedFiles) != 0 {
 			t.Errorf("%+v", d)
 		}
-		if text := d.Text(nil); !strings.Contains(text, "images[nginx].newTag") {
+		if text := d.Text(); !strings.Contains(text, "images[nginx].newTag") {
 			t.Errorf("text = %s", text)
 		}
 	})
@@ -370,8 +373,8 @@ func TestDescribe(t *testing.T) {
 			s["tolerations"] = s["tolerations"].([]any)[:1]
 		}, defaults)
 		d := kustomize.Describe(out)
-		if d.Strategy != "KustomizePatch" || len(d.AddedFiles) != 1 || !strings.Contains(d.Text(nil), "new patch file was added") {
-			t.Errorf("%+v\n%s", d, d.Text(nil))
+		if d.Strategy != "KustomizePatch" || len(d.AddedFiles) != 1 || !strings.Contains(d.Text(), "new patch file was added") {
+			t.Errorf("%+v\n%s", d, d.Text())
 		}
 	})
 	t.Run("a shared base is Direct and warns about the other Applications", func(t *testing.T) {
@@ -382,8 +385,36 @@ func TestDescribe(t *testing.T) {
 		if d.Strategy != "Direct" || len(d.SharedFiles) != 1 || d.SharedFiles[0] != deplF {
 			t.Fatalf("%+v", d)
 		}
-		text := d.Text(map[string][]string{deplF: {"argocd/demo-prod"}})
-		if !strings.Contains(text, "outside the Application's path") || !strings.Contains(text, "argocd/demo-prod") {
+		text := d.Text()
+		if !strings.Contains(text, "outside the Application's path") || !strings.Contains(text, "outside Backflow's policies") || strings.Contains(text, "also changes") {
+			t.Errorf("text = %s", text)
+		}
+	})
+}
+
+func TestSharedBaseOrder(t *testing.T) {
+	e := setup(t, kustomize.Options{})
+	dep := e.obj("Deployment", "web")
+	change := func(o map[string]any) { container(o)["env"].([]any)[1].(map[string]any)["value"] = "live-b" }
+	patchFile := "k/overlays/dev/backflow-patches/deployment-web.yaml"
+	t.Run("a base no other Application uses is edited before a new patch", func(t *testing.T) {
+		out := e.verify(dep, change, kustomize.Policy{EditBases: true, AddPatches: true})
+		wantMapped(t, out, deplF)
+		if d := kustomize.Describe(out); len(d.Users) != 0 || len(d.SharedFiles) != 1 {
+			t.Errorf("%+v", d)
+		}
+	})
+	users := map[string][]string{deplF: {"argocd/demo-prod", "argocd/demo-stage"}, "k/base/kustomization.yaml": {"argocd/demo-prod"}}
+	t.Run("a base other Applications use gets a new patch first", func(t *testing.T) {
+		out := e.verify(dep, change, kustomize.Policy{EditBases: true, AddPatches: true, OtherUsers: users})
+		wantMapped(t, out, patchFile, kfile)
+	})
+	t.Run("the shared base is the fallback when addPatches is off, and the text lists the others", func(t *testing.T) {
+		out := e.verify(dep, change, kustomize.Policy{EditBases: true, OtherUsers: users})
+		wantMapped(t, out, deplF)
+		text := kustomize.Describe(out).Text()
+		if !strings.Contains(text, "also changes: argocd/demo-prod, argocd/demo-stage at their next sync") ||
+			!strings.Contains(text, "outside Backflow's policies may use this file") {
 			t.Errorf("text = %s", text)
 		}
 	})

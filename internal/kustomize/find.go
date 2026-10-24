@@ -26,6 +26,11 @@ type Policy struct {
 	AddPatches bool
 	// Application is the name of the Argo CD Application, for messages.
 	Application string
+	// OtherUsers maps a repository file to the other Applications, of any
+	// BackflowPolicy, that have it in their RelevantFiles. A file outside the
+	// Application's path that others use is edited only after a new patch
+	// failed to verify (or addPatches is off): the edit would change them too.
+	OtherUsers map[string][]string
 }
 
 // kust is a kustomization file of the closed set.
@@ -119,19 +124,28 @@ func (f *finder) find(ch v1alpha1.FieldChange) *rendermap.Found {
 		tiers[t] = append(tiers[t], *c)
 	}
 	tiers[TierNewPatch] = append(tiers[TierNewPatch], f.newPatch(ch)...)
+	var baseFree, baseShared []rendermap.Candidate
+	for _, c := range tiers[TierBase] {
+		e := c.Meta.(*Edit)
+		e.Users = f.pol.OtherUsers[c.File]
+		if len(e.Users) > 0 {
+			baseShared = append(baseShared, c)
+		} else {
+			baseFree = append(baseFree, c)
+		}
+	}
 	var ordered []rendermap.Tier
 	for _, t := range []struct {
-		n    int
 		name string
+		cs   []rendermap.Candidate
 	}{
-		{TierSetting, "a setting of the kustomization"}, {TierPatch, "a patch of the kustomization"},
-		{TierResource, "the resource file"}, {TierBase, "a file outside the Application's path"},
-		{TierNewPatch, "a new patch"},
+		{"a setting of the kustomization", tiers[TierSetting]}, {"a patch of the kustomization", tiers[TierPatch]},
+		{"the resource file", tiers[TierResource]},
+		{"a file outside the Application's path that no other Application uses", baseFree},
+		{"a new patch", tiers[TierNewPatch]},
+		{"a file outside the Application's path that other Applications use", baseShared},
 	} {
-		if t.n == TierBase && !f.pol.EditBases {
-			continue
-		}
-		if cs := f.order(tiers[t.n]); len(cs) > 0 {
+		if cs := f.order(t.cs); len(cs) > 0 && (f.pol.EditBases || !isBase(cs)) {
 			ordered = append(ordered, rendermap.Tier{Name: t.name, Candidates: cs})
 		}
 	}
@@ -500,4 +514,8 @@ func (f *finder) hashedGenerator() (kust, string, bool) {
 		}
 	}
 	return kust{}, "", false
+}
+
+func isBase(cs []rendermap.Candidate) bool {
+	return cs[0].Meta.(*Edit).Tier == TierBase
 }
