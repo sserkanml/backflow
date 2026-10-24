@@ -68,7 +68,29 @@ func kustomizeBin() string {
 	return filepath.Join("..", "..", "bin", "kustomize")
 }
 
+// otherUsers maps every file of an Application's closed set to the other
+// Applications of the suite that build it, as the controller does with the
+// RelevantFiles of every Application of every policy.
+func otherUsers(a kustomizeApp) (map[string][]string, error) {
+	fsys := os.DirFS(filepath.Join("testdata", "kustomize"))
+	users := map[string][]string{}
+	for _, o := range kustomizeApps {
+		if o.name == a.name {
+			continue
+		}
+		src, err := kustomize.NewSource(fsys, o.path, o.options)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range src.Relevance().Files() {
+			users[f] = append(users[f], o.name)
+		}
+	}
+	return users, nil
+}
+
 type kustomizeLoaded struct {
+	users map[string][]string
 	app   kustomizeApp
 	src   *kustomize.Source
 	files map[string][]byte
@@ -87,7 +109,11 @@ func loadKustomize(ctx context.Context, a kustomizeApp, slots chan struct{}) (*k
 	if err != nil {
 		return nil, fmt.Errorf("%s: files: %w", a.name, err)
 	}
-	l := &kustomizeLoaded{app: a, src: src, files: files,
+	users, err := otherUsers(a)
+	if err != nil {
+		return nil, fmt.Errorf("%s: other users: %w", a.name, err)
+	}
+	l := &kustomizeLoaded{users: users, app: a, src: src, files: files,
 		rend: &kbuild.Renderer{Bin: kustomizeBin(), Dir: a.path, Options: a.options, Slots: slots},
 		ra:   rendermap.App{Name: a.name, Namespace: "argocd", Project: "default", DestNamespace: "demo"}}
 	if l.loc, err = kustomize.Locate(ctx, l.rend, src, files, l.ra); err != nil {
@@ -161,6 +187,7 @@ func (l *kustomizeLoaded) mapChanges(ctx context.Context, obj *unstructured.Unst
 	gv := obj.GroupVersionKind()
 	pol := m.pol
 	pol.Application = l.app.name
+	pol.OtherUsers = l.users
 	out, err := kustomize.Verify(ctx, l.rend, kustomize.Input{
 		App:      l.ra,
 		Resource: rendermap.ResourceKey{Group: gv.Group, Kind: obj.GetKind(), Namespace: obj.GetNamespace(), Name: obj.GetName()},
