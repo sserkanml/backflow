@@ -18,6 +18,12 @@ leaderElection: true
 # How often the state of an open merge request is polled.
 mergeRequestPollInterval: 2m
 
+# The time all renders through Argo CD of one verification may take together.
+# A proposal that needs more is Unmapped (RenderBudgetExceeded). Raise it when
+# Argo CD takes seconds per render, which an Application with several sources
+# and many candidates multiplies.
+renderBudget: 2m
+
 # Extra command line arguments of the operator, e.g. ["--zap-log-level=debug"].
 extraArgs: []
 

@@ -289,14 +289,14 @@ ok "account backflow (apiKey) enabled in argocd-cm"
 
 # Merge into the existing policy.csv; only append lines that are missing.
 policy="$(k -n "$ARGOCD_NS" get configmap argocd-rbac-cm -o jsonpath='{.data.policy\.csv}' 2>/dev/null || true)"
-for line in "p, role:backflow, applications, get, */*, allow" "g, backflow, role:backflow"; do
+for line in "p, role:backflow, applications, get, */*, allow" "p, role:backflow, repositories, get, *, allow" "g, backflow, role:backflow"; do
   if ! printf '%s\n' "$policy" | grep -qxF "$line"; then
     if [[ -n "$policy" ]]; then policy="$policy"$'\n'"$line"; else policy="$line"; fi
   fi
 done
 patch="$(POLICY="$policy" python3 -c 'import json,os; print(json.dumps({"data":{"policy.csv":os.environ["POLICY"]+"\n"}}))')"
 k -n "$ARGOCD_NS" patch configmap argocd-rbac-cm --type merge -p "$patch" >/dev/null
-ok "read-only RBAC policy for backflow merged into argocd-rbac-cm"
+ok "read-only RBAC policy for backflow merged into argocd-rbac-cm (applications get, repositories get for chart values)"
 
 # Argo CD looks for new commits every three minutes (plus up to a minute of
 # jitter) unless told otherwise. The tests wait for it, so poll every 30s with

@@ -42,6 +42,19 @@ g, backflow, role:backflow
 `applications, get` is also the permission Backflow needs to render Helm charts
 through Argo CD (see Helm sources below); nothing more is required.
 
+For Applications with several sources (a chart from a Helm repository or an OCI
+registry, and its value files in a Git repository, `$values/...`) Backflow also
+reads the chart's own `values.yaml` through Argo CD, which needs one more line,
+for the repositories the charts come from (`*` for all of them):
+
+```
+p, role:backflow, repositories, get, *, allow
+```
+
+Without it such a proposal stays in `Mapping` with the reason
+`ChartDefaultsUnavailable` and is tried again. The object of that permission is
+the bare repository URL, not `<project>/<url>`; `default/*` does not match.
+
 ```bash
 argocd login <argocd-server> --username admin
 TOKEN="$(argocd account generate-token --account backflow)"
