@@ -192,7 +192,7 @@ func (v *run) confirm(base snapshot, nd nondeterminism, fields []parsedField, ke
 	var added []*tryout
 	for _, u := range keys {
 		value := v.valueOf(fields[u.field], u.cand)
-		k := editKey{u.cand.File, u.cand.Path.String(), value}
+		k := editKey{u.cand.File, u.cand.Path.String(), value, u.cand.Variant}
 		if _, tried := v.index[k]; tried {
 			continue
 		}

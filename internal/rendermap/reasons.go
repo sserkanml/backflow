@@ -20,6 +20,10 @@ const (
 	ReasonRenderFailed            = "RenderFailed"
 	ReasonFilesTooLarge           = "FilesTooLarge"
 	ReasonUnsupportedChange       = "UnsupportedChange"
+	// ReasonSetByApplication: the value is set by an option of the Application
+	// (spec.source.kustomize.images, say), which Argo CD applies on top of Git,
+	// so a change of Git cannot change it.
+	ReasonSetByApplication = "SetByApplication"
 )
 
 // ReasonOf returns the reason for an error from a Renderer, or "" when the
