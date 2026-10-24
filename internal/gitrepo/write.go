@@ -169,6 +169,8 @@ func (c *Cache) DefaultBranch(ctx context.Context, repoURL string, auth *Auth) (
 type CommitInfo struct {
 	Message string
 	Parents []string
+	// When is the committer time.
+	When time.Time
 }
 
 // CommitInfo reads a commit, fetching it into the cache when needed.
@@ -185,7 +187,7 @@ func (c *Cache) CommitInfo(ctx context.Context, repoURL, sha string, auth *Auth)
 	if err != nil {
 		return nil, err
 	}
-	info := &CommitInfo{Message: commit.Message}
+	info := &CommitInfo{Message: commit.Message, When: commit.Committer.When}
 	for _, p := range commit.ParentHashes {
 		info.Parents = append(info.Parents, p.String())
 	}
