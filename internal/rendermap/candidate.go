@@ -135,6 +135,15 @@ type Writer interface {
 	Write(c Candidate, content []byte, value string) (*Written, error)
 }
 
+// ContextWriter is a Writer whose edit depends on files other than the one it
+// edits (a new patch file is listed in a kustomization that an earlier edit of
+// the same set may have changed). When a Writer is one, the engine calls
+// WriteWith with the current files of the set, and Write is not used.
+type ContextWriter interface {
+	Writer
+	WriteWith(c Candidate, files map[string][]byte, value string) (*Written, error)
+}
+
 // Provider supplies what the engine cannot know about a source kind. It is the
 // candidate seam: the scalar candidates come with each Field (see Found), the
 // structured ones are made from the layers a Provider reports.
