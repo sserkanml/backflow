@@ -350,3 +350,41 @@ func TestSetByApplication(t *testing.T) {
 		t.Errorf("message = %s", out.Unmapped.Message)
 	}
 }
+
+func TestDescribe(t *testing.T) {
+	e := setup(t, kustomize.Options{})
+	dep := e.obj("Deployment", "web")
+	t.Run("a setting", func(t *testing.T) {
+		out := e.verify(dep, func(o map[string]any) { container(o)["image"] = "nginx:9.9" }, defaults)
+		d := kustomize.Describe(out)
+		if d.Strategy != "KustomizePatch" || len(d.Tiers) != 1 || d.Tiers[0] != kustomize.TierSetting || len(d.SharedFiles) != 0 {
+			t.Errorf("%+v", d)
+		}
+		if text := d.Text(nil); !strings.Contains(text, "images[nginx].newTag") {
+			t.Errorf("text = %s", text)
+		}
+	})
+	t.Run("a new patch says a file was added", func(t *testing.T) {
+		out := e.verify(dep, func(o map[string]any) {
+			s := podSpec(o)
+			s["tolerations"] = s["tolerations"].([]any)[:1]
+		}, defaults)
+		d := kustomize.Describe(out)
+		if d.Strategy != "KustomizePatch" || len(d.AddedFiles) != 1 || !strings.Contains(d.Text(nil), "new patch file was added") {
+			t.Errorf("%+v\n%s", d, d.Text(nil))
+		}
+	})
+	t.Run("a shared base is Direct and warns about the other Applications", func(t *testing.T) {
+		out := e.verify(dep, func(o map[string]any) {
+			container(o)["env"].([]any)[1].(map[string]any)["value"] = "live-b"
+		}, kustomize.Policy{EditBases: true})
+		d := kustomize.Describe(out)
+		if d.Strategy != "Direct" || len(d.SharedFiles) != 1 || d.SharedFiles[0] != deplF {
+			t.Fatalf("%+v", d)
+		}
+		text := d.Text(map[string][]string{deplF: {"argocd/demo-prod"}})
+		if !strings.Contains(text, "outside the Application's path") || !strings.Contains(text, "argocd/demo-prod") {
+			t.Errorf("text = %s", text)
+		}
+	})
+}
