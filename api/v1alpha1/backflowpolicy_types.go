@@ -384,6 +384,49 @@ type ApplicationSummary struct {
 	// credentials; only the redacted URL is kept here.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+	// Sources lists every source of an Application that has several, in order.
+	// The fields above keep describing the first source. Empty for an
+	// Application with one source.
+	// +optional
+	// +listType=atomic
+	Sources []SourceSummary `json:"sources,omitempty"`
+}
+
+// SourceSummary describes one source of a multi-source Application.
+type SourceSummary struct {
+	// Position of the source in spec.sources, starting at 1 like Argo CD's
+	// sourcePositions.
+	Position int32 `json:"position"`
+	// Repository the source comes from: a Git repository, a Helm repository or
+	// an OCI registry.
+	RepoURL string `json:"repoURL"`
+	// Path inside a Git repository.
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Chart name, for a source that comes from a Helm repository or a registry.
+	// +optional
+	Chart string `json:"chart,omitempty"`
+	// Branch, tag, chart version or range the source tracks.
+	// +optional
+	TargetRevision string `json:"targetRevision,omitempty"`
+	// Revision Argo CD resolved and compares against: a commit SHA, or the chart
+	// version (status.sync.revisions at this position).
+	// +optional
+	Revision string `json:"revision,omitempty"`
+	// Revision of the last sync (status.operationState.syncResult.revisions).
+	// +optional
+	SyncedRevision string `json:"syncedRevision,omitempty"`
+	// How Argo CD renders the source: Directory, Kustomize, Helm or Plugin.
+	// Empty for a ref source, which is only referenced.
+	// +optional
+	SourceType string `json:"sourceType,omitempty"`
+	// Name of a ref source, referenced as $name/... in value files.
+	// +optional
+	Ref string `json:"ref,omitempty"`
+	// ScmConnection used for this repository. Empty for a repository that is
+	// not a Git repository, and when none matches.
+	// +optional
+	ScmConnection string `json:"scmConnection,omitempty"`
 }
 
 // +kubebuilder:object:root=true
