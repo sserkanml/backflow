@@ -38,7 +38,7 @@ type AppPatch struct {
 func ParseOptions(k map[string]any) Options {
 	var o Options
 	str := func(key string) string { s, _ := k[key].(string); return s }
-	o.NamePrefix, o.NameSuffix, o.Namespace = str("namePrefix"), str("nameSuffix"), str("namespace")
+	o.NamePrefix, o.NameSuffix, o.Namespace = str("namePrefix"), str("nameSuffix"), str(keyNamespace)
 	if l, ok := k["images"].([]any); ok {
 		for _, i := range l {
 			if s, ok := i.(string); ok {
@@ -49,10 +49,10 @@ func ParseOptions(k map[string]any) Options {
 	o.CommonLabels = stringMap(k["commonLabels"])
 	o.CommonAnnotations = stringMap(k["commonAnnotations"])
 	o.Replicas = map[string]string{}
-	if l, ok := k["replicas"].([]any); ok {
+	if l, ok := k[keyReplicas].([]any); ok {
 		for _, r := range l {
 			m, _ := r.(map[string]any)
-			if name, _ := m["name"].(string); name != "" {
+			if name, _ := m[keyName].(string); name != "" {
 				o.Replicas[name] = fmt.Sprint(m["count"])
 			}
 		}
@@ -65,7 +65,7 @@ func ParseOptions(k map[string]any) Options {
 		}
 	}
 	o.IgnoreMissingComponents, _ = k["ignoreMissingComponents"].(bool)
-	if l, ok := k["patches"].([]any); ok {
+	if l, ok := k[keyPatches].([]any); ok {
 		for _, p := range l {
 			m, _ := p.(map[string]any)
 			ap := AppPatch{}
@@ -73,15 +73,15 @@ func ParseOptions(k map[string]any) Options {
 			ap.Patch, _ = m["patch"].(string)
 			if t, ok := m["target"].(map[string]any); ok {
 				ap.Kind, _ = t["kind"].(string)
-				ap.Name, _ = t["name"].(string)
+				ap.Name, _ = t[keyName].(string)
 				ap.Group, _ = t["group"].(string)
-				ap.Namespace, _ = t["namespace"].(string)
+				ap.Namespace, _ = t[keyNamespace].(string)
 			}
 			o.Patches = append(o.Patches, ap)
 		}
 	}
-	modelled := map[string]bool{"namePrefix": true, "nameSuffix": true, "namespace": true, "images": true, "commonLabels": true,
-		"commonAnnotations": true, "replicas": true, "components": true, "ignoreMissingComponents": true, "patches": true, "version": true}
+	modelled := map[string]bool{"namePrefix": true, "nameSuffix": true, keyNamespace: true, "images": true, "commonLabels": true,
+		"commonAnnotations": true, keyReplicas: true, "components": true, "ignoreMissingComponents": true, keyPatches: true, "version": true}
 	for key, v := range k {
 		if !modelled[key] && !isZero(v) {
 			o.Other = append(o.Other, key)
