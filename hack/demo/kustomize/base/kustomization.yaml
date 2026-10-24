@@ -1,0 +1,15 @@
+resources:
+- deployment.yaml
+- service.yaml
+# Unhashed: the name stays kust-settings, so its data can be mapped to Git.
+configMapGenerator:
+- name: kust-settings
+  literals:
+  - MODE=base
+  - RETRIES=3
+  options:
+    disableNameSuffixHash: true
+# Hashed: the name is kust-flags-<hash of the data>; changing the data changes the name.
+- name: kust-flags
+  literals:
+  - FEATURE=on
