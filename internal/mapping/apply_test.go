@@ -597,3 +597,17 @@ func TestApplyQuotesStringsYAML11ReadsAsOtherTypes(t *testing.T) {
 		t.Errorf("a key that reads as a boolean is quoted: %q, %v", out, err)
 	}
 }
+
+func TestDocuments(t *testing.T) {
+	docs, err := Documents([]byte("---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: a\n  namespace: n\n---\n# empty\n---\nkind: ConfigMap\nmetadata:\n  name: b\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 3 || docs[0].Kind != "Deployment" || docs[0].Name != "a" || docs[0].Namespace != "n" || docs[0].APIVersion != "apps/v1" ||
+		docs[1].Root != nil || docs[2].Index != 2 || docs[2].Name != "b" {
+		t.Errorf("docs = %+v", docs)
+	}
+	if _, err := Documents([]byte("a: [")); err == nil {
+		t.Error("a document that does not parse is an error")
+	}
+}

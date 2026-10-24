@@ -1,6 +1,7 @@
 package mapping
 
 import (
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -129,4 +130,36 @@ func (li *lineIndex) offset(line, col int) int {
 		off += size
 	}
 	return off
+}
+
+// DocumentInfo describes one YAML document of a file, in the order Apply
+// numbers them.
+type DocumentInfo struct {
+	Index            int
+	APIVersion, Kind string
+	Namespace, Name  string
+	// Root is the parsed document; nil for an empty one. Its positions are
+	// those of the file.
+	Root *yaml.Node
+}
+
+// Documents parses the documents of a file. A document that does not parse is
+// an error.
+func Documents(content []byte) ([]DocumentInfo, error) {
+	text := string(content)
+	var out []DocumentInfo
+	for i, seg := range splitDocuments(text) {
+		root, err := parseDocument(text, seg)
+		if err != nil {
+			return nil, fmt.Errorf("document %d: %w", i, err)
+		}
+		d := DocumentInfo{Index: i, Root: root}
+		if root != nil && root.Kind == yaml.MappingNode {
+			meta := mapGet(root, "metadata")
+			d.APIVersion, d.Kind = scalarOf(mapGet(root, "apiVersion")), scalarOf(mapGet(root, "kind"))
+			d.Name, d.Namespace = scalarOf(mapGet(meta, "name")), scalarOf(mapGet(meta, "namespace"))
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }

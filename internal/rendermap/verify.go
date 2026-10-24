@@ -1697,13 +1697,20 @@ func failure(fields []FieldFailure) *Outcome {
 	return &Outcome{Unmapped: &Unmapped{Reason: reason, Message: msg, Fields: fields}}
 }
 
+// writeWith writes a candidate against the current files of the set.
+func writeWith(w Writer, files map[string][]byte, c Candidate, value string) (*Written, error) {
+	if cw, ok := w.(ContextWriter); ok {
+		return cw.WriteWith(c, files, value)
+	}
+	return w.Write(c, files[c.File], value)
+}
+
 // tryEdit applies one candidate's edit to a copy of the files.
 func tryEdit(w Writer, base map[string][]byte, c Candidate, value string) (files map[string][]byte, why string) {
-	content, ok := base[c.File]
-	if !ok && !c.NewFile {
+	if _, ok := base[c.File]; !ok && !c.NewFile {
 		return nil, "the file was not provided"
 	}
-	written, err := w.Write(c, content, value)
+	written, err := writeWith(w, base, c, value)
 	if err != nil {
 		return nil, err.Error()
 	}
@@ -1786,7 +1793,7 @@ func applySet(wr Writer, base map[string][]byte, fields []parsedField, set []*tr
 	files := maps.Clone(base)
 	var applied []appliedEdit
 	for _, t := range set {
-		w, err := wr.Write(t.cand, files[t.cand.File], t.value)
+		w, err := writeWith(wr, files, t.cand, t.value)
 		if err != nil {
 			return nil, nil, err
 		}
