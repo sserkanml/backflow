@@ -387,7 +387,7 @@ func helmSourceProblem(app *unstructured.Unstructured) error {
 	}
 	if chart, _, _ := unstructured.NestedString(app.Object, "spec", "source", "chart"); chart != "" {
 		return &verdictError{reason: reasonUnsupportedSourceType,
-			err: fmt.Errorf("the chart %q comes from a Helm repository or registry, not from the Git repository; only charts in Git are mapped (a chart with inline values and no ref source is not mapped yet)", chart)}
+			err: fmt.Errorf("the chart %q comes from a Helm repository or registry, not from the Git repository; only charts in Git are mapped; a chart with its values inline in the Application is planned (roadmap B6)", chart)}
 	}
 	return nil
 }

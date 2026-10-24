@@ -365,6 +365,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			setHelm(map[string]any{"valueFiles": []any{"$values/env/values.yaml"}, "parameters": []any{map[string]any{"name": "replicaCount", "value": "2"}}})
 			settle(backflowv1alpha1.PhaseUnmapped)
 			Expect(mapped().Message).To(ContainSubstring("in the Application"))
+			Expect(mapped().Message).To(ContainSubstring("roadmap B6"))
 		})
 
 		It("an Application outside the supported shape", func() {

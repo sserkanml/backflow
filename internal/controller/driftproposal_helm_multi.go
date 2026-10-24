@@ -323,7 +323,11 @@ func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflow
 		return nil, scratchFailure(err)
 	}
 	if !out.Mapped() {
-		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
+		msg := out.Unmapped.Message
+		if strings.Contains(msg, "in the Application, not by a value file") {
+			msg += " (mapping values that the Application sets inline, helm.values, helm.valuesObject and helm.parameters, is planned: roadmap B6)"
+		}
+		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(msg)}
 	}
 	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral,
 		overrides: out.Overrides, renders: out.Renders, repoURL: values.RepoURL}
