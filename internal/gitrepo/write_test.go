@@ -907,7 +907,7 @@ func TestCommitFilesCreatesListedFiles(t *testing.T) {
 	files := map[string][]byte{
 		"apps/demo/configmap.yaml":              []byte(cmAfter),
 		"apps/demo/backflow-patches/deploy.yml": []byte("kind: Deployment\n"), // a new directory
-		"apps/demo/aaa.yaml":                    []byte("a: 1\n"),            // sorts before the others
+		"apps/demo/aaa.yaml":                    []byte("a: 1\n"),             // sorts before the others
 	}
 	m := meta
 	m.Create = []string{"apps/demo/backflow-patches/deploy.yml", "apps/demo/aaa.yaml"}

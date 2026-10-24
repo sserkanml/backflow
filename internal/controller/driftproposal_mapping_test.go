@@ -337,19 +337,6 @@ var _ = Describe("DriftProposal mapping", func() {
 			func() { setDirectory(map[string]any{"include": "["}) }, reasonInvalidSourceOptions),
 	)
 
-	DescribeTable("does not map sources other than Directory and Helm",
-		func(sourceType backflowv1alpha1.SourceType) {
-			recreate(func(spec *backflowv1alpha1.DriftProposalSpec) { spec.Source.Type = sourceType })
-
-			_, err := reconcileDP()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
-			Expect(mapped().Reason).To(Equal(reasonUnsupportedSourceType))
-			Expect(repos.calls).To(BeZero())
-		},
-		Entry("Kustomize", backflowv1alpha1.SourceKustomize),
-	)
-
 	Context("when the repository cannot be read", func() {
 		It("keeps retrying with a growing delay and never gives up", func() {
 			repos.err = gitrepo.ErrUnavailable

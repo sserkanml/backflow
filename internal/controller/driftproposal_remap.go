@@ -15,6 +15,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/kustomize"
 )
 
 // A proposal is mapped at the revision Argo CD synced, and written to Git on
@@ -79,7 +80,7 @@ func mappingFingerprint(app *unstructured.Unstructured, policy *backflowv1alpha1
 	delete(source, "targetRevision")
 	sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources")
 	dest, _, _ := unstructured.NestedString(app.Object, "spec", "destination", "namespace")
-	b, _ := json.Marshal([]any{source, sources, dest, app.GetName(), policy.Spec.Helm, policy.Spec.Mapping})
+	b, _ := json.Marshal([]any{source, sources, dest, app.GetName(), policy.Spec.Helm, policy.Spec.Kustomize, policy.Spec.Mapping})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:8])
 }
@@ -185,6 +186,27 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 		for _, p := range paths {
 			if rel.Matches(p) {
 				return p, true
+			}
+		}
+		return "", true
+	case backflowv1alpha1.SourceKustomize:
+		for _, sha := range []string{from, to} {
+			tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, sha, access.auth)
+			if err != nil {
+				return "", false
+			}
+			rel, err := kustomize.RelevantFiles(tree, kustomizeSpecOf(app, dp.Spec.Source.Path))
+			_ = tree.Close()
+			if err != nil {
+				return "", false
+			}
+			if !rel.Closed() {
+				return "", false
+			}
+			for _, p := range paths {
+				if rel.Matches(p) {
+					return p, true
+				}
 			}
 		}
 		return "", true
