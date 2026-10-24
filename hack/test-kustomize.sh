@@ -220,6 +220,13 @@ BACKOFF = float(os.environ.get("GITLAB_BACKOFF", "3"))
 RETRIABLE = (0, 429, 500, 502, 503, 504)
 
 
+def retriable(code, text):
+    """gitlab.com sometimes answers 400, 502 or 503 with "Deadline Exceeded" when a
+    commit takes too long on its side. The commit may or may not have landed:
+    send() checks that before repeating a commit."""
+    return code in RETRIABLE or (code in (400, 502, 503) and "deadline exceeded" in text.lower())
+
+
 def log(msg):
     sys.stderr.write("gitlab: " + msg + "\n")
 
@@ -295,7 +302,7 @@ def send(method, path, body=None):
                     log("%s %s: the earlier attempt had worked" % (method, path.split("?")[0]))
                     return done
         code, text, retry_after = once(method, path, body)
-        if code not in RETRIABLE:
+        if not retriable(code, text):
             # A DELETE that finds the thing gone after an unseen first attempt is done.
             if method == "DELETE" and attempt and code == 404:
                 return 204, ""
