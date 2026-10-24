@@ -9,7 +9,12 @@
 #   2. Argo CD
 #   3. Backflow CRDs
 #   4. Demo Argo CD Applications pointing at the demo repository: demo-app
-#      (plain manifests) and the Helm ones demo-helm, shared-alpha, shared-beta
+#      (plain manifests), the Helm ones demo-helm, shared-alpha, shared-beta and
+#      the Kustomize one demo-kustomize (kustomize/overlays/dev over
+#      kustomize/base). The Kustomize files live in hack/demo/kustomize/; with
+#      GITLAB_TOKEN set (api scope) this script copies the ones the demo
+#      repository lacks into it with one commit through the GitLab API. It never
+#      overwrites a file. Without the token it only tells you what is missing.
 #   5. Read-only Argo CD account "backflow" and its API token Secret, and
 #      timeout.reconciliation 30s in argocd-cm (new commits are seen quickly)
 #
@@ -122,12 +127,13 @@ ok "installed"
 # ---------------------------------------------------------------------------
 step "Demo Applications"
 
-# apply_app <name> <path> <destination namespace> <env label> [helm block]
+# apply_app <name> <path> <destination namespace> <env label> [helm block] [demo label]
 # All demo Applications sync automatically without selfHeal, so drift stays
 # visible. The Helm ones carry env=helm-test: the tests that select
 # Applications by env=test must not see them.
 apply_app() {
-  local name="$1" path="$2" ns="$3" env="$4" helm="${5:-}"
+  local name="$1" path="$2" ns="$3" env="$4" helm="${5:-}" demo="${6:-}" demolabel=""
+  [[ -z "$demo" ]] || demolabel="    backflow.io/demo: $demo"
   k apply -f - >/dev/null <<EOF
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -136,6 +142,7 @@ metadata:
   namespace: $ARGOCD_NS
   labels:
     env: $env
+$demolabel
 spec:
   project: default
   source:
@@ -153,6 +160,52 @@ $helm
 EOF
   ok "$name applied ($path -> namespace $ns)"
 }
+
+# seed_demo_kustomize: add hack/demo/kustomize/* as kustomize/* to the demo
+# repository when they are missing there. The token is read from the
+# environment by python3 and is never printed or put in an argument.
+seed_demo_kustomize() {
+  local project="${DEMO_REPO#https://gitlab.com/}"
+  project="${project%.git}"
+  if [[ "$DEMO_REPO" != https://gitlab.com/* ]]; then
+    warn "the demo repository is not on gitlab.com; copy hack/demo/kustomize/ to kustomize/ in $DEMO_REPO yourself"
+    return 0
+  fi
+  if [[ -z "${GITLAB_TOKEN:-}" ]]; then
+    warn "GITLAB_TOKEN is not set: not checking that kustomize/ exists in $DEMO_REPO."
+    warn "demo-kustomize needs hack/demo/kustomize/ copied to kustomize/ there (rerun with GITLAB_TOKEN=... to do it)"
+    return 0
+  fi
+  python3 - "$ROOT/hack/demo/kustomize" "$project" "$DEMO_REVISION" <<'PY'
+import json, os, sys, urllib.error, urllib.parse, urllib.request
+src, project, ref = sys.argv[1:4]
+token = os.environ["GITLAB_TOKEN"]
+api = "https://gitlab.com/api/v4/projects/" + urllib.parse.quote(project, safe="")
+def call(method, url, body=None):
+    req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
+    return urllib.request.urlopen(req, timeout=30)
+actions, present = [], 0
+for dirpath, _, files in os.walk(src):
+    for name in sorted(files):
+        full = os.path.join(dirpath, name)
+        rel = "kustomize/" + os.path.relpath(full, src)
+        url = "%s/repository/files/%s?ref=%s" % (api, urllib.parse.quote(rel, safe=""), urllib.parse.quote(ref, safe=""))
+        try:
+            call("HEAD", url)
+            present += 1
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                sys.exit("checking %s: HTTP %d" % (rel, e.code))
+            actions.append({"action": "create", "file_path": rel, "content": open(full, encoding="utf-8").read()})
+if not actions:
+    print("  kustomize/ is complete in the demo repository (%d files)" % present)
+    sys.exit(0)
+call("POST", api + "/repository/commits", {"branch": ref, "commit_message": "demo: add the Kustomize demo (base and dev overlay)", "actions": actions})
+print("  added %d file(s) to kustomize/ in the demo repository" % len(actions))
+PY
+}
+seed_demo_kustomize
 
 apply_app demo-app "$DEMO_PATH" demo test
 
@@ -172,6 +225,11 @@ apply_app shared-alpha helm/shared shared-alpha helm-test "    helm:
 apply_app shared-beta helm/shared shared-beta helm-test "    helm:
       valueFiles:
         - services/beta/dev.yaml"
+
+# Kustomize: base shared by overlays, a setting and a patch in the dev overlay.
+# Its own label, and not env=test: the policies of the other tests select
+# env=test and must not see it. test-kustomize.sh selects backflow.io/demo=kustomize.
+apply_app demo-kustomize kustomize/overlays/dev demo-kustomize kustomize-test "" kustomize
 
 # wait_apps <name>...: wait until each Application is Synced/Healthy. An
 # Application whose path is missing in the repository fails at once instead of
@@ -206,7 +264,7 @@ wait_apps() {
     bad "$app is $sync/$health. Check: kubectl -n $ARGOCD_NS get application $app -o jsonpath='{.status.conditions}'"
   done
 }
-wait_apps demo-app demo-helm shared-alpha shared-beta
+wait_apps demo-app demo-helm shared-alpha shared-beta demo-kustomize
 
 # expect_source_type <name> <type>
 expect_source_type() {
@@ -218,6 +276,7 @@ expect_source_type demo-app Directory
 expect_source_type demo-helm Helm
 expect_source_type shared-alpha Helm
 expect_source_type shared-beta Helm
+expect_source_type demo-kustomize Kustomize
 
 # ---------------------------------------------------------------------------
 step "Argo CD account for Backflow"

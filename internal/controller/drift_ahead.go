@@ -597,6 +597,12 @@ func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy
 			summary.Name, changed, revs))
 		return
 	}
+	if checked && summary.SourceType == string(backflowv1alpha1.SourceKustomize) {
+		r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
+			"Git is ahead of the last sync of %s and %d file(s) its kustomization builds from changed (%s); drift detection for it is paused until Argo CD syncs.",
+			summary.Name, changed, revs))
+		return
+	}
 	if checked {
 		where := summary.Path
 		if strings.Trim(where, "./") == "" {

@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-kustomize
+  template:
+    metadata:
+      labels:
+        app: demo-kustomize
+      annotations:
+        team: platform
+    spec:
+      containers:
+      - name: web
+        image: nginxinc/nginx-unprivileged:1.26-alpine
+        ports:
+        - containerPort: 8080
+        env:
+        - name: GREETING
+          value: hello
+        - name: REGION
+          value: eu-west-1
