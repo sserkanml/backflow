@@ -384,7 +384,7 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 			log.V(1).Info("Drift seen, but no proposal is made now", "kind", res.Kind, "name", res.Name,
 				"applicationPaused", run.paused, "resourceHold", run.st.resourceHold(res))
 		}
-		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st); err != nil && firstErr == nil {
+		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st, proposalSources(run.app)); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -489,7 +489,8 @@ func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPoli
 // The spec of an existing proposal is never modified.
 func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, res appResource,
-	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool, st aheadState) error {
+	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool, st aheadState,
+	sources []backflowv1alpha1.ApplicationSource) error {
 	log := logf.FromContext(ctx)
 
 	srcType, ok := proposalSourceType(summary.SourceType)
@@ -573,6 +574,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 					Path:           summary.Path,
 					Type:           srcType,
 				},
+				Sources:    sources,
 				Changes:    changes,
 				DetectedAt: metav1.Now(),
 			},

@@ -155,3 +155,37 @@ func TestValueFileRefs(t *testing.T) {
 		t.Errorf("files = %v, want %v", s, want)
 	}
 }
+
+func TestProposalSources(t *testing.T) {
+	other := map[string]any{"repoURL": "https://gitlab.com/x/more.git", "targetRevision": "dev", "ref": "more"}
+	app := multiApp([]any{chartSource, valuesRef, other}, []any{"6.7.1", "aaaa", "bbbb"}, nil, []any{"Helm", "", ""})
+	got := proposalSources(app)
+	roles := make([]backflowv1alpha1.SourceRole, len(got))
+	revs := make([]string, len(got))
+	for i, s := range got {
+		roles[i], revs[i] = s.Role, s.Revision
+	}
+	if !reflect.DeepEqual(roles, []backflowv1alpha1.SourceRole{backflowv1alpha1.RoleRender, backflowv1alpha1.RoleValues, backflowv1alpha1.RoleReference}) ||
+		!reflect.DeepEqual(revs, []string{"6.7.1", "aaaa", "bbbb"}) {
+		t.Errorf("sources = %+v", got)
+	}
+
+	t.Run("revisions of the last sync when Argo CD compares none", func(t *testing.T) {
+		app := multiApp([]any{chartSource, valuesRef}, nil, []any{"6.7.0", "cccc"}, nil)
+		if got := proposalSources(app); got[0].Revision != "6.7.0" || got[1].Revision != "cccc" {
+			t.Errorf("sources = %+v", got)
+		}
+	})
+	t.Run("two ref sources that hold value files are both Values", func(t *testing.T) {
+		c := map[string]any{"repoURL": "ghcr.io/x", "chart": "c", "helm": map[string]any{"valueFiles": []any{"$values/a.yaml", "$more/b.yaml"}}}
+		got := proposalSources(multiApp([]any{c, valuesRef, other}, nil, nil, nil))
+		if got[1].Role != backflowv1alpha1.RoleValues || got[2].Role != backflowv1alpha1.RoleValues {
+			t.Errorf("sources = %+v", got)
+		}
+	})
+	t.Run("outside the supported shape there are none", func(t *testing.T) {
+		if got := proposalSources(multiApp([]any{chartSource}, nil, nil, nil)); got != nil {
+			t.Errorf("sources = %+v", got)
+		}
+	})
+}

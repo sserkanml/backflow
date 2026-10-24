@@ -186,3 +186,43 @@ func splitRefPath(raw string) refFile {
 	f.Ref, f.Path = name, strings.TrimPrefix(path, "/")
 	return f
 }
+
+// proposalSources describes the sources of a multi-source Application for a
+// proposal, each at the revision Argo CD compares against: the commit of a Git
+// source, the version of a chart. The Helm source renders; a ref source named by
+// a value file receives the edits (Values), the others are only referenced. It
+// returns nil for an Application outside the supported shape.
+func proposalSources(app *unstructured.Unstructured) []backflowv1alpha1.ApplicationSource {
+	ms, _ := helmMultiSource(app)
+	if ms == nil {
+		return nil
+	}
+	sources := specSources(app)
+	revs := statusStrings(app, fieldStatus, "sync", "revisions")
+	if len(revs) == 0 {
+		revs = statusStrings(app, fieldStatus, fieldOperationState, fieldSyncResult, "revisions")
+	}
+	helm, _ := sources[ms.Render]["helm"].(map[string]any)
+	used := map[string]bool{}
+	for _, f := range valueFileRefs(helm) {
+		if f.Ref != "" {
+			used[f.Ref] = true
+		}
+	}
+	out := make([]backflowv1alpha1.ApplicationSource, len(sources))
+	for i, src := range sources {
+		s := backflowv1alpha1.ApplicationSource{
+			Position: int32(i + 1), RepoURL: strField(src, "repoURL"), Revision: at(revs, i),
+			TargetRevision: strField(src, "targetRevision"), Path: strField(src, "path"),
+			Chart: strField(src, "chart"), Ref: strField(src, "ref"), Role: backflowv1alpha1.RoleReference,
+		}
+		switch {
+		case i == ms.Render:
+			s.Role, s.Type = backflowv1alpha1.RoleRender, backflowv1alpha1.SourceHelm
+		case used[s.Ref]:
+			s.Role = backflowv1alpha1.RoleValues
+		}
+		out[i] = s
+	}
+	return out
+}

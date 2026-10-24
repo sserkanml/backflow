@@ -1898,6 +1898,12 @@ var _ = Describe("Drift detection", func() {
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
 			Expect(eventsMatching("UnsupportedSource")).To(BeZero())
+			Expect(proposals()[0].Spec.Sources).To(Equal([]backflowv1alpha1.ApplicationSource{
+				{Position: 1, Role: backflowv1alpha1.RoleRender, RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1",
+					TargetRevision: "6.7.*", Chart: "podinfo", Type: backflowv1alpha1.SourceHelm},
+				{Position: 2, Role: backflowv1alpha1.RoleValues, RepoURL: "https://gitlab.com/x/values.git", Revision: values,
+					TargetRevision: "main", Ref: "values"},
+			}), "every source at the revision Argo CD compares against, and the one the edits are written to")
 		})
 
 		It("reports a chart that moved as a change of the Application, not as Git being ahead, and makes no proposal", func() {
