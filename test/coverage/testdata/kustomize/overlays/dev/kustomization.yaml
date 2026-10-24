@@ -1,0 +1,51 @@
+resources:
+- ../../base
+- extra.yaml
+components:
+- ../../components/tolerations
+images:
+- name: nginx
+  newTag: "1.26"
+replicas:
+- name: web
+  count: 2
+labels:
+- pairs:
+    env: dev
+  includeSelectors: false
+  includeTemplates: true
+patches:
+- path: env.yaml
+- target:
+    kind: Deployment
+    name: web
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/imagePullPolicy
+      value: Always
+- target:
+    kind: Deployment
+    name: web
+  patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: web
+    spec:
+      template:
+        spec:
+          containers:
+          - name: web
+            resources:
+              limits:
+                memory: 512Mi
+configMapGenerator:
+- name: settings
+  literals:
+  - mode=dev
+  - retries=3
+  options:
+    disableNameSuffixHash: true
+- name: flags
+  literals:
+  - feature=on
