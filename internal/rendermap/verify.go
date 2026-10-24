@@ -1454,6 +1454,32 @@ func (v *run) addStructured(base snapshot, nd nondeterminism, fields []parsedFie
 	return v.tryAll(base, nd, fields, added)
 }
 
+// prepare tells a renderer that can use it (Preparer) the file sets of the
+// edits about to be rendered, leaving out those already rendered.
+func (v *run) prepare(added []*tryout) error {
+	p, ok := v.r.(Preparer)
+	if !ok {
+		return nil
+	}
+	var sets []map[string][]byte
+	for _, t := range added {
+		files, why := tryEdit(v.in.Writer, v.in.Files, t.cand, t.value)
+		if why != "" {
+			continue
+		}
+		if v.shared != nil {
+			if _, done := v.shared.snaps[filesKey(files)]; done {
+				continue
+			}
+		}
+		sets = append(sets, files)
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	return v.budgetOr(p.Prepare(v.ctx, sets))
+}
+
 // tryAll renders each new edit on its own and records what it changed.
 func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, added []*tryout) error {
 	byPointer := map[string]int{}
@@ -1461,6 +1487,9 @@ func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, add
 		if !f.structured {
 			byPointer[f.Change.Path] = i
 		}
+	}
+	if err := v.prepare(added); err != nil {
+		return err
 	}
 	for _, t := range added {
 		files, why := tryEdit(v.in.Writer, v.in.Files, t.cand, t.value)

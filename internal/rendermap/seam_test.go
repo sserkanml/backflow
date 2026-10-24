@@ -116,3 +116,34 @@ func TestVerifyWithAnotherSource(t *testing.T) {
 		}
 	})
 }
+
+// preparingRenderer records what the engine tells it before a batch.
+type preparingRenderer struct {
+	lineRenderer
+	batches [][]map[string][]byte
+}
+
+func (p *preparingRenderer) Prepare(_ context.Context, sets []map[string][]byte) error {
+	p.batches = append(p.batches, sets)
+	return nil
+}
+
+func TestVerifyPreparesTheRendersOfABatch(t *testing.T) {
+	files := map[string][]byte{"a.txt": []byte("size=1"), "b.txt": []byte("size=1")}
+	found := &Found{Candidates: []Candidate{
+		{File: "a.txt", Path: KeyPath{"size"}}, {File: "b.txt", Path: KeyPath{"size"}},
+	}}
+	r := &preparingRenderer{}
+	out, err := Verify(context.Background(), r, lineInput(files, found), Options{})
+	if err != nil || !out.Mapped() {
+		t.Fatalf("out = %+v, err = %v", out, err)
+	}
+	if len(r.batches) == 0 || len(r.batches[0]) != 2 {
+		t.Fatalf("batches = %d, the first has %d sets, want both candidates in one batch", len(r.batches), len(r.batches[0]))
+	}
+	for _, set := range r.batches[0] {
+		if string(set["a.txt"]) == "size=1" && string(set["b.txt"]) == "size=1" {
+			t.Errorf("a set of the batch is the unmodified files: %v", set)
+		}
+	}
+}
