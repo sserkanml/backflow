@@ -17,6 +17,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/kustomize"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -46,6 +47,10 @@ type mappedChange struct {
 	overrides []rendermap.AppliedOverride
 	// renders is the number of renders through Argo CD the mapping took (Helm).
 	renders int
+	// kustomize describes the edits of a Kustomize mapping.
+	kustomize *kustomize.Description
+	// created are the edited files that do not exist in Git yet (a new patch).
+	created []string
 }
 
 // leftOutField is a drifted field a partial mapping leaves out.
@@ -204,6 +209,19 @@ func (m *mappedChange) message(dp *backflowv1alpha1.DriftProposal) string {
 		}
 		if n := len(m.overrides); n > 0 {
 			msg += fmt.Sprintf(" It adds %d key(s) that override chart defaults: %s.", n, m.overrideSummary())
+		}
+		return msg
+	}
+	if m.kustomize != nil {
+		msg := fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD and changes exactly the drifted fields.", files)
+		if len(m.created) > 0 {
+			msg += fmt.Sprintf(" It adds the new file(s) %s.", strings.Join(m.created, ", "))
+		}
+		if len(m.kustomize.SharedFiles) > 0 {
+			msg += fmt.Sprintf(" It edits %s, outside the Application's path.", strings.Join(m.kustomize.SharedFiles, ", "))
+			if apps := sharedApps(m.kustomize); len(apps) > 0 {
+				msg += fmt.Sprintf(" Merging also changes: %s at their next sync.", strings.Join(apps, ", "))
+			}
 		}
 		return msg
 	}
@@ -426,4 +444,15 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		change.leftOut = append(change.leftOut, leftOutField{path: l.Pointer, reason: l.Reason, message: l.Detail})
 	}
 	return change, nil
+}
+
+// sharedApps are the other Applications that build the shared files an edit
+// changes, sorted and without duplicates.
+func sharedApps(d *kustomize.Description) []string {
+	var apps []string
+	for _, a := range d.Users {
+		apps = append(apps, a...)
+	}
+	slices.Sort(apps)
+	return slices.Compact(apps)
 }

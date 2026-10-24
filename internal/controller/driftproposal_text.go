@@ -80,7 +80,7 @@ func mappedChanges(dp *backflowv1alpha1.DriftProposal, left []leftOutField) []ba
 // commitMessage lists the changed paths and names the proposal. The actor is
 // recorded as a trailer: the Kubernetes user has no Git identity, so the
 // commit is authored by the committer.
-func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride) string {
+func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, notes ...string) string {
 	var b strings.Builder
 	b.WriteString(commitSubject(dp, left))
 	b.WriteString("\n\nChanged paths:\n")
@@ -119,6 +119,9 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, over
 			}
 			b.WriteString("\n")
 		}
+	}
+	for _, n := range notes {
+		fmt.Fprintf(&b, "%s\n\n", n)
 	}
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposal, dp.Name)
 	fmt.Fprintf(&b, "%s: %s\n", trailerProposalUID, dp.UID)
@@ -182,7 +185,7 @@ func fenceFor(text string) string {
 // mergeRequestBody explains the change to the reviewer: what changed, who
 // changed it, the diff, which proposal it belongs to, and what merging or
 // closing means.
-func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, diff string) string {
+func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, diff string, notes ...string) string {
 	var b strings.Builder
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.Resource)))
@@ -224,6 +227,10 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, o
 				fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cell(collateralResource(ch), "-"), cell(ch.Path, "-"), cell(ch.Current, "(absent)"), cell(ch.New, "(absent)"))
 			}
 		}
+	}
+
+	for _, n := range notes {
+		fmt.Fprintf(&b, "\n**Kustomize**\n\n%s\n", n)
 	}
 
 	if len(left) > 0 {

@@ -119,9 +119,9 @@ func (r *DriftProposalReconciler) retryDelayFor(dp *backflowv1alpha1.DriftPropos
 func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	if t := dp.Spec.Source.Type; t != backflowv1alpha1.SourceDirectory && t != backflowv1alpha1.SourceHelm {
+	if t := dp.Spec.Source.Type; t != backflowv1alpha1.SourceDirectory && t != backflowv1alpha1.SourceHelm && t != backflowv1alpha1.SourceKustomize {
 		return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType,
-			fmt.Sprintf("Mapping %s sources is not supported yet; only Directory and Helm sources are mapped.", t))
+			fmt.Sprintf("Mapping %s sources is not supported; only Directory, Helm and Kustomize sources are mapped.", t))
 	}
 
 	if hasCredentials(dp.Spec.Source.RepoURL) {
@@ -144,6 +144,12 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if dp.Spec.Source.Type == backflowv1alpha1.SourceHelm {
 		// A chart that is not in the Git repository has nothing to read there.
 		if err := helmSourceProblem(app); err != nil {
+			return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType, err.Error())
+		}
+	}
+
+	if dp.Spec.Source.Type == backflowv1alpha1.SourceKustomize {
+		if err := kustomizeSourceProblem(app); err != nil {
 			return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType, err.Error())
 		}
 	}
@@ -350,8 +356,11 @@ func directoryInfoOf(app *unstructured.Unstructured) directorySourceInfo {
 // repository is not usable now), or a failure to read the repository.
 func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
-	if dp.Spec.Source.Type == backflowv1alpha1.SourceHelm {
+	switch dp.Spec.Source.Type {
+	case backflowv1alpha1.SourceHelm:
 		return r.mapHelm(ctx, dp, app, tree, sha)
+	case backflowv1alpha1.SourceKustomize:
+		return r.mapKustomize(ctx, dp, app, tree)
 	}
 	src := directoryInfoOf(app)
 	policy, err := r.policyOf(ctx, dp)
