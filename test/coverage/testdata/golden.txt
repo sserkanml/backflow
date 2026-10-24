@@ -322,16 +322,16 @@ kustomize-dev | ConfigMap settings | configmap-data | default | Mapped overlays/
 kustomize-dev | ConfigMap settings | configmap-data | editBases | Mapped overlays/dev/kustomization.yaml: configMapGenerator.0.literals.0 [setting]
 kustomize-dev | ConfigMap settings | configmap-data | no-addPatches | Mapped overlays/dev/kustomization.yaml: configMapGenerator.0.literals.0 [setting]
 kustomize-dev | Deployment web | env-change | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env.1.value, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev | Deployment web | env-change | editBases | Mapped base/deployment.yaml: spec.template.spec.containers.0.env.1.value [base]
+kustomize-dev | Deployment web | env-change | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env.1.value, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev | Deployment web | env-change | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev | Deployment web | env-remove | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev | Deployment web | env-remove | editBases | Mapped base/deployment.yaml: spec.template.spec.containers.0.env [base]
+kustomize-dev | Deployment web | env-remove | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev | Deployment web | env-remove | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev | Deployment web | image-tag | default | Mapped overlays/dev/kustomization.yaml: images.0.newTag [setting]
 kustomize-dev | Deployment web | image-tag | editBases | Mapped overlays/dev/kustomization.yaml: images.0.newTag [setting]
 kustomize-dev | Deployment web | image-tag | no-addPatches | Mapped overlays/dev/kustomization.yaml: images.0.newTag [setting]
 kustomize-dev | Deployment web | pod-annotation | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.metadata.annotations.backflow\.io/test, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev | Deployment web | pod-annotation | editBases | Mapped base/deployment.yaml: spec.template.metadata.annotations.backflow\.io/test [base]
+kustomize-dev | Deployment web | pod-annotation | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.metadata.annotations.backflow\.io/test, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev | Deployment web | pod-annotation | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev | Deployment web | pull-policy | default | Mapped overlays/dev/kustomization.yaml: patches.1.patch.0.value [patch]
 kustomize-dev | Deployment web | pull-policy | editBases | Mapped overlays/dev/kustomization.yaml: patches.1.patch.0.value [patch]
@@ -343,7 +343,7 @@ kustomize-dev | Deployment web | scale | default | Mapped overlays/dev/kustomiza
 kustomize-dev | Deployment web | scale | editBases | Mapped overlays/dev/kustomization.yaml: replicas.0.count [setting]
 kustomize-dev | Deployment web | scale | no-addPatches | Mapped overlays/dev/kustomization.yaml: replicas.0.count [setting]
 kustomize-dev | Deployment web | toleration-remove | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.tolerations, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev | Deployment web | toleration-remove | editBases | Mapped base/deployment.yaml: spec.template.spec.tolerations [base]
+kustomize-dev | Deployment web | toleration-remove | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.tolerations, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev | Deployment web | toleration-remove | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev | Service web | service-port | default | Unmapped NoVerifiedCandidate
 kustomize-dev | Service web | service-port | editBases | Mapped base/service.yaml: spec.ports.0.port [base]
@@ -358,16 +358,16 @@ kustomize-dev-images | ConfigMap settings | configmap-data | default | Mapped ov
 kustomize-dev-images | ConfigMap settings | configmap-data | editBases | Mapped overlays/dev/kustomization.yaml: configMapGenerator.0.literals.0 [setting]
 kustomize-dev-images | ConfigMap settings | configmap-data | no-addPatches | Mapped overlays/dev/kustomization.yaml: configMapGenerator.0.literals.0 [setting]
 kustomize-dev-images | Deployment web | env-change | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env.1.value, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev-images | Deployment web | env-change | editBases | Mapped base/deployment.yaml: spec.template.spec.containers.0.env.1.value [base]
+kustomize-dev-images | Deployment web | env-change | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env.1.value, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev-images | Deployment web | env-change | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev-images | Deployment web | env-remove | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev-images | Deployment web | env-remove | editBases | Mapped base/deployment.yaml: spec.template.spec.containers.0.env [base]
+kustomize-dev-images | Deployment web | env-remove | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev-images | Deployment web | env-remove | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev-images | Deployment web | image-tag | default | Unmapped SetByApplication
 kustomize-dev-images | Deployment web | image-tag | editBases | Unmapped SetByApplication
 kustomize-dev-images | Deployment web | image-tag | no-addPatches | Unmapped SetByApplication
 kustomize-dev-images | Deployment web | pod-annotation | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.metadata.annotations.backflow\.io/test, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev-images | Deployment web | pod-annotation | editBases | Mapped base/deployment.yaml: spec.template.metadata.annotations.backflow\.io/test [base]
+kustomize-dev-images | Deployment web | pod-annotation | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.metadata.annotations.backflow\.io/test, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev-images | Deployment web | pod-annotation | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev-images | Deployment web | pull-policy | default | Mapped overlays/dev/kustomization.yaml: patches.1.patch.0.value [patch]
 kustomize-dev-images | Deployment web | pull-policy | editBases | Mapped overlays/dev/kustomization.yaml: patches.1.patch.0.value [patch]
@@ -379,7 +379,7 @@ kustomize-dev-images | Deployment web | scale | default | Mapped overlays/dev/ku
 kustomize-dev-images | Deployment web | scale | editBases | Mapped overlays/dev/kustomization.yaml: replicas.0.count [setting]
 kustomize-dev-images | Deployment web | scale | no-addPatches | Mapped overlays/dev/kustomization.yaml: replicas.0.count [setting]
 kustomize-dev-images | Deployment web | toleration-remove | default | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.tolerations, overlays/dev/kustomization.yaml: patches.- [new patch]
-kustomize-dev-images | Deployment web | toleration-remove | editBases | Mapped base/deployment.yaml: spec.template.spec.tolerations [base]
+kustomize-dev-images | Deployment web | toleration-remove | editBases | Mapped overlays/dev/backflow-patches/deployment-web.yaml: spec.template.spec.tolerations, overlays/dev/kustomization.yaml: patches.- [new patch]
 kustomize-dev-images | Deployment web | toleration-remove | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-dev-images | Service web | service-port | default | Unmapped NoVerifiedCandidate
 kustomize-dev-images | Service web | service-port | editBases | Mapped base/service.yaml: spec.ports.0.port [base]
