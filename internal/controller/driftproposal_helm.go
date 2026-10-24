@@ -20,6 +20,7 @@ import (
 	"github.com/sserkanml/backflow/internal/kustomize"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 // Reasons of the Mapped condition for Helm sources that come from the
@@ -51,6 +52,9 @@ type mappedChange struct {
 	kustomize *kustomize.Description
 	// created are the edited files that do not exist in Git yet (a new patch).
 	created []string
+	// repoURL is the repository the files are in, for an Application with
+	// several sources.
+	repoURL string
 }
 
 // leftOutField is a drifted field a partial mapping leaves out.
@@ -201,6 +205,9 @@ func (m *mappedChange) message(dp *backflowv1alpha1.DriftProposal) string {
 		return m.partialMessage(dp)
 	}
 	files := strings.Join(m.paths(), ", ")
+	if m.repoURL != "" {
+		files += " of " + scm.RedactURL(m.repoURL)
+	}
 	if m.strategy == backflowv1alpha1.StrategyHelmValues {
 		msg := fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD and changes exactly the drifted fields.", files)
 		if len(m.collateral) > 0 {
@@ -258,6 +265,11 @@ func (r *DriftProposalReconciler) application(ctx context.Context, dp *backflowv
 func fullHelmSpec(app *unstructured.Unstructured, repoURL, path, sha string) helmmap.Spec {
 	spec := helmSpecAt(app, repoURL, path, sha)
 	helm, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "helm")
+	return withInlineHelm(spec, helm)
+}
+
+// withInlineHelm adds the inline settings of a Helm source to the spec.
+func withInlineHelm(spec helmmap.Spec, helm map[string]any) helmmap.Spec {
 	spec.Values, _, _ = unstructured.NestedString(helm, "values")
 	if obj, ok, _ := unstructured.NestedMap(helm, "valuesObject"); ok && len(obj) > 0 {
 		if b, err := json.Marshal(obj); err == nil {
@@ -363,16 +375,19 @@ func argoFailure(err error) error {
 func scalarOf(raw string) (any, bool) { return helmmap.ScalarOf(raw) }
 
 // helmSourceProblem returns a *verdictError for a Helm Application whose
-// source cannot be mapped at all: several sources, or a chart that comes from a
-// Helm repository or an OCI registry instead of the Git repository.
+// source cannot be mapped at all: several sources outside the supported shape
+// (a Helm source with Git ref sources), or a chart that comes from a Helm
+// repository or an OCI registry with no ref source to write to.
 func helmSourceProblem(app *unstructured.Unstructured) error {
-	if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
-		return &verdictError{reason: reasonUnsupportedSourceType,
-			err: errors.New("the Application has several sources; only single-source Helm Applications are mapped")}
+	if len(specSources(app)) > 0 {
+		if ms, why := helmMultiSource(app); ms == nil {
+			return &verdictError{reason: reasonUnsupportedSourceType, err: errors.New(unsupportedMultiSource(why))}
+		}
+		return nil
 	}
 	if chart, _, _ := unstructured.NestedString(app.Object, "spec", "source", "chart"); chart != "" {
 		return &verdictError{reason: reasonUnsupportedSourceType,
-			err: fmt.Errorf("the chart %q comes from a Helm repository or registry, not from the Git repository; only charts in Git are mapped", chart)}
+			err: fmt.Errorf("the chart %q comes from a Helm repository or registry, not from the Git repository; only charts in Git are mapped (a chart with inline values and no ref source is not mapped yet)", chart)}
 	}
 	return nil
 }
@@ -388,6 +403,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
 	if err := helmSourceProblem(app); err != nil {
 		return nil, err
+	}
+	if len(dp.Spec.Sources) > 0 {
+		return r.mapHelmMulti(ctx, dp, app, tree, sha)
 	}
 	spec := fullHelmSpec(app, dp.Spec.Source.RepoURL, dp.Spec.Source.Path, sha)
 	src, err := helmmap.NewSource(tree, spec)
@@ -422,7 +440,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		return nil, err
 	}
 	res := dp.Spec.Resource
-	out, err := helmmap.Verify(ctx, rend, helmmap.Input{
+	out, err := r.verify(ctx, dp, rend, helmmap.Input{
 		App:      helmAppOf(app),
 		Resource: rendermap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name},
 		Fields:   fields, Source: src, Files: files,

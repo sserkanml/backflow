@@ -226,3 +226,18 @@ func proposalSources(app *unstructured.Unstructured) []backflowv1alpha1.Applicat
 	}
 	return out
 }
+
+// writeTarget is the source the edits of a proposal are written to: spec.source,
+// or, for a proposal of a multi-source Application, the source with role Values,
+// whose repository, revision and branch the commits, branches and merge
+// requests use. Its Path is empty: the files are named by the value files.
+func writeTarget(dp *backflowv1alpha1.DriftProposal) backflowv1alpha1.SourceRef {
+	for _, s := range dp.Spec.Sources {
+		if s.Role == backflowv1alpha1.RoleValues {
+			return backflowv1alpha1.SourceRef{
+				RepoURL: s.RepoURL, Revision: s.Revision, TargetRevision: s.TargetRevision, Type: dp.Spec.Source.Type,
+			}
+		}
+	}
+	return dp.Spec.Source
+}

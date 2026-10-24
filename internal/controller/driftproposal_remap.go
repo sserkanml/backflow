@@ -112,7 +112,7 @@ func (r *DriftProposalReconciler) mapForHead(ctx context.Context, dp *backflowv1
 func (r *DriftProposalReconciler) reusableMapping(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	access *scmAccess, head string) (string, *mappedChange) {
 	memo, ok := r.memos.get(dp.UID)
-	if !ok || memo.revision != dp.Spec.Source.Revision {
+	if !ok || memo.revision != writeTarget(dp).Revision {
 		return "there is no earlier result in memory (the operator restarted, or the proposal was not mapped here)", nil
 	}
 	app, err := r.application(ctx, dp)
@@ -129,7 +129,7 @@ func (r *DriftProposalReconciler) reusableMapping(ctx context.Context, dp *backf
 	if head == memo.revision {
 		return remapReasonH, memo.change
 	}
-	url := dp.Spec.Source.RepoURL
+	url := writeTarget(dp).RepoURL
 	paths, err := r.Writer.ChangedPaths(ctx, url, memo.revision, head, access.auth)
 	if err != nil {
 		return "the changes between the revisions cannot be listed: " + redactText(err.Error()), nil
@@ -166,13 +166,16 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 		}
 		return "", true
 	case backflowv1alpha1.SourceHelm:
+		if len(dp.Spec.Sources) > 0 {
+			return r.changedRelevantMulti(ctx, dp, app, access, from, to, paths)
+		}
 		var rel *helmmap.Relevance
 		for _, sha := range []string{from, to} {
-			tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, sha, access.auth)
+			tree, err := r.Repos.Open(ctx, writeTarget(dp).RepoURL, sha, access.auth)
 			if err != nil {
 				return "", false
 			}
-			one, err := helmmap.RelevantFiles(tree, helmSpecAt(app, dp.Spec.Source.RepoURL, dp.Spec.Source.Path, sha))
+			one, err := helmmap.RelevantFiles(tree, helmSpecAt(app, writeTarget(dp).RepoURL, dp.Spec.Source.Path, sha))
 			_ = tree.Close()
 			if err != nil {
 				return "", false
@@ -191,7 +194,7 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 		return "", true
 	case backflowv1alpha1.SourceKustomize:
 		for _, sha := range []string{from, to} {
-			tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, sha, access.auth)
+			tree, err := r.Repos.Open(ctx, writeTarget(dp).RepoURL, sha, access.auth)
 			if err != nil {
 				return "", false
 			}
@@ -212,6 +215,43 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 		return "", true
 	}
 	return "", false
+}
+
+// changedRelevantMulti is changedRelevant for a multi-source Application: the
+// mapping depends on the value files of the ref source that receives the edits,
+// at either revision. The chart is not looked at: a new version of it is a change
+// of the Application, which the fingerprint of the mapping covers.
+func (r *DriftProposalReconciler) changedRelevantMulti(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+	app *unstructured.Unstructured, access *scmAccess, from, to string, paths []string) (changed string, known bool) {
+	values, err := valuesSource(dp)
+	ms, _ := helmMultiSource(app)
+	if err != nil || ms == nil {
+		return "", false
+	}
+	helm, _ := specSources(app)[ms.Render]["helm"].(map[string]any)
+	var mine []refFile
+	for _, f := range valueFileRefs(helm) {
+		if f.Ref == values.Ref {
+			mine = append(mine, f)
+		}
+	}
+	for _, sha := range []string{from, to} {
+		tree, err := r.Repos.Open(ctx, values.RepoURL, sha, access.auth)
+		if err != nil {
+			return "", false
+		}
+		rel, unchecked := refFilesAt(tree, mine)
+		_ = tree.Close()
+		if unchecked != "" {
+			return "", false
+		}
+		for _, p := range paths {
+			if rel.Matches(p) {
+				return p, true
+			}
+		}
+	}
+	return "", true
 }
 
 func itoa(n int) string {

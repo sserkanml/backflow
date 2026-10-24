@@ -2,6 +2,7 @@ package helmmap
 
 import (
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 	"testing/fstest"
@@ -57,11 +58,7 @@ func TestExternalChartSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
-	for n := range files {
-		names = append(names, n)
-	}
-	slices.Sort(names)
+	names := slices.Sorted(maps.Keys(files))
 	want := []string{"env/extra.yaml", "env/values.yaml", "podinfo@6.7.1/values.yaml"}
 	if !slices.Equal(names, want) {
 		t.Errorf("files = %v, want %v: the repository's own Chart.yaml and values.yaml are not the chart's", names, want)
@@ -123,5 +120,19 @@ func TestExternalChartMissingValueFile(t *testing.T) {
 		External: &ExternalChart{Name: "c", Version: "1", Values: []byte("a: 1\n")}})
 	if err != nil || len(src.ValueFiles) != 0 {
 		t.Errorf("src = %+v, err = %v", src, err)
+	}
+}
+
+func TestDependencyAndSubchartNames(t *testing.T) {
+	chart := []byte("apiVersion: v2\nname: app\ndependencies:\n  - name: redis\n    version: 1.0.0\n  - name: postgresql\n    alias: db\n    version: 2.0.0\n  - name: redis\n    version: 1.0.0\n")
+	if got := DependencyNames(chart); !slices.Equal(got, []string{"redis", "db"}) {
+		t.Errorf("dependencies = %v", got)
+	}
+	if got := DependencyNames([]byte("not: [valid")); got != nil {
+		t.Errorf("dependencies = %v", got)
+	}
+	got := SubchartNames([]string{"values.yaml", "charts/redis/values.yaml", "charts/db/values.yml", "charts/redis/values.yaml", "charts/a/b/values.yaml", "values-prod.yaml"})
+	if !slices.Equal(got, []string{"redis", "db"}) {
+		t.Errorf("subcharts = %v", got)
 	}
 }

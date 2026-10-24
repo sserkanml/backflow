@@ -7,6 +7,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/rendermap"
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 const (
@@ -190,6 +191,9 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, o
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.Resource)))
 	fmt.Fprintf(&b, "- **Application:** %s/%s\n", singleLine(dp.Spec.Application.Namespace), singleLine(dp.Spec.Application.Name))
+	if len(dp.Spec.Sources) > 0 {
+		fmt.Fprintf(&b, "- **Sources:** %s\n", singleLine(sourcesLine(dp.Spec.Sources)))
+	}
 	if a := dp.Spec.Actor; a != nil && singleLine(a.Username) != "" {
 		fmt.Fprintf(&b, "- **Changed by:** %s", singleLine(a.Username))
 		if ua := singleLine(a.UserAgent); ua != "" {
@@ -362,4 +366,27 @@ func collateralLines(dp *backflowv1alpha1.DriftProposal) []string {
 		lines = append(lines, fmt.Sprintf("%s %s: %s -> %s", singleLine(collateralResource(c)), singleLine(c.Path), singleLine(c.Current), singleLine(c.New)))
 	}
 	return lines
+}
+
+// sourcesLine describes the sources of a multi-source Application in a line:
+// the chart, and the repository each ref source comes from.
+func sourcesLine(sources []backflowv1alpha1.ApplicationSource) string {
+	parts := make([]string, 0, len(sources))
+	for _, s := range sources {
+		rev := s.Revision
+		if len(rev) == 40 {
+			rev = rev[:7]
+		}
+		switch {
+		case s.Chart != "":
+			parts = append(parts, fmt.Sprintf("chart %s %s from %s", s.Chart, rev, scm.RedactURL(s.RepoURL)))
+		case s.Ref != "" && s.Role == backflowv1alpha1.RoleValues:
+			parts = append(parts, fmt.Sprintf("values in %s (`$%s`, at %s), where this merge request is made", scm.RedactURL(s.RepoURL), s.Ref, rev))
+		case s.Ref != "":
+			parts = append(parts, fmt.Sprintf("`$%s` from %s at %s", s.Ref, scm.RedactURL(s.RepoURL), rev))
+		default:
+			parts = append(parts, fmt.Sprintf("%s at %s", scm.RedactURL(s.RepoURL), rev))
+		}
+	}
+	return strings.Join(parts, "; ")
 }

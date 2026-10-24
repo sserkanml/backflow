@@ -25,6 +25,8 @@ type fakeGit struct {
 	deleted  [][]string
 	branches []gitrepo.RemoteBranch
 	pushErr  error
+	// optionsErr is returned by a push that has options.
+	optionsErr error
 }
 
 func (g *fakeGit) CommitFiles(_ context.Context, _, base string, _ *gitrepo.Auth, files map[string][]byte, meta gitrepo.CommitMeta) (string, error) {
@@ -43,6 +45,9 @@ func (g *fakeGit) CommitFiles(_ context.Context, _, base string, _ *gitrepo.Auth
 func (g *fakeGit) PushBranches(_ context.Context, _ string, branches map[string]string, options map[string]string, _ *gitrepo.Auth) error {
 	if g.pushErr != nil {
 		return g.pushErr
+	}
+	if len(options) > 0 && g.optionsErr != nil {
+		return g.optionsErr
 	}
 	g.pushes = append(g.pushes, maps.Clone(branches))
 	g.options = append(g.options, options)
@@ -228,7 +233,7 @@ func TestFinishDeletesEveryBranchOnce(t *testing.T) {
 func TestBranchBound(t *testing.T) {
 	g, a := &fakeGit{}, &fakeArgo{}
 	r := newRenderer(g, a, func(c *Config) { c.MaxBranches = 2 })
-	var sets []map[string][]byte
+	sets := make([]map[string][]byte, 0, 3)
 	for i := range 3 {
 		sets = append(sets, edited(map[string]string{"env/values.yaml": fmt.Sprintf("a: %d\n", i+10)}))
 	}
@@ -276,7 +281,7 @@ func TestSecretsAreMasked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _, _ := nestedMap(objs[0].Object, "data")
+	data := nestedMap(objs[0].Object, "data")
 	if strings.Contains(fmt.Sprint(data), "aHVudGVyMg") || strings.Contains(fmt.Sprint(objs[0].Object), "abc") {
 		t.Errorf("a Secret value is in the object: %v", objs[0].Object)
 	}
@@ -284,10 +289,10 @@ func TestSecretsAreMasked(t *testing.T) {
 		t.Errorf("masked data = %v", data)
 	}
 	again, _ := r.Render(t.Context(), rendermap.App{}, maps.Clone(base))
-	if d2, _, _ := nestedMap(again[0].Object, "data"); d2["password"] != data["password"] {
+	if d2 := nestedMap(again[0].Object, "data"); d2["password"] != data["password"] {
 		t.Errorf("the mask of a value changes between renders")
 	}
-	if cm, _, _ := nestedMap(objs[1].Object, "data"); cm["password"] != "visible" {
+	if cm := nestedMap(objs[1].Object, "data"); cm["password"] != "visible" {
 		t.Errorf("a ConfigMap was masked: %v", cm)
 	}
 }
@@ -309,7 +314,18 @@ func TestSweepDeletesOnlyOldScratchBranches(t *testing.T) {
 	}
 }
 
-func nestedMap(o map[string]any, key string) (map[string]any, bool, error) {
-	m, ok := o[key].(map[string]any)
-	return m, ok, nil
+func nestedMap(o map[string]any, key string) map[string]any {
+	m, _ := o[key].(map[string]any)
+	return m
+}
+
+func TestPushWithoutOptionsWhenTheRemoteDoesNotTakeThem(t *testing.T) {
+	g := &fakeGit{optionsErr: gitrepo.ErrPushOptionsNotSupported}
+	r := newRenderer(g, &fakeArgo{}, nil)
+	if err := r.Prepare(t.Context(), []map[string][]byte{edited(map[string]string{"env/values.yaml": "a: 2\n"})}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.pushes) != 1 || g.options[0] != nil {
+		t.Errorf("pushes = %v, options = %v: the push is repeated without options", g.pushes, g.options)
+	}
 }

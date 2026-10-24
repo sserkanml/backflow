@@ -96,6 +96,11 @@ type RepositoryWriter interface {
 	ChangedPaths(ctx context.Context, repoURL, from, to string, auth *gitrepo.Auth) ([]string, error)
 	UpdateBranch(ctx context.Context, repoURL, branch, sha string, auth *gitrepo.Auth) error
 	FirstParentLog(ctx context.Context, repoURL, tip, stop string, limit int, auth *gitrepo.Auth) ([]gitrepo.LogEntry, bool, error)
+	// PushBranches, DeleteBranches and ListBranches are for the scratch branches
+	// that verify a multi-source proposal (see internal/scratch).
+	PushBranches(ctx context.Context, repoURL string, branches map[string]string, options map[string]string, auth *gitrepo.Auth) error
+	DeleteBranches(ctx context.Context, repoURL string, names []string, auth *gitrepo.Auth) error
+	ListBranches(ctx context.Context, repoURL, prefix string, auth *gitrepo.Auth) ([]gitrepo.RemoteBranch, error)
 }
 
 // scmAccess is everything needed to talk to the Git host of a repository.
@@ -154,14 +159,14 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 	}
 	if access == nil {
 		host := "the repository host"
-		if h, _, perr := scm.ParseRepoURL(dp.Spec.Source.RepoURL); perr == nil {
+		if h, _, perr := scm.ParseRepoURL(writeTarget(dp).RepoURL); perr == nil {
 			host = h
 		}
 		return r.holdProposal(ctx, dp, reasonMissingScmConnection,
 			fmt.Errorf("no ScmConnection matches %s; create one so Backflow can write to Git", host), 0)
 	}
 
-	_, project, err := scm.ParseRepoURL(dp.Spec.Source.RepoURL)
+	_, project, err := scm.ParseRepoURL(writeTarget(dp).RepoURL)
 	if err != nil {
 		return r.fail(ctx, dp, reasonInvalidRepositoryURL, err.Error())
 	}
@@ -193,12 +198,12 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 func (r *DriftProposalReconciler) targetBranch(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	policy *backflowv1alpha1.BackflowPolicy, access *scmAccess) (string, *proposalOutcome) {
 	explicit := policy.Spec.MergeRequest != nil && policy.Spec.MergeRequest.TargetBranch != ""
-	branch := dp.Spec.Source.TargetRevision
+	branch := writeTarget(dp).TargetRevision
 	if explicit {
 		branch = policy.Spec.MergeRequest.TargetBranch
 	}
 	if !explicit && (branch == "" || branch == "HEAD") {
-		def, err := r.Writer.DefaultBranch(ctx, dp.Spec.Source.RepoURL, access.auth)
+		def, err := r.Writer.DefaultBranch(ctx, writeTarget(dp).RepoURL, access.auth)
 		if err != nil {
 			if errors.Is(err, gitrepo.ErrBranchNotFound) {
 				res, ferr := r.fail(ctx, dp, reasonTargetNotABranch,
@@ -210,7 +215,7 @@ func (r *DriftProposalReconciler) targetBranch(ctx context.Context, dp *backflow
 		}
 		branch = def
 	}
-	if _, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, branch, access.auth); err != nil {
+	if _, err := r.Writer.BranchTip(ctx, writeTarget(dp).RepoURL, branch, access.auth); err != nil {
 		if errors.Is(err, gitrepo.ErrBranchNotFound) {
 			origin := "the Application's targetRevision"
 			if explicit {
@@ -248,7 +253,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 		return nil, &proposalOutcome{result: res, err: err}
 	}
 
-	head, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, target, access.auth)
+	head, err := r.Writer.BranchTip(ctx, writeTarget(dp).RepoURL, target, access.auth)
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrBranchNotFound) {
 			return stop(r.fail(ctx, dp, reasonTargetNotABranch, fmt.Sprintf("Branch %q no longer exists in the repository.", target)))
@@ -270,7 +275,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 			return stop(r.holdProposal(ctx, dp, held.reason, held.cause, 0))
 		}
 		if verdict, ok := errors.AsType[*verdictError](err); ok {
-			if head == dp.Spec.Source.Revision {
+			if head == writeTarget(dp).Revision {
 				// Same tree that mapped before: nothing changed in Git, so this
 				// is not "the source moved on".
 				return stop(ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error()))
@@ -284,7 +289,7 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 	}
 
 	started = time.Now()
-	sha, err := r.Writer.CommitFiles(ctx, dp.Spec.Source.RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res))
+	sha, err := r.Writer.CommitFiles(ctx, writeTarget(dp).RepoURL, head, access.auth, res.files(), r.commitMeta(dp, access, res))
 	logf.FromContext(ctx).Info("Commit built",
 		"proposal", dp.Name, "took", time.Since(started).Round(time.Millisecond).String(), "error", err)
 	if err != nil {
@@ -344,7 +349,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 		}
 		return nil, err
 	}
-	tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, sha, access.auth)
+	tree, err := r.Repos.Open(ctx, writeTarget(dp).RepoURL, sha, access.auth)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +371,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 // string says why a branch is not ours.
 func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	access *scmAccess, tip, head string) (bool, string, error) {
-	url := dp.Spec.Source.RepoURL
+	url := writeTarget(dp).RepoURL
 	info, err := r.Writer.CommitInfo(ctx, url, tip, access.auth)
 	if err != nil {
 		return false, "", err
@@ -474,7 +479,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 
 	pushStarted := time.Now()
-	err = r.Writer.CreateBranch(ctx, dp.Spec.Source.RepoURL, branch, change.sha, access.auth)
+	err = r.Writer.CreateBranch(ctx, writeTarget(dp).RepoURL, branch, change.sha, access.auth)
 	logf.FromContext(ctx).Info("Pushed the branch",
 		"proposal", dp.Name, "branch", branch, "took", time.Since(pushStarted).Round(time.Millisecond).String(), "error", err)
 	if err != nil {
@@ -576,7 +581,7 @@ func (r *DriftProposalReconciler) carriesOurWork(ctx context.Context, dp *backfl
 	if slices.Contains(known, mr.HeadSHA) {
 		return true
 	}
-	if tip, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, branch, access.auth); err == nil && tip == mr.HeadSHA {
+	if tip, err := r.Writer.BranchTip(ctx, writeTarget(dp).RepoURL, branch, access.auth); err == nil && tip == mr.HeadSHA {
 		return true
 	}
 	logf.FromContext(ctx).Info("Ignoring a closed or merged merge request that does not carry this proposal's work",
@@ -641,7 +646,7 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 			return out.result, out.err
 		}
 		pushStarted := time.Now()
-		err := r.Writer.UpdateBranch(ctx, dp.Spec.Source.RepoURL, target, change.sha, access.auth)
+		err := r.Writer.UpdateBranch(ctx, writeTarget(dp).RepoURL, target, change.sha, access.auth)
 		logf.FromContext(ctx).Info("Pushed the commit to the target branch",
 			"proposal", dp.Name, "branch", target, "took", time.Since(pushStarted).Round(time.Millisecond).String(), "error", err)
 		switch {
@@ -672,12 +677,12 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 // the revision, because a second commit would then be pushed on a guess.
 func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	access *scmAccess, target string) (bool, ctrl.Result, error) {
-	tip, err := r.Writer.BranchTip(ctx, dp.Spec.Source.RepoURL, target, access.auth)
+	tip, err := r.Writer.BranchTip(ctx, writeTarget(dp).RepoURL, target, access.auth)
 	if err != nil {
 		return false, ctrl.Result{}, nil // prepare reports it
 	}
 	limit := r.scanLimit()
-	log, reached, err := r.Writer.FirstParentLog(ctx, dp.Spec.Source.RepoURL, tip, dp.Spec.Source.Revision, limit, access.auth)
+	log, reached, err := r.Writer.FirstParentLog(ctx, writeTarget(dp).RepoURL, tip, writeTarget(dp).Revision, limit, access.auth)
 	if err != nil {
 		res, herr := r.gitFailure(ctx, dp, err)
 		return true, res, herr
@@ -690,7 +695,7 @@ func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *back
 	if !reached && len(log) >= limit {
 		res, herr := r.holdProposal(ctx, dp, reasonHistoryTooLong, fmt.Errorf(
 			"%q has more than %d commits since revision %s, so it cannot be told whether this proposal was already committed",
-			target, limit, shortRevision(dp.Spec.Source.Revision)), 0)
+			target, limit, shortRevision(writeTarget(dp).Revision)), 0)
 		return true, res, herr
 	}
 	return false, ctrl.Result{}, nil
@@ -875,6 +880,11 @@ func (r *DriftProposalReconciler) scmFailure(ctx context.Context, dp *backflowv1
 // Application and reads its token and CA bundle. See scmAccessFor.
 func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	policy *backflowv1alpha1.BackflowPolicy) (*scmAccess, error) {
+	if len(dp.Spec.Sources) > 0 {
+		// Each repository of a multi-source Application has its own connection:
+		// the one of the repository written to.
+		return scmAccessForRepo(ctx, r.Client, dp.Namespace, policy, dp.Spec.Application.Name, writeTarget(dp).RepoURL)
+	}
 	return scmAccessFor(ctx, r.Client, dp.Namespace, policy, dp.Spec.Application.Name)
 }
 

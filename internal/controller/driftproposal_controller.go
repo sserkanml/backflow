@@ -68,9 +68,16 @@ type DriftProposalReconciler struct {
 	// NewRenderer builds the renderer of Helm sources from the Argo CD
 	// connection of a policy. Defaults to a rendermap.ArgoRenderer over argocd.New.
 	NewRenderer func(argocd.Config) (rendermap.Renderer, error)
+	// NewChartArgo builds the Argo CD client that reads the values of a chart
+	// and renders by revision, for multi-source Applications. Defaults to argocd.New.
+	NewChartArgo func(argocd.Config) (ChartArgo, error)
+	// RenderBudget is the time all renders of one verification may take
+	// together. Zero means rendermap.DefaultBudget.
+	RenderBudget time.Duration
 
-	renderers argoClientCache[rendermap.Renderer] // per policy, so connections are reused
-	memos     mappingMemos                        // the mapping of a proposal, for the push (see mapForHead)
+	renderers    argoClientCache[rendermap.Renderer] // per policy, so connections are reused
+	chartClients argoClientCache[ChartArgo]
+	memos        mappingMemos // the mapping of a proposal, for the push (see mapForHead)
 }
 
 // trackEvery is how often an open merge request is polled.

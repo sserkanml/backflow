@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -191,7 +192,12 @@ func (r *Renderer) pushLocked(ctx context.Context, pending map[string]string) er
 	if len(pending) == 0 {
 		return nil
 	}
-	if err := r.cfg.Git.PushBranches(ctx, r.cfg.Repo, pending, r.cfg.PushOptions, r.cfg.Auth); err != nil {
+	err := r.cfg.Git.PushBranches(ctx, r.cfg.Repo, pending, r.cfg.PushOptions, r.cfg.Auth)
+	if errors.Is(err, gitrepo.ErrPushOptionsNotSupported) {
+		// The commit message carries [skip ci] as well.
+		err = r.cfg.Git.PushBranches(ctx, r.cfg.Repo, pending, nil, r.cfg.Auth)
+	}
+	if err != nil {
 		// A push can fail after it created some of the branches; the sweeper finds
 		// what this does not.
 		_ = r.cfg.Git.DeleteBranches(context.WithoutCancel(ctx), r.cfg.Repo, slices.Sorted(maps.Keys(pending)), r.cfg.Auth)
@@ -300,6 +306,26 @@ func Sweep(ctx context.Context, git Git, repo string, auth *gitrepo.Auth, maxAge
 		if now.Sub(b.When) > maxAge {
 			deleted = append(deleted, b.Name)
 		}
+	}
+	if err := git.DeleteBranches(ctx, repo, deleted, auth); err != nil {
+		return nil, err
+	}
+	return deleted, nil
+}
+
+// SweepPrefix deletes every branch of the repository that starts with prefix,
+// which must be within BranchPrefix: the branches of one proposal that an
+// earlier attempt left behind.
+func SweepPrefix(ctx context.Context, git Git, repo string, auth *gitrepo.Auth, prefix string) (deleted []string, err error) {
+	if !strings.HasPrefix(prefix, BranchPrefix) || len(prefix) <= len(BranchPrefix) {
+		return nil, fmt.Errorf("scratch: %q is not a prefix within %s", prefix, BranchPrefix)
+	}
+	branches, err := git.ListBranches(ctx, repo, prefix, auth)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range branches {
+		deleted = append(deleted, b.Name)
 	}
 	if err := git.DeleteBranches(ctx, repo, deleted, auth); err != nil {
 		return nil, err
