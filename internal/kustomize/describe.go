@@ -25,6 +25,9 @@ type Description struct {
 	AddedFiles []string
 	// SharedFiles are the edited files outside the Application's path.
 	SharedFiles []string
+	// Users maps a shared file to the other Applications of Backflow's
+	// policies that build it.
+	Users map[string][]string
 	// Lines are short sentences for the merge request, one per kind of edit.
 	Lines []string
 }
@@ -49,6 +52,12 @@ func Describe(out *rendermap.Outcome) Description {
 		}
 		if e.Shared && !slices.Contains(d.SharedFiles, a.Candidate.File) {
 			d.SharedFiles = append(d.SharedFiles, a.Candidate.File)
+			if len(e.Users) > 0 {
+				if d.Users == nil {
+					d.Users = map[string][]string{}
+				}
+				d.Users[a.Candidate.File] = e.Users
+			}
 		}
 		line := tierLine(e)
 		if !slices.Contains(d.Lines, line) {
@@ -74,9 +83,8 @@ func tierLine(e *Edit) string {
 }
 
 // Text is the explanation for a merge request or commit: what kind of edit
-// each one is. users maps an edited shared file to the Applications that
-// build it (see Source.Relevance), apart from this one; nil when unknown.
-func (d Description) Text(users map[string][]string) string {
+// each one is, and a warning for every file outside the Application's path.
+func (d Description) Text() string {
 	var b strings.Builder
 	for _, l := range d.Lines {
 		b.WriteString(l + "\n")
@@ -85,11 +93,11 @@ func (d Description) Text(users map[string][]string) string {
 		fmt.Fprintf(&b, "\nA new patch file was added (%s) and listed in the kustomization of the Application.\n", strings.Join(d.AddedFiles, ", "))
 	}
 	for _, f := range d.SharedFiles {
-		fmt.Fprintf(&b, "\nWarning: %s is outside the Application's path and may be shared.", f)
-		if apps := users[f]; len(apps) > 0 {
-			fmt.Fprintf(&b, " Merging this also changes what %s render.", strings.Join(apps, ", "))
+		fmt.Fprintf(&b, "\nWarning: %s is outside the Application's path.", f)
+		if apps := d.Users[f]; len(apps) > 0 {
+			fmt.Fprintf(&b, " Merging this also changes: %s at their next sync.", strings.Join(apps, ", "))
 		}
-		b.WriteString("\n")
+		b.WriteString(" Other Applications outside Backflow's policies may use this file.\n")
 	}
 	return strings.TrimSpace(b.String())
 }

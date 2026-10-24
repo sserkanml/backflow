@@ -51,6 +51,8 @@ type Edit struct {
 	Desired, Live string
 	// Shared is set for an edit of a file outside the Application's path.
 	Shared bool
+	// Users are the other Applications that build a shared file.
+	Users []string
 	// Kustomization is, for a new patch, the kustomization that lists it.
 	Kustomization string
 	// Patch is, for a new patch, what this edit adds to the patch file: a
