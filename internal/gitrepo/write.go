@@ -70,6 +70,10 @@ type CommitMeta struct {
 	// from the clock: the same inputs then always produce the same commit
 	// SHA, which makes retries after a restart find their own branch again.
 	When time.Time
+	// Create lists the paths that may not exist in the base: CommitFiles then
+	// adds them (and their directories) as regular files. A path not listed
+	// here must exist, or the call fails with ErrFileNotFound.
+	Create []string
 }
 
 // BranchTip returns the commit a branch points to on the remote. It asks the
@@ -446,7 +450,7 @@ func (c *Cache) CommitFiles(ctx context.Context, repoURL, baseSHA string, auth *
 		if err != nil {
 			return "", err
 		}
-		h, err := replaceFile(repo, rootTree, strings.Split(filePath, "/"), blob)
+		h, err := replaceFile(repo, rootTree, strings.Split(filePath, "/"), blob, slices.Contains(meta.Create, filePath))
 		if errors.Is(err, ErrNoChange) {
 			unchanged++
 			continue
@@ -506,7 +510,7 @@ func storeBlob(repo *git.Repository, content []byte) (plumbing.Hash, error) {
 
 // replaceFile returns the hash of a copy of tree in which the file at parts
 // points to blob. Siblings are shared with the original.
-func replaceFile(repo *git.Repository, tree *object.Tree, parts []string, blob plumbing.Hash) (plumbing.Hash, error) {
+func replaceFile(repo *git.Repository, tree *object.Tree, parts []string, blob plumbing.Hash, create bool) (plumbing.Hash, error) {
 	entries := make([]object.TreeEntry, len(tree.Entries))
 	copy(entries, tree.Entries)
 	idx := -1
@@ -517,7 +521,16 @@ func replaceFile(repo *git.Repository, tree *object.Tree, parts []string, blob p
 		}
 	}
 	if idx < 0 {
-		return plumbing.ZeroHash, fmt.Errorf("%w: %s", ErrFileNotFound, strings.Join(parts, "/"))
+		if !create {
+			return plumbing.ZeroHash, fmt.Errorf("%w: %s", ErrFileNotFound, strings.Join(parts, "/"))
+		}
+		entry, err := newEntry(repo, parts, blob)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		entries = append(entries, entry)
+		slices.SortFunc(entries, compareEntries)
+		return storeTree(repo, entries)
 	}
 	e := &entries[idx]
 	if len(parts) == 1 {
@@ -536,12 +549,16 @@ func replaceFile(repo *git.Repository, tree *object.Tree, parts []string, blob p
 		if err != nil {
 			return plumbing.ZeroHash, fmt.Errorf("%w: %v", ErrUnavailable, err)
 		}
-		h, err := replaceFile(repo, subTree, parts[1:], blob)
+		h, err := replaceFile(repo, subTree, parts[1:], blob, create)
 		if err != nil {
 			return plumbing.ZeroHash, err
 		}
 		e.Hash = h
 	}
+	return storeTree(repo, entries)
+}
+
+func storeTree(repo *git.Repository, entries []object.TreeEntry) (plumbing.Hash, error) {
 	out := &object.Tree{Entries: entries}
 	obj := repo.Storer.NewEncodedObject()
 	if err := out.Encode(obj); err != nil {
@@ -552,6 +569,35 @@ func replaceFile(repo *git.Repository, tree *object.Tree, parts []string, blob p
 		return plumbing.ZeroHash, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	return h, nil
+}
+
+// newEntry makes the tree entry for a file that does not exist yet, with the
+// directories above it.
+func newEntry(repo *git.Repository, parts []string, blob plumbing.Hash) (object.TreeEntry, error) {
+	if len(parts) == 1 {
+		return object.TreeEntry{Name: parts[0], Mode: filemode.Regular, Hash: blob}, nil
+	}
+	sub, err := newEntry(repo, parts[1:], blob)
+	if err != nil {
+		return object.TreeEntry{}, err
+	}
+	h, err := storeTree(repo, []object.TreeEntry{sub})
+	if err != nil {
+		return object.TreeEntry{}, err
+	}
+	return object.TreeEntry{Name: parts[0], Mode: filemode.Dir, Hash: h}, nil
+}
+
+// compareEntries orders tree entries as Git does: by name, a directory as if
+// its name ended in a slash.
+func compareEntries(a, b object.TreeEntry) int {
+	key := func(e object.TreeEntry) string {
+		if e.Mode == filemode.Dir {
+			return e.Name + "/"
+		}
+		return e.Name
+	}
+	return strings.Compare(key(a), key(b))
 }
 
 // CreateBranch creates refs/heads/<branch> on the remote at sha, which

@@ -900,3 +900,41 @@ func TestCommitFilesErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestCommitFilesCreatesListedFiles(t *testing.T) {
+	src, base := seed(t)
+	cache := NewCache(t.TempDir())
+	files := map[string][]byte{
+		"apps/demo/configmap.yaml":              []byte(cmAfter),
+		"apps/demo/backflow-patches/deploy.yml": []byte("kind: Deployment\n"), // a new directory
+		"apps/demo/aaa.yaml":                    []byte("a: 1\n"),            // sorts before the others
+	}
+	m := meta
+	m.Create = []string{"apps/demo/backflow-patches/deploy.yml", "apps/demo/aaa.yaml"}
+	sha, err := cache.CommitFiles(t.Context(), src.url(), base, nil, files, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := cache.Open(t.Context(), src.url(), sha, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = view.Close() }()
+	for name, want := range map[string]string{
+		"apps/demo/backflow-patches/deploy.yml": "kind: Deployment\n", "apps/demo/aaa.yaml": "a: 1\n",
+		"apps/demo/configmap.yaml": cmAfter, "apps/demo/deploy.yaml": "spec:\n  replicas: 1\n",
+	} {
+		if got, _ := view.ReadFile(name); string(got) != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	// A file that is not listed must exist.
+	if _, err := cache.CommitFiles(t.Context(), src.url(), base, nil, map[string][]byte{"apps/demo/new.yaml": []byte("x")}, meta); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("err = %v, want ErrFileNotFound", err)
+	}
+	// Deterministic.
+	again, err := NewCache(t.TempDir()).CommitFiles(t.Context(), src.url(), base, nil, files, m)
+	if err != nil || again != sha {
+		t.Errorf("again = %s, %v; want %s", again, err, sha)
+	}
+}
