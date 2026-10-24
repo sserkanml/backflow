@@ -19,8 +19,9 @@ import (
 
 // Errors of rendering.
 var (
-	// ErrRenderFailed means the chart does not render with the given files.
-	ErrRenderFailed = errors.New("the chart does not render")
+	// ErrRenderFailed means the source (a chart, a kustomization) does not
+	// render with the given files.
+	ErrRenderFailed = errors.New("the source does not render")
 	// ErrFilesTooLarge means the files do not fit the limits of Argo CD's
 	// repo server.
 	ErrFilesTooLarge = errors.New("the files are too large to render with")
@@ -64,7 +65,7 @@ type ManifestsClient interface {
 }
 
 // ArgoRenderer renders through Argo CD's API server, so the chart is rendered
-// by the Helm version and the settings of the Argo CD that deploys it.
+// by the Helm or Kustomize version and the settings of the Argo CD that deploys it.
 type ArgoRenderer struct {
 	Client ManifestsClient
 }
@@ -80,7 +81,7 @@ func (r *ArgoRenderer) CloseIdleConnections() {
 
 // Render implements Renderer. Errors from Argo CD that a retry can fix
 // (argocd.ErrUnauthorized, ErrNotFound, ErrUnreachable) are returned as they
-// are; a chart that does not render wraps ErrRenderFailed, and files over
+// are; a source that does not render wraps ErrRenderFailed, and files over
 // the limits wrap ErrFilesTooLarge.
 func (r *ArgoRenderer) Render(ctx context.Context, app App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
 	resp, err := r.Client.GetManifestsWithFiles(ctx, argocd.ManifestsQuery{

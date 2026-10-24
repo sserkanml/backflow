@@ -191,6 +191,9 @@ type Outcome struct {
 	// Overrides lists the edits of Results that add a key to override a chart
 	// default, with the default each one overrides.
 	Overrides []AppliedOverride
+	// Applied are the candidates behind Results, in the order they were applied,
+	// for a source that describes what kind of edit each one is.
+	Applied []Applied
 	// LeftOut are the fields the edits do not cover, with the reason for each.
 	// Set only with Options.AllowPartial, when some fields were mapped.
 	LeftOut []FieldFailure
@@ -198,6 +201,15 @@ type Outcome struct {
 	Unmapped *Unmapped
 	// Renders is the number of renders done.
 	Renders int
+}
+
+// Applied is a candidate that was applied to the files, with the change of the
+// proposal it answers.
+type Applied struct {
+	Candidate   Candidate
+	ChangeIndex int
+	// Value is the text that was written for a scalar candidate.
+	Value string
 }
 
 // AppliedOverride is an edit that adds a key to a value file to override a
@@ -738,6 +750,10 @@ func (v *run) verify(in []Field, opts Options) (*Outcome, error) {
 	if fail != nil {
 		return fail, nil
 	}
+	// A field the source knows no edit can reach is not rendered for.
+	if bad := blockedFields(fields); len(bad) > 0 {
+		return failure(bad), nil
+	}
 
 	// The unmodified files, twice: what differs between the two is
 	// nondeterministic.
@@ -773,7 +789,10 @@ type stage struct {
 	// container for a drifted limit) come after every edit of a key that holds
 	// the field's own value.
 	own, ancestors bool
-	rule           collateralRule
+	// later is the 1-based index of the Found.Later tier whose candidates are
+	// tried; 0 for the other stages.
+	later int
+	rule  collateralRule
 }
 
 func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opts Options) (*Outcome, error) {
@@ -803,12 +822,20 @@ func (v *run) stages(base snapshot, nd nondeterminism, fields []parsedField, opt
 				return failure(bad), nil
 			}
 		}
+		if st.later > 0 {
+			if bad := tooManyLater(fields, st.later, opts); bad != nil {
+				return failure(bad), nil
+			}
+		}
 		if err := v.addStage(base, nd, fields, st); err != nil {
 			return v.renderErr(err)
 		}
 		out, escalate, err := v.evaluate(base, nd, fields, st.rule)
 		if err != nil || !escalate {
 			v.mappedRank = stageRank(st.fragments, st.overrides, st.ancestors)
+			if st.later > 0 {
+				v.mappedRank = laterRank + st.later
+			}
 			v.mappedRule = st.rule
 			return out, err
 		}
@@ -860,12 +887,51 @@ func (v *run) planStages(fields []parsedField, rule collateralRule) []stage {
 	if v.overrides && v.structured.any(1, true) {
 		withRule(stage{ancestors: true, overrides: true})
 	}
+	// The tiers a source lists after its first candidates, each only when the
+	// ones before verify nothing.
+	for i := 1; i <= laterTiers(fields); i++ {
+		withRule(stage{later: i})
+	}
 	return stages
+}
+
+// laterRank is added to the index of a later tier to rank it after every other
+// stage (see stageRank).
+const laterRank = 10
+
+// laterTiers is the most Found.Later tiers a field has.
+func laterTiers(fields []parsedField) int {
+	n := 0
+	for _, f := range fields {
+		if f.Found != nil {
+			n = max(n, len(f.Found.Later))
+		}
+	}
+	return n
+}
+
+// tooManyLater applies the bound on candidates to a later tier of a field,
+// before any is rendered.
+func tooManyLater(fields []parsedField, tier int, opts Options) []FieldFailure {
+	var bad []FieldFailure
+	for _, f := range fields {
+		if f.Found == nil || len(f.Found.Later) < tier {
+			continue
+		}
+		t := f.Found.Later[tier-1]
+		if n := len(t.Candidates); n > opts.MaxCandidates {
+			bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: ReasonTooManyCandidates,
+				Detail: fmt.Sprintf("%d candidates in %s, at most %d are tried", n, t.Name, opts.MaxCandidates)})
+		}
+	}
+	return bad
 }
 
 // addStage renders the candidates a stage adds to the ones tried before.
 func (v *run) addStage(base snapshot, nd nondeterminism, fields []parsedField, st stage) error {
 	switch {
+	case st.later > 0:
+		return v.addLater(base, nd, fields, st.later)
 	case st.overrides && st.ancestors:
 		return v.addStructured(base, nd, fields, 1, true)
 	case st.overrides:
@@ -980,7 +1046,7 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 			snap, err := v.render(files)
 			switch {
 			case errors.Is(err, ErrRenderFailed):
-				interacted = append(interacted, describeSet(set)+": the chart does not render with all the edits together")
+				interacted = append(interacted, describeSet(set)+": the source does not render with all the edits together")
 				continue
 			case err != nil:
 				o, e := v.renderErr(err)
@@ -1017,6 +1083,7 @@ func (v *run) evaluate(base snapshot, nd nondeterminism, fields []parsedField, r
 		Results:    buildResults(v.in.Files, verified[0].final, verified[0].applied),
 		Collateral: verified[0].collateral,
 		Overrides:  overridesOf(verified[0].applied),
+		Applied:    appliedOf(verified[0].applied),
 	}, false, nil
 }
 
@@ -1056,6 +1123,20 @@ func overridesOf(edits []appliedEdit) []AppliedOverride {
 		}
 	}
 	return out
+}
+
+// blockedFields lists the fields a source says cannot be mapped.
+func blockedFields(fields []parsedField) []FieldFailure {
+	var bad []FieldFailure
+	for _, f := range fields {
+		for _, found := range []*Found{f.Found, f.Fragments} {
+			if found != nil && found.Blocked != nil {
+				bad = append(bad, FieldFailure{Pointer: f.Change.Path, Reason: found.Blocked.Reason, Detail: found.Blocked.Message})
+				break
+			}
+		}
+	}
+	return bad
 }
 
 // preflight parses the fields and applies the limits that need no render.
@@ -1129,7 +1210,7 @@ func (v *run) baseline(fields []parsedField) (snapshot, nondeterminism, *Outcome
 }
 
 // editKey is one key of a value file set to one value.
-type editKey struct{ File, Path, Value string }
+type editKey struct{ File, Path, Value, Variant string }
 
 // tryout is one edit and what a render with only that edit showed.
 type tryout struct {
@@ -1292,21 +1373,54 @@ func (v *run) addTries(base snapshot, nd nondeterminism, fields []parsedField, f
 			cands = found.Overrides
 		}
 		for _, c := range cands {
-			value := f.newValue
-			if c.Fragment {
-				value = c.NewValue
-			}
-			k := editKey{c.File, c.Path.String(), value}
-			if t, ok := v.index[k]; ok {
-				if !slices.Contains(t.origin, i) {
-					t.origin = append(t.origin, i)
-				}
-				continue
-			}
-			t := &tryout{cand: c, value: value, fragment: c.Fragment, origin: []int{i}}
-			v.index[k] = t
-			v.tries = append(v.tries, t)
-			added = append(added, t)
+			added = v.note(added, i, f, c)
+		}
+	}
+	return v.tryAll(base, nd, fields, added)
+}
+
+// candidateValue is the text an edit writes: the new value of a part, the text
+// of a structured edit, else the live value of the field.
+func candidateValue(c Candidate, f parsedField) string {
+	switch {
+	case c.Structured != nil:
+		return c.Structured.Text()
+	case c.Fragment:
+		return c.NewValue
+	}
+	return f.newValue
+}
+
+// note records the candidate of a field as an edit to try, unless the same edit
+// was proposed before, which then also answers this field. It returns added with
+// the new edit.
+func (v *run) note(added []*tryout, field int, f parsedField, c Candidate) []*tryout {
+	value := candidateValue(c, f)
+	k := editKey{c.File, c.Path.String(), value, c.Variant}
+	if t, ok := v.index[k]; ok {
+		if !slices.Contains(t.origin, field) {
+			t.origin = append(t.origin, field)
+		}
+		return added
+	}
+	t := &tryout{cand: c, value: value, fragment: c.Fragment, origin: []int{field}}
+	v.index[k] = t
+	v.tries = append(v.tries, t)
+	return append(added, t)
+}
+
+// addLater renders the candidates of a later tier that were not tried yet.
+func (v *run) addLater(base snapshot, nd nondeterminism, fields []parsedField, tier int) error {
+	if v.index == nil {
+		v.index = map[editKey]*tryout{}
+	}
+	var added []*tryout
+	for i, f := range fields {
+		if f.Found == nil || len(f.Found.Later) < tier {
+			continue
+		}
+		for _, c := range f.Found.Later[tier-1].Candidates {
+			added = v.note(added, i, f, c)
 		}
 	}
 	return v.tryAll(base, nd, fields, added)
@@ -1323,7 +1437,7 @@ func (v *run) addStructured(base snapshot, nd nondeterminism, fields []parsedFie
 	}
 	var added []*tryout
 	for _, sc := range list {
-		k := editKey{sc.cand.File, sc.cand.Path.String(), sc.value}
+		k := editKey{sc.cand.File, sc.cand.Path.String(), sc.value, sc.cand.Variant}
 		if t, ok := v.index[k]; ok {
 			for _, o := range sc.origin {
 				if !slices.Contains(t.origin, o) {
@@ -1357,7 +1471,7 @@ func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, add
 		snap, err := v.render(files)
 		switch {
 		case errors.Is(err, ErrRenderFailed):
-			t.why = "the chart does not render with it"
+			t.why = "the source does not render with it"
 			continue
 		case err != nil:
 			return err
@@ -1554,7 +1668,7 @@ func pointers(fields []parsedField) string {
 func (v *run) baseFailure(err error) (*Outcome, error) {
 	switch {
 	case errors.Is(err, ErrRenderFailed):
-		return unmapped(ReasonRenderFailed, "the chart does not render: %v", err), nil
+		return unmapped(ReasonRenderFailed, "the source does not render: %v", err), nil
 	case errors.Is(err, ErrFilesTooLarge):
 		return unmapped(ReasonFilesTooLarge, "%v", err), nil
 	case errors.Is(err, errDuplicateResource):
@@ -1586,7 +1700,7 @@ func failure(fields []FieldFailure) *Outcome {
 // tryEdit applies one candidate's edit to a copy of the files.
 func tryEdit(w Writer, base map[string][]byte, c Candidate, value string) (files map[string][]byte, why string) {
 	content, ok := base[c.File]
-	if !ok {
+	if !ok && !c.NewFile {
 		return nil, "the file was not provided"
 	}
 	written, err := w.Write(c, content, value)
@@ -1595,6 +1709,9 @@ func tryEdit(w Writer, base map[string][]byte, c Candidate, value string) (files
 	}
 	files = maps.Clone(base)
 	files[c.File] = written.Edited
+	for _, a := range written.Also {
+		files[a.File] = a.Edited
+	}
 	return files, ""
 }
 
@@ -1660,6 +1777,7 @@ type appliedEdit struct {
 	cand        Candidate
 	w           *Written
 	changeIndex int
+	value       string
 }
 
 // applySet applies the edits of a set one after the other to a copy of the
@@ -1673,8 +1791,11 @@ func applySet(wr Writer, base map[string][]byte, fields []parsedField, set []*tr
 			return nil, nil, err
 		}
 		files[t.cand.File] = w.Edited
+		for _, a := range w.Also {
+			files[a.File] = a.Edited
+		}
 		// The change that proposed the edit is the one whose value the key held.
-		applied = append(applied, appliedEdit{cand: t.cand, w: w, changeIndex: fields[t.origin[0]].Index})
+		applied = append(applied, appliedEdit{cand: t.cand, w: w, changeIndex: fields[t.origin[0]].Index, value: t.value})
 	}
 	return files, applied, nil
 }
@@ -1682,21 +1803,40 @@ func applySet(wr Writer, base map[string][]byte, fields []parsedField, set []*tr
 func buildResults(base, final map[string][]byte, edits []appliedEdit) []mapping.Result {
 	byFile := map[string]*mapping.Result{}
 	var order []string
-	for _, e := range edits {
-		r := byFile[e.cand.File]
+	entry := func(file string) *mapping.Result {
+		r := byFile[file]
 		if r == nil {
-			r = &mapping.Result{File: e.cand.File, Edited: final[e.cand.File],
-				Diff: mapping.UnifiedDiff(e.cand.File, base[e.cand.File], final[e.cand.File])}
-			byFile[e.cand.File] = r
-			order = append(order, e.cand.File)
+			r = &mapping.Result{File: file, Edited: final[file], Diff: mapping.UnifiedDiff(file, base[file], final[file])}
+			byFile[file] = r
+			order = append(order, file)
 		}
+		return r
+	}
+	for _, e := range edits {
+		r := entry(e.cand.File)
 		r.Edits = append(r.Edits, mapping.Edit{
 			File: e.cand.File, Location: e.cand.Path.Pointer(), Value: e.w.Edits[0].Value, ChangeIndex: e.changeIndex,
 		})
+		// The files the edit also changes.
+		for _, a := range e.w.Also {
+			ar := entry(a.File)
+			for _, ed := range a.Edits {
+				ed.ChangeIndex = e.changeIndex
+				ar.Edits = append(ar.Edits, ed)
+			}
+		}
 	}
 	out := make([]mapping.Result, 0, len(order))
 	for _, f := range order {
 		out = append(out, *byFile[f])
+	}
+	return out
+}
+
+func appliedOf(edits []appliedEdit) []Applied {
+	out := make([]Applied, len(edits))
+	for i, e := range edits {
+		out[i] = Applied{Candidate: e.cand, ChangeIndex: e.changeIndex, Value: e.value}
 	}
 	return out
 }

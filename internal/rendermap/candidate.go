@@ -21,6 +21,13 @@ type Candidate struct {
 	// Structured is set when the candidate is not the change of one scalar:
 	// a map or a list set at Path, or a key removed.
 	Structured *StructuredEdit
+	// Variant tells apart edits of one file at one Path that are not the same
+	// edit (a source with several kinds of files uses it); Meta is what its
+	// Writer needs to make the edit, opaque to the engine. NewFile is set when
+	// File does not exist and the Writer creates it.
+	Variant string
+	Meta    any
+	NewFile bool
 }
 
 // Default is a default, outside the files that are edited, that feeds a drifted
@@ -71,9 +78,30 @@ type Found struct {
 	// to the file that receives overrides. They are only tried when no key a
 	// file already defines works.
 	Overrides []Candidate
+	// Later are further candidates, in the order they are tried: a set only when
+	// no edit set of the candidates before it verifies (Candidates and the keys
+	// of Fragments first). A source that has places to look in an order of
+	// preference, a setting before a file before a new patch, lists them here.
+	Later []Tier
+	// Blocked says the field cannot be mapped whatever is tried, and why.
+	Blocked *Blocked
 	// Diagnostics explains what the source knows about the value when nothing
 	// verifies; nil when it knows nothing.
 	Diagnostics Diagnostics
+}
+
+// Tier is a named set of candidates that is tried after the ones before it.
+type Tier struct {
+	Name       string
+	Candidates []Candidate
+}
+
+// Blocked is a field that no edit can bring to its live value: the source knows
+// where the value comes from, and Git does not decide it (a setting of the
+// Application, a hashed generator).
+type Blocked struct {
+	// Reason is machine readable (a Reason constant); Message is for people.
+	Reason, Message string
 }
 
 // Diagnostics lets a source explain why a field has no verified candidate. Both
@@ -94,6 +122,10 @@ type Written struct {
 	Line int
 	// Text is that line as it reads in the new file.
 	Text string
+	// Also are the other files the edit changes, in full: a new patch file is
+	// listed in the kustomization that uses it. Edits of an entry are the edits
+	// of that file.
+	Also []mapping.Result
 }
 
 // Writer edits a file for a candidate. It is the file writer seam of a source
