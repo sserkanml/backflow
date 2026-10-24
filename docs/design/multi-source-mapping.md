@@ -175,9 +175,9 @@ What B costs:
   needed, but the repository now receives scratch refs *before* any human
   decision. "Git always wins" holds (a branch is not a change of the source of
   truth, and it is removed), but it must be said in the README and the policy
-  docs, and a policy in `ReportOnly` mode must not push anything: in
-  `ReportOnly`, multi-source proposals stay `Unmapped` with a reason saying
-  that verification needs scratch branches (see below).
+  docs, and with `spec.mapping.scratchBranches: Auto` a policy in `ReportOnly` mode
+  does not push anything: its multi-source proposals stay `Unmapped` with
+  `ScratchBranchesDisabled` (see Decisions).
 - **Branch budget and cleanup.** One push per verification round, not per
   render: Backflow builds all the candidate commits locally (go-git, from the
   tree of `spec.source` revision of the values repository), gives each its own
@@ -357,7 +357,8 @@ per-revision callback.
 | the drifted value comes from `helm.values`, `valuesObject`, `parameters` or `fileParameters` of the Application | `NoVerifiedCandidate` with the existing "set by ... in the Application" text | B6; already reported for single-source |
 | several ref sources define the same key | `AmbiguousCandidates` | message names both repositories |
 | the value file is in a repository Backflow cannot write to (no connection, read-only token) | `RepositoryAuthFailed` / `NoScmConnection`, **retried** | like single-source |
-| `ReportOnly` policy | `Unmapped` with reason `VerificationNeedsScratchBranch` | mapping "never writes to Git"; verification of a multi-source proposal does, so it is not done in ReportOnly |
+| scratch branches are off (`spec.mapping.scratchBranches: Never`, or `Auto` with `ReportOnly`) | `ScratchBranchesDisabled` | mapping "never writes to Git"; verification of a multi-source proposal does, so it needs the switch; the message names the field |
+| `revisions`/`sourcePositions` not supported by the Argo CD | `ArgoCDUnsupported` | minimum Argo CD 2.6 |
 | the push of the scratch branches is rejected | `ScratchBranchRejected` | final until the connection changes |
 | `$values` resolves to a path that does not exist at the synced revision | `MissingValueFile` | as today |
 | plugin source (CMP) among the sources, or a Kustomize/Directory first source | `UnsupportedSourceType` | |
@@ -401,38 +402,54 @@ per-revision callback.
      defines, `ui.color`, from `appdetails`) is added to the value file;
   d. Git-ahead: a commit to the values file pauses, a commit to another file
      does not, and a chart version bump in the Application pauses;
-  e. `ReportOnly` stays `Unmapped/VerificationNeedsScratchBranch`;
+  e. `ReportOnly` stays `Unmapped/ScratchBranchesDisabled`;
   f. a rejected scratch push (a protected branch rule on `backflow/scratch/*`)
      leaves the proposal `Unmapped` and no branches behind.
   Argo CD needs the one extra RBAC line from S3; `hack/dev-up.sh` adds it.
 
-## Open questions
+## Decisions
 
-1. **The 10 s in the API server.** Unary `GetManifests` and
-   `GetManifestsWithFiles` took 10.0 to 10.9 s per call on the rebuilt kind
-   cluster, 0.3 s in the first calls of the spike, with repo-server time of 0.1
-   to 0.3 s throughout. Probably DNS inside kind, not confirmed. It must be
-   re-measured on another cluster before choosing the default render budget
-   (`DefaultBudget` is 2 minutes, enough for ~10 renders at 10 s, not for 40).
-2. **GitLab behaviour of scratch branches**: `ci.skip` really suppresses the
-   pipeline, which hooks fire, whether a protected-branch rule can forbid
-   `backflow/*`, and the rate of pushes. Untested: it needs the GitLab token the
-   spike could not use. GitHub: `[skip ci]` is honoured by Actions, no push
-   option exists.
-3. **Hidden refs** (`refs/backflow/*`) work with Argo CD but not with GitLab;
-   keep branches, or offer hidden refs for a provider that accepts them?
-4. **Several repositories written by one proposal.** The first version writes
-   to one repository; a proposal that needs two is `Unmapped`. Is that
-   acceptable for the target users (values split across repositories)?
-5. **`ReportOnly`**: it gives no mapping for multi-source at all in this design.
-   Alternative: allow scratch branches in `ReportOnly` behind an explicit
-   policy flag (`spec.mapping.allowScratchBranches`), default off.
-6. **appdetails source equality** forces the exact source object, so the
-   request has to be built from `spec.sources[i]` untouched; a Helm version
-   override or `helm.valuesObject` makes the cached defaults key longer.
-7. **Chart version ranges** (`targetRevision: 18.*`): `status.sync.revisions[i]`
-   gives the resolved version, which is what `appdetails` and the renders must
-   pin; unary `GetManifests` with `revisions` was only tested with an exact
-   version.
-8. **Argo CD versions**: `revisions` and `sourcePositions` need Argo CD 2.6+;
-   `GetManifestsWithFiles` and `appdetails` behaviour was observed on 3.5.3 only.
+These settle the open questions of the spike.
+
+1. **Render budget.** Configurable: the manager flag `--render-budget`
+   (default 2m, today's `DefaultBudget`) and, only if cheap, no policy field.
+   Every `Verify` logs, at V(0) and on completion, the number of renders and the
+   wall time (`Verification finished`, `renders`, `elapsed`, `mapped`), so the
+   unexplained 10 s of the spike shows up in real runs.
+2. **Scratch pushes skip CI.** GitLab: the push option `ci.skip` and `[skip ci]`
+   in the commit message. GitHub: `[skip ci]` in the commit message (there is
+   no push option). Whether GitLab then really runs no pipeline is checked by the
+   e2e script (section e), not assumed.
+3. **Branches only**, named `backflow/scratch/<proposal-uid8>-<n>`. The parent
+   of every scratch commit is the synced commit of the ref source
+   (`status.sync.revisions[i]`). One push creates all candidate branches, one
+   push deletes them (in a `defer`). A sweeper removes `backflow/scratch/`
+   branches older than one hour, that prefix only, never another branch.
+4. **Two repositories**: a proposal that would write to two repositories is
+   `Unmapped` (or partial, when `allowPartial` and the other repository's fields
+   can be left out).
+5. **`spec.mapping.scratchBranches`**: `Auto` (default: off for `ReportOnly`,
+   on for `MergeRequest` and `DirectCommit`), `Always`, `Never`. When it is off,
+   the proposal is `Unmapped` with reason `ScratchBranchesDisabled` and a message
+   that names the field.
+6. **`appdetails`** requests are built from `spec.sources[i]` unmodified (S3).
+7. **Pinned revisions.** Base and candidate renders pin every source to the
+   resolved revision in `status.sync.revisions` (the chart version, the Git SHA),
+   never to a range or a branch name.
+8. **Argo CD version.** `revisions` and `sourcePositions` need Argo CD 2.6 or
+   later; the behaviour was observed on 3.5.3 and that is the version the
+   end-to-end tests run against. An "unknown field" or unsupported error from
+   those parameters makes the proposal `Unmapped` with reason
+   `ArgoCDUnsupported`.
+
+## Still open
+
+- **The 10 s in the API server** (S2): unexplained; the per-`Verify` log line of
+  decision 1 and the budget flag exist to live with it. Re-measure on another
+  cluster.
+- **GitLab behaviour of scratch branches**: `ci.skip`, push webhooks, protected
+  branch rules for `backflow/*`, push rate. Checked by the e2e script on the demo
+  project, which needs the GitLab token.
+- **Chart version ranges** (`targetRevision: 18.*`): renders pin the resolved
+  version of `status.sync.revisions` (decision 7); unary `GetManifests` with
+  `revisions` was only tried with an exact version, which is what pinning gives.
