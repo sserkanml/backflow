@@ -77,8 +77,12 @@ type BackflowPolicySpec struct {
 	// +optional
 	Helm *HelmOptions `json:"helm,omitempty"`
 
-	// How drifted fields are traced back to Git, for Directory and Helm
-	// sources alike.
+	// Kustomize-specific behaviour.
+	// +optional
+	Kustomize *KustomizeOptions `json:"kustomize,omitempty"`
+
+	// How drifted fields are traced back to Git, for Directory, Helm and
+	// Kustomize sources alike.
 	// +optional
 	Mapping *MappingOptions `json:"mapping,omitempty"`
 
@@ -109,6 +113,20 @@ func (s BackflowPolicySpec) PartialAllowed() bool {
 // (spec.helm.addOverrides, true unless set to false).
 func (s BackflowPolicySpec) OverridesAllowed() bool {
 	return s.Helm == nil || s.Helm.AddOverrides == nil || *s.Helm.AddOverrides
+}
+
+// KustomizeEditsBases reports whether a Kustomize edit may change files outside
+// the Application's path, which other Applications may share
+// (spec.kustomize.editBases, false unless set).
+func (s BackflowPolicySpec) KustomizeEditsBases() bool {
+	return s.Kustomize != nil && s.Kustomize.EditBases
+}
+
+// KustomizeAddsPatches reports whether a Kustomize edit may add a patch file
+// to the Application's overlay as a last resort (spec.kustomize.addPatches,
+// true unless set to false).
+func (s BackflowPolicySpec) KustomizeAddsPatches() bool {
+	return s.Kustomize == nil || s.Kustomize.AddPatches == nil || *s.Kustomize.AddPatches
 }
 
 // DefaultBatchWindow is the batch window of a policy that does not set one.
@@ -171,6 +189,29 @@ type IgnoreRule struct {
 	// JSON pointers to ignore, e.g. /spec/replicas.
 	// +kubebuilder:validation:MinItems=1
 	JSONPointers []string `json:"jsonPointers"`
+}
+
+// KustomizeOptions configures how drift in Kustomize-rendered resources is
+// mapped back to files. An edit is looked for, in this order, in the settings
+// of the Application's own kustomization (images, replicas, labels, generator
+// literals), in the patches it already has, in the resource files inside the
+// Application's path, in files outside it (shared bases), and last in a new
+// patch file; every edit is proven by rendering through Argo CD.
+type KustomizeOptions struct {
+	// Allow edits to files outside the Application's path: a base or a
+	// component that other Applications may use too. A change there reaches
+	// every Application that includes the file, so the merge request names them.
+	// By default only files inside the Application's path are edited.
+	// +kubebuilder:default=false
+	EditBases bool `json:"editBases,omitempty"`
+
+	// As a last resort, when no existing file can take the change, add a
+	// strategic merge patch with only the drifted fields to the Application's
+	// overlay (backflow-patches/<kind>-<name>.yaml) and list it under patches
+	// in the overlay's kustomization.
+	// +kubebuilder:default=true
+	// +optional
+	AddPatches *bool `json:"addPatches,omitempty"`
 }
 
 // MappingOptions configures how a proposal is mapped to files in Git.

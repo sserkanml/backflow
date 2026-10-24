@@ -149,6 +149,26 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeFalse())
 		})
 
+		It("accepts spec.kustomize: editBases off and addPatches on unless they are set", func() {
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.KustomizeEditsBases()).To(BeFalse(), "off without a kustomize block")
+			Expect(backflowpolicy.Spec.KustomizeAddsPatches()).To(BeTrue(), "on without a kustomize block")
+
+			backflowpolicy.Spec.Kustomize = &backflowv1alpha1.KustomizeOptions{}
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.Kustomize.AddPatches).NotTo(BeNil(), "the API server fills in the default")
+			Expect(backflowpolicy.Spec.KustomizeEditsBases()).To(BeFalse())
+			Expect(backflowpolicy.Spec.KustomizeAddsPatches()).To(BeTrue())
+
+			off := false
+			backflowpolicy.Spec.Kustomize = &backflowv1alpha1.KustomizeOptions{EditBases: true, AddPatches: &off}
+			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
+			Expect(backflowpolicy.Spec.KustomizeEditsBases()).To(BeTrue())
+			Expect(backflowpolicy.Spec.KustomizeAddsPatches()).To(BeFalse())
+		})
+
 		It("looks again soon, without an error, when the policy changed while its status was computed", func() {
 			controllerReconciler := &BackflowPolicyReconciler{Client: conflictingClient{k8sClient}, Scheme: k8sClient.Scheme()}
 			res, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
