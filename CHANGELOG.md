@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.8.0](https://github.com/sserkanml/backflow/compare/v0.7.0...v0.8.0) (2026-10-24)
+
+
+### Features
+
+* **api:** spec.kustomize editBases and addPatches ([0b3b3dd](https://github.com/sserkanml/backflow/commit/0b3b3dde55d69d2cfab4d97b1a98e9b868110c74))
+* **drift:** gitrepo creates the files a commit lists as new ([92f8436](https://github.com/sserkanml/backflow/commit/92f843637785b1017926054f337e68dc671bb351))
+* **drift:** map Kustomize proposals ([837188e](https://github.com/sserkanml/backflow/commit/837188e95e78f0b1c610a5fb652c2b6130c792f3))
+* **kustomize:** describe edits per tier for status and merge requests ([69abe61](https://github.com/sserkanml/backflow/commit/69abe61fb0e097f8a0d025d458399c17ed9f3095))
+* **kustomize:** locate resources by origin annotations ([c8593c6](https://github.com/sserkanml/backflow/commit/c8593c6a86a813c13fd8fbfa1db364b4d8921313))
+* **kustomize:** map to settings, patches, resource files, bases and a new patch ([8668c0b](https://github.com/sserkanml/backflow/commit/8668c0b58b3293c6d5107cbf5d73b57b50cb0d61))
+* **kustomize:** try a new patch before a base other Applications use ([d3b9def](https://github.com/sserkanml/backflow/commit/d3b9defaf74dcb4d416c640f06dc56e21ea16ff1))
+
+
+### Refactoring
+
+* **drift:** context writer for edits that list a new file in another ([b66f0b2](https://github.com/sserkanml/backflow/commit/b66f0b28dbecebb5c245ff61e8175f46ae9f1f29))
+* **drift:** source-neutral render error and engine hooks for tiered sources ([d0fe21a](https://github.com/sserkanml/backflow/commit/d0fe21abb882163fe3d243e341b949b34c8127ca))
+
+
+### Documentation
+
+* **kustomize:** README section and design notes ([2873dbc](https://github.com/sserkanml/backflow/commit/2873dbc0961e9ce98705ed1af7d79ad664f17395))
+
 ## [0.7.0](https://github.com/sserkanml/backflow/compare/v0.6.0...v0.7.0) (2026-10-23)
 
 
