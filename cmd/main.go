@@ -244,6 +244,10 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
 		os.Exit(1)
 	}
+	if err := mgr.Add(&controller.ScratchSweeper{Client: mgr.GetClient(), Git: repoCache}); err != nil {
+		setupLog.Error(err, "Failed to add the scratch branch sweeper")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
