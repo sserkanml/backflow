@@ -270,9 +270,9 @@ $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{
 endef
 
 .PHONY: coverage
-coverage: ## Measure Helm mapping coverage on real charts (needs the helm binary; writes test/coverage/REPORT.md).
-	go test -tags coverage ./test/coverage/ -run TestCoverage -count=1 -v -timeout 45m
+coverage: kustomize ## Measure Helm and Kustomize mapping coverage (needs the helm binary; installs kustomize v5.8.1, the version of Argo CD; writes test/coverage/REPORT.md).
+	KUSTOMIZE_BIN="$(abspath $(KUSTOMIZE))" go test -tags coverage ./test/coverage/ -run TestCoverage -count=1 -v -timeout 45m
 
 .PHONY: coverage-update
-coverage-update: ## Accept the current mapping coverage as the golden file.
-	go test -tags coverage ./test/coverage/ -run TestCoverage -count=1 -v -timeout 45m -args -update
+coverage-update: kustomize ## Accept the current mapping coverage as the golden file.
+	KUSTOMIZE_BIN="$(abspath $(KUSTOMIZE))" go test -tags coverage ./test/coverage/ -run TestCoverage -count=1 -v -timeout 45m -args -update

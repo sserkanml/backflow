@@ -1,0 +1,17 @@
+namePrefix: prod-
+resources:
+- ../../base
+images:
+- name: nginx
+  newName: registry.example.com/nginx
+  newTag: "1.25.3"
+replicas:
+- name: web
+  count: 4
+patches:
+- path: annotate.json
+  target:
+    kind: Deployment
+- target:
+    kind: Deployment
+  patch: '[{"op": "replace", "path": "/spec/template/spec/containers/0/env/1/value", "value": "us"}]'

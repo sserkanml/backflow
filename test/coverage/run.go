@@ -15,6 +15,7 @@ import (
 	"github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/drift"
 	"github.com/sserkanml/backflow/internal/helmmap"
+	"github.com/sserkanml/backflow/internal/kustomize"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -29,6 +30,8 @@ const (
 type policySet struct {
 	name string
 	opts rendermap.Options
+	// pol is what a Kustomize policy allows; opts is used for Helm.
+	pol kustomize.Policy
 }
 
 // The suite maps every case under three policies: the defaults of a
@@ -78,6 +81,8 @@ func (o outcome) rank() int {
 
 // caseResult is one scenario on one resource of one chart.
 type caseResult struct {
+	// Source is the source type: Helm or Kustomize.
+	Source                    string
 	Chart, Resource, Scenario string
 	Changes                   []v1alpha1.FieldChange
 	ByPolicy                  map[string]outcome
@@ -140,7 +145,7 @@ func (l *loaded) runAll(ctx context.Context) ([]caseResult, error) {
 				continue
 			}
 			jobs = append(jobs, &job{obj: obj, sc: sc, res: caseResult{
-				Chart: l.c.name, Resource: obj.GetKind() + " " + strings.TrimPrefix(obj.GetName(), l.c.release+"-"),
+				Source: sourceHelm, Chart: l.c.name, Resource: obj.GetKind() + " " + strings.TrimPrefix(obj.GetName(), l.c.release+"-"),
 				Scenario: sc.id, Changes: changes, ByPolicy: map[string]outcome{},
 			}})
 		}
