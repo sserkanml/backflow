@@ -93,6 +93,9 @@ type aheadState struct {
 	// source of its last sync. A new source can change what is rendered without
 	// a new revision, and neither the revisions nor the paths say so.
 	sourceChanged string
+	// holdKind is the Event reason for sourceChanged: holdApplicationChanged
+	// when the chart of a multi-source Application changed, else holdGitAhead.
+	holdKind string
 }
 
 // hold is the reason the whole Application is paused although the files under
@@ -152,7 +155,11 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 	}
 	st.paused = st.compared != "" && st.compared != st.synced
 
-	st.sourceChanged = sourceChange(app)
+	if why := chartChange(app); why != "" {
+		st.sourceChanged, st.holdKind = why, holdApplicationChanged
+	} else {
+		st.sourceChanged, st.holdKind = sourceChange(app), holdGitAhead
+	}
 	if items, _, _ := unstructured.NestedSlice(app.Object, fieldStatus, fieldOperationState, fieldSyncResult, "resources"); len(items) > 0 {
 		st.applied = map[string]bool{}
 		for _, it := range items {
@@ -280,8 +287,8 @@ func pruneEmpty(v any) any {
 // sync there is nothing to compare, and the revisions speak for themselves.
 func sourceChange(app *unstructured.Unstructured) string {
 	spec, specOK := sourcesOf(app, []string{"spec", "source"}, []string{"spec", "sources"})
-	synced, syncedOK := sourcesOf(app, []string{fieldStatus, fieldOperationState, fieldSyncResult, "source"},
-		[]string{fieldStatus, fieldOperationState, fieldSyncResult, "sources"})
+	synced, syncedOK := sourcesOf(app, []string{fieldStatus, fieldOperationState, fieldSyncResult, fieldSpecSource},
+		[]string{fieldStatus, fieldOperationState, fieldSyncResult, fieldSpecSources})
 	if !specOK || !syncedOK {
 		return ""
 	}
@@ -366,6 +373,8 @@ type aheadKey struct {
 	// file parameters, the variables they may use), kustomize those of a
 	// Kustomize source (components, patch files); empty for other sources.
 	helm, kustomize string
+	// multi fingerprints the sources of a multi-source Application.
+	multi string
 }
 
 type aheadCheck struct {
@@ -385,6 +394,46 @@ func (r *DriftReconciler) now() time.Time {
 	return time.Now()
 }
 
+// aheadShape says which kind of source a look at the repository is made for.
+type aheadShape struct {
+	multi, helm, kust bool
+	ms                *multiSource
+}
+
+// aheadShapeOf decides whether the Application's source can be looked at, and
+// how. ok is false when it cannot, and the pause then applies: only a Directory,
+// Helm or Kustomize source, or a Helm source with Git ref sources, both
+// revisions must be commits (per source for several), and the repository must
+// be readable.
+func (r *DriftReconciler) aheadShapeOf(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
+	app *unstructured.Unstructured, st aheadState) (shape aheadShape, ok bool) {
+	shape.multi = len(specSources(app)) > 0
+	shape.helm = !shape.multi && summary.SourceType == string(backflowv1alpha1.SourceHelm)
+	shape.kust = !shape.multi && summary.SourceType == string(backflowv1alpha1.SourceKustomize)
+	if shape.multi {
+		ms, why := helmMultiSource(app)
+		if ms == nil {
+			logf.FromContext(ctx).V(1).Info("Pausing drift detection while Git is ahead: "+unsupportedMultiSource(why),
+				"application", summary.Name)
+			return shape, false
+		}
+		shape.ms = ms
+		return shape, r.Git != nil
+	}
+	if r.Git == nil || (!shape.helm && !shape.kust && summary.SourceType != string(backflowv1alpha1.SourceDirectory)) ||
+		summary.RepoURL == "" || !isFullSHA(st.compared) || !isFullSHA(st.synced) {
+		return shape, false
+	}
+	// Jsonnet can read any file, so which files the Application is made of
+	// cannot be told from its directory.
+	if jsonnet, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "directory", "jsonnet"); len(jsonnet) > 0 {
+		logf.FromContext(ctx).Info("The Application's directory source uses Jsonnet; pausing drift detection while Git is ahead",
+			"application", summary.Name)
+		return shape, false
+	}
+	return shape, true
+}
+
 // changedUnderPath tells how many files under the Application's directory
 // changed between the last synced revision and the revision Argo CD compares
 // against. checked is false when that cannot be told, and the pause then
@@ -395,22 +444,11 @@ func (r *DriftReconciler) now() time.Time {
 // lookAtHelm and lookAtKustomize).
 func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured, st aheadState) (changed int, checked bool) {
-	helm := summary.SourceType == string(backflowv1alpha1.SourceHelm)
-	kust := summary.SourceType == string(backflowv1alpha1.SourceKustomize)
-	if r.Git == nil || (!helm && !kust && summary.SourceType != string(backflowv1alpha1.SourceDirectory)) || summary.RepoURL == "" ||
-		!isFullSHA(st.compared) || !isFullSHA(st.synced) {
+	shape, ok := r.aheadShapeOf(ctx, summary, app, st)
+	if !ok {
 		return 0, false
 	}
-	if sources, ok, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); ok && len(sources) > 0 {
-		return 0, false
-	}
-	// Jsonnet can read any file, so which files the Application is made of
-	// cannot be told from its directory.
-	if jsonnet, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "directory", "jsonnet"); len(jsonnet) > 0 {
-		logf.FromContext(ctx).Info("The Application's directory source uses Jsonnet; pausing drift detection while Git is ahead",
-			"application", summary.Name)
-		return 0, false
-	}
+	multi, helm, kust, ms := shape.multi, shape.helm, shape.kust, shape.ms
 	recurse, _, _ := unstructured.NestedBool(app.Object, "spec", "source", "directory", "recurse")
 	key := aheadKey{repo: summary.RepoURL, from: st.synced, to: st.compared, path: summary.Path, recurse: recurse}
 	if helm {
@@ -418,6 +456,9 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 	}
 	if kust {
 		key.kustomize = kustomizeFingerprint(app, summary)
+	}
+	if multi {
+		key.multi = multiSourceFingerprint(app)
 	}
 
 	r.aheadMu.Lock()
@@ -429,10 +470,15 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 		if err == nil && access != nil {
 			auth = access.auth
 		}
+		if multi {
+			err = nil // each repository of the Application is read with its own connection
+		}
 		switch {
 		case err != nil:
 		case helm:
 			hit, err = r.lookAtHelm(ctx, summary, app, st, auth)
+		case multi:
+			hit, err = r.lookAtMultiSource(ctx, policy, summary, app, ms)
 		case kust:
 			hit, err = r.lookAtKustomize(ctx, summary, app, st, auth)
 		default:
@@ -553,7 +599,7 @@ func (r *DriftReconciler) reportHeld(policy *backflowv1alpha1.BackflowPolicy,
 	if !r.reportOnce(policy, summary.Name, "ahead", "", "held/"+st.compared+"/"+st.hold()) {
 		return
 	}
-	r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
+	r.event(policy, corev1.EventTypeNormal, st.holdKind, fmt.Sprintf(
 		"Drift detection for %s is paused: %s (revision %s). It resumes after a complete, successful sync of the current source.",
 		summary.Name, st.hold(), shortRevision(st.compared)))
 }

@@ -146,7 +146,7 @@ func TestValueFileRefs(t *testing.T) {
 		"fileParameters": []any{map[string]any{"name": "tls", "path": "$values/tls.pem"}},
 	}
 	got := valueFileRefs(helm)
-	var s []string
+	s := make([]string, 0, len(got))
 	for _, f := range got {
 		s = append(s, f.Ref+":"+f.Path)
 	}

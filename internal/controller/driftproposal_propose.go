@@ -890,6 +890,32 @@ func scmAccessFor(ctx context.Context, c client.Reader, namespace string,
 			break
 		}
 	}
+	return scmAccessByName(ctx, c, namespace, connName)
+}
+
+// scmAccessForRepo is scmAccessFor for one repository of a multi-source
+// Application: the connection the policy matched to that repository's host. It
+// returns nil when the repository has none (a public one, for example).
+func scmAccessForRepo(ctx context.Context, c client.Reader, namespace string,
+	policy *backflowv1alpha1.BackflowPolicy, appName, repoURL string) (*scmAccess, error) {
+	var connName string
+	for _, a := range policy.Status.Applications {
+		if a.Name != appName {
+			continue
+		}
+		for _, src := range a.Sources {
+			if src.RepoURL == repoURL && src.ScmConnection != "" {
+				connName = src.ScmConnection
+				break
+			}
+		}
+	}
+	return scmAccessByName(ctx, c, namespace, connName)
+}
+
+// scmAccessByName reads the token and CA bundle of a ScmConnection; nil for an
+// empty name.
+func scmAccessByName(ctx context.Context, c client.Reader, namespace, connName string) (*scmAccess, error) {
 	if connName == "" {
 		return nil, nil
 	}

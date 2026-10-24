@@ -22,6 +22,11 @@ import (
 // use, of which ARGOCD_APP_REVISION differs per revision.
 func helmSpecAt(app *unstructured.Unstructured, repoURL, path, sha string) helmmap.Spec {
 	helm, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "helm")
+	return helmSpecFrom(app, helm, repoURL, path, sha)
+}
+
+// helmSpecFrom is helmSpecAt for the helm settings of any source.
+func helmSpecFrom(app *unstructured.Unstructured, helm map[string]any, repoURL, path, sha string) helmmap.Spec {
 	spec := helmmap.Spec{Path: path}
 	spec.ValueFiles, _, _ = unstructured.NestedStringSlice(helm, "valueFiles")
 	spec.IgnoreMissingValueFiles, _, _ = unstructured.NestedBool(helm, "ignoreMissingValueFiles")
@@ -81,7 +86,7 @@ func helmFingerprint(app *unstructured.Unstructured, summary backflowv1alpha1.Ap
 // tree that cannot be read is an error, tried again later.
 func (r *DriftReconciler) lookAtHelm(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
 	app *unstructured.Unstructured, st aheadState, auth *gitrepo.Auth) (aheadCheck, error) {
-	return r.countRelevant(ctx, summary, st, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
+	return r.countRelevant(ctx, summary.RepoURL, st.synced, st.compared, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
 		rel, err := helmmap.RelevantFiles(fsys, helmSpecAt(app, summary.RepoURL, summary.Path, sha))
 		if err != nil {
 			if helmmap.ReasonOf(err) != "" || errors.Is(err, helmmap.ErrNotAChart) {
@@ -103,20 +108,20 @@ type relevantFiles interface {
 // started to use). at works out the files for the tree of one revision; it
 // returns a reason when they cannot be told, which gives no answer for good
 // (unchecked); a tree that cannot be read is an error, tried again later.
-func (r *DriftReconciler) countRelevant(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
-	st aheadState, auth *gitrepo.Auth, at func(fsys fs.FS, sha string) (rel relevantFiles, unchecked string, err error)) (aheadCheck, error) {
+func (r *DriftReconciler) countRelevant(ctx context.Context, repoURL, from, to string,
+	auth *gitrepo.Auth, at func(fsys fs.FS, sha string) (rel relevantFiles, unchecked string, err error)) (aheadCheck, error) {
 	opener, ok := r.Git.(TreeOpener)
 	if !ok {
 		return aheadCheck{unchecked: "the repository's files cannot be read"}, nil
 	}
-	paths, err := r.Git.ChangedPaths(ctx, summary.RepoURL, st.synced, st.compared, auth)
+	paths, err := r.Git.ChangedPaths(ctx, repoURL, from, to, auth)
 	if err != nil {
 		return aheadCheck{}, err
 	}
 
 	var relevant []relevantFiles
-	for _, sha := range []string{st.synced, st.compared} {
-		fsys, release, err := opener.OpenTree(ctx, summary.RepoURL, sha, auth)
+	for _, sha := range []string{from, to} {
+		fsys, release, err := opener.OpenTree(ctx, repoURL, sha, auth)
 		if err != nil {
 			return aheadCheck{}, err
 		}

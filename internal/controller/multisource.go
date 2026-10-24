@@ -9,10 +9,17 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
 
+// Names of Application fields and source types used in several places.
+const (
+	fieldSpecSource  = "source"
+	fieldSpecSources = "sources"
+	sourceTypeHelm   = "Helm"
+)
+
 // specSources returns spec.sources of an Application: nil for an Application
 // with a single source.
 func specSources(app *unstructured.Unstructured) []map[string]any {
-	items, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources")
+	items, _, _ := unstructured.NestedSlice(app.Object, "spec", fieldSpecSources)
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		m, _ := it.(map[string]any)
@@ -63,7 +70,7 @@ func summarizeSources(app *unstructured.Unstructured) []backflowv1alpha1.SourceS
 			// Not reconciled yet: say what the spec says.
 			switch {
 			case s.Chart != "" || src["helm"] != nil:
-				s.SourceType = "Helm"
+				s.SourceType = sourceTypeHelm
 			case src["kustomize"] != nil:
 				s.SourceType = "Kustomize"
 			default:
@@ -112,9 +119,9 @@ func helmMultiSource(app *unstructured.Unstructured) (*multiSource, string) {
 		ms.Render = i
 		kind := at(types, i)
 		switch {
-		case kind != "" && kind != "Helm":
+		case kind != "" && kind != sourceTypeHelm:
 			return nil, fmt.Sprintf("source %d is a %s source", i+1, kind)
-		case strField(src, "chart") == "" && src["helm"] == nil && kind != "Helm":
+		case strField(src, "chart") == "" && src["helm"] == nil && kind != sourceTypeHelm:
 			return nil, fmt.Sprintf("source %d is not a Helm source", i+1)
 		case src["plugin"] != nil:
 			return nil, fmt.Sprintf("source %d uses a plugin", i+1)

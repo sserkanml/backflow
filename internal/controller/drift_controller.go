@@ -455,9 +455,10 @@ func (r *DriftReconciler) reportDeleted(policy *backflowv1alpha1.BackflowPolicy,
 
 // trackedResources reads the resources of an Application's status. ok is false
 // when there is nothing to judge: Argo CD has not reported resources yet, or
-// the Application has several sources, which cannot be mapped to one place in
-// Git yet. For the latter, something that would be proposed is said once per
-// revision, and the proposals the Application has are left alone.
+// the Application has several sources that are not a Helm source with Git ref
+// sources, which cannot be mapped to one place in Git. For the latter,
+// something that would be proposed is said once per revision, and the proposals
+// the Application has are left alone.
 func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) (resources []appResource, ok bool) {
 	resources, known := appResources(app)
@@ -465,11 +466,15 @@ func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPoli
 		return nil, false
 	}
 	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
+		ms, why := helmMultiSource(app)
+		if ms != nil {
+			return resources, true
+		}
 		for _, res := range resources {
 			if res.Status == syncOutOfSync && drift.Allowed(res.Group, res.Kind, policy.Spec.Include, policy.Spec.Exclude) {
 				if r.reportOnce(policy, summary.Name, "unsupportedSource", "", gitAhead(app).compared) {
 					r.event(policy, corev1.EventTypeWarning, "UnsupportedSource", fmt.Sprintf(
-						"Application %s has several sources, which is not supported yet; no proposals are made for it", summary.Name))
+						"Application %s is not supported yet, no proposals are made for it: %s", summary.Name, unsupportedMultiSource(why)))
 				}
 				break
 			}

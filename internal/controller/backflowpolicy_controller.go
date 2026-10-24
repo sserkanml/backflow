@@ -432,9 +432,9 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.Appli
 	if s.SourceType == "" {
 		switch {
 		case chart != "":
-			s.SourceType = "Helm"
+			s.SourceType = sourceTypeHelm
 		case src["helm"] != nil:
-			s.SourceType = "Helm"
+			s.SourceType = sourceTypeHelm
 		case src["kustomize"] != nil:
 			s.SourceType = "Kustomize"
 		default:
