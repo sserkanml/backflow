@@ -46,8 +46,17 @@ type DriftProposalSpec struct {
 	// The drifted resource.
 	Resource ResourceRef `json:"resource"`
 
-	// Where the resource comes from in Git.
+	// Where the resource comes from in Git. For an Application with several
+	// sources this is its first source; see Sources for the others.
 	Source SourceRef `json:"source"`
+
+	// Every source of an Application that has several, in order, each at the
+	// revision Argo CD compared against when the drift was observed. The edits of
+	// the proposal are written to the one with role Values.
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=atomic
+	// +optional
+	Sources []ApplicationSource `json:"sources,omitempty"`
 
 	// Field-level changes between Git (desired) and the cluster (live).
 	// +kubebuilder:validation:MinItems=1
@@ -90,6 +99,46 @@ type SourceRef struct {
 	// +optional
 	Path string     `json:"path,omitempty"`
 	Type SourceType `json:"type"`
+}
+
+// SourceRole is what a source of a multi-source Application is for.
+// +kubebuilder:validation:Enum=Render;Values;Reference
+type SourceRole string
+
+const (
+	// RoleRender is the source that renders: a Helm chart.
+	RoleRender SourceRole = "Render"
+	// RoleValues is the ref source whose files hold the values; Backflow writes
+	// its edits there.
+	RoleValues SourceRole = "Values"
+	// RoleReference is any other ref source.
+	RoleReference SourceRole = "Reference"
+)
+
+// ApplicationSource is one source of a multi-source Application.
+type ApplicationSource struct {
+	// Position in spec.sources of the Application, from 1.
+	Position int32      `json:"position"`
+	Role     SourceRole `json:"role"`
+	RepoURL  string     `json:"repoURL"`
+	// Revision Argo CD resolved and compared against: a commit SHA, or the chart
+	// version of a chart from a Helm repository or a registry.
+	Revision string `json:"revision"`
+	// Branch, tag, chart version or range the source tracks.
+	// +optional
+	TargetRevision string `json:"targetRevision,omitempty"`
+	// Path inside a Git repository.
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Chart name, for a chart from a Helm repository or a registry.
+	// +optional
+	Chart string `json:"chart,omitempty"`
+	// Name of a ref source, referenced as $name/... in value files.
+	// +optional
+	Ref string `json:"ref,omitempty"`
+	// How Argo CD renders the source. Empty for a ref source.
+	// +optional
+	Type SourceType `json:"type,omitempty"`
 }
 
 // ChangeOperation is the kind of change on a field.
@@ -156,6 +205,10 @@ const (
 // Mapping records where each change lands in the source.
 type Mapping struct {
 	Strategy MappingStrategy `json:"strategy"`
+	// Repository the edits are written to, when the Application has several
+	// sources: the repository of the source with role Values.
+	// +optional
+	RepoURL string `json:"repoURL,omitempty"`
 	// +optional
 	Edits []SourceEdit `json:"edits,omitempty"`
 	// True when a re-render with the edits reproduced the live state exactly.

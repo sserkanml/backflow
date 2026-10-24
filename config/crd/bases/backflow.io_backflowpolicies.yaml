@@ -394,6 +394,23 @@ spec:
                       reported as a new proposal. A proposal that maps no field is still
                       Unmapped.
                     type: boolean
+                  scratchBranches:
+                    default: Auto
+                    description: |-
+                      Whether verification may push scratch branches to the repository that
+                      holds the value files of a multi-source Application. Such an Application
+                      is rendered by Argo CD from commits, so each candidate edit is committed to
+                      a temporary branch (backflow/scratch/...), rendered by its commit SHA and
+                      deleted again; no branch of the source of truth is touched. Auto: allowed
+                      for MergeRequest and DirectCommit, not for ReportOnly, whose mapping never
+                      writes to Git. Always: allowed in every mode. Never: not allowed. When it is
+                      not allowed, a proposal that needs scratch branches is Unmapped with reason
+                      ScratchBranchesDisabled.
+                    enum:
+                    - Auto
+                    - Always
+                    - Never
+                    type: string
                 type: object
               mergeRequest:
                 description: Merge request settings. Used when Mode is MergeRequest.

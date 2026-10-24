@@ -162,7 +162,9 @@ spec:
                 - version
                 type: object
               source:
-                description: Where the resource comes from in Git.
+                description: |-
+                  Where the resource comes from in Git. For an Application with several
+                  sources this is its first source; see Sources for the others.
                 properties:
                   path:
                     description: Path inside the repository; for Helm repos, the chart
@@ -189,6 +191,66 @@ spec:
                 - revision
                 - type
                 type: object
+              sources:
+                description: |-
+                  Every source of an Application that has several, in order, each at the
+                  revision Argo CD compared against when the drift was observed. The edits of
+                  the proposal are written to the one with role Values.
+                items:
+                  description: ApplicationSource is one source of a multi-source Application.
+                  properties:
+                    chart:
+                      description: Chart name, for a chart from a Helm repository
+                        or a registry.
+                      type: string
+                    path:
+                      description: Path inside a Git repository.
+                      type: string
+                    position:
+                      description: Position in spec.sources of the Application, from
+                        1.
+                      format: int32
+                      type: integer
+                    ref:
+                      description: Name of a ref source, referenced as $name/... in
+                        value files.
+                      type: string
+                    repoURL:
+                      type: string
+                    revision:
+                      description: |-
+                        Revision Argo CD resolved and compared against: a commit SHA, or the chart
+                        version of a chart from a Helm repository or a registry.
+                      type: string
+                    role:
+                      description: SourceRole is what a source of a multi-source Application
+                        is for.
+                      enum:
+                      - Render
+                      - Values
+                      - Reference
+                      type: string
+                    targetRevision:
+                      description: Branch, tag, chart version or range the source
+                        tracks.
+                      type: string
+                    type:
+                      description: How Argo CD renders the source. Empty for a ref
+                        source.
+                      enum:
+                      - Directory
+                      - Kustomize
+                      - Helm
+                      type: string
+                  required:
+                  - position
+                  - repoURL
+                  - revision
+                  - role
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: atomic
             required:
             - application
             - changes
@@ -346,6 +408,11 @@ spec:
                   reason:
                     description: Why the change could not be mapped. Set only when
                       strategy is Unmapped.
+                    type: string
+                  repoURL:
+                    description: |-
+                      Repository the edits are written to, when the Application has several
+                      sources: the repository of the source with role Values.
                     type: string
                   strategy:
                     description: MappingStrategy is how the change was traced back

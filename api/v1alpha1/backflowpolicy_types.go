@@ -108,6 +108,22 @@ func (s BackflowPolicySpec) PartialAllowed() bool {
 	return s.Mapping != nil && s.Mapping.AllowPartial
 }
 
+// ScratchBranchesAllowed reports whether verification may push scratch branches
+// (spec.mapping.scratchBranches): Auto allows them except in ReportOnly mode.
+func (s BackflowPolicySpec) ScratchBranchesAllowed() bool {
+	mode := ScratchBranchesAuto
+	if s.Mapping != nil && s.Mapping.ScratchBranches != "" {
+		mode = s.Mapping.ScratchBranches
+	}
+	switch mode {
+	case ScratchBranchesAlways:
+		return true
+	case ScratchBranchesNever:
+		return false
+	}
+	return s.Mode != ModeReportOnly
+}
+
 // OverridesAllowed reports whether a Helm edit may add a key to the
 // Application's last value file to override a chart default
 // (spec.helm.addOverrides, true unless set to false).
@@ -227,7 +243,30 @@ type MappingOptions struct {
 	// Unmapped.
 	// +kubebuilder:default=false
 	AllowPartial bool `json:"allowPartial,omitempty"`
+
+	// Whether verification may push scratch branches to the repository that
+	// holds the value files of a multi-source Application. Such an Application
+	// is rendered by Argo CD from commits, so each candidate edit is committed to
+	// a temporary branch (backflow/scratch/...), rendered by its commit SHA and
+	// deleted again; no branch of the source of truth is touched. Auto: allowed
+	// for MergeRequest and DirectCommit, not for ReportOnly, whose mapping never
+	// writes to Git. Always: allowed in every mode. Never: not allowed. When it is
+	// not allowed, a proposal that needs scratch branches is Unmapped with reason
+	// ScratchBranchesDisabled.
+	// +kubebuilder:default=Auto
+	// +optional
+	ScratchBranches ScratchBranchesMode `json:"scratchBranches,omitempty"`
 }
+
+// ScratchBranchesMode is the value of spec.mapping.scratchBranches.
+// +kubebuilder:validation:Enum=Auto;Always;Never
+type ScratchBranchesMode string
+
+const (
+	ScratchBranchesAuto   ScratchBranchesMode = "Auto"
+	ScratchBranchesAlways ScratchBranchesMode = "Always"
+	ScratchBranchesNever  ScratchBranchesMode = "Never"
+)
 
 // HelmMappingMode controls how rendered fields are traced back to values.
 // +kubebuilder:validation:Enum=Auto;ExplicitOnly
