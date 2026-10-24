@@ -184,7 +184,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 		isDefault bool
 	}
 	var layers []layer
-	deps, missing := dependencyDefaults(files, s.ChartDir)
+	deps, missing := s.dependencyLayers(files)
 	res.UnreadDependencies = missing
 	for _, dd := range deps {
 		defs, err := parseValues(dd.data)

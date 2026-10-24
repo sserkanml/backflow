@@ -26,7 +26,7 @@ func (s *Source) Layers(files map[string][]byte) ([]rendermap.Layer, error) {
 		return out, nil
 	}
 	var layers []rendermap.Layer
-	deps, _ := dependencyDefaults(files, s.ChartDir)
+	deps, _ := s.dependencyLayers(files)
 	for _, dd := range deps {
 		m, err := decode(dd.file, dd.data)
 		if err != nil {

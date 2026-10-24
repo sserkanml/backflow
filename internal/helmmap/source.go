@@ -78,9 +78,27 @@ type Spec struct {
 	// FileParameters is helm.fileParameters.
 	FileParameters          []FileParameter
 	IgnoreMissingValueFiles bool
+	// External is set when the chart is not in the repository at all: it comes
+	// from a Helm repository or a registry, and Path is not read. Its own
+	// defaults are given instead.
+	External *ExternalChart
 	// Env holds the variables value file paths may use, the $ARGOCD_APP_*
 	// set Argo CD defines. ARGOCD_APP_SOURCE_PATH defaults to Path.
 	Env map[string]string
+}
+
+// ExternalChart describes a chart that Argo CD pulls from a Helm repository or a
+// registry, as far as Backflow can know it without the chart's files.
+type ExternalChart struct {
+	// Name and Version name the chart, for messages and for the name of its
+	// defaults.
+	Name, Version string
+	// Values is the text of the chart's own values.yaml (what Argo CD returns
+	// for the chart; comments and all).
+	Values []byte
+	// UnreadDependencies are the dependencies whose defaults are not available:
+	// Argo CD does not return the values.yaml of a subchart.
+	UnreadDependencies []string
 }
 
 // InlineValue is what one inline layer sets at a key path.
@@ -96,8 +114,11 @@ type InlineValue struct {
 // Source is the resolved Helm source of an Application: which files feed the
 // chart and which key paths the inline settings control.
 type Source struct {
-	// ChartDir is the chart directory, relative to the repository root.
+	// ChartDir is the chart directory, relative to the repository root. Empty
+	// when the chart is External.
 	ChartDir string
+	// External is the chart that is not in the repository, if it is not.
+	External *ExternalChart
 	// ChartValues is the chart's own values.yaml. Its defaults are never
 	// edited; an Application overrides them instead.
 	ChartValues string
@@ -158,11 +179,16 @@ func (s *Source) overrideFile() (file, reason string) {
 //   - a missing file or a glob without a match is an error unless
 //     ignoreMissingValueFiles is set, in which case it is skipped.
 func NewSource(fsys fs.FS, spec Spec) (*Source, error) {
-	chart, err := cleanRepoPath(spec.Path, true)
-	if err != nil {
-		return nil, fmt.Errorf("chart path %q: %w", spec.Path, err)
+	var src *Source
+	if ext := spec.External; ext != nil {
+		src = &Source{External: ext, ChartValues: fmt.Sprintf("%s@%s/values.yaml", ext.Name, ext.Version)}
+	} else {
+		chart, err := cleanRepoPath(spec.Path, true)
+		if err != nil {
+			return nil, fmt.Errorf("chart path %q: %w", spec.Path, err)
+		}
+		src = &Source{ChartDir: chart, ChartValues: path.Join(chart, "values.yaml")}
 	}
-	src := &Source{ChartDir: chart, ChartValues: path.Join(chart, "values.yaml")}
 
 	env := map[string]string{"ARGOCD_APP_SOURCE_PATH": spec.Path}
 	maps.Copy(env, spec.Env)
