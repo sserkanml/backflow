@@ -356,10 +356,30 @@ spec:
                   - kind
                   type: object
                 type: array
+              kustomize:
+                description: Kustomize-specific behaviour.
+                properties:
+                  addPatches:
+                    default: true
+                    description: |-
+                      As a last resort, when no existing file can take the change, add a
+                      strategic merge patch with only the drifted fields to the Application's
+                      overlay (backflow-patches/<kind>-<name>.yaml) and list it under patches
+                      in the overlay's kustomization.
+                    type: boolean
+                  editBases:
+                    default: false
+                    description: |-
+                      Allow edits to files outside the Application's path: a base or a
+                      component that other Applications may use too. A change there reaches
+                      every Application that includes the file, so the merge request names them.
+                      By default only files inside the Application's path are edited.
+                    type: boolean
+                type: object
               mapping:
                 description: |-
-                  How drifted fields are traced back to Git, for Directory and Helm
-                  sources alike.
+                  How drifted fields are traced back to Git, for Directory, Helm and
+                  Kustomize sources alike.
                 properties:
                   allowPartial:
                     default: false
