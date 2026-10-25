@@ -1,6 +1,6 @@
 # Multi-source mapping
 
-Status: design, from a spike. No production code yet.
+Status: implemented (`internal/scratch`, `internal/argocd/revisions.go`, `internal/helmmap/external.go`, `driftproposal_helm_multi.go`). The spike findings are unchanged; "As implemented" lists where the implementation differs from the design below.
 
 Goal: map drift of a multi-source Application whose Helm chart comes from a
 Helm repository (HTTP or OCI) or from another Git repository, with its value
@@ -408,6 +408,53 @@ per-revision callback.
   f. a rejected scratch push (a protected branch rule on `backflow/scratch/*`)
      leaves the proposal `Unmapped` and no branches behind.
   Argo CD needs the one extra RBAC line from S3; `hack/dev-up.sh` adds it.
+
+## As implemented
+
+- **The proposal.** `spec.source` stays the first source of the Application, as
+  before. `spec.sources` lists every source with its role (`Render`, `Values`,
+  `Reference`) and the revision Argo CD compared against; the commits, branches,
+  merge request and `ScmConnection` of a proposal use the source with role
+  `Values` (`writeTarget`), and `status.mapping.repoURL` names it. Value files from
+  more than one Git repository are `MultipleValueRepositories`; a value file
+  inside a chart that is not in Git is `ValueFileNotInGit`.
+- **Masking happens in the Argo CD client.** `GetManifestsByRevisions` parses its
+  response and masks the data of Secrets (a keyed hash) before returning; the raw
+  body is never kept, and error texts of Argo CD are cut to their first line with
+  quoted text removed. The scratch renderer therefore never holds a Secret value.
+  Tests: unit tests of the client, and an envtest that runs the real client
+  against a server that plays Argo CD, with the value of a Secret changing with the
+  edit (a leak would be quoted in the collateral message), asserting that the
+  value appears in no log line at any level, status, Event, merge request or error.
+- **Batches.** The engine tells the renderer the file sets of a batch of
+  candidates before rendering it (`rendermap.Preparer`); the scratch renderer
+  commits them all and pushes them in one push. A set that was not prepared (a
+  combination of edits) is pushed when it is rendered. A commit is remembered only
+  once its branch is pushed. A remote that does not take push options is pushed
+  to again without them (the commit message carries `[skip ci]`).
+- **Chart defaults.** From `appdetails` for a chart from a Helm repository or a
+  registry; for a chart in Git, the `values.yaml` of the chart's directory at the
+  revision recorded for it, and every dependency declared in its `Chart.yaml` is
+  reported as unread (their defaults are not read, whether or not they are
+  unpacked). `valueRefs` has no templates to scan, so confirmation renders carry
+  the proof, and more proposals end in `TooManyCandidates`, which is safe.
+- **Operator.** `--render-budget` (chart value `renderBudget`), a log line at V(0)
+  at the end of every verification, a `ScratchSweeper` runnable (leader only,
+  every 15 minutes, branches older than an hour under `backflow/scratch/`), and
+  `spec.mapping.scratchBranches`.
+- **Status and Git ahead.** `status.applications[].sources[]` per source; the
+  `UnsupportedSource` pause is gone for the supported shape, and stays, with the
+  reason in its text, for others. A chart version that moved is `ApplicationChanged`.
+- **Coverage.** `nginx-ms` and `webapp-ms`: the charts `nginx` and `webapp` as
+  an Application with a chart from a Helm repository (its `values.yaml` and the
+  names of its subcharts stand in for `appdetails`; the renderer is
+  `helm template` over the chart files and the edited value file). The existing
+  Helm and Kustomize outcomes are unchanged. The suite gives each case a long
+  render budget of its own (the cases queue for the helm processes, and a
+  production budget would turn a slow case into another outcome).
+- **End-to-end test.** `hack/test-multi-source.sh` against `demo-multi`
+  (`./hack/dev-up.sh` creates it: podinfo 6.7.1 from `ghcr.io`, values in
+  `multi/values-dev.yaml` of the demo repository).
 
 ## Decisions
 
