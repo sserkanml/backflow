@@ -15,6 +15,10 @@
 #      GITLAB_TOKEN set (api scope) this script copies the ones the demo
 #      repository lacks into it with one commit through the GitLab API. It never
 #      overwrites a file. Without the token it only tells you what is missing.
+#      A fifth one, demo-multi, has several sources: the chart podinfo from the
+#      OCI registry ghcr.io (pinned version) and its values from the demo
+#      repository ($values/multi/values-dev.yaml). hack/demo/multi/ is seeded
+#      into the demo repository the same way, with the same token.
 #   5. Read-only Argo CD account "backflow" and its API token Secret, and
 #      timeout.reconciliation 30s in argocd-cm (new commits are seen quickly)
 #
@@ -161,24 +165,27 @@ EOF
   ok "$name applied ($path -> namespace $ns)"
 }
 
-# seed_demo_kustomize: add hack/demo/kustomize/* as kustomize/* to the demo
-# repository when they are missing there. The token is read from the
-# environment by python3 and is never printed or put in an argument.
-seed_demo_kustomize() {
+# seed_demo_files <directory under hack/demo> <path in the demo repository> <what>:
+# add the files of the directory to the demo repository when they are missing
+# there, with one commit through the GitLab API. It never overwrites a file. The
+# token is read from the environment by python3 and is never printed or put in
+# an argument.
+seed_demo_files() {
+  local dir="$1" prefix="$2" what="$3"
   local project="${DEMO_REPO#https://gitlab.com/}"
   project="${project%.git}"
   if [[ "$DEMO_REPO" != https://gitlab.com/* ]]; then
-    warn "the demo repository is not on gitlab.com; copy hack/demo/kustomize/ to kustomize/ in $DEMO_REPO yourself"
+    warn "the demo repository is not on gitlab.com; copy hack/demo/$dir/ to $prefix/ in $DEMO_REPO yourself"
     return 0
   fi
   if [[ -z "${GITLAB_TOKEN:-}" ]]; then
-    warn "GITLAB_TOKEN is not set: not checking that kustomize/ exists in $DEMO_REPO."
-    warn "demo-kustomize needs hack/demo/kustomize/ copied to kustomize/ there (rerun with GITLAB_TOKEN=... to do it)"
+    warn "GITLAB_TOKEN is not set: not checking that $prefix/ exists in $DEMO_REPO."
+    warn "$what needs hack/demo/$dir/ copied to $prefix/ there (rerun with GITLAB_TOKEN=... to do it)"
     return 0
   fi
-  python3 - "$ROOT/hack/demo/kustomize" "$project" "$DEMO_REVISION" <<'PY'
+  python3 - "$ROOT/hack/demo/$dir" "$project" "$DEMO_REVISION" "$prefix" "$what" <<'PY'
 import json, os, sys, urllib.error, urllib.parse, urllib.request
-src, project, ref = sys.argv[1:4]
+src, project, ref, prefix, what = sys.argv[1:6]
 token = os.environ["GITLAB_TOKEN"]
 api = "https://gitlab.com/api/v4/projects/" + urllib.parse.quote(project, safe="")
 def call(method, url, body=None):
@@ -189,7 +196,7 @@ actions, present = [], 0
 for dirpath, _, files in os.walk(src):
     for name in sorted(files):
         full = os.path.join(dirpath, name)
-        rel = "kustomize/" + os.path.relpath(full, src)
+        rel = prefix + "/" + os.path.relpath(full, src)
         url = "%s/repository/files/%s?ref=%s" % (api, urllib.parse.quote(rel, safe=""), urllib.parse.quote(ref, safe=""))
         try:
             call("HEAD", url)
@@ -199,13 +206,14 @@ for dirpath, _, files in os.walk(src):
                 sys.exit("checking %s: HTTP %d" % (rel, e.code))
             actions.append({"action": "create", "file_path": rel, "content": open(full, encoding="utf-8").read()})
 if not actions:
-    print("  kustomize/ is complete in the demo repository (%d files)" % present)
+    print("  %s/ is complete in the demo repository (%d files)" % (prefix, present))
     sys.exit(0)
-call("POST", api + "/repository/commits", {"branch": ref, "commit_message": "demo: add the Kustomize demo (base and dev overlay)", "actions": actions})
-print("  added %d file(s) to kustomize/ in the demo repository" % len(actions))
+call("POST", api + "/repository/commits", {"branch": ref, "commit_message": "demo: add " + what, "actions": actions})
+print("  added %d file(s) to %s/ in the demo repository" % (len(actions), prefix))
 PY
 }
-seed_demo_kustomize
+seed_demo_files kustomize kustomize "the Kustomize demo (base and dev overlay)"
+seed_demo_files multi multi "the values of the multi-source demo"
 
 apply_app demo-app "$DEMO_PATH" demo test
 
@@ -230,6 +238,41 @@ apply_app shared-beta helm/shared shared-beta helm-test "    helm:
 # Its own label, and not env=test: the policies of the other tests select
 # env=test and must not see it. test-kustomize.sh selects backflow.io/demo=kustomize.
 apply_app demo-kustomize kustomize/overlays/dev demo-kustomize kustomize-test "" kustomize
+
+# Several sources: the chart podinfo from the OCI registry ghcr.io, pinned, and
+# its value file in the demo repository as the ref source $values. Its own labels
+# (not env=test, and not env=helm-test): test-multi-source.sh selects
+# backflow.io/demo=multi.
+k apply -f - >/dev/null <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-multi
+  namespace: $ARGOCD_NS
+  labels:
+    env: multi-test
+    backflow.io/demo: multi
+spec:
+  project: default
+  sources:
+    - repoURL: ghcr.io/stefanprodan/charts
+      chart: podinfo
+      targetRevision: 6.7.1
+      helm:
+        valueFiles:
+          - \$values/multi/values-dev.yaml
+    - repoURL: $DEMO_REPO
+      targetRevision: $DEMO_REVISION
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo-multi
+  syncPolicy:
+    automated: {}
+    syncOptions:
+      - CreateNamespace=true
+EOF
+ok "demo-multi applied (podinfo 6.7.1 from ghcr.io, values from multi/values-dev.yaml of the demo repository)"
 
 # wait_apps <name>...: wait until each Application is Synced/Healthy. An
 # Application whose path is missing in the repository fails at once instead of
@@ -264,7 +307,7 @@ wait_apps() {
     bad "$app is $sync/$health. Check: kubectl -n $ARGOCD_NS get application $app -o jsonpath='{.status.conditions}'"
   done
 }
-wait_apps demo-app demo-helm shared-alpha shared-beta demo-kustomize
+wait_apps demo-app demo-helm shared-alpha shared-beta demo-kustomize demo-multi
 
 # expect_source_type <name> <type>
 expect_source_type() {
@@ -277,6 +320,8 @@ expect_source_type demo-helm Helm
 expect_source_type shared-alpha Helm
 expect_source_type shared-beta Helm
 expect_source_type demo-kustomize Kustomize
+got="$(k -n "$ARGOCD_NS" get application demo-multi -o jsonpath='{.status.sourceTypes[0]}' 2>/dev/null || true)"
+if [[ "$got" == "Helm" ]]; then ok "demo-multi sourceTypes[0] $got"; else bad "demo-multi sourceTypes[0] is '$got', expected Helm"; fi
 
 # ---------------------------------------------------------------------------
 step "Argo CD account for Backflow"
