@@ -270,6 +270,19 @@ How a proposal is made:
    with its old and new value, and say that the edit was verified by rendering
    through Argo CD.
 
+**Hooks and names chosen at random.** Resources with a `helm.sh/hook` or
+`argocd.argoproj.io/hook` annotation (a chart's test Pods, `PreSync` Jobs) are not
+what the Application manages, so verification leaves them out of every comparison,
+for Helm, Kustomize, Directory and multi-source Applications alike. A resource that
+is not a hook but is named at random by the chart (`randAlphaNum` in its name) is
+found by the two renders of the unmodified files: a resource that exists in one
+render only is a name that is not stable, and adding or removing a resource of its
+kind in that namespace is not counted as a change. The two renders are real renders:
+for a multi-source Application, whose renders Argo CD answers from its manifest cache
+for a commit it has rendered before, each is made from a commit of its own (a scratch
+commit that adds a marker file at the root of the repository), so the cache cannot make
+them one.
+
 Like Directory proposals, a Helm proposal is made against the head of the target
 branch. When the head is the revision the proposal was mapped at, or only files
 the mapping does not depend on changed since (the files a render reads for Helm,

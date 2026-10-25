@@ -502,3 +502,25 @@ These settle the open questions of the spike.
 - **Chart version ranges** (`targetRevision: 18.*`): renders pin the resolved
   version of `status.sync.revisions` (decision 7); unary `GetManifests` with
   `revisions` was only tried with an exact version, which is what pinning gives.
+
+## Hooks and the manifest cache (found by the second real run)
+
+podinfo's chart renders three test Pods (`helm.sh/hook: test`) named with
+`randAlphaNum`. Every candidate then "added" one Pod and "removed" another, and all
+of them were `ValueAffectsOtherFields`. Two causes, both fixed:
+
+- **Hooks are not compared.** Resources with `helm.sh/hook` or
+  `argocd.argoproj.io/hook` are left out of every verification snapshot
+  (`rendermap.IsHook`, in `takeSnapshot`), for all source types. Drift detection is
+  not affected: it reads Argo CD's resource list, which has no hooks.
+- **The two base renders were one.** The unmodified files render at the parent
+  commit, and Argo CD answers a revision it has rendered before from its manifest
+  cache, also across proposals (the same Pod name was "before the edit" in proposals
+  minutes apart). The check for names that change on every render saw two identical
+  renders. `rendermap.FreshRenderer` lets a renderer make a render no cache answers;
+  the scratch renderer commits a marker file (`.backflow-scratch-nonce`) for each of
+  the two base renders. They cost two scratch branches and two pushes more per
+  verification. Uploaded files (`GetManifestsWithFiles`, Helm and Kustomize in Git)
+  are rendered by the repo server without that cache as far as I know, which could not
+  be confirmed without a cluster; the engine asks for fresh renders there too when the
+  renderer has them, and the coverage suite models both renderers.
