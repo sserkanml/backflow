@@ -223,12 +223,15 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 // of the Application, which the fingerprint of the mapping covers.
 func (r *DriftProposalReconciler) changedRelevantMulti(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	app *unstructured.Unstructured, access *scmAccess, from, to string, paths []string) (changed string, known bool) {
-	values, err := valuesSource(dp)
 	ms, _ := helmMultiSource(app)
-	if err != nil || ms == nil {
+	if ms == nil || ms.Render >= len(dp.Spec.Sources) {
 		return "", false
 	}
 	helm, _ := specSources(app)[ms.Render]["helm"].(map[string]any)
+	values, err := valuesSource(dp, helm, dp.Spec.Sources[ms.Render])
+	if err != nil {
+		return "", false
+	}
 	var mine []refFile
 	for _, f := range valueFileRefs(helm) {
 		if f.Ref == values.Ref {

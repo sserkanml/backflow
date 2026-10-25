@@ -2,13 +2,17 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-logr/logr/funcr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.yaml.in/yaml/v3"
@@ -16,7 +20,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -339,11 +345,18 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 	})
 
 	Context("what stays Unmapped", func() {
-		It("a value file inside the chart", func() {
+		It("a value file inside a chart that is not in Git has its own reason, naming the file and the source", func() {
 			setHelm(map[string]any{"valueFiles": []any{"values-prod.yaml", "$values/env/values.yaml"}})
 			settle(backflowv1alpha1.PhaseUnmapped)
-			Expect(mapped().Reason).To(Equal(reasonMultipleValueRepositories))
-			Expect(mapped().Message).To(ContainSubstring("inside the chart"))
+			Expect(mapped().Reason).To(Equal(reasonValueFileNotInGit))
+			Expect(mapped().Message).To(ContainSubstring("values-prod.yaml of source 1"))
+			Expect(mapped().Message).To(ContainSubstring("chart podinfo from ghcr.io/stefanprodan/charts"))
+		})
+
+		It("only value files inside the chart: the same reason", func() {
+			setHelm(map[string]any{"valueFiles": []any{"values-prod.yaml"}})
+			settle(backflowv1alpha1.PhaseUnmapped)
+			Expect(mapped().Reason).To(Equal(reasonValueFileNotInGit))
 		})
 
 		It("value files from two repositories", func() {
@@ -365,7 +378,9 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			setHelm(map[string]any{"valueFiles": []any{"$values/env/values.yaml"}, "parameters": []any{map[string]any{"name": "replicaCount", "value": "2"}}})
 			settle(backflowv1alpha1.PhaseUnmapped)
 			Expect(mapped().Message).To(ContainSubstring("in the Application"))
-			Expect(mapped().Message).To(ContainSubstring("roadmap B6"))
+			Expect(mapped().Message).To(ContainSubstring("Backflow does not map values set in the Application yet"))
+			Expect(mapped().Message).To(ContainSubstring("spec.sources[0].helm"))
+			Expect(mapped().Message).NotTo(ContainSubstring("roadmap"))
 		})
 
 		It("an Application outside the supported shape", func() {
@@ -384,6 +399,112 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			Expect(mapped().Reason).To(Equal(reasonArgoCDUnsupported))
 			Expect(mapped().Message).To(ContainSubstring(minArgoCDVersion))
 			Expect(scratchBranches()).To(BeEmpty())
+		})
+	})
+
+	Context("the Secrets of the response of Argo CD", func() {
+		const secretValue = "hunter2-secret-value-"
+		var (
+			server   *httptest.Server
+			respond  func(w http.ResponseWriter, q argocd.RevisionsQuery)
+			recorder *events.FakeRecorder
+		)
+
+		BeforeEach(func() {
+			recorder = events.NewFakeRecorder(100)
+			r.Recorder = recorder
+			r.NewChartArgo = nil // the real client, against a server that plays Argo CD
+			respond = func(w http.ResponseWriter, q argocd.RevisionsQuery) {
+				resp, err := argo.GetManifestsByRevisions(ctx, q)
+				Expect(err).NotTo(HaveOccurred())
+				var cm struct {
+					Data map[string]string `json:"data"`
+				}
+				Expect(json.Unmarshal([]byte(resp.Manifests[0]), &cm)).To(Succeed())
+				// The Secret's value follows the value file, so an edit changes it: the
+				// answer would quote it if it were not masked.
+				secret := `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"ms-secret"},"data":{"password":"` + secretValue + cm.Data["REPLICAS"] + `"}}`
+				_ = json.NewEncoder(w).Encode(map[string]any{"manifests": append(resp.Manifests, secret)})
+			}
+			server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch {
+				case strings.HasSuffix(req.URL.Path, "/appdetails"):
+					_ = json.NewEncoder(w).Encode(map[string]any{"helm": map[string]any{"values": podinfoDefaults}})
+				case strings.HasSuffix(req.URL.Path, "/manifests"):
+					q := argocd.RevisionsQuery{AppName: "ms-app", AppNamespace: ns, Revisions: req.URL.Query()["revisions"]}
+					respond(w, q)
+				default:
+					http.NotFound(w, req)
+				}
+			}))
+			setPolicy(func(p *backflowv1alpha1.BackflowPolicy) {
+				p.Spec.ArgoCD.URL, p.Spec.ArgoCD.InsecureSkipTLSVerify = server.URL, true
+			})
+		})
+		AfterEach(func() { server.Close() })
+
+		// everything that is kept or shown, after the proposal was worked on with
+		// logging at every level.
+		everything := func() string {
+			var mu sync.Mutex
+			var lines []string
+			logger := funcr.New(func(_, args string) { mu.Lock(); lines = append(lines, args); mu.Unlock() }, funcr.Options{Verbosity: 10})
+			lctx := logf.IntoContext(ctx, logger)
+			for range 5 {
+				_, err := r.Reconcile(lctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
+			got, err := json.Marshal(latest())
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			var evs []string
+			for len(recorder.Events) > 0 {
+				evs = append(evs, <-recorder.Events)
+			}
+			bodies := make([]string, 0, 2*len(provider.created))
+			for _, c := range provider.created {
+				bodies = append(bodies, c.Title, c.Body)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			return strings.Join(lines, "\n") + "\n" + string(got) + "\n" + strings.Join(evs, "\n") + "\n" + strings.Join(bodies, "\n")
+		}
+
+		It("never reach a log line, the status, an Event or the merge request, even when an edit changes the Secret", func() {
+			out := everything()
+			// The edit also changes the Secret, which the policy does not allow: the
+			// answer names that change, and must not quote the value.
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(mapped().Message).To(ContainSubstring("Secret"))
+			Expect(mapped().Message).To(ContainSubstring("hidden:"))
+			Expect(out).NotTo(ContainSubstring(secretValue))
+		})
+
+		It("nor when Argo CD fails with an error that quotes the manifest", func() {
+			respond = func(w http.ResponseWriter, _ argocd.RevisionsQuery) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte("{\"message\":\"rpc error: code = Unknown desc = yaml: unmarshal errors:\\n  line 3: cannot unmarshal !!str `" + secretValue +
+					"` into int\\napiVersion: v1\\nkind: Secret\\ndata:\\n  password: " + secretValue + "\"}"))
+			}
+			out := everything()
+			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(out).NotTo(ContainSubstring(secretValue))
+			Expect(mapped().Message).To(ContainSubstring("does not render"))
+		})
+
+		It("nor when a manifest of the response cannot be parsed", func() {
+			respond = func(w http.ResponseWriter, _ argocd.RevisionsQuery) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"manifests": []string{"kind: Secret\ndata:\n  password: " + secretValue}})
+			}
+			out := everything()
+			Expect(out).NotTo(ContainSubstring(secretValue))
+			Expect(latest().Status.Phase).NotTo(Equal(backflowv1alpha1.PhaseProposed))
+		})
+
+		It("nor when the response is not JSON", func() {
+			respond = func(w http.ResponseWriter, _ argocd.RevisionsQuery) {
+				_, _ = w.Write([]byte("password: " + secretValue))
+			}
+			Expect(everything()).NotTo(ContainSubstring(secretValue))
 		})
 	})
 

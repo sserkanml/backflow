@@ -189,3 +189,40 @@ func TestProposalSources(t *testing.T) {
 		}
 	})
 }
+
+func TestTranslateValueFiles(t *testing.T) {
+	registryChart := backflowv1alpha1.ApplicationSource{Position: 1, Role: backflowv1alpha1.RoleRender, RepoURL: "ghcr.io/x/charts", Chart: "podinfo"}
+	gitChart := backflowv1alpha1.ApplicationSource{Position: 1, Role: backflowv1alpha1.RoleRender, RepoURL: "https://gitlab.com/x/chart.git", Path: "charts/app"}
+	helm := func(files ...any) map[string]any { return map[string]any{"valueFiles": files} }
+	tests := []struct {
+		name   string
+		helm   map[string]any
+		render backflowv1alpha1.ApplicationSource
+		reason string
+		msg    string
+		want   []string
+	}{
+		{name: "all in the ref", helm: helm("$values/a.yaml", "$values/b/c.yaml"), render: registryChart, want: []string{"/a.yaml", "/b/c.yaml"}},
+		{name: "a file inside a chart that is not in Git", helm: helm("values-prod.yaml", "$values/a.yaml"), render: registryChart,
+			reason: reasonValueFileNotInGit, msg: "values-prod.yaml of source 1 is inside the chart podinfo from ghcr.io/x/charts"},
+		{name: "a file inside a chart in Git is a second Git repository", helm: helm("values-prod.yaml", "$values/a.yaml"), render: gitChart,
+			reason: reasonMultipleValueRepositories, msg: "inside the chart in https://gitlab.com/x/chart.git"},
+		{name: "a file in another ref", helm: helm("$values/a.yaml", "$more/b.yaml"), render: registryChart,
+			reason: reasonMultipleValueRepositories, msg: "in the repository of $more"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, _, err := translateValueFiles(tt.helm, "values", tt.render)
+			if tt.reason == "" {
+				if err != nil || !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("files = %v, err = %v", got, err)
+				}
+				return
+			}
+			v, ok := err.(*verdictError)
+			if !ok || v.reason != tt.reason || !strings.Contains(v.err.Error(), tt.msg) {
+				t.Errorf("err = %v, want %s containing %q", err, tt.reason, tt.msg)
+			}
+		})
+	}
+}

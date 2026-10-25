@@ -24,6 +24,7 @@ import (
 // Reasons of the Mapped condition for the proposals of multi-source Applications.
 const (
 	reasonMultipleValueRepositories = "MultipleValueRepositories"
+	reasonValueFileNotInGit         = "ValueFileNotInGit"
 	reasonScratchBranchesDisabled   = "ScratchBranchesDisabled"
 	reasonScratchBranchRejected     = "ScratchBranchRejected"
 	reasonArgoCDUnsupported         = "ArgoCDUnsupported"
@@ -61,7 +62,7 @@ func (r *DriftProposalReconciler) chartArgo(ctx context.Context, policy *backflo
 
 // valuesSource is the one source whose files hold the values and receive the
 // edits.
-func valuesSource(dp *backflowv1alpha1.DriftProposal) (backflowv1alpha1.ApplicationSource, error) {
+func valuesSource(dp *backflowv1alpha1.DriftProposal, helm map[string]any, render backflowv1alpha1.ApplicationSource) (backflowv1alpha1.ApplicationSource, error) {
 	var found []backflowv1alpha1.ApplicationSource
 	for _, s := range dp.Spec.Sources {
 		if s.Role == backflowv1alpha1.RoleValues {
@@ -72,6 +73,14 @@ func valuesSource(dp *backflowv1alpha1.DriftProposal) (backflowv1alpha1.Applicat
 	case 1:
 		return found[0], nil
 	case 0:
+		for _, f := range valueFileRefs(helm) {
+			if f.Ref == "" && render.Chart != "" {
+				return backflowv1alpha1.ApplicationSource{}, &verdictError{reason: reasonValueFileNotInGit, err: fmt.Errorf(
+					"the value file %s of source %d is inside the chart %s from %s, which is not in a Git repository, so Backflow cannot edit it; "+
+						"only value files in a Git repository ($ref/...) are edited",
+					f.Raw, render.Position, render.Chart, scm.RedactURL(render.RepoURL))}
+			}
+		}
 		return backflowv1alpha1.ApplicationSource{}, &verdictError{reason: rendermap.ReasonNoVerifiedCandidate,
 			err: errors.New("no value file of the Helm source is in a ref source ($ref/path), so there is no file of a Git repository to edit")}
 	}
@@ -87,18 +96,26 @@ func valuesSource(dp *backflowv1alpha1.DriftProposal) (backflowv1alpha1.Applicat
 // translateValueFiles turns the value files and file parameters of the Helm
 // source into paths of the repository of the ref source they all must come from
 // (a path with a leading slash is relative to the repository root). A value file
-// that is not in that repository (inside the chart, or in another ref source)
-// cannot be mapped.
-func translateValueFiles(helm map[string]any, ref string) (valueFiles []string, params []helmmap.FileParameter, err error) {
+// inside a chart that is not in Git (from a Helm repository or a registry) cannot
+// be edited at all (ValueFileNotInGit); one inside a chart in Git, or in another
+// ref source, is in a second repository (MultipleValueRepositories).
+func translateValueFiles(helm map[string]any, ref string, render backflowv1alpha1.ApplicationSource) (valueFiles []string, params []helmmap.FileParameter, err error) {
 	for _, f := range valueFileRefs(helm) {
-		if f.Ref != ref {
-			where := "inside the chart"
-			if f.Ref != "" {
-				where = "in the repository of $" + f.Ref
-			}
-			return nil, nil, &verdictError{reason: reasonMultipleValueRepositories,
-				err: fmt.Errorf("the value file %s is %s, not in the repository of $%s that receives the edits", f.Raw, where, ref)}
+		switch {
+		case f.Ref == ref:
+			continue
+		case f.Ref == "" && render.Chart != "":
+			return nil, nil, &verdictError{reason: reasonValueFileNotInGit, err: fmt.Errorf(
+				"the value file %s of source %d is inside the chart %s from %s, which is not in a Git repository, so Backflow cannot edit it; "+
+					"only value files in a Git repository ($%s/...) are edited",
+				f.Raw, render.Position, render.Chart, scm.RedactURL(render.RepoURL), ref)}
+		case f.Ref == "":
+			return nil, nil, &verdictError{reason: reasonMultipleValueRepositories, err: fmt.Errorf(
+				"the value file %s is inside the chart in %s, a second Git repository besides the one of $%s that receives the edits",
+				f.Raw, scm.RedactURL(render.RepoURL), ref)}
 		}
+		return nil, nil, &verdictError{reason: reasonMultipleValueRepositories, err: fmt.Errorf(
+			"the value file %s is in the repository of $%s, a second Git repository besides the one of $%s that receives the edits", f.Raw, f.Ref, ref)}
 	}
 	files, _, _ := unstructured.NestedStringSlice(helm, "valueFiles")
 	for _, raw := range files {
@@ -219,13 +236,13 @@ func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflow
 	if ms == nil {
 		return nil, &verdictError{reason: reasonUnsupportedSourceType, err: errors.New(unsupportedMultiSource(why))}
 	}
-	values, err := valuesSource(dp)
+	render := dp.Spec.Sources[ms.Render]
+	helm, _ := specSources(app)[ms.Render]["helm"].(map[string]any)
+	values, err := valuesSource(dp, helm, render)
 	if err != nil {
 		return nil, err
 	}
-	render := dp.Spec.Sources[ms.Render]
-	helm, _ := specSources(app)[ms.Render]["helm"].(map[string]any)
-	valueFiles, fileParams, err := translateValueFiles(helm, values.Ref)
+	valueFiles, fileParams, err := translateValueFiles(helm, values.Ref, render)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +342,7 @@ func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflow
 	if !out.Mapped() {
 		msg := out.Unmapped.Message
 		if strings.Contains(msg, "in the Application, not by a value file") {
-			msg += " (mapping values that the Application sets inline, helm.values, helm.valuesObject and helm.parameters, is planned: roadmap B6)"
+			msg += fmt.Sprintf(" (it is set inline in the Application, in spec.sources[%d].helm; Backflow does not map values set in the Application yet)", ms.Render)
 		}
 		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(msg)}
 	}
