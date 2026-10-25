@@ -517,10 +517,14 @@ of them were `ValueAffectsOtherFields`. Two causes, both fixed:
   commit, and Argo CD answers a revision it has rendered before from its manifest
   cache, also across proposals (the same Pod name was "before the edit" in proposals
   minutes apart). The check for names that change on every render saw two identical
-  renders. `rendermap.FreshRenderer` lets a renderer make a render no cache answers;
-  the scratch renderer commits a marker file (`.backflow-scratch-nonce`) for each of
-  the two base renders. They cost two scratch branches and two pushes more per
-  verification. Uploaded files (`GetManifestsWithFiles`, Helm and Kustomize in Git)
-  are rendered by the repo server without that cache as far as I know, which could not
-  be confirmed without a cluster; the engine asks for fresh renders there too when the
-  renderer has them, and the coverage suite models both renderers.
+  renders. `rendermap.FreshRenderer` lets a renderer make a render no cache answers.
+  The first fix committed a marker file (`.backflow-scratch-nonce`) for each of the
+  two renders; it was replaced by `GetManifests?noCache=true`
+  (`argocd.RevisionsQuery.NoCache`), which Argo CD v3.5.3 allows with the Backflow
+  account's `applications, get` and which gives a real render each time (checked on
+  the kind cluster: two plain calls return the same random Pod names, two `noCache`
+  calls differ). The two base renders then cost no scratch branch and no push: per
+  verification, two branches and two pushes fewer than with the marker commits.
+  Uploaded files (`GetManifestsWithFiles`, single-source Helm and Kustomize) are
+  never cached: three uploads of the same podinfo chart through the Backflow account
+  gave three sets of Pod names. `ArgoRenderer` therefore needs no `RenderFresh`.
