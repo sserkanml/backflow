@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -120,5 +121,100 @@ func TestGetHelmDetails(t *testing.T) {
 				t.Errorf("err = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+const hunter = "aHVudGVyMi1zZWNyZXQ="
+
+func TestGetManifestsByRevisionsMasksSecrets(t *testing.T) {
+	secret := `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s"},"type":"Opaque","data":{"password":"` + hunter + `","user":"YWRtaW4="},"stringData":{"token":"plain-token"}}`
+	cm := `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm"},"data":{"password":"visible"}}`
+	custom := `{"apiVersion":"example.com/v1","kind":"Secret","metadata":{"name":"x"},"data":{"k":"v"}}`
+	body, _ := json.Marshal(map[string]any{"manifests": []string{secret, cm, custom}})
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(body) })
+	resp, err := c.GetManifestsByRevisions(t.Context(), RevisionsQuery{AppName: "a", AppNamespace: "argocd", Revisions: []string{"x"}, SourcePositions: []int{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(resp.Manifests, "\n")
+	for _, leak := range []string{hunter, "plain-token", "YWRtaW4="} {
+		if strings.Contains(all, leak) {
+			t.Errorf("the response still holds %q: %s", leak, all)
+		}
+	}
+	dataOf := func(manifest string) map[string]string {
+		var m struct {
+			Data map[string]string `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(manifest), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m.Data
+	}
+	got := dataOf(resp.Manifests[0])
+	if !strings.HasPrefix(got["password"], "<hidden:") || got["password"] == got["user"] {
+		t.Errorf("masked data = %v", got)
+	}
+	if resp.Manifests[1] != cm || resp.Manifests[2] != custom {
+		t.Errorf("a ConfigMap and a Secret of another API group are not touched: %v", resp.Manifests[1:])
+	}
+
+	// The same value gives the same mask, another value another one.
+	again, err := maskManifests([]string{secret, strings.ReplaceAll(secret, hunter, "b3RoZXI=")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := dataOf(again[0]), dataOf(again[1])
+	if a["password"] != got["password"] || a["password"] == b["password"] {
+		t.Errorf("masks: %v %v %v", got, a, b)
+	}
+}
+
+func TestGetManifestsByRevisionsErrorsNeverHoldManifestText(t *testing.T) {
+	secretText := "hunter2-super-secret"
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"a render error that quotes the value", http.StatusInternalServerError,
+			"{\"message\":\"rpc error: code = Unknown desc = yaml: unmarshal errors:\\n  line 3: cannot unmarshal !!str `" + secretText + "` into int\"}"},
+		{"quotes of every kind", http.StatusInternalServerError,
+			`{"message":"error: password: \"` + secretText + `\" and '` + secretText + `' failed"}`},
+		{"a manifest that is not JSON", http.StatusOK, `{"manifests":["kind: Secret\ndata:\n  password: ` + secretText + `"]}`},
+		{"a body that is not JSON at all", http.StatusOK, `not json ` + secretText},
+		{"a body of the wrong shape", http.StatusOK, `{"manifests":"` + secretText + `"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			})
+			_, err := c.GetManifestsByRevisions(t.Context(), RevisionsQuery{AppName: "a", AppNamespace: "argocd", Revisions: []string{"x"}, SourcePositions: []int{1}})
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if strings.Contains(err.Error(), secretText) {
+				t.Errorf("the error holds the value: %v", err)
+			}
+		})
+	}
+}
+
+func TestSanitizeMessage(t *testing.T) {
+	long := strings.Repeat("x", 1000)
+	tests := []struct{ in, want string }{
+		{"permission denied: repositories, get, ghcr.io/x", "permission denied: repositories, get, ghcr.io/x"},
+		{"first line\nsecond line with `quoted`", "first line"},
+		{"failed on `helm template . --values x`: exit 1", `failed on "…": exit 1`},
+		{`value "a" and 'b' and ` + "`c`", `value "…" and "…" and "…"`},
+		{"  padded  \r\nrest", "padded"},
+		{long, strings.Repeat("x", maxServerMessage) + "…"},
+	}
+	for _, tt := range tests {
+		if got := sanitizeMessage(tt.in); got != tt.want {
+			t.Errorf("sanitizeMessage(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

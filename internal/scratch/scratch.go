@@ -7,8 +7,6 @@ package scratch
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -237,9 +235,6 @@ func (r *Renderer) Render(ctx context.Context, app rendermap.App, files map[stri
 	if err != nil {
 		return nil, err
 	}
-	for _, o := range objs {
-		maskSecret(o)
-	}
 	return objs, nil
 }
 
@@ -331,36 +326,4 @@ func SweepPrefix(ctx context.Context, git Git, repo string, auth *gitrepo.Auth, 
 		return nil, err
 	}
 	return deleted, nil
-}
-
-// maskKey makes the masked form of a Secret value stable within the process and
-// useless outside it.
-var maskKey = func() []byte {
-	k := make([]byte, 32)
-	if _, err := rand.Read(k); err != nil {
-		panic(err)
-	}
-	return k
-}()
-
-// maskSecret replaces the values of a Secret's data and stringData with a keyed
-// hash: a change of a value still shows as a change, and the value never leaves
-// the renderer. Argo CD masks the Secrets of an upload; the manifests of a
-// render by revision come unmasked.
-func maskSecret(o *unstructured.Unstructured) {
-	if o.GetKind() != "Secret" || o.GroupVersionKind().Group != "" {
-		return
-	}
-	for _, field := range []string{"data", "stringData"} {
-		m, ok, _ := unstructured.NestedMap(o.Object, field)
-		if !ok {
-			continue
-		}
-		for k, v := range m {
-			mac := hmac.New(sha256.New, maskKey)
-			_, _ = fmt.Fprint(mac, v)
-			m[k] = "<hidden:" + hex.EncodeToString(mac.Sum(nil)[:8]) + ">"
-		}
-		_ = unstructured.SetNestedMap(o.Object, m, field)
-	}
 }

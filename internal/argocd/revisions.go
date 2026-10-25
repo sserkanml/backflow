@@ -37,6 +37,7 @@ type RevisionsQuery struct {
 // source (the unary GetManifests of Argo CD with revisions and
 // sourcePositions). A commit Argo CD has not fetched is fetched by its SHA. The
 // Application's own settings are used; nothing is sent but the revisions.
+// The data of Secrets in the response is masked (see maskManifests).
 // Errors wrap ErrUnauthorized, ErrNotFound, ErrUnreachable, ErrUnsupported or
 // ErrRenderFailed.
 func (c *Client) GetManifestsByRevisions(ctx context.Context, q RevisionsQuery) (*ManifestsResponse, error) {
@@ -62,6 +63,13 @@ func (c *Client) GetManifestsByRevisions(ctx context.Context, q RevisionsQuery) 
 	if err := httpError(status, body, q.AppName); err != nil {
 		return nil, err
 	}
+	return decodeRevisionsResponse(body)
+}
+
+// decodeRevisionsResponse decodes the response of a render by revision and
+// masks the Secrets in it. The body is not kept: from here on only masked
+// manifests exist.
+func decodeRevisionsResponse(body []byte) (*ManifestsResponse, error) {
 	var parsed struct {
 		Manifests  []string `json:"manifests"`
 		Namespace  string   `json:"namespace"`
@@ -70,10 +78,15 @@ func (c *Client) GetManifestsByRevisions(ctx context.Context, q RevisionsQuery) 
 		SourceType string   `json:"sourceType"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("%w: invalid response: %v", ErrUnreachable, err)
+		// The error of the decoder can name a value; say only that it is invalid.
+		return nil, fmt.Errorf("%w: the response is not the expected JSON", ErrUnreachable)
+	}
+	masked, err := maskManifests(parsed.Manifests)
+	if err != nil {
+		return nil, err
 	}
 	return &ManifestsResponse{
-		Manifests: parsed.Manifests, Namespace: parsed.Namespace, Server: parsed.Server,
+		Manifests: masked, Namespace: parsed.Namespace, Server: parsed.Server,
 		Revision: parsed.Revision, SourceType: parsed.SourceType,
 	}, nil
 }
@@ -172,7 +185,7 @@ func httpError(status int, body []byte, app string) error {
 		Code    int    `json:"code"`
 	}
 	_ = json.Unmarshal(body, &e)
-	msg := strings.TrimSpace(e.Message)
+	msg := sanitizeMessage(e.Message)
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return fmt.Errorf("%w: HTTP %d: %s", ErrUnauthorized, status, msg)

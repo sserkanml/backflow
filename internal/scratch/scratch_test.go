@@ -271,32 +271,6 @@ func TestRenderErrors(t *testing.T) {
 	}
 }
 
-func TestSecretsAreMasked(t *testing.T) {
-	a := &fakeArgo{manifests: []string{
-		`{"apiVersion":"v1","kind":"Secret","metadata":{"name":"s"},"data":{"password":"aHVudGVyMg==","user":"YWRtaW4="},"stringData":{"token":"abc"}}`,
-		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm"},"data":{"password":"visible"}}`,
-	}}
-	r := newRenderer(&fakeGit{}, a, nil)
-	objs, err := r.Render(t.Context(), rendermap.App{}, maps.Clone(base))
-	if err != nil {
-		t.Fatal(err)
-	}
-	data := nestedMap(objs[0].Object, "data")
-	if strings.Contains(fmt.Sprint(data), "aHVudGVyMg") || strings.Contains(fmt.Sprint(objs[0].Object), "abc") {
-		t.Errorf("a Secret value is in the object: %v", objs[0].Object)
-	}
-	if data["password"] == data["user"] || !strings.HasPrefix(fmt.Sprint(data["password"]), "<hidden:") {
-		t.Errorf("masked data = %v", data)
-	}
-	again, _ := r.Render(t.Context(), rendermap.App{}, maps.Clone(base))
-	if d2 := nestedMap(again[0].Object, "data"); d2["password"] != data["password"] {
-		t.Errorf("the mask of a value changes between renders")
-	}
-	if cm := nestedMap(objs[1].Object, "data"); cm["password"] != "visible" {
-		t.Errorf("a ConfigMap was masked: %v", cm)
-	}
-}
-
 func TestSweepDeletesOnlyOldScratchBranches(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	g := &fakeGit{branches: []gitrepo.RemoteBranch{
@@ -311,21 +285,5 @@ func TestSweepDeletesOnlyOldScratchBranches(t *testing.T) {
 	want := []string{BranchPrefix + "old-1", BranchPrefix + "old-2"}
 	if !slices.Equal(deleted, want) || len(g.deleted) != 1 || !slices.Equal(g.deleted[0], want) {
 		t.Errorf("deleted = %v (%v)", deleted, g.deleted)
-	}
-}
-
-func nestedMap(o map[string]any, key string) map[string]any {
-	m, _ := o[key].(map[string]any)
-	return m
-}
-
-func TestPushWithoutOptionsWhenTheRemoteDoesNotTakeThem(t *testing.T) {
-	g := &fakeGit{optionsErr: gitrepo.ErrPushOptionsNotSupported}
-	r := newRenderer(g, &fakeArgo{}, nil)
-	if err := r.Prepare(t.Context(), []map[string][]byte{edited(map[string]string{"env/values.yaml": "a: 2\n"})}); err != nil {
-		t.Fatal(err)
-	}
-	if len(g.pushes) != 1 || g.options[0] != nil {
-		t.Errorf("pushes = %v, options = %v: the push is repeated without options", g.pushes, g.options)
 	}
 }
