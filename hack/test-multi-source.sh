@@ -906,13 +906,21 @@ echo "  waiting for Argo CD to compare $APP against main (${MAIN_ORIG_SHA:0:8}) 
 RESTORE_CLUSTER=true
 refresh_app hard
 sleep 3
-if ! wait_settled "$MAIN_ORIG_SHA"; then
-  echo "  $APP is not settled yet; syncing it first..."
+# out_of_sync_resources: the resources Argo CD reports OutOfSync, for a message.
+out_of_sync_resources() {
+  app_field '{range .status.resources[?(@.status=="OutOfSync")]}{.kind}/{.name} {end}'
+}
+# Settled is not Synced: right after ./hack/dev-up.sh the Application can be
+# compared against main and OutOfSync, because its automated sync applies a new
+# commit only once and may have tried before the commit (or the chart) was
+# reachable. Syncing it once at main is what puts it in the known state.
+if ! wait_settled "$MAIN_ORIG_SHA" || [[ "$(app_sync_status)" != "Synced" ]]; then
+  echo "  $APP is not settled and Synced yet (sync $(app_sync_status); OutOfSync: $(out_of_sync_resources)); syncing it at main first..."
   sync_app "$MAIN_ORIG_SHA" || die "$APP did not become Synced: $(app_state)"
   wait_settled "$MAIN_ORIG_SHA" || die "Argo CD did not settle at main ${MAIN_ORIG_SHA:0:8} within ${WAIT}s: $(app_state)"
 fi
 [[ "$(main_sha)" == "$MAIN_ORIG_SHA" ]] || die "main moved while this test was starting; run it again"
-[[ "$(app_sync_status)" == "Synced" ]] || die "$APP is not Synced at main: $(app_state)"
+[[ "$(app_sync_status)" == "Synced" ]] || die "$APP is not Synced at main after a sync (OutOfSync: $(out_of_sync_resources)): $(app_state)"
 # Settled at main is not enough: Argo CD's automated sync applies a commit once,
 # the first time an Application is OutOfSync at it, unless a sync of that commit
 # already happened. One sync of main spends that.
