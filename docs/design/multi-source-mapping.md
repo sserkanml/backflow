@@ -1,4 +1,4 @@
-# Multi-source mapping (roadmap B5)
+# Multi-source mapping
 
 Status: design, from a spike. No production code yet.
 
@@ -353,8 +353,10 @@ per-revision callback.
 
 | Situation | Reason (machine-readable) | Note |
 |---|---|---|
-| single-source Helm-repository chart with inline `helm.values` / `valuesObject` | `UnsupportedSourceType` (as today) | roadmap B6 |
-| the drifted value comes from `helm.values`, `valuesObject`, `parameters` or `fileParameters` of the Application | `NoVerifiedCandidate` with the existing "set by ... in the Application" text | B6; already reported for single-source |
+| single-source Helm-repository chart with inline `helm.values` / `valuesObject` | `UnsupportedSourceType` (as today) | values set in the Application are not mapped yet |
+| the drifted value comes from `helm.values`, `valuesObject`, `parameters` or `fileParameters` of the Application | `NoVerifiedCandidate` with the existing "set by ... in the Application" text, and where it is set (`spec.sources[N].helm`) | values set in the Application are not mapped yet; already reported for single-source |
+| a value file inside a chart that is not in Git (a Helm-repository or registry chart's own `values-prod.yaml`) | `ValueFileNotInGit` | the message names the file and the source |
+| value files in two Git repositories (a second ref source, or inside a chart in Git) | `MultipleValueRepositories` | a proposal is written to one repository |
 | several ref sources define the same key | `AmbiguousCandidates` | message names both repositories |
 | the value file is in a repository Backflow cannot write to (no connection, read-only token) | `RepositoryAuthFailed` / `NoScmConnection`, **retried** | like single-source |
 | scratch branches are off (`spec.mapping.scratchBranches: Never`, or `Auto` with `ReportOnly`) | `ScratchBranchesDisabled` | mapping "never writes to Git"; verification of a multi-source proposal does, so it needs the switch; the message names the field |
