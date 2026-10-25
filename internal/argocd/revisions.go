@@ -31,6 +31,11 @@ type RevisionsQuery struct {
 	Revisions []string
 	// SourcePositions are the positions of the sources in spec.sources, from 1.
 	SourcePositions []int
+	// NoCache asks Argo CD to render for real: without it a revision that was
+	// rendered before is answered from the manifest cache, so two renders of the
+	// same revision are one render and a resource a chart names at random looks
+	// stable. It needs no more permission than the render itself.
+	NoCache bool
 }
 
 // GetManifestsByRevisions renders an Application at the given revision of each
@@ -48,6 +53,9 @@ func (c *Client) GetManifestsByRevisions(ctx context.Context, q RevisionsQuery) 
 		return nil, errors.New("argocd: one source position is needed for each revision")
 	}
 	v := url.Values{"appNamespace": {q.AppNamespace}}
+	if q.NoCache {
+		v.Set("noCache", "true")
+	}
 	for i, rev := range q.Revisions {
 		v.Add("revisions", rev)
 		v.Add("sourcePositions", strconv.Itoa(q.SourcePositions[i]))
