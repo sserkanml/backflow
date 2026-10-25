@@ -1,0 +1,18 @@
+# Development values of the multi-source demo (Application demo-multi): the chart
+# podinfo comes from ghcr.io, and this file is its $values/multi/values-dev.yaml.
+replicaCount: 2
+
+ui:
+  message: "hello from the multi-source demo"
+
+# Extra annotations of the pods.
+podAnnotations:
+  team: platform
+  owner: backflow-demo
+
+# Extra environment variables of the container.
+extraEnvs:
+  - name: DEMO_MODE
+    value: "on"
+  - name: DEMO_REGION
+    value: eu-west-1

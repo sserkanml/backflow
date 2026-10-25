@@ -95,8 +95,15 @@ func (r *ArgoRenderer) Render(ctx context.Context, app App, files map[string][]b
 	case err != nil:
 		return nil, err
 	}
-	out := make([]*unstructured.Unstructured, 0, len(resp.Manifests))
-	for i, m := range resp.Manifests {
+	return ParseManifests(app, resp.Manifests)
+}
+
+// ParseManifests decodes the manifests Argo CD returns (one JSON document
+// each) and gives each resource the namespace it has in the cluster (see
+// namespaceFor). A renderer that gets its manifests another way uses it too.
+func ParseManifests(app App, manifests []string) ([]*unstructured.Unstructured, error) {
+	out := make([]*unstructured.Unstructured, 0, len(manifests))
+	for i, m := range manifests {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(m), &obj); err != nil {
 			return nil, fmt.Errorf("manifest %d is not JSON: %w", i, err)
@@ -112,6 +119,40 @@ func (r *ArgoRenderer) Render(ctx context.Context, app App, files map[string][]b
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// FreshRenderer is a Renderer that can render so that no cache answers: Argo CD
+// serves a render of a revision it has rendered before from its manifest cache,
+// so two renders of the same commit are one render, and a resource named by the
+// chart at random (randAlphaNum) would look stable. Verify renders the
+// unmodified files twice to find what changes on every render; it uses
+// RenderFresh for both when the Renderer has it.
+type FreshRenderer interface {
+	Renderer
+	RenderFresh(ctx context.Context, app App, files map[string][]byte) ([]*unstructured.Unstructured, error)
+}
+
+// Hook annotations: a resource that carries one is not part of the Application's
+// desired state but a job Argo CD runs around a sync (or, for Helm, a chart test),
+// and Argo CD does not manage it. Its render is not compared.
+const (
+	helmHookAnnotation = "helm.sh/hook"
+	argoHookAnnotation = "argocd.argoproj.io/hook"
+)
+
+// IsHook reports whether a rendered resource is a Helm or Argo CD hook, such as
+// the test Pod of a chart, which is often named at random.
+func IsHook(u *unstructured.Unstructured) bool {
+	ann := u.GetAnnotations()
+	return ann[helmHookAnnotation] != "" || ann[argoHookAnnotation] != ""
+}
+
+// Preparer is a Renderer that gains from knowing the file sets of the renders
+// to come: the scratch renderer commits and pushes them all at once. The engine
+// calls Prepare before it renders a batch of edits, with every file set of the
+// batch that is not rendered yet. Render must work without Prepare.
+type Preparer interface {
+	Prepare(ctx context.Context, sets []map[string][]byte) error
 }
 
 // namespaceFor returns the namespace a rendered resource has in the cluster.

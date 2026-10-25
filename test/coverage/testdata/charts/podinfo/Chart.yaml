@@ -1,0 +1,5 @@
+apiVersion: v2
+name: podinfo
+description: A chart shaped like podinfo's, for the coverage suite. Its tests are Helm hooks named at random.
+version: 6.7.1
+appVersion: 6.7.1

@@ -108,6 +108,22 @@ func (s BackflowPolicySpec) PartialAllowed() bool {
 	return s.Mapping != nil && s.Mapping.AllowPartial
 }
 
+// ScratchBranchesAllowed reports whether verification may push scratch branches
+// (spec.mapping.scratchBranches): Auto allows them except in ReportOnly mode.
+func (s BackflowPolicySpec) ScratchBranchesAllowed() bool {
+	mode := ScratchBranchesAuto
+	if s.Mapping != nil && s.Mapping.ScratchBranches != "" {
+		mode = s.Mapping.ScratchBranches
+	}
+	switch mode {
+	case ScratchBranchesAlways:
+		return true
+	case ScratchBranchesNever:
+		return false
+	}
+	return s.Mode != ModeReportOnly
+}
+
 // OverridesAllowed reports whether a Helm edit may add a key to the
 // Application's last value file to override a chart default
 // (spec.helm.addOverrides, true unless set to false).
@@ -227,7 +243,30 @@ type MappingOptions struct {
 	// Unmapped.
 	// +kubebuilder:default=false
 	AllowPartial bool `json:"allowPartial,omitempty"`
+
+	// Whether verification may push scratch branches to the repository that
+	// holds the value files of a multi-source Application. Such an Application
+	// is rendered by Argo CD from commits, so each candidate edit is committed to
+	// a temporary branch (backflow/scratch/...), rendered by its commit SHA and
+	// deleted again; no branch of the source of truth is touched. Auto: allowed
+	// for MergeRequest and DirectCommit, not for ReportOnly, whose mapping never
+	// writes to Git. Always: allowed in every mode. Never: not allowed. When it is
+	// not allowed, a proposal that needs scratch branches is Unmapped with reason
+	// ScratchBranchesDisabled.
+	// +kubebuilder:default=Auto
+	// +optional
+	ScratchBranches ScratchBranchesMode `json:"scratchBranches,omitempty"`
 }
+
+// ScratchBranchesMode is the value of spec.mapping.scratchBranches.
+// +kubebuilder:validation:Enum=Auto;Always;Never
+type ScratchBranchesMode string
+
+const (
+	ScratchBranchesAuto   ScratchBranchesMode = "Auto"
+	ScratchBranchesAlways ScratchBranchesMode = "Always"
+	ScratchBranchesNever  ScratchBranchesMode = "Never"
+)
 
 // HelmMappingMode controls how rendered fields are traced back to values.
 // +kubebuilder:validation:Enum=Auto;ExplicitOnly
@@ -384,6 +423,49 @@ type ApplicationSummary struct {
 	// credentials; only the redacted URL is kept here.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+	// Sources lists every source of an Application that has several, in order.
+	// The fields above keep describing the first source. Empty for an
+	// Application with one source.
+	// +optional
+	// +listType=atomic
+	Sources []SourceSummary `json:"sources,omitempty"`
+}
+
+// SourceSummary describes one source of a multi-source Application.
+type SourceSummary struct {
+	// Position of the source in spec.sources, starting at 1 like Argo CD's
+	// sourcePositions.
+	Position int32 `json:"position"`
+	// Repository the source comes from: a Git repository, a Helm repository or
+	// an OCI registry.
+	RepoURL string `json:"repoURL"`
+	// Path inside a Git repository.
+	// +optional
+	Path string `json:"path,omitempty"`
+	// Chart name, for a source that comes from a Helm repository or a registry.
+	// +optional
+	Chart string `json:"chart,omitempty"`
+	// Branch, tag, chart version or range the source tracks.
+	// +optional
+	TargetRevision string `json:"targetRevision,omitempty"`
+	// Revision Argo CD resolved and compares against: a commit SHA, or the chart
+	// version (status.sync.revisions at this position).
+	// +optional
+	Revision string `json:"revision,omitempty"`
+	// Revision of the last sync (status.operationState.syncResult.revisions).
+	// +optional
+	SyncedRevision string `json:"syncedRevision,omitempty"`
+	// How Argo CD renders the source: Directory, Kustomize, Helm or Plugin.
+	// Empty for a ref source, which is only referenced.
+	// +optional
+	SourceType string `json:"sourceType,omitempty"`
+	// Name of a ref source, referenced as $name/... in value files.
+	// +optional
+	Ref string `json:"ref,omitempty"`
+	// ScmConnection used for this repository. Empty for a repository that is
+	// not a Git repository, and when none matches.
+	// +optional
+	ScmConnection string `json:"scmConnection,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -1,4 +1,4 @@
-# Kustomize mapping (roadmap B4)
+# Kustomize mapping
 
 Status: implemented (`internal/kustomize`, wired in `driftproposal_kustomize.go`).
 The spike findings below are unchanged; the design section was adjusted where the

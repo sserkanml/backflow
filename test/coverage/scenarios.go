@@ -16,6 +16,8 @@ type scenario struct {
 	desc string
 	// kinds are the resource kinds it applies to.
 	kinds []string
+	// charts limits the scenario to these charts; empty means all of them.
+	charts []string
 	// apply patches the object in place and reports whether it applied.
 	apply func(obj map[string]any) bool
 }
@@ -261,6 +263,34 @@ func sortedKeys(m map[string]any) []string {
 		}
 	}
 	return keys
+}
+
+// Scenarios of the podinfo-like chart: a default that only the chart sets, and the
+// removal of a pod annotation the environment sets.
+func init() {
+	podinfo := []string{"podinfo", "podinfo-ms"}
+	scenarios = append(scenarios,
+		scenario{id: "color-change", desc: "change the UI color env var (a chart default)", kinds: workloadKinds, charts: podinfo,
+			apply: func(o map[string]any) bool {
+				env, _ := container(o)["env"].([]any)
+				for _, e := range env {
+					if item, _ := e.(map[string]any); item != nil && item["name"] == "PODINFO_UI_COLOR" {
+						item["value"] = "#ff0000"
+						return true
+					}
+				}
+				return false
+			}},
+		scenario{id: "annotation-remove", desc: "remove the first pod annotation", kinds: workloadKinds, charts: podinfo,
+			apply: func(o map[string]any) bool {
+				ann, _ := podTemplate(o, "metadata")["annotations"].(map[string]any)
+				for _, k := range sortedKeys(ann) {
+					delete(ann, k)
+					return true
+				}
+				return false
+			}},
+	)
 }
 
 // Scenarios that combine others, to see partial proposals.

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  # A random name on every render, as podinfo's tests have.
+  name: {{ .Release.Name }}-podinfo-grpc-test-{{ randAlphaNum 5 | lower }}
+  annotations:
+    helm.sh/hook: test
+spec:
+  containers:
+    - name: grpc
+      image: busybox
+      command: ["true"]
+  restartPolicy: Never

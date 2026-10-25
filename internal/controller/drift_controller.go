@@ -384,7 +384,7 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 			log.V(1).Info("Drift seen, but no proposal is made now", "kind", res.Kind, "name", res.Name,
 				"applicationPaused", run.paused, "resourceHold", run.st.resourceHold(res))
 		}
-		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st); err != nil && firstErr == nil {
+		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st, proposalSources(run.app)); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -455,9 +455,10 @@ func (r *DriftReconciler) reportDeleted(policy *backflowv1alpha1.BackflowPolicy,
 
 // trackedResources reads the resources of an Application's status. ok is false
 // when there is nothing to judge: Argo CD has not reported resources yet, or
-// the Application has several sources, which cannot be mapped to one place in
-// Git yet. For the latter, something that would be proposed is said once per
-// revision, and the proposals the Application has are left alone.
+// the Application has several sources that are not a Helm source with Git ref
+// sources, which cannot be mapped to one place in Git. For the latter,
+// something that would be proposed is said once per revision, and the proposals
+// the Application has are left alone.
 func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) (resources []appResource, ok bool) {
 	resources, known := appResources(app)
@@ -465,11 +466,15 @@ func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPoli
 		return nil, false
 	}
 	if sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources"); len(sources) > 0 {
+		ms, why := helmMultiSource(app)
+		if ms != nil {
+			return resources, true
+		}
 		for _, res := range resources {
 			if res.Status == syncOutOfSync && drift.Allowed(res.Group, res.Kind, policy.Spec.Include, policy.Spec.Exclude) {
 				if r.reportOnce(policy, summary.Name, "unsupportedSource", "", gitAhead(app).compared) {
 					r.event(policy, corev1.EventTypeWarning, "UnsupportedSource", fmt.Sprintf(
-						"Application %s has several sources, which is not supported yet; no proposals are made for it", summary.Name))
+						"Application %s is not supported yet, no proposals are made for it: %s", summary.Name, unsupportedMultiSource(why)))
 				}
 				break
 			}
@@ -484,7 +489,8 @@ func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPoli
 // The spec of an existing proposal is never modified.
 func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, res appResource,
-	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool, st aheadState) error {
+	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool, st aheadState,
+	sources []backflowv1alpha1.ApplicationSource) error {
 	log := logf.FromContext(ctx)
 
 	srcType, ok := proposalSourceType(summary.SourceType)
@@ -568,6 +574,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 					Path:           summary.Path,
 					Type:           srcType,
 				},
+				Sources:    sources,
 				Changes:    changes,
 				DetectedAt: metav1.Now(),
 			},
@@ -700,15 +707,7 @@ func hasOpenMergeRequest(p *backflowv1alpha1.DriftProposal) bool {
 }
 
 // syncedRevision is the revision Argo CD compared the Application with.
-func syncedRevision(app *unstructured.Unstructured) string {
-	rev, _, _ := unstructured.NestedString(app.Object, fieldStatus, "sync", "revision")
-	if rev == "" {
-		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, fieldStatus, "sync", "revisions"); ok && len(revs) > 0 {
-			rev = revs[0]
-		}
-	}
-	return rev
-}
+func syncedRevision(app *unstructured.Unstructured) string { return comparedRevisions(app) }
 
 // managedResourcesCache reads an Application's managed resources at most once
 // per reconcile, and only when needed.

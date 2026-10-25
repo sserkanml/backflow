@@ -1865,6 +1865,75 @@ var _ = Describe("Drift detection", func() {
 		Expect(n).To(Equal(1))
 	})
 
+	Context("an Application with a Helm source and a Git ref source", func() {
+		const values = "2222222222222222222222222222222222222222"
+		setMulti := func(compared, synced string) {
+			ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, []any{
+				map[string]any{"repoURL": "ghcr.io/stefanprodan/charts", "chart": "podinfo", "targetRevision": "6.7.*",
+					"helm": map[string]any{"valueFiles": []any{"$values/env/values.yaml"}}},
+				map[string]any{"repoURL": "https://gitlab.com/x/values.git", "targetRevision": "main", "ref": "values"},
+			}, "spec", "sources")).To(Succeed())
+			unstructured.RemoveNestedField(app.Object, "status", "sync", "revision")
+			unstructured.RemoveNestedField(app.Object, "status", "operationState", "syncResult", "revision")
+			ExpectWithOffset(1, unstructured.SetNestedStringSlice(app.Object, []string{compared, values}, "status", "sync", "revisions")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedStringSlice(app.Object, []string{synced, values}, "status", "operationState", "syncResult", "revisions")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedStringSlice(app.Object, []string{"Helm", ""}, "status", "sourceTypes")).To(Succeed())
+			// The result of a sync has source, the first source, and sources, all of them.
+			sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources")
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sources[0], "status", "operationState", "syncResult", "source")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, sources, "status", "operationState", "syncResult", "sources")).To(Succeed())
+			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			policy.Status.Applications[0].SourceType = "Helm"
+			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		}
+		eventsMatching := func(sub string) int {
+			n := 0
+			for len(recorder.Events) > 0 {
+				if e := <-recorder.Events; strings.Contains(e, sub) {
+					n++
+				}
+			}
+			return n
+		}
+
+		It("is not rejected: its drift is proposed", func() {
+			setMulti("6.7.1", "6.7.1")
+			reconcileOnce()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(eventsMatching("UnsupportedSource")).To(BeZero())
+			Expect(proposals()[0].Spec.Sources).To(Equal([]backflowv1alpha1.ApplicationSource{
+				{Position: 1, Role: backflowv1alpha1.RoleRender, RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1",
+					TargetRevision: "6.7.*", Chart: "podinfo", Type: backflowv1alpha1.SourceHelm},
+				{Position: 2, Role: backflowv1alpha1.RoleValues, RepoURL: "https://gitlab.com/x/values.git", Revision: values,
+					TargetRevision: "main", Ref: "values"},
+			}), "every source at the revision Argo CD compares against, and the one the edits are written to")
+		})
+
+		It("reports a chart that moved as a change of the Application, not as Git being ahead, and makes no proposal", func() {
+			setMulti("6.7.2", "6.7.1")
+			for range 3 {
+				reconcileOnce()
+			}
+			Expect(proposals()).To(BeEmpty())
+			var got []string
+			for len(recorder.Events) > 0 {
+				got = append(got, <-recorder.Events)
+			}
+			var changed, ahead int
+			for _, e := range got {
+				if strings.Contains(e, "ApplicationChanged") {
+					changed++
+					Expect(e).To(ContainSubstring("chart podinfo of source 1 moved from 6.7.1 to 6.7.2"))
+				}
+				if strings.Contains(e, "GitAhead") {
+					ahead++
+				}
+			}
+			Expect([]int{changed, ahead}).To(Equal([]int{1, 0}), "events: %v", got)
+		})
+	})
+
 	Context("a sync that did not apply every resource", func() {
 		const sha = "1111111111111111111111111111111111111111"
 		deployRes := func() map[string]any {

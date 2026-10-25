@@ -31,6 +31,9 @@ var (
 // repository), the value files, and the files of helm.fileParameters. The
 // result is the unmodified Git state; edits are applied to a copy.
 func CollectFiles(fsys fs.FS, src *Source) (map[string][]byte, error) {
+	if src.External != nil {
+		return collectExternal(fsys, src)
+	}
 	out := map[string][]byte{}
 	visited := map[string]bool{}
 	queue := []string{src.ChartDir}
@@ -132,4 +135,20 @@ func fileDependencies(files map[string][]byte, dir string) ([]string, error) {
 		}
 	}
 	return deps, nil
+}
+
+// collectExternal reads what a render of a chart that is not in the repository
+// needs from the repository: the value files and the files of the file
+// parameters. The chart's defaults are added under the name of Source.ChartValues,
+// which is not a path of the repository.
+func collectExternal(fsys fs.FS, src *Source) (map[string][]byte, error) {
+	out := map[string][]byte{src.ChartValues: src.External.Values}
+	for _, name := range slices.Concat(src.ValueFiles, src.FileParameterFiles) {
+		data, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", name, err)
+		}
+		out[name] = data
+	}
+	return out, nil
 }

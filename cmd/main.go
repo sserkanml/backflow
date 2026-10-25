@@ -59,7 +59,7 @@ func init() {
 func main() {
 	var metricsAddr string
 	var repoCacheDir string
-	var mrPollInterval time.Duration
+	var mrPollInterval, renderBudget time.Duration
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
@@ -74,6 +74,9 @@ func main() {
 		"Directory where Git repositories are cached for mapping. Defaults to <os.TempDir()>/backflow-repos.")
 	flag.DurationVar(&mrPollInterval, "merge-request-poll-interval", 2*time.Minute,
 		"How often the state of an open merge request is polled.")
+	flag.DurationVar(&renderBudget, "render-budget", 2*time.Minute,
+		"The time all renders of one verification may take together, for each proposal of a Helm or Kustomize source. "+
+			"Rendering goes through Argo CD, which can take seconds per render.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -227,6 +230,7 @@ func main() {
 		Writer:        repoCache,
 		Recorder:      mgr.GetEventRecorder("backflow-driftproposal"),
 		TrackInterval: mrPollInterval,
+		RenderBudget:  renderBudget,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)
@@ -238,6 +242,10 @@ func main() {
 		Git:      repoCache,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
+		os.Exit(1)
+	}
+	if err := mgr.Add(&controller.ScratchSweeper{Client: mgr.GetClient(), Git: repoCache}); err != nil {
+		setupLog.Error(err, "Failed to add the scratch branch sweeper")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

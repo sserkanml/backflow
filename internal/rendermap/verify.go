@@ -256,9 +256,15 @@ func flatten(prefix string, v any, out leaves) {
 	}
 }
 
+// takeSnapshot flattens a render. Hook resources are left out (see IsHook): they
+// are not what the Application manages, and a chart test Pod with a random name
+// would otherwise look like a resource that every edit adds and removes.
 func takeSnapshot(objs []*unstructured.Unstructured) (snapshot, error) {
 	s := snapshot{}
 	for _, o := range objs {
+		if IsHook(o) {
+			continue
+		}
 		k := keyOf(o)
 		if _, dup := s[k]; dup {
 			return nil, fmt.Errorf("%w: %s", errDuplicateResource, k)
@@ -597,13 +603,28 @@ func (v *run) render(files map[string][]byte) (snapshot, error) {
 	return snap, err
 }
 
-// renderFresh renders without looking at the cache.
+// renderFresh renders without looking at the cache of this Verify.
 func (v *run) renderFresh(files map[string][]byte) (snapshot, error) {
+	return v.renderWith(files, v.r.Render)
+}
+
+// renderBase renders the unmodified files for the nondeterminism check: with
+// RenderFresh when the Renderer has it, so that a cache of the renderer cannot
+// make the two renders one.
+func (v *run) renderBase(files map[string][]byte) (snapshot, error) {
+	if f, ok := v.r.(FreshRenderer); ok {
+		return v.renderWith(files, f.RenderFresh)
+	}
+	return v.renderFresh(files)
+}
+
+func (v *run) renderWith(files map[string][]byte,
+	render func(context.Context, App, map[string][]byte) ([]*unstructured.Unstructured, error)) (snapshot, error) {
 	if v.ctx.Err() != nil {
 		return nil, v.budgetOr(v.ctx.Err())
 	}
 	v.renders++
-	objs, err := v.r.Render(v.ctx, v.in.App, files)
+	objs, err := render(v.ctx, v.in.App, files)
 	if err != nil {
 		return nil, v.budgetOr(err)
 	}
@@ -1167,11 +1188,11 @@ func (v *run) baseline(fields []parsedField) (snapshot, nondeterminism, *Outcome
 		// Two renders of the same files, never taken from the cache: what
 		// differs between them is nondeterministic.
 		var err error
-		if base, err = v.renderFresh(in.Files); err != nil {
+		if base, err = v.renderBase(in.Files); err != nil {
 			out, err := v.baseFailure(err)
 			return nil, nondeterminism{}, out, err
 		}
-		if again, err = v.renderFresh(in.Files); err != nil {
+		if again, err = v.renderBase(in.Files); err != nil {
 			out, err := v.baseFailure(err)
 			return nil, nondeterminism{}, out, err
 		}
@@ -1454,6 +1475,32 @@ func (v *run) addStructured(base snapshot, nd nondeterminism, fields []parsedFie
 	return v.tryAll(base, nd, fields, added)
 }
 
+// prepare tells a renderer that can use it (Preparer) the file sets of the
+// edits about to be rendered, leaving out those already rendered.
+func (v *run) prepare(added []*tryout) error {
+	p, ok := v.r.(Preparer)
+	if !ok {
+		return nil
+	}
+	var sets []map[string][]byte
+	for _, t := range added {
+		files, why := tryEdit(v.in.Writer, v.in.Files, t.cand, t.value)
+		if why != "" {
+			continue
+		}
+		if v.shared != nil {
+			if _, done := v.shared.snaps[filesKey(files)]; done {
+				continue
+			}
+		}
+		sets = append(sets, files)
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	return v.budgetOr(p.Prepare(v.ctx, sets))
+}
+
 // tryAll renders each new edit on its own and records what it changed.
 func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, added []*tryout) error {
 	byPointer := map[string]int{}
@@ -1461,6 +1508,9 @@ func (v *run) tryAll(base snapshot, nd nondeterminism, fields []parsedField, add
 		if !f.structured {
 			byPointer[f.Change.Path] = i
 		}
+	}
+	if err := v.prepare(added); err != nil {
+		return err
 	}
 	for _, t := range added {
 		files, why := tryEdit(v.in.Writer, v.in.Files, t.cand, t.value)

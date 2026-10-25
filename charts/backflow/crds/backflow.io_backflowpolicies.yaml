@@ -394,6 +394,23 @@ spec:
                       reported as a new proposal. A proposal that maps no field is still
                       Unmapped.
                     type: boolean
+                  scratchBranches:
+                    default: Auto
+                    description: |-
+                      Whether verification may push scratch branches to the repository that
+                      holds the value files of a multi-source Application. Such an Application
+                      is rendered by Argo CD from commits, so each candidate edit is committed to
+                      a temporary branch (backflow/scratch/...), rendered by its commit SHA and
+                      deleted again; no branch of the source of truth is touched. Auto: allowed
+                      for MergeRequest and DirectCommit, not for ReportOnly, whose mapping never
+                      writes to Git. Always: allowed in every mode. Never: not allowed. When it is
+                      not allowed, a proposal that needs scratch branches is Unmapped with reason
+                      ScratchBranchesDisabled.
+                    enum:
+                    - Auto
+                    - Always
+                    - Never
+                    type: string
                 type: object
               mergeRequest:
                 description: Merge request settings. Used when Mode is MergeRequest.
@@ -469,6 +486,65 @@ spec:
                       description: 'How Argo CD renders the source: Directory, Kustomize,
                         Helm or Plugin.'
                       type: string
+                    sources:
+                      description: |-
+                        Sources lists every source of an Application that has several, in order.
+                        The fields above keep describing the first source. Empty for an
+                        Application with one source.
+                      items:
+                        description: SourceSummary describes one source of a multi-source
+                          Application.
+                        properties:
+                          chart:
+                            description: Chart name, for a source that comes from
+                              a Helm repository or a registry.
+                            type: string
+                          path:
+                            description: Path inside a Git repository.
+                            type: string
+                          position:
+                            description: |-
+                              Position of the source in spec.sources, starting at 1 like Argo CD's
+                              sourcePositions.
+                            format: int32
+                            type: integer
+                          ref:
+                            description: Name of a ref source, referenced as $name/...
+                              in value files.
+                            type: string
+                          repoURL:
+                            description: |-
+                              Repository the source comes from: a Git repository, a Helm repository or
+                              an OCI registry.
+                            type: string
+                          revision:
+                            description: |-
+                              Revision Argo CD resolved and compares against: a commit SHA, or the chart
+                              version (status.sync.revisions at this position).
+                            type: string
+                          scmConnection:
+                            description: |-
+                              ScmConnection used for this repository. Empty for a repository that is
+                              not a Git repository, and when none matches.
+                            type: string
+                          sourceType:
+                            description: |-
+                              How Argo CD renders the source: Directory, Kustomize, Helm or Plugin.
+                              Empty for a ref source, which is only referenced.
+                            type: string
+                          syncedRevision:
+                            description: Revision of the last sync (status.operationState.syncResult.revisions).
+                            type: string
+                          targetRevision:
+                            description: Branch, tag, chart version or range the source
+                              tracks.
+                            type: string
+                        required:
+                        - position
+                        - repoURL
+                        type: object
+                      type: array
+                      x-kubernetes-list-type: atomic
                     syncedRevision:
                       description: Commit Argo CD last synced.
                       type: string

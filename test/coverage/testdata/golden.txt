@@ -51,6 +51,57 @@ nginx | Deployment nginx-prod | toleration-remove | no-overrides | Mapped envs/p
 nginx | Service nginx-prod | service-port | default | Mapped envs/prod/nginx.yaml: service.ports.http
 nginx | Service nginx-prod | service-port | permissive | Mapped envs/prod/nginx.yaml: service.ports.http
 nginx | Service nginx-prod | service-port | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | annotation-remove | default | Mapped charts/podinfo/values-prod.yaml: podAnnotations.owner
+podinfo | Deployment podinfo | annotation-remove | permissive | Mapped charts/podinfo/values-prod.yaml: podAnnotations.owner
+podinfo | Deployment podinfo | annotation-remove | no-overrides | Mapped charts/podinfo/values-prod.yaml: podAnnotations.owner
+podinfo | Deployment podinfo | color-change | default | Mapped charts/podinfo/values-prod.yaml: ui.color
+podinfo | Deployment podinfo | color-change | permissive | Mapped charts/podinfo/values-prod.yaml: ui.color
+podinfo | Deployment podinfo | color-change | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | env-add | default | Mapped charts/podinfo/values-prod.yaml: extraEnvs
+podinfo | Deployment podinfo | env-add | permissive | Mapped charts/podinfo/values-prod.yaml: extraEnvs
+podinfo | Deployment podinfo | env-add | no-overrides | Mapped charts/podinfo/values-prod.yaml: extraEnvs
+podinfo | Deployment podinfo | env-change | default | Mapped charts/podinfo/values-prod.yaml: extraEnvs.1.value
+podinfo | Deployment podinfo | env-change | permissive | Mapped charts/podinfo/values-prod.yaml: extraEnvs.1.value
+podinfo | Deployment podinfo | env-change | no-overrides | Mapped charts/podinfo/values-prod.yaml: extraEnvs.1.value
+podinfo | Deployment podinfo | env-remove | default | Mapped charts/podinfo/values-prod.yaml: extraEnvs
+podinfo | Deployment podinfo | env-remove | permissive | Mapped charts/podinfo/values-prod.yaml: extraEnvs
+podinfo | Deployment podinfo | env-remove | no-overrides | Mapped charts/podinfo/values-prod.yaml: extraEnvs
+podinfo | Deployment podinfo | image-tag | default | Mapped charts/podinfo/values-prod.yaml: image.tag
+podinfo | Deployment podinfo | image-tag | permissive | Mapped charts/podinfo/values-prod.yaml: image.tag
+podinfo | Deployment podinfo | image-tag | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | label-add | default | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | label-add | permissive | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | label-add | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | nodeselector-add | default | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | nodeselector-add | permissive | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | pod-annotation | default | Mapped charts/podinfo/values-prod.yaml: podAnnotations.backflow\.io/test
+podinfo | Deployment podinfo | pod-annotation | permissive | Mapped charts/podinfo/values-prod.yaml: podAnnotations.backflow\.io/test
+podinfo | Deployment podinfo | pod-annotation | no-overrides | Mapped charts/podinfo/values-prod.yaml: podAnnotations.backflow\.io/test
+podinfo | Deployment podinfo | port-change | default | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | port-change | permissive | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | port-change | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | pull-policy | default | Mapped charts/podinfo/values-prod.yaml: image.pullPolicy
+podinfo | Deployment podinfo | pull-policy | permissive | Mapped charts/podinfo/values-prod.yaml: image.pullPolicy
+podinfo | Deployment podinfo | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | resources | default | Unmapped ValueAffectsOtherFields
+podinfo | Deployment podinfo | resources | permissive | Unmapped ValueAffectsOtherFields
+podinfo | Deployment podinfo | resources | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | scale | default | Mapped charts/podinfo/values-prod.yaml: replicaCount
+podinfo | Deployment podinfo | scale | permissive | Mapped charts/podinfo/values-prod.yaml: replicaCount
+podinfo | Deployment podinfo | scale | no-overrides | Mapped charts/podinfo/values-prod.yaml: replicaCount
+podinfo | Deployment podinfo | scale+pod-annotation | default | Mapped charts/podinfo/values-prod.yaml: podAnnotations.backflow\.io/test, charts/podinfo/values-prod.yaml: replicaCount
+podinfo | Deployment podinfo | scale+pod-annotation | permissive | Mapped charts/podinfo/values-prod.yaml: podAnnotations.backflow\.io/test, charts/podinfo/values-prod.yaml: replicaCount
+podinfo | Deployment podinfo | scale+pod-annotation | no-overrides | Mapped charts/podinfo/values-prod.yaml: podAnnotations.backflow\.io/test, charts/podinfo/values-prod.yaml: replicaCount
+podinfo | Deployment podinfo | scale+toleration | default | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | scale+toleration | permissive | Partial charts/podinfo/values-prod.yaml: replicaCount | left out: NoVerifiedCandidate
+podinfo | Deployment podinfo | scale+toleration | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | toleration | default | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | toleration | permissive | Unmapped NoVerifiedCandidate
+podinfo | Deployment podinfo | toleration | no-overrides | Unmapped NoVerifiedCandidate
+podinfo | Service podinfo | service-port | default | Mapped charts/podinfo/values-prod.yaml: service.port
+podinfo | Service podinfo | service-port | permissive | Mapped charts/podinfo/values-prod.yaml: service.port
+podinfo | Service podinfo | service-port | no-overrides | Unmapped NoVerifiedCandidate
 postgresql | Service hl | service-port | default | Unmapped ValueAffectsOtherFields
 postgresql | Service hl | service-port | permissive | Unmapped ValueAffectsOtherFields
 postgresql | Service hl | service-port | no-overrides | Unmapped NoVerifiedCandidate
@@ -411,3 +462,198 @@ kustomize-prod | Deployment prod-web | toleration-remove | no-addPatches | Unmap
 kustomize-prod | Service prod-web | service-port | default | Unmapped NoVerifiedCandidate
 kustomize-prod | Service prod-web | service-port | editBases | Mapped base/service.yaml: spec.ports.0.port [base]
 kustomize-prod | Service prod-web | service-port | no-addPatches | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | env-add | default | Mapped values/nginx.yaml: extraEnvVars
+nginx-ms | Deployment nginx-ms | env-add | permissive | Mapped values/nginx.yaml: extraEnvVars
+nginx-ms | Deployment nginx-ms | env-add | no-overrides | Mapped values/nginx.yaml: extraEnvVars
+nginx-ms | Deployment nginx-ms | env-change | default | Mapped values/nginx.yaml: extraEnvVars.0.value
+nginx-ms | Deployment nginx-ms | env-change | permissive | Mapped values/nginx.yaml: extraEnvVars.0.value
+nginx-ms | Deployment nginx-ms | env-change | no-overrides | Mapped values/nginx.yaml: extraEnvVars.0.value
+nginx-ms | Deployment nginx-ms | env-remove | default | Mapped values/nginx.yaml: extraEnvVars
+nginx-ms | Deployment nginx-ms | env-remove | permissive | Mapped values/nginx.yaml: extraEnvVars
+nginx-ms | Deployment nginx-ms | env-remove | no-overrides | Mapped values/nginx.yaml: extraEnvVars
+nginx-ms | Deployment nginx-ms | image-tag | default | Mapped values/nginx.yaml: image.tag
+nginx-ms | Deployment nginx-ms | image-tag | permissive | Mapped values/nginx.yaml: image.tag
+nginx-ms | Deployment nginx-ms | image-tag | no-overrides | Mapped values/nginx.yaml: image.tag
+nginx-ms | Deployment nginx-ms | label-add | default | Mapped values/nginx.yaml: podLabels.backflow\.io/test
+nginx-ms | Deployment nginx-ms | label-add | permissive | Mapped values/nginx.yaml: podLabels.backflow\.io/test
+nginx-ms | Deployment nginx-ms | label-add | no-overrides | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | nodeselector-add | default | Mapped values/nginx.yaml: nodeSelector
+nginx-ms | Deployment nginx-ms | nodeselector-add | permissive | Mapped values/nginx.yaml: nodeSelector
+nginx-ms | Deployment nginx-ms | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | pod-annotation | default | Mapped values/nginx.yaml: podAnnotations.backflow\.io/test
+nginx-ms | Deployment nginx-ms | pod-annotation | permissive | Mapped values/nginx.yaml: podAnnotations.backflow\.io/test
+nginx-ms | Deployment nginx-ms | pod-annotation | no-overrides | Mapped values/nginx.yaml: podAnnotations.backflow\.io/test
+nginx-ms | Deployment nginx-ms | port-change | default | Unmapped ValueAffectsOtherFields
+nginx-ms | Deployment nginx-ms | port-change | permissive | Unmapped ValueAffectsOtherFields
+nginx-ms | Deployment nginx-ms | port-change | no-overrides | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | probe-delay | default | Mapped values/nginx.yaml: livenessProbe.initialDelaySeconds
+nginx-ms | Deployment nginx-ms | probe-delay | permissive | Mapped values/nginx.yaml: livenessProbe.initialDelaySeconds
+nginx-ms | Deployment nginx-ms | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | pull-policy | default | Unmapped ValueAffectsOtherFields
+nginx-ms | Deployment nginx-ms | pull-policy | permissive | Unmapped ValueAffectsOtherFields
+nginx-ms | Deployment nginx-ms | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | resources | default | Unmapped ValueAffectsOtherFields
+nginx-ms | Deployment nginx-ms | resources | permissive | Unmapped ValueAffectsOtherFields
+nginx-ms | Deployment nginx-ms | resources | no-overrides | Unmapped NoVerifiedCandidate
+nginx-ms | Deployment nginx-ms | scale | default | Mapped values/nginx.yaml: replicaCount
+nginx-ms | Deployment nginx-ms | scale | permissive | Mapped values/nginx.yaml: replicaCount
+nginx-ms | Deployment nginx-ms | scale | no-overrides | Mapped values/nginx.yaml: replicaCount
+nginx-ms | Deployment nginx-ms | scale+pod-annotation | default | Mapped values/nginx.yaml: podAnnotations.backflow\.io/test, values/nginx.yaml: replicaCount
+nginx-ms | Deployment nginx-ms | scale+pod-annotation | permissive | Mapped values/nginx.yaml: podAnnotations.backflow\.io/test, values/nginx.yaml: replicaCount
+nginx-ms | Deployment nginx-ms | scale+pod-annotation | no-overrides | Mapped values/nginx.yaml: podAnnotations.backflow\.io/test, values/nginx.yaml: replicaCount
+nginx-ms | Deployment nginx-ms | scale+toleration | default | Mapped values/nginx.yaml: replicaCount, values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | scale+toleration | permissive | Mapped values/nginx.yaml: replicaCount, values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | scale+toleration | no-overrides | Mapped values/nginx.yaml: replicaCount, values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | toleration | default | Mapped values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | toleration | permissive | Mapped values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | toleration | no-overrides | Mapped values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | toleration-remove | default | Mapped values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | toleration-remove | permissive | Mapped values/nginx.yaml: tolerations
+nginx-ms | Deployment nginx-ms | toleration-remove | no-overrides | Mapped values/nginx.yaml: tolerations
+nginx-ms | Service nginx-ms | service-port | default | Mapped values/nginx.yaml: service.ports.http
+nginx-ms | Service nginx-ms | service-port | permissive | Mapped values/nginx.yaml: service.ports.http
+nginx-ms | Service nginx-ms | service-port | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | annotation-remove | default | Mapped values/podinfo.yaml: podAnnotations.owner
+podinfo-ms | Deployment podinfo | annotation-remove | permissive | Mapped values/podinfo.yaml: podAnnotations.owner
+podinfo-ms | Deployment podinfo | annotation-remove | no-overrides | Mapped values/podinfo.yaml: podAnnotations.owner
+podinfo-ms | Deployment podinfo | color-change | default | Mapped values/podinfo.yaml: ui.color
+podinfo-ms | Deployment podinfo | color-change | permissive | Mapped values/podinfo.yaml: ui.color
+podinfo-ms | Deployment podinfo | color-change | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | env-add | default | Mapped values/podinfo.yaml: extraEnvs
+podinfo-ms | Deployment podinfo | env-add | permissive | Mapped values/podinfo.yaml: extraEnvs
+podinfo-ms | Deployment podinfo | env-add | no-overrides | Mapped values/podinfo.yaml: extraEnvs
+podinfo-ms | Deployment podinfo | env-change | default | Mapped values/podinfo.yaml: extraEnvs.1.value
+podinfo-ms | Deployment podinfo | env-change | permissive | Mapped values/podinfo.yaml: extraEnvs.1.value
+podinfo-ms | Deployment podinfo | env-change | no-overrides | Mapped values/podinfo.yaml: extraEnvs.1.value
+podinfo-ms | Deployment podinfo | env-remove | default | Mapped values/podinfo.yaml: extraEnvs
+podinfo-ms | Deployment podinfo | env-remove | permissive | Mapped values/podinfo.yaml: extraEnvs
+podinfo-ms | Deployment podinfo | env-remove | no-overrides | Mapped values/podinfo.yaml: extraEnvs
+podinfo-ms | Deployment podinfo | image-tag | default | Mapped values/podinfo.yaml: image.tag
+podinfo-ms | Deployment podinfo | image-tag | permissive | Mapped values/podinfo.yaml: image.tag
+podinfo-ms | Deployment podinfo | image-tag | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | label-add | default | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | label-add | permissive | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | label-add | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | nodeselector-add | default | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | nodeselector-add | permissive | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | pod-annotation | default | Mapped values/podinfo.yaml: podAnnotations.backflow\.io/test
+podinfo-ms | Deployment podinfo | pod-annotation | permissive | Mapped values/podinfo.yaml: podAnnotations.backflow\.io/test
+podinfo-ms | Deployment podinfo | pod-annotation | no-overrides | Mapped values/podinfo.yaml: podAnnotations.backflow\.io/test
+podinfo-ms | Deployment podinfo | port-change | default | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | port-change | permissive | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | port-change | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | pull-policy | default | Mapped values/podinfo.yaml: image.pullPolicy
+podinfo-ms | Deployment podinfo | pull-policy | permissive | Mapped values/podinfo.yaml: image.pullPolicy
+podinfo-ms | Deployment podinfo | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | resources | default | Unmapped ValueAffectsOtherFields
+podinfo-ms | Deployment podinfo | resources | permissive | Unmapped ValueAffectsOtherFields
+podinfo-ms | Deployment podinfo | resources | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | scale | default | Mapped values/podinfo.yaml: replicaCount
+podinfo-ms | Deployment podinfo | scale | permissive | Mapped values/podinfo.yaml: replicaCount
+podinfo-ms | Deployment podinfo | scale | no-overrides | Mapped values/podinfo.yaml: replicaCount
+podinfo-ms | Deployment podinfo | scale+pod-annotation | default | Mapped values/podinfo.yaml: podAnnotations.backflow\.io/test, values/podinfo.yaml: replicaCount
+podinfo-ms | Deployment podinfo | scale+pod-annotation | permissive | Mapped values/podinfo.yaml: podAnnotations.backflow\.io/test, values/podinfo.yaml: replicaCount
+podinfo-ms | Deployment podinfo | scale+pod-annotation | no-overrides | Mapped values/podinfo.yaml: podAnnotations.backflow\.io/test, values/podinfo.yaml: replicaCount
+podinfo-ms | Deployment podinfo | scale+toleration | default | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | scale+toleration | permissive | Partial values/podinfo.yaml: replicaCount | left out: NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | scale+toleration | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | toleration | default | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | toleration | permissive | Unmapped NoVerifiedCandidate
+podinfo-ms | Deployment podinfo | toleration | no-overrides | Unmapped NoVerifiedCandidate
+podinfo-ms | Service podinfo | service-port | default | Mapped values/podinfo.yaml: service.port
+podinfo-ms | Service podinfo | service-port | permissive | Mapped values/podinfo.yaml: service.port
+podinfo-ms | Service podinfo | service-port | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | ConfigMap webapp | configmap-data | default | Mapped values/webapp.yaml: config.cacheTTL
+webapp-ms | ConfigMap webapp | configmap-data | permissive | Mapped values/webapp.yaml: config.cacheTTL
+webapp-ms | ConfigMap webapp | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | env-add | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | env-add | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | env-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | image-tag | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | image-tag | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | image-tag | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | label-add | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | label-add | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | label-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | nodeselector-add | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | nodeselector-add | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | pod-annotation | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | pod-annotation | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | port-change | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | port-change | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | port-change | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | pull-policy | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | pull-policy | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | resources | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | resources | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | resources | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale+pod-annotation | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale+pod-annotation | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale+pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale+toleration | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale+toleration | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | scale+toleration | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | toleration | default | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | toleration | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment kvstore | toleration | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | env-add | default | Mapped values/webapp.yaml: env
+webapp-ms | Deployment webapp | env-add | permissive | Mapped values/webapp.yaml: env
+webapp-ms | Deployment webapp | env-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | env-change | default | Mapped values/webapp.yaml: env
+webapp-ms | Deployment webapp | env-change | permissive | Mapped values/webapp.yaml: env
+webapp-ms | Deployment webapp | env-change | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | env-remove | default | Mapped values/webapp.yaml: env
+webapp-ms | Deployment webapp | env-remove | permissive | Mapped values/webapp.yaml: env
+webapp-ms | Deployment webapp | env-remove | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | image-tag | default | Unmapped ValueAffectsOtherFields
+webapp-ms | Deployment webapp | image-tag | permissive | Mapped values/webapp.yaml: image.tag
+webapp-ms | Deployment webapp | image-tag | no-overrides | Unmapped ValueAffectsOtherFields
+webapp-ms | Deployment webapp | label-add | default | Mapped values/webapp.yaml: podLabels.backflow\.io/test
+webapp-ms | Deployment webapp | label-add | permissive | Mapped values/webapp.yaml: podLabels.backflow\.io/test
+webapp-ms | Deployment webapp | label-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | nodeselector-add | default | Mapped values/webapp.yaml: nodeSelector
+webapp-ms | Deployment webapp | nodeselector-add | permissive | Mapped values/webapp.yaml: nodeSelector
+webapp-ms | Deployment webapp | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | pod-annotation | default | Mapped values/webapp.yaml: podAnnotations
+webapp-ms | Deployment webapp | pod-annotation | permissive | Mapped values/webapp.yaml: podAnnotations
+webapp-ms | Deployment webapp | pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | port-change | default | Mapped values/webapp.yaml: containerPort
+webapp-ms | Deployment webapp | port-change | permissive | Mapped values/webapp.yaml: containerPort
+webapp-ms | Deployment webapp | port-change | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | probe-delay | default | Mapped values/webapp.yaml: probes.initialDelaySeconds
+webapp-ms | Deployment webapp | probe-delay | permissive | Mapped values/webapp.yaml: probes.initialDelaySeconds
+webapp-ms | Deployment webapp | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | pull-policy | default | Mapped values/webapp.yaml: image.pullPolicy
+webapp-ms | Deployment webapp | pull-policy | permissive | Mapped values/webapp.yaml: image.pullPolicy
+webapp-ms | Deployment webapp | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | resources | default | Mapped values/webapp.yaml: resources.limits.memory
+webapp-ms | Deployment webapp | resources | permissive | Mapped values/webapp.yaml: resources.limits.memory
+webapp-ms | Deployment webapp | resources | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | scale | default | Mapped values/webapp.yaml: replicaCount
+webapp-ms | Deployment webapp | scale | permissive | Mapped values/webapp.yaml: replicaCount
+webapp-ms | Deployment webapp | scale | no-overrides | Mapped values/webapp.yaml: replicaCount
+webapp-ms | Deployment webapp | scale+pod-annotation | default | Mapped values/webapp.yaml: podAnnotations, values/webapp.yaml: replicaCount
+webapp-ms | Deployment webapp | scale+pod-annotation | permissive | Mapped values/webapp.yaml: podAnnotations, values/webapp.yaml: replicaCount
+webapp-ms | Deployment webapp | scale+pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Deployment webapp | scale+toleration | default | Mapped values/webapp.yaml: replicaCount, values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | scale+toleration | permissive | Mapped values/webapp.yaml: replicaCount, values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | scale+toleration | no-overrides | Mapped values/webapp.yaml: replicaCount, values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | toleration | default | Mapped values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | toleration | permissive | Mapped values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | toleration | no-overrides | Mapped values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | toleration-remove | default | Mapped values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | toleration-remove | permissive | Mapped values/webapp.yaml: tolerations
+webapp-ms | Deployment webapp | toleration-remove | no-overrides | Mapped values/webapp.yaml: tolerations
+webapp-ms | Service kvstore | service-port | default | Unmapped NoVerifiedCandidate
+webapp-ms | Service kvstore | service-port | permissive | Unmapped NoVerifiedCandidate
+webapp-ms | Service kvstore | service-port | no-overrides | Unmapped NoVerifiedCandidate
+webapp-ms | Service webapp | service-port | default | Mapped values/webapp.yaml: service.port
+webapp-ms | Service webapp | service-port | permissive | Mapped values/webapp.yaml: service.port
+webapp-ms | Service webapp | service-port | no-overrides | Mapped values/webapp.yaml: service.port

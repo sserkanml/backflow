@@ -50,7 +50,7 @@ func kustomizeFingerprint(app *unstructured.Unstructured, summary backflowv1alph
 // Application stays paused as for any Git-ahead state.
 func (r *DriftReconciler) lookAtKustomize(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
 	app *unstructured.Unstructured, st aheadState, auth *gitrepo.Auth) (aheadCheck, error) {
-	return r.countRelevant(ctx, summary, st, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
+	return r.countRelevant(ctx, summary.RepoURL, st.synced, st.compared, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
 		rel, err := kustomize.RelevantFiles(fsys, kustomizeSpecOf(app, summary.Path))
 		if err != nil {
 			return nil, "", err

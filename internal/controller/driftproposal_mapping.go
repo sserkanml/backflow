@@ -124,12 +124,12 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 			fmt.Sprintf("Mapping %s sources is not supported; only Directory, Helm and Kustomize sources are mapped.", t))
 	}
 
-	if hasCredentials(dp.Spec.Source.RepoURL) {
+	if hasCredentials(writeTarget(dp).RepoURL) {
 		// The URL would put a credential into every log line, status and
 		// request that mentions it. Access comes from an ScmConnection.
 		return ctrl.Result{}, r.unmapped(ctx, dp, reasonRepositoryURLHasCreds, fmt.Sprintf(
 			"The repository URL %s of the Argo CD Application contains credentials, which Backflow does not use. "+
-				"Remove them from the Application and give Backflow access with an ScmConnection.", redactText(dp.Spec.Source.RepoURL)))
+				"Remove them from the Application and give Backflow access with an ScmConnection.", redactText(writeTarget(dp).RepoURL)))
 	}
 
 	app, err := r.application(ctx, dp)
@@ -165,7 +165,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		return r.retry(ctx, dp, reasonRepositoryUnavailable, fmt.Errorf("cannot read the access to the repository: %w", err))
 	}
 
-	tree, err := r.Repos.Open(ctx, dp.Spec.Source.RepoURL, dp.Spec.Source.Revision, auth)
+	tree, err := r.Repos.Open(ctx, writeTarget(dp).RepoURL, writeTarget(dp).Revision, auth)
 	if err != nil {
 		switch {
 		case errors.Is(err, gitrepo.ErrRevisionNotFound):
@@ -183,7 +183,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	}
 	defer func() { _ = tree.Close() }()
 
-	change, err := r.mapTree(ctx, dp, app, tree, dp.Spec.Source.Revision)
+	change, err := r.mapTree(ctx, dp, app, tree, writeTarget(dp).Revision)
 	if err != nil {
 		if verdict, ok := errors.AsType[*verdictError](err); ok {
 			return ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error())
@@ -200,13 +200,14 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	}
 
 	if policy, perr := r.policyOf(ctx, dp); perr == nil {
-		r.memos.put(dp.UID, mappingMemo{change: change, revision: dp.Spec.Source.Revision,
+		r.memos.put(dp.UID, mappingMemo{change: change, revision: writeTarget(dp).Revision,
 			fingerprint: mappingFingerprint(app, policy), at: time.Now()})
 	}
 
 	orig := dp.DeepCopy()
 	edits := change.edits()
 	dp.Status.Mapping = &backflowv1alpha1.Mapping{
+		RepoURL:    change.repoURL,
 		Strategy:   change.strategy,
 		Edits:      edits,
 		Verified:   true,

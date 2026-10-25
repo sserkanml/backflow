@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"io"
 	"path"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -27,6 +28,16 @@ type depDefaults struct {
 
 // maxPackagedValues bounds the values.yaml read from a packaged subchart.
 const maxPackagedValues = 1 << 20
+
+// dependencyLayers is dependencyDefaults for the chart of the source: a chart
+// that is not in the repository has no files to read, and its subcharts'
+// defaults are unavailable.
+func (s *Source) dependencyLayers(files map[string][]byte) (out []depDefaults, missing []string) {
+	if s.External != nil {
+		return nil, slices.Clone(s.External.UnreadDependencies)
+	}
+	return dependencyDefaults(files, s.ChartDir)
+}
 
 // dependencyDefaults lists the values.yaml files of the dependencies that are
 // part of the files of the render: a subchart unpacked under charts/, or a

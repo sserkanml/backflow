@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-var sources = []string{sourceHelm, sourceKustomize}
+var sources = []string{sourceHelm, sourceKustomize, sourceHelmMulti}
 
 // policiesOf are the policy sets the cases of a source type run under.
 func policiesOf(source string) []policySet {

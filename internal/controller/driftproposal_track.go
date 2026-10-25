@@ -77,7 +77,7 @@ func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1a
 	if access == nil {
 		return nil, &heldError{reason: reasonMissingScmConnection, cause: errors.New("no ScmConnection matches the repository")}
 	}
-	_, project, err := scm.ParseRepoURL(dp.Spec.Source.RepoURL)
+	_, project, err := scm.ParseRepoURL(writeTarget(dp).RepoURL)
 	if err != nil {
 		return nil, &heldError{reason: reasonInvalidRepositoryURL, cause: err}
 	}
@@ -436,7 +436,7 @@ const branchScanLimit = 50
 // to it. exists is false when the branch is already gone.
 func (r *DriftProposalReconciler) branchIsOurs(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	access *scmAccess, branch string) (exists bool, why string, err error) {
-	url := dp.Spec.Source.RepoURL
+	url := writeTarget(dp).RepoURL
 	tip, err := r.Writer.BranchTip(ctx, url, branch, access.auth)
 	if err != nil {
 		if errors.Is(err, gitrepo.ErrBranchNotFound) {

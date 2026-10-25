@@ -116,7 +116,12 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		s := summarizeApplication(&apps[i])
 		s.ScmConnection = connectionFor(s.RepoURL, conns.Items)
-		if s.ScmConnection == "" {
+		if s.Sources = summarizeSources(&apps[i]); s.Sources != nil {
+			// Each Git repository has its own connection, matched by host. A chart
+			// from a Helm repository or a registry needs none.
+			s.ScmConnection = matchSourceConnections(s.Sources, conns.Items)
+		}
+		if missingConnection(s) {
 			missingScm = append(missingScm, s.Name)
 		}
 		summaries = append(summaries, s)
@@ -394,7 +399,8 @@ func (r *BackflowPolicyReconciler) policiesSharingArgoCDNamespace(ctx context.Co
 }
 
 // summarizeApplication extracts what Backflow needs from an Application.
-// Multi-source Applications are summarised by their first source for now.
+// The fields describe the first source of a multi-source Application; its
+// sources are listed by summarizeSources.
 func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.ApplicationSummary {
 	s := backflowv1alpha1.ApplicationSummary{Name: app.GetName()}
 
@@ -426,9 +432,9 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.Appli
 	if s.SourceType == "" {
 		switch {
 		case chart != "":
-			s.SourceType = "Helm"
+			s.SourceType = sourceTypeHelm
 		case src["helm"] != nil:
-			s.SourceType = "Helm"
+			s.SourceType = sourceTypeHelm
 		case src["kustomize"] != nil:
 			s.SourceType = "Kustomize"
 		default:
@@ -440,6 +446,44 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1alpha1.Appli
 		s.ManagedResources = int32(len(resources))
 	}
 	return s
+}
+
+// matchSourceConnections sets the ScmConnection of every Git source and returns
+// the one that stands for the Application: the first ref source's, since value
+// files are what Backflow writes, else the first Git source's.
+func matchSourceConnections(sources []backflowv1alpha1.SourceSummary, conns []backflowv1alpha1.ScmConnection) string {
+	var first, ref string
+	for i := range sources {
+		if !isGitSource(sources[i]) {
+			continue
+		}
+		sources[i].ScmConnection = connectionFor(sources[i].RepoURL, conns)
+		if first == "" {
+			first = sources[i].ScmConnection
+		}
+		if ref == "" && sources[i].Ref != "" {
+			ref = sources[i].ScmConnection
+		}
+	}
+	if ref != "" {
+		return ref
+	}
+	return first
+}
+
+// missingConnection reports whether a repository Backflow reads or writes has
+// no ScmConnection: the repository of a single-source Application, or any Git
+// source of a multi-source one.
+func missingConnection(s backflowv1alpha1.ApplicationSummary) bool {
+	if s.Sources == nil {
+		return s.ScmConnection == ""
+	}
+	for _, src := range s.Sources {
+		if isGitSource(src) && src.ScmConnection == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // repoHost returns the canonical (lower-cased, www.github.com as github.com) host of a Git URL. It understands
@@ -519,8 +563,8 @@ func applicationChanged() predicate.Predicate {
 				!reflect.DeepEqual(oldApp.GetLabels(), newApp.GetLabels()) {
 				return true
 			}
-			oldRev, _, _ := unstructured.NestedString(oldApp.Object, fieldStatus, "sync", "revision")
-			newRev, _, _ := unstructured.NestedString(newApp.Object, fieldStatus, "sync", "revision")
+			// The revisions of every source: status.sync.revision is empty for several.
+			oldRev, newRev := syncedRevision(oldApp), syncedRevision(newApp)
 			oldRes, _, _ := unstructured.NestedSlice(oldApp.Object, fieldStatus, "resources")
 			newRes, _, _ := unstructured.NestedSlice(newApp.Object, fieldStatus, "resources")
 			oldType, _, _ := unstructured.NestedString(oldApp.Object, fieldStatus, "sourceType")

@@ -15,6 +15,12 @@ create your resources (here: {{ .Release.Namespace }}).
      p, role:backflow, applications, get, */*, allow
      g, backflow, role:backflow
 
+   For Applications with several sources (a chart from a Helm repository or a
+   registry, value files in Git as $values/...) add a third line, so that
+   Backflow can read the chart's own values.yaml through Argo CD:
+
+     p, role:backflow, repositories, get, *, allow
+
    Generate a token and store it:
 
    argocd login <argocd-server> --username admin

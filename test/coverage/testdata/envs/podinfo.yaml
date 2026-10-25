@@ -1,0 +1,14 @@
+# Production values of the podinfo-like chart.
+replicaCount: 2
+
+ui:
+  message: hello from the coverage suite
+
+podAnnotations:
+  owner: platform
+
+extraEnvs:
+  - name: DEMO_MODE
+    value: "on"
+  - name: DEMO_REGION
+    value: eu-west-1
