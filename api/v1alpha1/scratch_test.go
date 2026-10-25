@@ -18,6 +18,7 @@ func TestScratchBranchesAllowed(t *testing.T) {
 		{"mapping without the field, MergeRequest", BackflowPolicySpec{Mode: ModeMergeRequest, Mapping: &MappingOptions{AllowPartial: true}}, true},
 	}
 	for _, tt := range tests {
+
 		if got := tt.spec.ScratchBranchesAllowed(); got != tt.want {
 			t.Errorf("%s: %v, want %v", tt.name, got, tt.want)
 		}
