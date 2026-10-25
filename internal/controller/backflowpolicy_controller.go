@@ -563,8 +563,8 @@ func applicationChanged() predicate.Predicate {
 				!reflect.DeepEqual(oldApp.GetLabels(), newApp.GetLabels()) {
 				return true
 			}
-			oldRev, _, _ := unstructured.NestedString(oldApp.Object, fieldStatus, "sync", "revision")
-			newRev, _, _ := unstructured.NestedString(newApp.Object, fieldStatus, "sync", "revision")
+			// The revisions of every source: status.sync.revision is empty for several.
+			oldRev, newRev := syncedRevision(oldApp), syncedRevision(newApp)
 			oldRes, _, _ := unstructured.NestedSlice(oldApp.Object, fieldStatus, "resources")
 			newRes, _, _ := unstructured.NestedSlice(newApp.Object, fieldStatus, "resources")
 			oldType, _, _ := unstructured.NestedString(oldApp.Object, fieldStatus, "sourceType")

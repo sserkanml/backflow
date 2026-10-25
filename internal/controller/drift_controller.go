@@ -707,15 +707,7 @@ func hasOpenMergeRequest(p *backflowv1alpha1.DriftProposal) bool {
 }
 
 // syncedRevision is the revision Argo CD compared the Application with.
-func syncedRevision(app *unstructured.Unstructured) string {
-	rev, _, _ := unstructured.NestedString(app.Object, fieldStatus, "sync", "revision")
-	if rev == "" {
-		if revs, ok, _ := unstructured.NestedStringSlice(app.Object, fieldStatus, "sync", "revisions"); ok && len(revs) > 0 {
-			rev = revs[0]
-		}
-	}
-	return rev
-}
+func syncedRevision(app *unstructured.Unstructured) string { return comparedRevisions(app) }
 
 // managedResourcesCache reads an Application's managed resources at most once
 // per reconcile, and only when needed.

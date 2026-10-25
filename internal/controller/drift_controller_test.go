@@ -1878,6 +1878,10 @@ var _ = Describe("Drift detection", func() {
 			ExpectWithOffset(1, unstructured.SetNestedStringSlice(app.Object, []string{compared, values}, "status", "sync", "revisions")).To(Succeed())
 			ExpectWithOffset(1, unstructured.SetNestedStringSlice(app.Object, []string{synced, values}, "status", "operationState", "syncResult", "revisions")).To(Succeed())
 			ExpectWithOffset(1, unstructured.SetNestedStringSlice(app.Object, []string{"Helm", ""}, "status", "sourceTypes")).To(Succeed())
+			// The result of a sync has source, the first source, and sources, all of them.
+			sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources")
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sources[0], "status", "operationState", "syncResult", "source")).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, sources, "status", "operationState", "syncResult", "sources")).To(Succeed())
 			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 			policy.Status.Applications[0].SourceType = "Helm"

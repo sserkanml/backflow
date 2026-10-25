@@ -135,6 +135,12 @@ func statusTime(app *unstructured.Unstructured, path ...string) time.Time {
 	return t
 }
 
+// comparedRevisions is the revision Argo CD compares the Application against: one
+// for a single source, those of all sources joined for several.
+func comparedRevisions(app *unstructured.Unstructured) string {
+	return revisions(app, []string{fieldStatus, "sync", "revision"}, []string{fieldStatus, "sync", "revisions"})
+}
+
 // gitAhead compares the revision Argo CD compares the Application against
 // (status.sync.revision) with the revision of its last sync
 // (status.operationState.syncResult.revision). They differ when a commit has
@@ -149,7 +155,7 @@ func statusTime(app *unstructured.Unstructured, path ...string) time.Time {
 // sync; the stability rule (see stable) covers that without guessing how long.
 func gitAhead(app *unstructured.Unstructured) aheadState {
 	st := aheadState{
-		compared: revisions(app, []string{fieldStatus, "sync", "revision"}, []string{fieldStatus, "sync", "revisions"}),
+		compared: comparedRevisions(app),
 		synced: revisions(app, []string{fieldStatus, fieldOperationState, fieldSyncResult, "revision"},
 			[]string{fieldStatus, fieldOperationState, fieldSyncResult, "revisions"}),
 	}
@@ -202,21 +208,22 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 // rendered from a revision.
 var sourceFields = []string{"repoURL", "path", "targetRevision", "chart", "directory", "helm", "kustomize", "plugin"}
 
-// sourcesOf reads the source of an Application at the path (a map), or its
-// sources (a list). ok is false when neither is there.
+// sourcesOf reads the sources of an Application: the list when there is one,
+// else the single source at the path. A multi-source Application has a list; the
+// result of its last sync has both (source is the first of them), so the list
+// must win, or the sources would count one. ok is false when neither is there.
 func sourcesOf(app *unstructured.Unstructured, single, list []string) (out []map[string]any, ok bool) {
+	if items, found, _ := unstructured.NestedSlice(app.Object, list...); found && len(items) > 0 {
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			out = append(out, m)
+		}
+		return out, true
+	}
 	if m, found, _ := unstructured.NestedMap(app.Object, single...); found {
 		return []map[string]any{m}, true
 	}
-	items, found, _ := unstructured.NestedSlice(app.Object, list...)
-	if !found {
-		return nil, false
-	}
-	for _, it := range items {
-		m, _ := it.(map[string]any)
-		out = append(out, m)
-	}
-	return out, true
+	return nil, false
 }
 
 // normalizeSource keeps the fields that matter and drops what carries no

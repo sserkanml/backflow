@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 )
@@ -224,5 +225,73 @@ func TestTranslateValueFiles(t *testing.T) {
 				t.Errorf("err = %v, want %s containing %q", err, tt.reason, tt.msg)
 			}
 		})
+	}
+}
+
+// argoMultiApp is a multi-source Application the way Argo CD reports it after a
+// sync: status.sync.revision is empty (the revisions are a list), and the result
+// of the sync has both source (the first source) and sources (all of them).
+func argoMultiApp(compared, synced []any) *unstructured.Unstructured {
+	app := multiApp([]any{chartSource, valuesRef}, compared, synced, []any{"Helm", ""})
+	status := app.Object["status"].(map[string]any)
+	result := status["operationState"].(map[string]any)["syncResult"].(map[string]any)
+	result["source"] = chartSource
+	result["sources"] = []any{chartSource, valuesRef}
+	return app
+}
+
+func TestSourcesOfPrefersTheListOfSources(t *testing.T) {
+	app := argoMultiApp([]any{"6.7.1", "aaaa"}, []any{"6.7.1", "aaaa"})
+	got, ok := sourcesOf(app, []string{"status", "operationState", "syncResult", "source"}, []string{"status", "operationState", "syncResult", "sources"})
+	if !ok || len(got) != 2 {
+		t.Fatalf("sources of the last sync = %d (ok %v), want both: the result of a sync has source, the first one, too", len(got), ok)
+	}
+	single := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"source": map[string]any{"repoURL": "x"}}}}
+	if got, ok := sourcesOf(single, []string{"spec", "source"}, []string{"spec", "sources"}); !ok || len(got) != 1 {
+		t.Errorf("single source: %d, %v", len(got), ok)
+	}
+}
+
+func TestSourceChangeOfAMultiSourceApplication(t *testing.T) {
+	t.Run("nothing changed since the last sync", func(t *testing.T) {
+		if got := sourceChange(argoMultiApp([]any{"6.7.1", "bbbb"}, []any{"6.7.1", "aaaa"})); got != "" {
+			t.Errorf("sourceChange = %q: the number of sources must not look changed (2 now, 1 then)", got)
+		}
+		if st := gitAhead(argoMultiApp([]any{"6.7.1", "bbbb"}, []any{"6.7.1", "aaaa"})); st.hold() != "" || !st.paused {
+			t.Errorf("a ref source that moved is Git ahead, not a change of the Application: hold = %q, paused = %v", st.hold(), st.paused)
+		}
+	})
+	t.Run("a source changed in the Application", func(t *testing.T) {
+		app := argoMultiApp([]any{"6.7.1", "aaaa"}, []any{"6.7.1", "aaaa"})
+		sources, _ := app.Object["spec"].(map[string]any)["sources"].([]any)
+		other := map[string]any{"repoURL": valuesRepo, "targetRevision": "dev", "ref": "values"}
+		app.Object["spec"].(map[string]any)["sources"] = []any{sources[0], other}
+		if got := sourceChange(app); !strings.Contains(got, "targetRevision") {
+			t.Errorf("sourceChange = %q", got)
+		}
+	})
+}
+
+func TestSyncedRevisionOfAMultiSourceApplication(t *testing.T) {
+	if got := syncedRevision(argoMultiApp([]any{"6.7.1", "bbbb"}, []any{"6.7.1", "aaaa"})); got != "6.7.1,bbbb" {
+		t.Errorf("syncedRevision = %q, want the revisions of all sources, the form a proposal records", got)
+	}
+	single := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"sync": map[string]any{"revision": "abc"}}}}
+	if got := syncedRevision(single); got != "abc" {
+		t.Errorf("single source: %q", got)
+	}
+}
+
+func TestApplicationChangedSeesTheRevisionsOfSeveralSources(t *testing.T) {
+	update := applicationChanged().Update
+	old := argoMultiApp([]any{"6.7.1", "aaaa"}, []any{"6.7.1", "aaaa"})
+	if update(event.UpdateEvent{ObjectOld: old, ObjectNew: old.DeepCopy()}) {
+		t.Error("an Application that did not change triggers a reconcile")
+	}
+	if !update(event.UpdateEvent{ObjectOld: old, ObjectNew: argoMultiApp([]any{"6.7.1", "bbbb"}, []any{"6.7.1", "aaaa"})}) {
+		t.Error("a new commit of a ref source does not trigger a reconcile of the policy")
+	}
+	if !update(event.UpdateEvent{ObjectOld: old, ObjectNew: argoMultiApp([]any{"6.7.2", "aaaa"}, []any{"6.7.1", "aaaa"})}) {
+		t.Error("a new chart version does not trigger a reconcile of the policy")
 	}
 }
