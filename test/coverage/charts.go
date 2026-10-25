@@ -30,6 +30,19 @@ type chartCase struct {
 	valueFiles  []string // as written in the Application (relative to the chart, or /absolute)
 	release     string
 	namespace   string
+	// multi deploys the chart as an Application with several sources: the chart
+	// comes from a Helm repository (it is not in Git, and its own defaults are
+	// what Argo CD returns for it), and the repository holds the environment
+	// values file only, as the ref source $values.
+	multi bool
+}
+
+// source is the source type the case is reported under.
+func (c chartCase) source() string {
+	if c.multi {
+		return sourceHelmMulti
+	}
+	return sourceHelm
 }
 
 var charts = []chartCase{
@@ -41,15 +54,21 @@ var charts = []chartCase{
 		valueFiles: []string{"/envs/prod/postgresql.yaml"}, release: "postgresql-prod", namespace: "db"},
 	{name: "webapp", dir: "webapp", env: "webapp.yaml", envRepoPath: "charts/webapp/values-prod.yaml",
 		valueFiles: []string{"values-prod.yaml"}, release: "webapp-prod", namespace: "apps"},
+	// The same charts as an Application with a chart from a Helm repository and
+	// its value files in a Git repository ($values/...).
+	{name: "nginx-ms", archive: "nginx-25.2.8.tgz", env: "nginx.yaml", envRepoPath: "values/nginx.yaml",
+		valueFiles: []string{"/values/nginx.yaml"}, release: "nginx-ms", namespace: "web", multi: true},
+	{name: "webapp-ms", dir: "webapp", env: "webapp.yaml", envRepoPath: "values/webapp.yaml",
+		valueFiles: []string{"/values/webapp.yaml"}, release: "webapp-ms", namespace: "apps", multi: true},
 }
 
 // chartPath is the chart directory in the repository.
 func (c chartCase) chartPath() string { return "charts/" + c.name }
 
-// repo builds the repository the Application reads from.
-func (c chartCase) repo() (fstest.MapFS, error) {
-	m := fstest.MapFS{}
-	add := func(name string, data []byte) { m[name] = &fstest.MapFile{Data: data, Mode: 0o644} }
+// chartFiles are the files of the chart, under chartPath.
+func (c chartCase) chartFiles() (map[string][]byte, error) {
+	out := map[string][]byte{}
+	add := func(name string, data []byte) { out[name] = data }
 	switch {
 	case c.archive != "":
 		f, err := os.Open(filepath.Join("testdata", "charts", c.archive))
@@ -78,11 +97,27 @@ func (c chartCase) repo() (fstest.MapFS, error) {
 			return nil, err
 		}
 	}
+	return out, nil
+}
+
+// repo builds the repository the Application reads from: the chart and the
+// environment values file, or for a chart that is not in Git the values file only.
+func (c chartCase) repo() (fstest.MapFS, error) {
+	m := fstest.MapFS{}
+	if !c.multi {
+		files, err := c.chartFiles()
+		if err != nil {
+			return nil, err
+		}
+		for name, data := range files {
+			m[name] = &fstest.MapFile{Data: data, Mode: 0o644}
+		}
+	}
 	env, err := os.ReadFile(filepath.Join("testdata", "envs", c.env))
 	if err != nil {
 		return nil, err
 	}
-	add(c.envRepoPath, env)
+	m[c.envRepoPath] = &fstest.MapFile{Data: env, Mode: 0o644}
 	return m, nil
 }
 

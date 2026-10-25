@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -26,6 +27,13 @@ const (
 	Unmapped = "Unmapped"
 )
 
+// renderBudget is the time one case may take. The cases queue for the helm
+// processes, so with the default budget of a verification (two minutes, which is
+// time spent rendering through Argo CD in production) a busy machine would turn a
+// slow case into a different outcome; the suite measures what can be mapped, not
+// how fast.
+const renderBudget = 20 * time.Minute
+
 // policySet is a set of the policy options the mapping runs with.
 type policySet struct {
 	name string
@@ -41,13 +49,14 @@ type policySet struct {
 // overrides existed.
 func policySets() []policySet {
 	return []policySet{
-		{name: "default", opts: rendermap.Options{AddOverrides: true}},
+		{name: "default", opts: rendermap.Options{AddOverrides: true, Budget: renderBudget}},
 		{name: "permissive", opts: rendermap.Options{
+			Budget:          renderBudget,
 			AddOverrides:    true,
 			AllowPartial:    true,
 			AllowCollateral: []string{rendermap.CollateralLabels, rendermap.CollateralAnnotations},
 		}},
-		{name: "no-overrides", opts: rendermap.Options{}},
+		{name: "no-overrides", opts: rendermap.Options{Budget: renderBudget}},
 	}
 }
 
@@ -105,6 +114,23 @@ func load(ctx context.Context, c chartCase, slots chan struct{}) (*loaded, error
 		return nil, err
 	}
 	spec := helmmap.Spec{Path: c.chartPath(), ValueFiles: c.valueFiles}
+	var chart map[string][]byte
+	if c.multi {
+		// The chart is not in the repository: what Argo CD returns for it stands in
+		// for its files (its values.yaml, and the names of its subcharts).
+		if chart, err = c.chartFiles(); err != nil {
+			return nil, err
+		}
+		var subcharts []string
+		for name := range chart {
+			subcharts = append(subcharts, strings.TrimPrefix(name, c.chartPath()+"/"))
+		}
+		sort.Strings(subcharts)
+		spec.External = &helmmap.ExternalChart{
+			Name: c.name, Version: "1.0.0", Values: chart[c.chartPath()+"/values.yaml"],
+			UnreadDependencies: helmmap.SubchartNames(subcharts),
+		}
+	}
 	src, err := helmmap.NewSource(repo, spec)
 	if err != nil {
 		return nil, fmt.Errorf("%s: source: %w", c.name, err)
@@ -113,7 +139,8 @@ func load(ctx context.Context, c chartCase, slots chan struct{}) (*loaded, error
 	if err != nil {
 		return nil, fmt.Errorf("%s: files: %w", c.name, err)
 	}
-	rend := &helmRenderer{chartDir: c.chartPath(), valueFiles: src.ValueFiles, release: c.release, namespace: c.namespace, slots: slots}
+	rend := &helmRenderer{chartDir: c.chartPath(), valueFiles: src.ValueFiles, release: c.release, namespace: c.namespace, slots: slots,
+		chart: chart, skip: map[string]bool{src.ChartValues: c.multi}}
 	app := rendermap.App{Name: c.release, Namespace: "argocd", Project: "default", DestNamespace: c.namespace, ReleaseName: c.release}
 	base, err := rend.Render(ctx, app, files)
 	if err != nil {
@@ -145,7 +172,7 @@ func (l *loaded) runAll(ctx context.Context) ([]caseResult, error) {
 				continue
 			}
 			jobs = append(jobs, &job{obj: obj, sc: sc, res: caseResult{
-				Source: sourceHelm, Chart: l.c.name, Resource: obj.GetKind() + " " + strings.TrimPrefix(obj.GetName(), l.c.release+"-"),
+				Source: l.c.source(), Chart: l.c.name, Resource: obj.GetKind() + " " + strings.TrimPrefix(obj.GetName(), l.c.release+"-"),
 				Scenario: sc.id, Changes: changes, ByPolicy: map[string]outcome{},
 			}})
 		}

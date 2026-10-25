@@ -35,6 +35,11 @@ type helmRenderer struct {
 	valueFiles []string // repository paths, in order
 	release    string
 	namespace  string
+	// chart are the files of a chart that is not in the repository the files
+	// come from, written next to them; skip names the synthetic ones that
+	// are not files.
+	chart map[string][]byte
+	skip  map[string]bool
 	// slots bounds the helm processes running at once, across all renderers.
 	slots chan struct{}
 }
@@ -58,13 +63,18 @@ func (r *helmRenderer) helm(ctx context.Context, files map[string][]byte) ([]*un
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	for name, data := range files {
-		dst := filepath.Join(dir, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil {
-			return nil, err
+	for _, set := range []map[string][]byte{r.chart, files} {
+		for name, data := range set {
+			if r.skip[name] {
+				continue
+			}
+			dst := filepath.Join(dir, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(dst, data, 0o600); err != nil {
+				return nil, err
+			}
 		}
 	}
 	args := []string{"template", r.release, filepath.Join(dir, filepath.FromSlash(r.chartDir)), "--namespace", r.namespace, "--skip-tests"}

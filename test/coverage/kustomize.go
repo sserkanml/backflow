@@ -24,6 +24,9 @@ import (
 const (
 	sourceHelm      = "Helm"
 	sourceKustomize = "Kustomize"
+	// sourceHelmMulti is a chart from a Helm repository with its value files in a
+	// Git repository, an Application with several sources.
+	sourceHelmMulti = "Helm, several sources"
 )
 
 // kustomizeApp is one Kustomize Application under test: an overlay of the

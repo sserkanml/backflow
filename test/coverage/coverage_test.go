@@ -98,7 +98,7 @@ func TestCoverage(t *testing.T) {
 	sort.Slice(results, func(i, j int) bool {
 		a, b := results[i], results[j]
 		if a.Source != b.Source {
-			return a.Source == sourceHelm
+			return sourceOrder(a.Source) < sourceOrder(b.Source)
 		}
 		if a.Chart != b.Chart {
 			return a.Chart < b.Chart
@@ -144,6 +144,17 @@ func TestCoverage(t *testing.T) {
 	for _, s := range regressions {
 		t.Errorf("REGRESSION: %s", s)
 	}
+}
+
+// sourceOrder is the order of the source types in the report and the golden
+// file: new ones go last, so the existing lines keep their place.
+func sourceOrder(s string) int {
+	for i, x := range sources {
+		if x == s {
+			return i
+		}
+	}
+	return len(sources)
 }
 
 func pct(n, total int) float64 {
@@ -234,6 +245,7 @@ func report(all []caseResult) string {
 			cellOf(r.ByPolicy["default"]), cellOf(r.ByPolicy["permissive"]), cellOf(r.ByPolicy["no-overrides"]))
 	}
 	b.WriteString(kustomizeReport(bySource(all, sourceKustomize)))
+	b.WriteString(multiSourceReport(bySource(all, sourceHelmMulti)))
 	return b.String()
 }
 
