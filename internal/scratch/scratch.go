@@ -91,11 +91,13 @@ type Renderer struct {
 	branches []string          // created, to delete
 	pushes   int
 	renders  int
+	fresh    int
 }
 
 var (
-	_ rendermap.Renderer = (*Renderer)(nil)
-	_ rendermap.Preparer = (*Renderer)(nil)
+	_ rendermap.Renderer      = (*Renderer)(nil)
+	_ rendermap.Preparer      = (*Renderer)(nil)
+	_ rendermap.FreshRenderer = (*Renderer)(nil)
 )
 
 // New returns a Renderer. Call Finish when done, whatever happened.
@@ -213,6 +215,40 @@ func (r *Renderer) Render(ctx context.Context, app rendermap.App, files map[stri
 	if err != nil {
 		return nil, err
 	}
+	return r.renderAt(ctx, app, sha)
+}
+
+// freshMarker is the file a RenderFresh commit adds to the repository root, so
+// that its commit is one Argo CD has never rendered.
+const freshMarker = ".backflow-scratch-nonce"
+
+// RenderFresh implements rendermap.FreshRenderer. Argo CD answers a render of a
+// revision it rendered before from its manifest cache, also for the unmodified
+// files (rendered at Parent): two renders would be one, and a resource the chart
+// names at random would look stable. RenderFresh renders a commit of its own, the
+// files plus a marker file at the root of the repository, which no source reads.
+func (r *Renderer) RenderFresh(ctx context.Context, app rendermap.App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
+	r.mu.Lock()
+	if len(r.branches)+1 > r.cfg.MaxBranches {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%w: more than %d", ErrTooManyBranches, r.cfg.MaxBranches)
+	}
+	r.fresh++
+	changed := r.changed(files)
+	changed[freshMarker] = fmt.Appendf(nil, "%d %d\n", r.cfg.Now().UnixNano(), r.fresh)
+	sha, err := r.commitLocked(ctx, changed)
+	if err == nil {
+		err = r.pushLocked(ctx, map[string]string{r.nextBranchLocked(0): sha})
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return r.renderAt(ctx, app, sha)
+}
+
+// renderAt renders the Application with the source of the value files at sha.
+func (r *Renderer) renderAt(ctx context.Context, app rendermap.App, sha string) ([]*unstructured.Unstructured, error) {
 	revisions := slices.Clone(r.cfg.Revisions)
 	revisions[r.cfg.ValuesPosition-1] = sha
 	positions := make([]int, len(revisions))

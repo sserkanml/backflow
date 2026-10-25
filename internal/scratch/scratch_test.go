@@ -287,3 +287,43 @@ func TestSweepDeletesOnlyOldScratchBranches(t *testing.T) {
 		t.Errorf("deleted = %v (%v)", deleted, g.deleted)
 	}
 }
+
+func TestRenderFreshCommitsAMarkerSoNoCacheAnswers(t *testing.T) {
+	g, a := &fakeGit{}, &fakeArgo{}
+	r := newRenderer(g, a, nil)
+	revisions := make([]string, 0, 2)
+	for range 2 {
+		if _, err := r.RenderFresh(t.Context(), rendermap.App{DestNamespace: "demo"}, maps.Clone(base)); err != nil {
+			t.Fatal(err)
+		}
+		revisions = append(revisions, a.queries[len(a.queries)-1].Revisions[1])
+	}
+	if revisions[0] == parent || revisions[1] == parent || revisions[0] == revisions[1] {
+		t.Errorf("revisions = %v: the unmodified files must be rendered at two commits of their own, not at the parent", revisions)
+	}
+	if len(g.commits) != 2 || len(g.pushes) != 2 {
+		t.Fatalf("commits = %d, pushes = %d, want 2 and 2", len(g.commits), len(g.pushes))
+	}
+	markers := make([]string, 0, len(g.commits))
+	for _, files := range g.commits {
+		if len(files) != 1 || files[freshMarker] == nil {
+			t.Errorf("a fresh commit holds %v: only the marker differs from the base", slices.Sorted(maps.Keys(files)))
+		}
+		markers = append(markers, string(files[freshMarker]))
+	}
+	if markers[0] == markers[1] {
+		t.Errorf("the two markers are the same: %q", markers)
+	}
+	if branches, _, renders := r.Stats(); branches != 2 || renders != 2 {
+		t.Errorf("branches = %d, renders = %d", branches, renders)
+	}
+	// An edit is rendered with its own change plus the marker, and the branches
+	// are counted against the bound like any other.
+	r2 := newRenderer(&fakeGit{}, &fakeArgo{}, func(c *Config) { c.MaxBranches = 1 })
+	if _, err := r2.RenderFresh(t.Context(), rendermap.App{}, maps.Clone(base)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r2.RenderFresh(t.Context(), rendermap.App{}, maps.Clone(base)); !errors.Is(err, ErrTooManyBranches) {
+		t.Errorf("err = %v, want ErrTooManyBranches", err)
+	}
+}

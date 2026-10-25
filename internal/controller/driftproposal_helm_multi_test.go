@@ -273,7 +273,11 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			Expect(q.SourcePositions).To(Equal([]int{1, 2}))
 			Expect(q.AppName).To(Equal("ms-app"))
 		}
-		Expect(argo.queries[0].Revisions[1]).To(Equal(initial), "the unmodified files are rendered at the commit the Application compared against")
+		Expect(len(argo.queries)).To(BeNumerically(">=", 3))
+		first, second := argo.queries[0].Revisions[1], argo.queries[1].Revisions[1]
+		Expect(first).NotTo(Equal(initial), "the unmodified files are rendered at a commit of their own, not the one Argo CD may have cached")
+		Expect(second).NotTo(Equal(initial))
+		Expect(first).NotTo(Equal(second), "the two renders of the unmodified files are two commits, so no cache makes them one")
 
 		By("leaving no scratch branch behind, and the target branch where it was")
 		Expect(scratchBranches()).To(BeEmpty())
