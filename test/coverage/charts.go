@@ -35,6 +35,11 @@ type chartCase struct {
 	// what Argo CD returns for it), and the repository holds the environment
 	// values file only, as the ref source $values.
 	multi bool
+	// hooks renders the way Argo CD does: the chart's test hooks are in the
+	// render (helm template --skip-tests would leave them out), and the render of
+	// the same files is answered from a cache, as Argo CD does for a revision it
+	// rendered before. The chart names its test Pods at random.
+	hooks bool
 }
 
 // source is the source type the case is reported under.
@@ -60,6 +65,12 @@ var charts = []chartCase{
 		valueFiles: []string{"/values/nginx.yaml"}, release: "nginx-ms", namespace: "web", multi: true},
 	{name: "webapp-ms", dir: "webapp", env: "webapp.yaml", envRepoPath: "values/webapp.yaml",
 		valueFiles: []string{"/values/webapp.yaml"}, release: "webapp-ms", namespace: "apps", multi: true},
+	// A chart shaped like podinfo's: test hooks named at random, a default that
+	// only the chart sets (ui.color), podAnnotations and extraEnvs.
+	{name: "podinfo", dir: "podinfo", env: "podinfo.yaml", envRepoPath: "charts/podinfo/values-prod.yaml",
+		valueFiles: []string{"values-prod.yaml"}, release: "podinfo-prod", namespace: "apps", hooks: true},
+	{name: "podinfo-ms", dir: "podinfo", env: "podinfo.yaml", envRepoPath: "values/podinfo.yaml",
+		valueFiles: []string{"/values/podinfo.yaml"}, release: "podinfo-ms", namespace: "apps", multi: true, hooks: true},
 }
 
 // chartPath is the chart directory in the repository.

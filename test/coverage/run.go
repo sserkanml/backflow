@@ -140,7 +140,7 @@ func load(ctx context.Context, c chartCase, slots chan struct{}) (*loaded, error
 		return nil, fmt.Errorf("%s: files: %w", c.name, err)
 	}
 	rend := &helmRenderer{chartDir: c.chartPath(), valueFiles: src.ValueFiles, release: c.release, namespace: c.namespace, slots: slots,
-		chart: chart, skip: map[string]bool{src.ChartValues: c.multi}}
+		chart: chart, skip: map[string]bool{src.ChartValues: c.multi}, hooks: c.hooks}
 	app := rendermap.App{Name: c.release, Namespace: "argocd", Project: "default", DestNamespace: c.namespace, ReleaseName: c.release}
 	base, err := rend.Render(ctx, app, files)
 	if err != nil {
@@ -160,7 +160,7 @@ func (l *loaded) runAll(ctx context.Context) ([]caseResult, error) {
 	var jobs []*job
 	for _, obj := range l.base {
 		for _, sc := range scenarios {
-			if !contains(sc.kinds, obj.GetKind()) {
+			if !contains(sc.kinds, obj.GetKind()) || (len(sc.charts) > 0 && !contains(sc.charts, l.c.name)) {
 				continue
 			}
 			live := obj.DeepCopy()
