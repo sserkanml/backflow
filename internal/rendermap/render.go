@@ -66,6 +66,12 @@ type ManifestsClient interface {
 
 // ArgoRenderer renders through Argo CD's API server, so the chart is rendered
 // by the Helm or Kustomize version and the settings of the Argo CD that deploys it.
+//
+// It is not a FreshRenderer, because it never needs to be: GetManifestsWithFiles
+// renders the uploaded files in the repo server without the manifest cache (three
+// uploads of the same podinfo chart, whose test Pods are named at random, gave three
+// different sets of names, with the Backflow account). Only the render of a revision
+// (GetManifests, used by the scratch renderer) is cached, and it has noCache.
 type ArgoRenderer struct {
 	Client ManifestsClient
 }
@@ -126,7 +132,8 @@ func ParseManifests(app App, manifests []string) ([]*unstructured.Unstructured, 
 // so two renders of the same commit are one render, and a resource named by the
 // chart at random (randAlphaNum) would look stable. Verify renders the
 // unmodified files twice to find what changes on every render; it uses
-// RenderFresh for both when the Renderer has it.
+// RenderFresh for both when the Renderer has it. (The scratch renderer asks Argo CD
+// for noCache; ArgoRenderer needs nothing, see there.)
 type FreshRenderer interface {
 	Renderer
 	RenderFresh(ctx context.Context, app App, files map[string][]byte) ([]*unstructured.Unstructured, error)

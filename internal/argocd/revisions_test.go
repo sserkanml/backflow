@@ -11,6 +11,7 @@ import (
 )
 
 func TestGetManifestsByRevisions(t *testing.T) {
+	wantNoCache := false
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/applications/ms-app/manifests" {
 			t.Errorf("%s %s", r.Method, r.URL.Path)
@@ -25,6 +26,9 @@ func TestGetManifestsByRevisions(t *testing.T) {
 		if q.Get("appNamespace") != "argocd" || r.Header.Get("Authorization") != "Bearer tok" {
 			t.Errorf("query %v, auth %q", q, r.Header.Get("Authorization"))
 		}
+		if _, has := q["noCache"]; has != wantNoCache {
+			t.Errorf("noCache in the query = %v, want %v (%v)", has, wantNoCache, q)
+		}
 		_, _ = w.Write([]byte(`{"manifests":["{\"kind\":\"Service\"}","{\"kind\":\"Deployment\"}"],"sourceType":"Helm"}`))
 	})
 	resp, err := c.GetManifestsByRevisions(t.Context(), RevisionsQuery{
@@ -36,6 +40,16 @@ func TestGetManifestsByRevisions(t *testing.T) {
 	if len(resp.Manifests) != 2 || resp.SourceType != "Helm" {
 		t.Errorf("resp = %+v", resp)
 	}
+
+	t.Run("NoCache sends noCache=true", func(t *testing.T) {
+		wantNoCache = true
+		defer func() { wantNoCache = false }()
+		if _, err := c.GetManifestsByRevisions(t.Context(), RevisionsQuery{
+			AppName: "ms-app", AppNamespace: "argocd", Revisions: []string{"6.7.1", "abc"}, SourcePositions: []int{1, 2}, NoCache: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	t.Run("a mismatch of revisions and positions is refused before any request", func(t *testing.T) {
 		if _, err := c.GetManifestsByRevisions(t.Context(), RevisionsQuery{AppName: "a", Revisions: []string{"x"}}); err == nil {

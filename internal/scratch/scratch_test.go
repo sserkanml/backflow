@@ -288,42 +288,40 @@ func TestSweepDeletesOnlyOldScratchBranches(t *testing.T) {
 	}
 }
 
-func TestRenderFreshCommitsAMarkerSoNoCacheAnswers(t *testing.T) {
+func TestRenderFreshAsksArgoCDNotToUseItsCache(t *testing.T) {
 	g, a := &fakeGit{}, &fakeArgo{}
 	r := newRenderer(g, a, nil)
-	revisions := make([]string, 0, 2)
+	if _, err := r.Render(t.Context(), rendermap.App{DestNamespace: "demo"}, maps.Clone(base)); err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
 		if _, err := r.RenderFresh(t.Context(), rendermap.App{DestNamespace: "demo"}, maps.Clone(base)); err != nil {
 			t.Fatal(err)
 		}
-		revisions = append(revisions, a.queries[len(a.queries)-1].Revisions[1])
 	}
-	if revisions[0] == parent || revisions[1] == parent || revisions[0] == revisions[1] {
-		t.Errorf("revisions = %v: the unmodified files must be rendered at two commits of their own, not at the parent", revisions)
+	if len(a.queries) != 3 {
+		t.Fatalf("queries = %d, want 3", len(a.queries))
 	}
-	if len(g.commits) != 2 || len(g.pushes) != 2 {
-		t.Fatalf("commits = %d, pushes = %d, want 2 and 2", len(g.commits), len(g.pushes))
+	if a.queries[0].NoCache {
+		t.Error("an ordinary render must use the cache")
 	}
-	markers := make([]string, 0, len(g.commits))
-	for _, files := range g.commits {
-		if len(files) != 1 || files[freshMarker] == nil {
-			t.Errorf("a fresh commit holds %v: only the marker differs from the base", slices.Sorted(maps.Keys(files)))
+	for _, q := range a.queries[1:] {
+		if !q.NoCache || !slices.Equal(q.Revisions, []string{"6.7.1", parent}) {
+			t.Errorf("query = %+v: the unmodified files are rendered at the parent, with noCache", q)
 		}
-		markers = append(markers, string(files[freshMarker]))
 	}
-	if markers[0] == markers[1] {
-		t.Errorf("the two markers are the same: %q", markers)
+	if len(g.commits) != 0 || len(g.pushes) != 0 {
+		t.Errorf("commits = %d, pushes = %d: a fresh render of the unmodified files needs no scratch branch", len(g.commits), len(g.pushes))
 	}
-	if branches, _, renders := r.Stats(); branches != 2 || renders != 2 {
-		t.Errorf("branches = %d, renders = %d", branches, renders)
+	if branches, pushes, renders := r.Stats(); branches != 0 || pushes != 0 || renders != 3 {
+		t.Errorf("branches = %d, pushes = %d, renders = %d", branches, pushes, renders)
 	}
-	// An edit is rendered with its own change plus the marker, and the branches
-	// are counted against the bound like any other.
-	r2 := newRenderer(&fakeGit{}, &fakeArgo{}, func(c *Config) { c.MaxBranches = 1 })
-	if _, err := r2.RenderFresh(t.Context(), rendermap.App{}, maps.Clone(base)); err != nil {
+	// Edited files still go to a scratch commit, with noCache as well.
+	if _, err := r.RenderFresh(t.Context(), rendermap.App{}, edited(map[string]string{"env/values.yaml": "a: 2\n"})); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r2.RenderFresh(t.Context(), rendermap.App{}, maps.Clone(base)); !errors.Is(err, ErrTooManyBranches) {
-		t.Errorf("err = %v, want ErrTooManyBranches", err)
+	last := a.queries[len(a.queries)-1]
+	if !last.NoCache || last.Revisions[1] == parent || len(g.commits) != 1 {
+		t.Errorf("query = %+v, commits = %d", last, len(g.commits))
 	}
 }
