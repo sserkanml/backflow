@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/sserkanml/backflow/compare/v0.8.0...v0.9.0) (2026-10-25)
+
+
+### Features
+
+* **api:** spec.mapping.scratchBranches and per-source status of Applications and proposals ([e968e69](https://github.com/sserkanml/backflow/commit/e968e699e8d902ac2731c56cfbe0335a725d8d81))
+* **drift:** chart defaults from Argo CD for charts that are not in Git ([e968e69](https://github.com/sserkanml/backflow/commit/e968e699e8d902ac2731c56cfbe0335a725d8d81))
+* **drift:** git-ahead per source; a chart version change is reported as a change of the Application ([e968e69](https://github.com/sserkanml/backflow/commit/e968e699e8d902ac2731c56cfbe0335a725d8d81))
+* **drift:** leave Helm and Argo CD hook resources out of verification ([e968e69](https://github.com/sserkanml/backflow/commit/e968e699e8d902ac2731c56cfbe0335a725d8d81))
+* **drift:** map multi-source Helm Applications whose values are in a Git ref source, verified through scratch branches ([e968e69](https://github.com/sserkanml/backflow/commit/e968e699e8d902ac2731c56cfbe0335a725d8d81))
+
+
+### Documentation
+
+* **drift:** multi-source mapping and the Argo CD permission it needs ([e968e69](https://github.com/sserkanml/backflow/commit/e968e699e8d902ac2731c56cfbe0335a725d8d81))
+
 ## [0.8.0](https://github.com/sserkanml/backflow/compare/v0.7.0...v0.8.0) (2026-10-24)
 
 
