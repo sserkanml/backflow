@@ -8,7 +8,8 @@
 #   - CRD defaults are filled in
 #   - ScmConnection reports Unreachable / SecretError / Unauthorized correctly
 #   - A real token turns Ready=True (only when GITLAB_TOKEN is set)
-#   - Updating the token Secret is picked up immediately (Secret watch)
+#   - A rotated or created token Secret is picked up at the next verification
+#     (Secrets are not watched; the operator runs with --scm-recheck-interval=10s)
 #
 # Usage (from the repository root):
 #   ./hack/test-scm.sh
@@ -32,9 +33,12 @@ IN_CLUSTER="${IN_CLUSTER:-false}"
 MANAGER_NS="${MANAGER_NS:-backflow-system}"
 MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-90s}"
-# Must be shorter than the 1 minute retry interval, so a pass proves the
-# Secret watch fired rather than the periodic retry.
-ROTATE_TIMEOUT="${ROTATE_TIMEOUT:-30s}"
+# Secrets are not watched: a changed Secret is noticed at the next verification.
+# The local operator runs with --scm-recheck-interval=10s, so this must be well
+# below the 5 minute default (a pass proves the re-verification works) and above
+# 10s. An operator deployed in the cluster uses the chart's scmRecheckInterval
+# (5m by default), so wait for that.
+if [[ "$IN_CLUSTER" == "true" ]]; then ROTATE_TIMEOUT="${ROTATE_TIMEOUT:-330s}"; else ROTATE_TIMEOUT="${ROTATE_TIMEOUT:-40s}"; fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
@@ -175,7 +179,7 @@ else
 step "Building and starting the operator"
 make build >/dev/null
 mkdir -p "$LOG_DIR"
-"$ROOT/bin/manager" >"$LOG_FILE" 2>&1 &
+"$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
 MANAGER_PID=$!
 
 for _ in $(seq 1 60); do
@@ -270,6 +274,11 @@ expect_reason unreachable Unreachable "$WAIT_TIMEOUT" "Non-existent host"
 apply_scm missing-secret https://gitlab.invalid does-not-exist
 expect_reason missing-secret SecretError "$WAIT_TIMEOUT" "Non-existent Secret"
 
+# The Secret is created afterwards: nothing watches it, so the failing connection
+# finds it when it is verified again.
+set_token does-not-exist dummy
+expect_reason missing-secret Unreachable "$ROTATE_TIMEOUT" "Secret created later, picked up at the next verification"
+
 if k -n "$NS" get scm unreachable -o jsonpath='{.status.lastCheckTime}' | grep -q .; then
   pass "status.lastCheckTime is set"
 else
@@ -290,10 +299,10 @@ if [[ -n "$GITLAB_TOKEN" ]]; then
   fi
 
   set_token real-token wrong-token
-  expect_reason real Unauthorized "$ROTATE_TIMEOUT" "Token replaced with a wrong one, picked up via Secret watch"
+  expect_reason real Unauthorized "$ROTATE_TIMEOUT" "Token replaced with a wrong one, picked up at the next verification"
 
   set_token real-token "$GITLAB_TOKEN"
-  expect_reason real Authenticated "$ROTATE_TIMEOUT" "Token restored, picked up via Secret watch"
+  expect_reason real Authenticated "$ROTATE_TIMEOUT" "Token restored, picked up at the next verification"
 else
   skip "GITLAB_TOKEN not set, valid token test skipped"
   set_token wrong-token wrong-token
