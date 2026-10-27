@@ -340,6 +340,86 @@ spec:
               mapping:
                 description: Mapping records where each change lands in the source.
                 properties:
+                  application:
+                    description: |-
+                      Where the value is set in the Application, when an option of the
+                      Application (helm.parameters, kustomize.images, ...) decides a drifted
+                      field. Set only when strategy is Unmapped with reason SetByApplication.
+                      Nothing is proposed: no Argo CD API renders an Application with a changed
+                      spec, so the edit cannot be verified by a render of the child.
+                    properties:
+                      application:
+                        description: The Application whose option sets the value,
+                          as namespace/name.
+                        type: string
+                      current:
+                        description: JSON-encoded value the option has now.
+                        type: string
+                      option:
+                        description: The option, such as spec.source.helm.parameters[name=image.tag].
+                        type: string
+                      optionPath:
+                        description: |-
+                          JSON pointer of the option's value in the Application resource, such as
+                          /spec/source/helm/parameters/0/value.
+                        type: string
+                      parent:
+                        description: The parent Application and its Git file.
+                        properties:
+                          diff:
+                            description: |-
+                              Unified diff of the edit that sets the suggested value, verified by a
+                              render of the parent. Empty when there is no suggested value.
+                            maxLength: 32768
+                            type: string
+                          file:
+                            description: |-
+                              File that defines the option and where in it (a key path for Helm, a JSON
+                              pointer otherwise).
+                            type: string
+                          location:
+                            type: string
+                          message:
+                            description: Why the state is what it is, for people.
+                            maxLength: 1024
+                            type: string
+                          name:
+                            description: |-
+                              The parent Application as namespace/name, or the ApplicationSet that
+                              generated the child.
+                            type: string
+                          repoURL:
+                            description: Git repository and commit the parent was
+                              rendered at.
+                            type: string
+                          revision:
+                            type: string
+                          state:
+                            description: |-
+                              ApplicationParentState says what is known about the Git file that defines the
+                              Application whose option sets the value.
+                            enum:
+                            - Located
+                            - NotManagedFromGit
+                            - GeneratedByApplicationSet
+                            - NotVerifiable
+                            - OutOfSync
+                            - Ambiguous
+                            type: string
+                        required:
+                        - state
+                        type: object
+                      suggested:
+                        description: |-
+                          JSON-encoded value that would reproduce the live state, when it can be
+                          derived exactly (a parameter, a valuesObject key, an image tag, a replica
+                          count, a label). Empty when it cannot, or when the option is a string that
+                          holds YAML (helm.values, kustomize patches).
+                        type: string
+                    required:
+                    - application
+                    - option
+                    type: object
                   collateral:
                     description: |-
                       Changes the edits also make beyond the drifted fields, which the policy
