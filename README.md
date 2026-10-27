@@ -773,6 +773,35 @@ branch (a parent with several sources is `NotVerifiable` so that nothing needs
 one). The parent is read with the `ScmConnection` of the proposal's namespace that
 matches its host, or anonymously.
 
+## JSON files
+
+A manifest, a patch or a value file that is JSON is edited as JSON, **in place**: only
+the bytes of the edit change. Indentation (spaces or tabs, any width), key order, the
+text of numbers (`1.10` stays `1.10` unless the value changes), string escapes, line
+endings (CRLF), a byte order mark and the final newline (or its absence) stay as they
+are. A changed value is written with correct escaping; a new member goes after the last
+one with the indentation of its siblings (or on the same line in a one-line object);
+a removed member or element takes its comma with it and leaves no blank line; a map or
+list that is replaced is written again in the surrounding style. Every result is parsed and
+compared with the object the edit was meant to give, and a key defined twice on the path
+of an edit (which JSON parsers read differently) is `Ambiguous`, never guessed.
+
+What is JSON follows Argo CD (v3.5.3, `getObjsFromYAMLOrJSON`):
+
+- **Directory sources.** A file whose name ends in `.json` holds **one object**; a
+  second value in the file, or an array at the top, makes Argo CD fail, so Backflow
+  reads such a file as defining nothing. An object with an `items` array is a list (any
+  `kind`, `List` usually): its items are the resources, and `"items": null` is an empty
+  list. A `.yaml` file with JSON in it is read as YAML and edited as YAML.
+- **Kustomize sources.** `.json` resource files, strategic merge patches and JSON 6902
+  patches (a JSON list) are edited as JSON, whichever tier they come in. Settings in
+  `kustomization.yaml`, and new Backflow patches, stay YAML.
+- **Helm sources.** A value file with a `.json` extension is read by Helm as YAML and
+  edited by Backflow as JSON.
+
+Limits: UTF-16 files are not edited (Argo CD reads them, Backflow refuses them), and
+Jsonnet is not supported.
+
 ## Partial proposals
 
 By default a proposal is all or nothing: when one drifted field cannot be traced
@@ -836,8 +865,9 @@ the cluster again after the sync.
 - **One operator instance is one trust domain.** Policies and connections of an
   instance share the repository cache and the operator can read every Secret;
   run one instance per tenant that must be kept apart (see Trust above).
-- **YAML manifests only.** A resource defined in a JSON manifest cannot be
-  edited; its proposal is `Unmapped` (`UnsupportedFileFormat`).
+- **YAML and JSON manifests.** Jsonnet cannot be edited, and Argo CD's Jsonnet
+  output is not read at all, so a resource it generates is not found. See JSON files
+  below for what is read as JSON.
 - **Array style is re-rendered.** Changing a value inside a list re-renders
   the entry that holds it, so its indentation and flow or block style may
   differ from your file. Items cannot be added to or removed from lists.
