@@ -28,8 +28,8 @@
 #      config.timeout to values-dev.yaml (an override of the chart default; only
 #      that line is added, the body and the commit name the default). With
 #      spec.helm.addOverrides: false it stays Unmapped (chart defaults, as before).
-#      FEATURE is set by a helm parameter of the Application: Unmapped
-#      (NoVerifiedCandidate), the Application decides it, not a value file.
+#      FEATURE is set by a helm parameter of the Application: Unmapped (SetByApplication),
+#      the status says which parameter and where its Application is defined in Git.
 #   h. A Deployment: scaling demo-helm is mapped to replicaCount and stays an
 #      integer. Changing the container image with kubectl set image changes only
 #      a part of the image string ("repository:tag"); the key image.tag holds that
@@ -1357,7 +1357,9 @@ wait_for "proposal is Unmapped (FEATURE $GIT_FEATURE -> $NEW_FEATURE)" has_propo
 remember_proposals
 P_G2="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_FEATURE\"" | head -n 1)"
 if [[ -n "$P_G2" ]]; then
-  expect_unmapped "$P_G2" NoVerifiedCandidate "helm.parameters" "config.feature"
+  expect_unmapped "$P_G2" SetByApplication "Set by spec.source.helm.parameters[name=config.feature] of the Application $ARGOCD_NS/$DEMO_APP" "no merge request is made"
+  expect_eq "application option path" "/spec/source/helm/parameters/0/value" "$(dp_field "$P_G2" .status.mapping.application.optionPath)"
+  expect_eq "suggested value" "\"$NEW_FEATURE\"" "$(dp_field "$P_G2" .status.mapping.application.suggested)"
 fi
 reset_cluster "$DEMO_APP"
 

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sserkanml/backflow/internal/appvalues"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -278,6 +280,11 @@ func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alp
 			if head == writeTarget(dp).Revision {
 				// Same tree that mapped before: nothing changed in Git, so this
 				// is not "the source moved on".
+				if len(verdict.options) > 0 {
+					if app, aerr := r.application(ctx, dp); aerr == nil {
+						return stop(r.unmappedByApplication(ctx, dp, app, verdict))
+					}
+				}
 				return stop(ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error()))
 			}
 			return stop(ctrl.Result{}, r.supersededByGit(ctx, dp, sourceChangedMessage+" "+verdict.err.Error()))
@@ -310,6 +317,9 @@ type verdictError struct {
 	err error
 	// reason is the machine-readable reason for the Mapped condition.
 	reason string
+	// options are the options of the Application that set the fields that
+	// could not be mapped, when there are such (see driftproposal_application.go).
+	options []appvalues.Option
 }
 
 func (e *verdictError) Error() string { return e.err.Error() }

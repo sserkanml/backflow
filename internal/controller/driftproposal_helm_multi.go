@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sserkanml/backflow/internal/appvalues"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -340,6 +342,9 @@ func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflow
 		return nil, scratchFailure(err)
 	}
 	if !out.Mapped() {
+		if opts := helmmap.ApplicationOptions(appvalues.SourceAt(ms.Render), fields, unmappedPaths(out), helm); len(opts) > 0 {
+			return nil, applicationVerdict(out, opts)
+		}
 		msg := out.Unmapped.Message
 		if strings.Contains(msg, "in the Application, not by a value file") {
 			msg += fmt.Sprintf(" (it is set inline in the Application, in spec.sources[%d].helm; Backflow does not map values set in the Application yet)", ms.Render)

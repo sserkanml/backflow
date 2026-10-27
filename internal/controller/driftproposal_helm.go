@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/appvalues"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/kustomize"
@@ -455,7 +456,9 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 		return nil, argoFailure(err)
 	}
 	if !out.Mapped() {
-		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
+		helm, _, _ := unstructured.NestedMap(app.Object, "spec", "source", "helm")
+		opts := helmmap.ApplicationOptions(appvalues.SingleSource, fields, unmappedPaths(out), helm)
+		return nil, applicationVerdict(out, opts)
 	}
 	change := &mappedChange{strategy: backflowv1alpha1.StrategyHelmValues, results: out.Results, collateral: out.Collateral, overrides: out.Overrides, renders: out.Renders}
 	for _, l := range out.LeftOut {

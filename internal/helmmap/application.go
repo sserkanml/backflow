@@ -7,11 +7,11 @@ import (
 
 // ApplicationOptions returns the options of the Application (helm.parameters,
 // helm.valuesObject, helm.values) that set the fields that could not be mapped,
-// one per option, with the fields each one sets. helm is spec.source.helm of the
-// Application. A suggested value is given only when the option's own value is
+// one per option, with the fields each one sets. helm is the helm block of the source (at says where it is in the
+// Application). A suggested value is given only when the option's own value is
 // what the field copies: the live value of the field, or for a part of it (an
 // image tag) the new text of that part.
-func ApplicationOptions(fields []rendermap.Field, unmapped map[string]bool, helm map[string]any) []appvalues.Option {
+func ApplicationOptions(at appvalues.Where, fields []rendermap.Field, unmapped map[string]bool, helm map[string]any) []appvalues.Option {
 	var out []appvalues.Option
 	add := func(o appvalues.Option, field string) {
 		for i := range out {
@@ -51,11 +51,11 @@ func ApplicationOptions(fields []rendermap.Field, unmapped map[string]bool, helm
 				var ok bool
 				switch c.Layer {
 				case LayerParameters:
-					o, ok = appvalues.HelmParameter(helm, c.Name, suggested, has)
+					o, ok = appvalues.HelmParameter(at, helm, c.Name, suggested, has)
 				case LayerValuesObject:
-					o, ok = appvalues.HelmValuesObject(helm, c.Path, suggested, has)
+					o, ok = appvalues.HelmValuesObject(at, helm, c.Path, suggested, has)
 				case LayerValues:
-					o, ok = appvalues.HelmValues(c.Path), true
+					o, ok = appvalues.HelmValues(at, c.Path), true
 				}
 				if ok {
 					add(o, f.Change.Path)

@@ -87,7 +87,7 @@ func TestApplicationOptionsOfTheKustomizeOptions(t *testing.T) {
 		s2, _ := NewSource(fsys, "k/overlay", o2)
 		f2, _ := FieldsFor(s2, files, nil, obj, Policy{Application: "demo"}, ch)
 		got := ApplicationOptions(f2, map[string]bool{"/spec/replicas": true})
-		if len(got) != 1 || got[0].Option != "spec.source.kustomize.patches[0]" || got[0].Path != "/spec/source/kustomize/patches/0" || got[0].Suggested != "" {
+		if len(got) != 1 || got[0].Option != "spec.source.kustomize.patches[0]" || got[0].Path != "/spec/source/kustomize/patches/0/patch" || got[0].Suggested != "" {
 			t.Errorf("%+v", got)
 		}
 	})

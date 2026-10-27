@@ -78,8 +78,15 @@ func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflow
 	if err != nil {
 		return nil, err
 	}
+	fields, err := kustomize.FieldsFor(src, files, located.Origins[key], located.Objects[key], kustomize.Policy{
+		EditBases: policy.Spec.KustomizeEditsBases(), AddPatches: policy.Spec.KustomizeAddsPatches(),
+		Application: app.GetName(), OtherUsers: others,
+	}, dp.Spec.Changes)
+	if err != nil {
+		return nil, err
+	}
 	out, err := kustomize.Verify(ctx, rend, kustomize.Input{
-		App: rapp, Resource: key, Changes: dp.Spec.Changes, Source: src, Files: files, Located: located,
+		App: rapp, Resource: key, Changes: dp.Spec.Changes, Source: src, Files: files, Located: located, Fields: fields,
 		Policy: kustomize.Policy{
 			EditBases: policy.Spec.KustomizeEditsBases(), AddPatches: policy.Spec.KustomizeAddsPatches(),
 			Application: app.GetName(), OtherUsers: others,
@@ -89,7 +96,7 @@ func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflow
 		return nil, renderFailure(ctx, err)
 	}
 	if !out.Mapped() {
-		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(out.Unmapped.Message)}
+		return nil, applicationVerdict(out, kustomize.ApplicationOptions(fields, unmappedPaths(out)))
 	}
 	desc := kustomize.Describe(out)
 	change := &mappedChange{strategy: desc.Strategy, results: out.Results, collateral: out.Collateral, renders: out.Renders, kustomize: &desc}
