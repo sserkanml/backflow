@@ -115,7 +115,10 @@ The most used values of the chart; all of them are in
 | `imagePullSecrets` | `[]` | for a mirror that needs credentials |
 | `replicaCount`, `leaderElection` | `1`, `true` | more than one replica needs leader election |
 | `mergeRequestPollInterval` | `2m` | how often an open merge request is polled |
-| `resources` | 50m/128Mi requests, 500m/512Mi limits | tune to the number of Secrets and Applications |
+| `resources` | 50m/128Mi requests, 500m/512Mi limits | tune to the number of Applications |
+| `secretNamespaces` | `[]` | namespaces where the operator may read Secrets; empty means every namespace (see Permissions) |
+| `scmRecheckInterval` | `5m` | how often a working ScmConnection is verified again; also how long a rotated token goes unnoticed |
+| `secretCacheTTL` | `30s` | how long a Secret that was read stays in memory |
 | `repoCache.sizeLimit` | `2Gi` | the `emptyDir` Git repositories are cached on |
 | `extraArgs` | `[]` | extra operator flags |
 | `podSecurityContext`, `securityContext` | restricted, no fixed IDs | see OpenShift below |
@@ -142,11 +145,59 @@ of the `ArgoCD` resource) for the account above. The server certificate is
 signed by the cluster's service CA: mount it in a Secret and set
 `argoCD.caSecretRef`.
 
+### Permissions
+
+The operator never writes to the cluster. Everything it is allowed to do, and why:
+
+| Resource | Verbs | Scope | Why |
+|---|---|---|---|
+| `applications.argoproj.io` | `get`, `list`, `watch` | cluster | find the Applications a policy selects and see when they drift or sync |
+| `scmconnections`, `backflowpolicies`, `driftproposals` (`backflow.io`) | `get`, `list`, `watch`, `create`, `update`, `patch`, `delete` | cluster | its own resources; it creates and updates DriftProposals |
+| their `/status` | `get`, `update`, `patch` | cluster | the controller that owns a resource writes its status |
+| their `/finalizers` | `update` | cluster | cleanup of branches and merge requests when a proposal is deleted |
+| `events` | `create`, `patch` | cluster | Events on policies and proposals |
+| `secrets` | **`get` only** | every namespace, or the namespaces of `secretNamespaces` | the token of an ScmConnection, its CA bundle, the Argo CD token and CA bundle of a policy |
+| `leases`, `configmaps`, `events` | leader election | release namespace | only with `leaderElection` |
+| `tokenreviews`, `subjectaccessreviews` | `create` | cluster | only with `metrics.enabled` (authentication and authorization of the metrics endpoint) |
+
+Secrets are read **by name, straight from the API server**: the operator holds
+no `list` or `watch` on them, keeps no informer for them, and so does not hold
+every Secret of the cluster in memory. A Secret read stays in memory for
+`secretCacheTTL` (30s) and is never logged.
+
+By default the `get` on Secrets is a ClusterRole rule. To narrow it to the
+namespaces where your ScmConnections and policies live, list them:
+
+```bash
+helm upgrade --install backflow oci://ghcr.io/sserkanml/charts/backflow -n backflow-system \
+  --set 'secretNamespaces={team-a,team-b}'
+```
+
+The cluster-wide rule is then gone: the chart creates a Role and a RoleBinding
+that grant `get` on Secrets in each listed namespace and in the release
+namespace. An ScmConnection whose token Secret is in another namespace is not
+`Ready`, with the reason `SecretForbidden` and a message that names the namespace
+and the chart value. A BackflowPolicy whose Argo CD token is in another namespace
+cannot reach Argo CD; its proposals are held and the message names the namespace.
+
+**Token rotation.** Secrets are not watched, so a changed Secret is noticed at
+the next read, not at once:
+
+- An ScmConnection is verified again every `scmRecheckInterval` (default `5m`,
+  the operator flag `--scm-recheck-interval`). A rotated token or CA bundle is
+  therefore picked up within that interval, and `Ready` turns False if the old
+  token stops working. Changing the ScmConnection itself verifies it at once.
+- A proposal that is held because its credentials were refused retries with a
+  growing delay (5 seconds to 10 minutes) and reads the Secret again each time.
+- The Argo CD token is read when it is used, and kept for `secretCacheTTL` (30s,
+  `--secret-cache-ttl`), and dropped as soon as Argo CD answers 401, so a rotated
+  token is used within about 30 seconds.
+
 ### Upgrade and uninstall
 
 ```bash
 # CRDs are not touched by helm upgrade: apply the ones of the new version first
-helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <new> | kubectl apply --server-side -f -
+helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <new> | kubectl apply --server-side --force-conflicts -f -
 helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version <new> -n backflow-system
 
 helm uninstall backflow -n backflow-system
@@ -162,9 +213,13 @@ the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
 **Before every `helm upgrade`, apply the CRDs of the version you upgrade to:**
 
 ```bash
-helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <version> | kubectl apply --server-side -f -
+helm show crds oci://ghcr.io/sserkanml/charts/backflow --version <version> | kubectl apply --server-side --force-conflicts -f -
 helm upgrade backflow oci://ghcr.io/sserkanml/charts/backflow --version <version> -n backflow-system
 ```
+
+`--server-side --force-conflicts` lets the apply take over fields that an earlier
+`kubectl apply` or `kubectl replace` of the CRDs owns; without it the apply can
+stop on a field-ownership conflict.
 
 Helm installs the files in the chart's `crds/` once and never upgrades them, so
 `helm upgrade` leaves the CRDs of the old version in place, and an API server
@@ -863,8 +918,9 @@ the cluster again after the sync.
   but their proposals end `Unmapped`. See Helm sources and Kustomize sources above
   for what mapping can and cannot do.
 - **One operator instance is one trust domain.** Policies and connections of an
-  instance share the repository cache and the operator can read every Secret;
-  run one instance per tenant that must be kept apart (see Trust above).
+  instance share the repository cache and the operator can read the Secrets of
+  every namespace in `secretNamespaces` (every namespace by default); run one
+  instance per tenant that must be kept apart (see Permissions above).
 - **YAML and JSON manifests.** Jsonnet cannot be edited, and Argo CD's Jsonnet
   output is not read at all, so a resource it generates is not found. See JSON files
   below for what is read as JSON.
@@ -880,9 +936,10 @@ the cluster again after the sync.
 - **The repository cache is never pruned and holds full clones.** It lives in
   the volume mounted at `--repo-cache-dir` and only grows. Size it for your
   repositories, or restart the pod with an empty volume to clear it.
-- **All Secrets are cached cluster-wide.** The operator reads token Secrets
-  through an informer that watches every Secret in the cluster, which costs
-  memory in clusters with many of them.
+- **A rotated token is noticed after a delay.** Secrets are not watched (the
+  operator cannot list them), so an ScmConnection finds out at its next
+  verification, at most `scmRecheckInterval` (5 minutes by default) later. See
+  Permissions above.
 - **Open proposals of a blocked or not-Ready policy are left as they are.**
   When a policy stops matching an Application, conflicts with another policy
   or its connection is not Ready, proposals that are already open keep their
