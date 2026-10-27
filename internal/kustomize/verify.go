@@ -52,6 +52,9 @@ type Input struct {
 	Files   map[string][]byte
 	Located *Located
 	Policy  Policy
+	// Fields are the fields of the changes when the caller made them already
+	// (FieldsFor); Verify makes them otherwise.
+	Fields []rendermap.Field
 }
 
 // Verify decides whether the changes can be traced back to edits of the
@@ -61,9 +64,12 @@ func Verify(ctx context.Context, r rendermap.Renderer, in Input, opts rendermap.
 	if obj == nil {
 		return nil, fmt.Errorf("the locate render has no %s %s", in.Resource.Kind, in.Resource.Name)
 	}
-	fields, err := FieldsFor(in.Source, in.Files, in.Located.Origins[in.Resource], obj, in.Policy, in.Changes)
-	if err != nil {
-		return nil, err
+	fields := in.Fields
+	if fields == nil {
+		var err error
+		if fields, err = FieldsFor(in.Source, in.Files, in.Located.Origins[in.Resource], obj, in.Policy, in.Changes); err != nil {
+			return nil, err
+		}
 	}
 	return rendermap.Verify(ctx, r, rendermap.Input{
 		App: in.App, Resource: in.Resource, Fields: fields, Files: in.Files,

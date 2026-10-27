@@ -102,6 +102,9 @@ type Tier struct {
 type Blocked struct {
 	// Reason is machine readable (a Reason constant); Message is for people.
 	Reason, Message string
+	// Detail is what the source knows about the cause, opaque to the engine (the
+	// option of the Application that sets the value, for example).
+	Detail any
 }
 
 // Diagnostics lets a source explain why a field has no verified candidate. Both
