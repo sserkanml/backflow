@@ -8,14 +8,6 @@ metadata:
 rules:
 - apiGroups:
   - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
   - events.k8s.io
   resources:
   - events
@@ -62,3 +54,11 @@ rules:
   - get
   - patch
   - update
+{{- if not .Values.secretNamespaces }}
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+{{- end }}
