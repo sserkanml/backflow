@@ -144,8 +144,8 @@ func TestSecretNamespacesReplaceTheClusterWideRule(t *testing.T) {
 		meta, _ := obj["metadata"].(map[string]any)
 		switch obj["kind"] {
 		case "ClusterRole":
-			if strings.Contains(text(t, []map[string]any{obj}), "secrets") {
-				t.Errorf("the ClusterRole must not mention Secrets when secretNamespaces is set:\n%s", text(t, []map[string]any{obj}))
+			if rendered := text(t, []map[string]any{obj}); strings.Contains(rendered, "secrets") {
+				t.Errorf("the ClusterRole must not mention Secrets when secretNamespaces is set:\n%s", rendered)
 			}
 		case "Role":
 			roles[fmt.Sprint(meta["namespace"])] = true
