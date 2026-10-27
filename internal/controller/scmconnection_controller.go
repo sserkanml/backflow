@@ -48,6 +48,12 @@ type ScmConnectionReconciler struct {
 	RecheckInterval time.Duration
 }
 
+// retryInterval is how soon a failing connection is verified again: never later
+// than a working one, so a fixed Secret is noticed at least as fast as a rotated one.
+func (r *ScmConnectionReconciler) retryInterval() time.Duration {
+	return min(scmRetryInterval, r.recheckInterval())
+}
+
 func (r *ScmConnectionReconciler) recheckInterval() time.Duration {
 	if r.RecheckInterval > 0 {
 		return r.RecheckInterval
@@ -100,7 +106,7 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if checkErr != nil {
 		log.Info("SCM connection check failed", "reason", cond.Reason, "error", checkErr.Error())
-		return ctrl.Result{RequeueAfter: scmRetryInterval}, nil
+		return ctrl.Result{RequeueAfter: r.retryInterval()}, nil
 	}
 	log.Info("SCM connection verified", "user", user)
 	return ctrl.Result{RequeueAfter: r.recheckInterval()}, nil
