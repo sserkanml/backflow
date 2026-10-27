@@ -233,6 +233,89 @@ type Mapping struct {
 	// +kubebuilder:validation:MaxItems=64
 	// +optional
 	Unmapped []UnmappedField `json:"unmapped,omitempty"`
+	// Where the value is set in the Application, when an option of the
+	// Application (helm.parameters, kustomize.images, ...) decides a drifted
+	// field. Set only when strategy is Unmapped with reason SetByApplication.
+	// Nothing is proposed: no Argo CD API renders an Application with a changed
+	// spec, so the edit cannot be verified by a render of the child.
+	// +optional
+	Application *ApplicationValue `json:"application,omitempty"`
+}
+
+// ApplicationParentState says what is known about the Git file that defines the
+// Application whose option sets the value.
+// +kubebuilder:validation:Enum=Located;NotManagedFromGit;GeneratedByApplicationSet;NotVerifiable;OutOfSync;Ambiguous
+type ApplicationParentState string
+
+const (
+	// ParentLocated: the parent Application renders the child from Git and a
+	// render of the parent with the edit changes exactly the option.
+	ParentLocated ApplicationParentState = "Located"
+	// ParentNotManagedFromGit: no Application manages the child.
+	ParentNotManagedFromGit ApplicationParentState = "NotManagedFromGit"
+	// ParentGeneratedByApplicationSet: an ApplicationSet generated the child.
+	ParentGeneratedByApplicationSet ApplicationParentState = "GeneratedByApplicationSet"
+	// ParentNotVerifiable: the parent exists but its Git file cannot be found
+	// with certainty (several sources, no Git source, no verified edit).
+	ParentNotVerifiable ApplicationParentState = "NotVerifiable"
+	// ParentOutOfSync: the parent is not synced, so its Git is not what runs.
+	ParentOutOfSync ApplicationParentState = "OutOfSync"
+	// ParentAmbiguous: more than one Application manages the child.
+	ParentAmbiguous ApplicationParentState = "Ambiguous"
+)
+
+// ApplicationValue says which option of an Argo CD Application sets a drifted
+// value, and where that option is defined in Git.
+type ApplicationValue struct {
+	// The Application whose option sets the value, as namespace/name.
+	Application string `json:"application"`
+	// The option, such as spec.source.helm.parameters[name=image.tag].
+	Option string `json:"option"`
+	// JSON pointer of the option's value in the Application resource, such as
+	// /spec/source/helm/parameters/0/value.
+	// +optional
+	OptionPath string `json:"optionPath,omitempty"`
+	// JSON-encoded value the option has now.
+	// +optional
+	Current string `json:"current,omitempty"`
+	// JSON-encoded value that would reproduce the live state, when it can be
+	// derived exactly (a parameter, a valuesObject key, an image tag, a replica
+	// count, a label). Empty when it cannot, or when the option is a string that
+	// holds YAML (helm.values, kustomize patches).
+	// +optional
+	Suggested string `json:"suggested,omitempty"`
+	// The parent Application and its Git file.
+	// +optional
+	Parent *ParentApplication `json:"parent,omitempty"`
+}
+
+// ParentApplication is the Application that defines the child in Git.
+type ParentApplication struct {
+	State ApplicationParentState `json:"state"`
+	// The parent Application as namespace/name, or the ApplicationSet that
+	// generated the child.
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Git repository and commit the parent was rendered at.
+	// +optional
+	RepoURL string `json:"repoURL,omitempty"`
+	// +optional
+	Revision string `json:"revision,omitempty"`
+	// File that defines the option and where in it (a key path for Helm, a JSON
+	// pointer otherwise).
+	// +optional
+	File string `json:"file,omitempty"`
+	// +optional
+	Location string `json:"location,omitempty"`
+	// Unified diff of the edit that sets the suggested value, verified by a
+	// render of the parent. Empty when there is no suggested value.
+	// +kubebuilder:validation:MaxLength=32768
+	// +optional
+	Diff string `json:"diff,omitempty"`
+	// Why the state is what it is, for people.
+	// +kubebuilder:validation:MaxLength=1024
+	// +optional
+	Message string `json:"message,omitempty"`
 }
 
 // UnmappedField is a drifted field that a partial mapping leaves out.
