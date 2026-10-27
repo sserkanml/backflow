@@ -26,6 +26,8 @@ jobs:
       # test/chart renders the chart; with CI=true a missing helm fails the test.
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.0
 
       - name: Running Tests
         run: |
@@ -50,6 +52,8 @@ jobs:
 
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.0
 
       - name: Lint the chart
         run: make helm-lint

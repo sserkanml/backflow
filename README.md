@@ -265,6 +265,9 @@ make coverage           # how much real-chart and overlay drift maps back to Git
 make helm-sync          # copy the CRDs and RBAC rules into charts/backflow after make manifests
 ```
 
+CI uses Helm v4.2.0 (`.github/workflows/test.yml`). The chart tests compare the
+rendered objects, not the text, so they also pass with Helm 3.
+
 To try a local build in the cluster instead of the released image:
 
 ```bash
