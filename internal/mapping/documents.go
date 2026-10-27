@@ -185,7 +185,7 @@ func DocumentsOf(file string, content []byte) ([]DocumentInfo, error) {
 		switch {
 		case items.Kind == yaml.SequenceNode:
 			nodes = items.Content
-		case items.Kind == yaml.ScalarNode && items.Tag == "!!null":
+		case items.Kind == yaml.ScalarNode && items.Tag == nullTag:
 			nodes = nil
 		}
 	}

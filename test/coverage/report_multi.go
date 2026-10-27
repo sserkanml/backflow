@@ -45,3 +45,21 @@ func multiSourceReport(results []caseResult) string {
 	}
 	return b.String()
 }
+
+// directoryReport is the part of REPORT.md for Directory sources: the same
+// manifests as YAML files and as JSON files, mapped in place by the YAML and the
+// JSON editor.
+func directoryReport(results []caseResult) string {
+	var b strings.Builder
+	b.WriteString("\n## Directory\n\n")
+	b.WriteString("The same Deployment, Service and ConfigMap as YAML files (`directory-yaml`) and as JSON files (`directory-json`: one object per file, and a `kind: List` whose items are the resources), with the scenarios of the Kustomize section. There is nothing to render: the file is the resource, and an edit is verified by comparing the edited resource with the original.\n\n")
+	b.WriteString("| Application | Resource | Scenario | Changed fields | Result |\n|---|---|---|---|---|\n")
+	for _, r := range results {
+		var paths []string
+		for _, c := range r.Changes {
+			paths = append(paths, "`"+c.Path+"`")
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", r.Chart, r.Resource, r.Scenario, strings.Join(paths, "<br>"), cellOf(r.ByPolicy["default"]))
+	}
+	return b.String()
+}

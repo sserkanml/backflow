@@ -18,6 +18,9 @@ import (
 // mapTag is the YAML tag of a mapping.
 const mapTag = "!!map"
 
+// nullTag is the YAML tag of null.
+const nullTag = "!!null"
+
 // Apply applies the proposal's changes to one document of a file and returns
 // the edited file. The new values are the live values of the changes, because
 // the goal is to make Git match the cluster. Everything outside the edited
@@ -229,7 +232,7 @@ func addEdit(li *lineIndex, root *yaml.Node, segs []string, live string) (edit, 
 		start, end = entryRange(li, steps, unit)
 	}
 
-	if parent.Kind == yaml.ScalarNode && parent.Tag == "!!null" {
+	if parent.Kind == yaml.ScalarNode && parent.Tag == nullTag {
 		*parent = yaml.Node{Kind: yaml.MappingNode, Tag: mapTag, LineComment: parent.LineComment, Line: parent.Line, Column: parent.Column}
 	}
 	if parent.Kind != yaml.MappingNode {
@@ -592,7 +595,7 @@ func jsonValue(dec *json.Decoder) (*yaml.Node, error) {
 	case bool:
 		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: strconv.FormatBool(t)}, nil
 	case nil:
-		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}, nil
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: nullTag, Value: "null"}, nil
 	}
 	return nil, fmt.Errorf("unexpected JSON token %v", tok)
 }

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: demo
+data:
+  mode: base
+  retries: "3"

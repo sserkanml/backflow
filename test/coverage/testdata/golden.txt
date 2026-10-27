@@ -363,6 +363,99 @@ webapp | Service kvstore | service-port | no-overrides | Unmapped NoVerifiedCand
 webapp | Service webapp | service-port | default | Mapped charts/webapp/values-prod.yaml: service.port
 webapp | Service webapp | service-port | permissive | Mapped charts/webapp/values-prod.yaml: service.port
 webapp | Service webapp | service-port | no-overrides | Mapped charts/webapp/values-prod.yaml: service.port
+webapp-json | ConfigMap webapp | configmap-data | default | Mapped charts/webapp-json/values-prod.json: config.cacheTTL
+webapp-json | ConfigMap webapp | configmap-data | permissive | Mapped charts/webapp-json/values-prod.json: config.cacheTTL
+webapp-json | ConfigMap webapp | configmap-data | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | env-add | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | env-add | permissive | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | env-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | image-tag | default | Mapped charts/webapp-json/values-prod.json: store.image.tag
+webapp-json | Deployment kvstore | image-tag | permissive | Mapped charts/webapp-json/values-prod.json: store.image.tag
+webapp-json | Deployment kvstore | image-tag | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | label-add | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | label-add | permissive | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | label-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | nodeselector-add | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | nodeselector-add | permissive | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | pod-annotation | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | pod-annotation | permissive | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | port-change | default | Unmapped ValueAffectsOtherFields
+webapp-json | Deployment kvstore | port-change | permissive | Unmapped ValueAffectsOtherFields
+webapp-json | Deployment kvstore | port-change | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | pull-policy | default | Mapped charts/webapp-json/values-prod.json: store.image.pullPolicy
+webapp-json | Deployment kvstore | pull-policy | permissive | Mapped charts/webapp-json/values-prod.json: store.image.pullPolicy
+webapp-json | Deployment kvstore | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | resources | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | resources | permissive | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | resources | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale | default | Mapped charts/webapp-json/values-prod.json: store.replicaCount
+webapp-json | Deployment kvstore | scale | permissive | Mapped charts/webapp-json/values-prod.json: store.replicaCount
+webapp-json | Deployment kvstore | scale | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale+pod-annotation | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale+pod-annotation | permissive | Partial charts/webapp-json/values-prod.json: store.replicaCount | left out: NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale+pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale+toleration | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale+toleration | permissive | Partial charts/webapp-json/values-prod.json: store.replicaCount | left out: NoVerifiedCandidate
+webapp-json | Deployment kvstore | scale+toleration | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | toleration | default | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | toleration | permissive | Unmapped NoVerifiedCandidate
+webapp-json | Deployment kvstore | toleration | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | env-add | default | Mapped charts/webapp-json/values-prod.json: env
+webapp-json | Deployment webapp | env-add | permissive | Mapped charts/webapp-json/values-prod.json: env
+webapp-json | Deployment webapp | env-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | env-change | default | Mapped charts/webapp-json/values-prod.json: env
+webapp-json | Deployment webapp | env-change | permissive | Mapped charts/webapp-json/values-prod.json: env
+webapp-json | Deployment webapp | env-change | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | env-remove | default | Mapped charts/webapp-json/values-prod.json: env
+webapp-json | Deployment webapp | env-remove | permissive | Mapped charts/webapp-json/values-prod.json: env
+webapp-json | Deployment webapp | env-remove | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | image-tag | default | Unmapped ValueAffectsOtherFields
+webapp-json | Deployment webapp | image-tag | permissive | Mapped charts/webapp-json/values-prod.json: image.tag
+webapp-json | Deployment webapp | image-tag | no-overrides | Unmapped ValueAffectsOtherFields
+webapp-json | Deployment webapp | label-add | default | Mapped charts/webapp-json/values-prod.json: podLabels.backflow\.io/test
+webapp-json | Deployment webapp | label-add | permissive | Mapped charts/webapp-json/values-prod.json: podLabels.backflow\.io/test
+webapp-json | Deployment webapp | label-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | nodeselector-add | default | Mapped charts/webapp-json/values-prod.json: nodeSelector
+webapp-json | Deployment webapp | nodeselector-add | permissive | Mapped charts/webapp-json/values-prod.json: nodeSelector
+webapp-json | Deployment webapp | nodeselector-add | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | pod-annotation | default | Mapped charts/webapp-json/values-prod.json: podAnnotations
+webapp-json | Deployment webapp | pod-annotation | permissive | Mapped charts/webapp-json/values-prod.json: podAnnotations
+webapp-json | Deployment webapp | pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | port-change | default | Mapped charts/webapp-json/values-prod.json: containerPort
+webapp-json | Deployment webapp | port-change | permissive | Mapped charts/webapp-json/values-prod.json: containerPort
+webapp-json | Deployment webapp | port-change | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | probe-delay | default | Mapped charts/webapp-json/values-prod.json: probes.initialDelaySeconds
+webapp-json | Deployment webapp | probe-delay | permissive | Mapped charts/webapp-json/values-prod.json: probes.initialDelaySeconds
+webapp-json | Deployment webapp | probe-delay | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | pull-policy | default | Mapped charts/webapp-json/values-prod.json: image.pullPolicy
+webapp-json | Deployment webapp | pull-policy | permissive | Mapped charts/webapp-json/values-prod.json: image.pullPolicy
+webapp-json | Deployment webapp | pull-policy | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | resources | default | Mapped charts/webapp-json/values-prod.json: resources.limits.memory
+webapp-json | Deployment webapp | resources | permissive | Mapped charts/webapp-json/values-prod.json: resources.limits.memory
+webapp-json | Deployment webapp | resources | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | scale | default | Mapped charts/webapp-json/values-prod.json: replicaCount
+webapp-json | Deployment webapp | scale | permissive | Mapped charts/webapp-json/values-prod.json: replicaCount
+webapp-json | Deployment webapp | scale | no-overrides | Mapped charts/webapp-json/values-prod.json: replicaCount
+webapp-json | Deployment webapp | scale+pod-annotation | default | Mapped charts/webapp-json/values-prod.json: podAnnotations, charts/webapp-json/values-prod.json: replicaCount
+webapp-json | Deployment webapp | scale+pod-annotation | permissive | Mapped charts/webapp-json/values-prod.json: podAnnotations, charts/webapp-json/values-prod.json: replicaCount
+webapp-json | Deployment webapp | scale+pod-annotation | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Deployment webapp | scale+toleration | default | Mapped charts/webapp-json/values-prod.json: replicaCount, charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | scale+toleration | permissive | Mapped charts/webapp-json/values-prod.json: replicaCount, charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | scale+toleration | no-overrides | Mapped charts/webapp-json/values-prod.json: replicaCount, charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | toleration | default | Mapped charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | toleration | permissive | Mapped charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | toleration | no-overrides | Mapped charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | toleration-remove | default | Mapped charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | toleration-remove | permissive | Mapped charts/webapp-json/values-prod.json: tolerations
+webapp-json | Deployment webapp | toleration-remove | no-overrides | Mapped charts/webapp-json/values-prod.json: tolerations
+webapp-json | Service kvstore | service-port | default | Unmapped ValueAffectsOtherFields
+webapp-json | Service kvstore | service-port | permissive | Unmapped ValueAffectsOtherFields
+webapp-json | Service kvstore | service-port | no-overrides | Unmapped NoVerifiedCandidate
+webapp-json | Service webapp | service-port | default | Mapped charts/webapp-json/values-prod.json: service.port
+webapp-json | Service webapp | service-port | permissive | Mapped charts/webapp-json/values-prod.json: service.port
+webapp-json | Service webapp | service-port | no-overrides | Mapped charts/webapp-json/values-prod.json: service.port
 kustomize-dev | ConfigMap extra | configmap-data | default | Mapped overlays/dev/extra.yaml: data.level [resource file]
 kustomize-dev | ConfigMap extra | configmap-data | editBases | Mapped overlays/dev/extra.yaml: data.level [resource file]
 kustomize-dev | ConfigMap extra | configmap-data | no-addPatches | Mapped overlays/dev/extra.yaml: data.level [resource file]
@@ -435,6 +528,36 @@ kustomize-dev-images | Deployment web | toleration-remove | no-addPatches | Unma
 kustomize-dev-images | Service web | service-port | default | Unmapped NoVerifiedCandidate
 kustomize-dev-images | Service web | service-port | editBases | Mapped base/service.yaml: spec.ports.0.port [base]
 kustomize-dev-images | Service web | service-port | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | ConfigMap extra | configmap-data | default | Mapped overlays/json/extra.json: data.level [resource file]
+kustomize-json | ConfigMap extra | configmap-data | editBases | Mapped overlays/json/extra.json: data.level [resource file]
+kustomize-json | ConfigMap extra | configmap-data | no-addPatches | Mapped overlays/json/extra.json: data.level [resource file]
+kustomize-json | Deployment web | env-change | default | Mapped overlays/json/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env.1.value, overlays/json/kustomization.yaml: patches.- [new patch]
+kustomize-json | Deployment web | env-change | editBases | Mapped base-json/deployment.json: spec.template.spec.containers.0.env.1.value [base]
+kustomize-json | Deployment web | env-change | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | Deployment web | env-remove | default | Mapped overlays/json/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.env, overlays/json/kustomization.yaml: patches.- [new patch]
+kustomize-json | Deployment web | env-remove | editBases | Mapped base-json/deployment.json: spec.template.spec.containers.0.env [base]
+kustomize-json | Deployment web | env-remove | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | Deployment web | image-tag | default | Mapped overlays/json/kustomization.yaml: images.0.newTag [setting]
+kustomize-json | Deployment web | image-tag | editBases | Mapped overlays/json/kustomization.yaml: images.0.newTag [setting]
+kustomize-json | Deployment web | image-tag | no-addPatches | Mapped overlays/json/kustomization.yaml: images.0.newTag [setting]
+kustomize-json | Deployment web | pod-annotation | default | Mapped overlays/json/backflow-patches/deployment-web.yaml: spec.template.metadata.annotations, overlays/json/kustomization.yaml: patches.- [new patch]
+kustomize-json | Deployment web | pod-annotation | editBases | Mapped base-json/deployment.json: spec.template.metadata.annotations [base]
+kustomize-json | Deployment web | pod-annotation | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | Deployment web | pull-policy | default | Mapped overlays/json/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.imagePullPolicy, overlays/json/kustomization.yaml: patches.- [new patch]
+kustomize-json | Deployment web | pull-policy | editBases | Mapped base-json/deployment.json: spec.template.spec.containers.0.imagePullPolicy [base]
+kustomize-json | Deployment web | pull-policy | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | Deployment web | resources | default | Mapped overlays/json/backflow-patches/deployment-web.yaml: spec.template.spec.containers.0.resources.limits.memory, overlays/json/kustomization.yaml: patches.- [new patch]
+kustomize-json | Deployment web | resources | editBases | Mapped base-json/deployment.json: spec.template.spec.containers.0.resources.limits.memory [base]
+kustomize-json | Deployment web | resources | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | Deployment web | scale | default | Mapped overlays/json/replicas.json: 0.value [patch]
+kustomize-json | Deployment web | scale | editBases | Mapped overlays/json/replicas.json: 0.value [patch]
+kustomize-json | Deployment web | scale | no-addPatches | Mapped overlays/json/replicas.json: 0.value [patch]
+kustomize-json | Deployment web | toleration-remove | default | Mapped overlays/json/backflow-patches/deployment-web.yaml: spec.template.spec.tolerations, overlays/json/kustomization.yaml: patches.- [new patch]
+kustomize-json | Deployment web | toleration-remove | editBases | Mapped base-json/deployment.json: spec.template.spec.tolerations [base]
+kustomize-json | Deployment web | toleration-remove | no-addPatches | Unmapped NoVerifiedCandidate
+kustomize-json | Service web | service-port | default | Unmapped NoVerifiedCandidate
+kustomize-json | Service web | service-port | editBases | Mapped base-json/service.json: spec.ports.0.port [base]
+kustomize-json | Service web | service-port | no-addPatches | Unmapped NoVerifiedCandidate
 kustomize-prod | Deployment prod-web | env-change | default | Mapped overlays/prod/kustomization.yaml: patches.1.patch.0.value [patch]
 kustomize-prod | Deployment prod-web | env-change | editBases | Mapped overlays/prod/kustomization.yaml: patches.1.patch.0.value [patch]
 kustomize-prod | Deployment prod-web | env-change | no-addPatches | Mapped overlays/prod/kustomization.yaml: patches.1.patch.0.value [patch]
@@ -657,3 +780,23 @@ webapp-ms | Service kvstore | service-port | no-overrides | Unmapped NoVerifiedC
 webapp-ms | Service webapp | service-port | default | Mapped values/webapp.yaml: service.port
 webapp-ms | Service webapp | service-port | permissive | Mapped values/webapp.yaml: service.port
 webapp-ms | Service webapp | service-port | no-overrides | Mapped values/webapp.yaml: service.port
+directory-json | ConfigMap settings | configmap-data | default | Mapped json/list.json: data.mode
+directory-json | Deployment web | env-change | default | Mapped json/deployment.json: spec.template.spec.containers.0.env.1.value
+directory-json | Deployment web | env-remove | default | Mapped json/deployment.json: spec.template.spec.containers.0.env
+directory-json | Deployment web | image-tag | default | Mapped json/deployment.json: spec.template.spec.containers.0.image
+directory-json | Deployment web | pod-annotation | default | Mapped json/deployment.json: spec.template.metadata.annotations
+directory-json | Deployment web | pull-policy | default | Mapped json/deployment.json: spec.template.spec.containers.0.imagePullPolicy
+directory-json | Deployment web | resources | default | Mapped json/deployment.json: spec.template.spec.containers.0.resources.limits.memory
+directory-json | Deployment web | scale | default | Mapped json/deployment.json: spec.replicas
+directory-json | Deployment web | toleration-remove | default | Mapped json/deployment.json: spec.template.spec.tolerations
+directory-json | Service web | service-port | default | Mapped json/list.json: spec.ports.0.port
+directory-yaml | ConfigMap settings | configmap-data | default | Mapped yaml/configmap.yaml: data.mode
+directory-yaml | Deployment web | env-change | default | Mapped yaml/deployment.yaml: spec.template.spec.containers.0.env.1.value
+directory-yaml | Deployment web | env-remove | default | Mapped yaml/deployment.yaml: spec.template.spec.containers.0.env
+directory-yaml | Deployment web | image-tag | default | Mapped yaml/deployment.yaml: spec.template.spec.containers.0.image
+directory-yaml | Deployment web | pod-annotation | default | Mapped yaml/deployment.yaml: spec.template.metadata.annotations
+directory-yaml | Deployment web | pull-policy | default | Mapped yaml/deployment.yaml: spec.template.spec.containers.0.imagePullPolicy
+directory-yaml | Deployment web | resources | default | Mapped yaml/deployment.yaml: spec.template.spec.containers.0.resources.limits.memory
+directory-yaml | Deployment web | scale | default | Mapped yaml/deployment.yaml: spec.replicas
+directory-yaml | Deployment web | toleration-remove | default | Mapped yaml/deployment.yaml: spec.template.spec.tolerations
+directory-yaml | Service web | service-port | default | Mapped yaml/service.yaml: spec.ports.0.port

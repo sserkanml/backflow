@@ -68,6 +68,11 @@ func TestCoverage(t *testing.T) {
 			}
 		}()
 	}
+	dirResults, err := runDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	results = append(results, dirResults...)
 	for _, a := range kustomizeApps {
 		wg.Add(1)
 		go func() {
@@ -246,6 +251,7 @@ func report(all []caseResult) string {
 	}
 	b.WriteString(kustomizeReport(bySource(all, sourceKustomize)))
 	b.WriteString(multiSourceReport(bySource(all, sourceHelmMulti)))
+	b.WriteString(directoryReport(bySource(all, sourceDirectory)))
 	return b.String()
 }
 
