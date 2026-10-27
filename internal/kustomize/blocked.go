@@ -44,7 +44,7 @@ func (f *finder) setByApplication(ch v1alpha1.FieldChange) string {
 	switch {
 	case last == "image" && slices.ContainsFunc(segs, isContainerList):
 		if image, ok := scalarJSON(ch.Desired); ok && o.SetsImage(image) != "" {
-			return "images"
+			return keyImages
 		}
 	case slices.Equal(segs, specReplicas):
 		for name := range o.Replicas {
@@ -54,21 +54,21 @@ func (f *finder) setByApplication(ch v1alpha1.FieldChange) string {
 		}
 	case slices.Equal(segs, []string{keyMetadata, keyName}):
 		if o.NamePrefix != "" {
-			return "namePrefix"
+			return keyNamePrefix
 		}
 		if o.NameSuffix != "" {
-			return "nameSuffix"
+			return keyNameSuffix
 		}
 	case slices.Equal(segs, []string{keyMetadata, keyNamespace}) && o.Namespace != "":
 		return keyNamespace
 	}
 	if key, kind := labelKey(segs); kind == keyLabels {
 		if _, ok := o.CommonLabels[key]; ok {
-			return "commonLabels"
+			return keyCommonLabels
 		}
 	} else if kind == keyAnnotations {
 		if _, ok := o.CommonAnnotations[key]; ok {
-			return "commonAnnotations"
+			return keyCommonAnnots
 		}
 	}
 	for _, p := range o.Patches {
@@ -125,7 +125,7 @@ func (f *finder) appOption(kind string, ch v1alpha1.FieldChange) appvalues.Optio
 	base := "/spec/source/kustomize/"
 	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
 	switch kind {
-	case "images":
+	case keyImages:
 		desired, _ := scalarJSON(ch.Desired)
 		entry := o.SetsImage(desired)
 		i := slices.Index(o.Images, entry)
@@ -153,9 +153,9 @@ func (f *finder) appOption(kind string, ch v1alpha1.FieldChange) appvalues.Optio
 				return opt
 			}
 		}
-	case "namePrefix", "nameSuffix", keyNamespace:
+	case keyNamePrefix, keyNameSuffix, keyNamespace:
 		return appvalues.Option{Option: "spec.source.kustomize." + kind, Path: base + kind, Current: j(o.Raw[kind])}
-	case "commonLabels", "commonAnnotations":
+	case keyCommonLabels, keyCommonAnnots:
 		key, _ := labelKey(parseSegments(ch.Path))
 		opt := appvalues.Option{Option: "spec.source.kustomize." + kind + "[" + key + "]", Path: base + kind + "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(key)}
 		if m, ok := o.Raw[kind].(map[string]any); ok {

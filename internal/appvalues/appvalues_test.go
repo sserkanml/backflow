@@ -1,6 +1,7 @@
 package appvalues
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -108,16 +109,4 @@ func TestHelmOptions(t *testing.T) {
 	})
 }
 
-func splitDots(s string) []string {
-	var out []string
-	cur := ""
-	for _, r := range s {
-		if r == '.' {
-			out = append(out, cur)
-			cur = ""
-			continue
-		}
-		cur += string(r)
-	}
-	return append(out, cur)
-}
+func splitDots(s string) []string { return strings.Split(s, ".") }
