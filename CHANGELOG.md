@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.10.0](https://github.com/sserkanml/backflow/compare/v0.9.1...v0.10.0) (2026-10-27)
+
+
+### Features
+
+* **api:** status.mapping.application, where an Application option sets a value ([4ed92be](https://github.com/sserkanml/backflow/commit/4ed92bef5b9e362dbb8bf97c7cbea6267bbf63f4))
+* **drift:** diagnose values set in the Application ([5eeac8d](https://github.com/sserkanml/backflow/commit/5eeac8d148676031f0e9e4aebd8e92eb547dc819))
+* **drift:** find the Git file of an Application option through its parent ([cf3cd0a](https://github.com/sserkanml/backflow/commit/cf3cd0a21fe8f06530f05502098eb1299b6246ea))
+* **drift:** name the Helm Application option that sets a value ([d93bb79](https://github.com/sserkanml/backflow/commit/d93bb79302f8d46be69474b6ea027724d8b45699))
+* **drift:** name the Kustomize Application option that sets a value ([d315f05](https://github.com/sserkanml/backflow/commit/d315f05a0daf24db800e27d13abe944fa0682430))
+* **drift:** shorter diagnosis messages ([28fb480](https://github.com/sserkanml/backflow/commit/28fb480c0f04d883b512e4d5efd85255be0c645d))
+
+
+### Documentation
+
+* **drift:** application values as implemented ([1fbc0cb](https://github.com/sserkanml/backflow/commit/1fbc0cb9f885d041f2bdbb1fa5257d85dbdf9553))
+* **drift:** application values design ([6a13c88](https://github.com/sserkanml/backflow/commit/6a13c883cd7c23c564a6f962e57d8f73c30c2ccc))
+* **drift:** noCache is adopted ([e88b22b](https://github.com/sserkanml/backflow/commit/e88b22bad59cc830b8b4b7d2aec9e9568142f917))
+* **drift:** values set in the Application ([70f2643](https://github.com/sserkanml/backflow/commit/70f2643adb59cf95d96fc1fc38e42dd706b8df7f))
+
 ## [0.9.1](https://github.com/sserkanml/backflow/compare/v0.9.0...v0.9.1) (2026-10-25)
 
 
