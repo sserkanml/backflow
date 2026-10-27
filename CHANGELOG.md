@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/sserkanml/backflow/compare/v0.10.0...v0.11.0) (2026-10-27)
+
+
+### Features
+
+* **drift:** an in-place JSON editor ([caf23b6](https://github.com/sserkanml/backflow/commit/caf23b6a22a6a248e06b329d044b867133685297))
+* **drift:** edit JSON files of Kustomize and Helm sources ([9a8deab](https://github.com/sserkanml/backflow/commit/9a8deab6ce7196daec34766e0ef07586a529e2bb))
+* **drift:** edit JSON manifests of a Directory source ([8444940](https://github.com/sserkanml/backflow/commit/84449408b243d2f36d2d3d6277ee94d0d2a2be04))
+
+
+### Documentation
+
+* **drift:** JSON files ([8aa8ac1](https://github.com/sserkanml/backflow/commit/8aa8ac18af32be5049f1bee7488dad674516850f))
+
 ## [0.10.0](https://github.com/sserkanml/backflow/compare/v0.9.1...v0.10.0) (2026-10-27)
 
 
