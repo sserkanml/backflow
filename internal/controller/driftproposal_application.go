@@ -31,6 +31,17 @@ import (
 // engines it uses for any resource, verified by a render of the parent. The
 // result is recorded in status.mapping.application. Nothing is written.
 
+// parentLookupKey marks a context as the lookup of an option in a parent: the
+// mapping then looks for the file that holds the value, never for a place to add
+// a patch (see mapKustomize).
+type parentLookupKey struct{}
+
+func withParentLookup(ctx context.Context) context.Context {
+	return context.WithValue(ctx, parentLookupKey{}, true)
+}
+
+func isParentLookup(ctx context.Context) bool { v, _ := ctx.Value(parentLookupKey{}).(bool); return v }
+
 // probeValue is the value a location-only lookup edits the option to. It never
 // leaves the verification: the diff is not recorded.
 const probeValue = `"backflow-location-probe"`
@@ -278,7 +289,7 @@ func (r *DriftProposalReconciler) locateInParent(ctx context.Context, dp *backfl
 	}
 	defer func() { _ = tree.Close() }()
 
-	change, err := r.mapTree(ctx, synth, parent, tree, revision)
+	change, err := r.mapTree(withParentLookup(ctx), synth, parent, tree, revision)
 	if err != nil {
 		if _, ok := errors.AsType[*heldError](err); ok {
 			return nil, err
@@ -287,6 +298,11 @@ func (r *DriftProposalReconciler) locateInParent(ctx context.Context, dp *backfl
 			return nil, &verdictError{reason: verdict.reason, err: fmt.Errorf("a render of the parent Application with the edit does not verify it: %w", verdict.err)}
 		}
 		return nil, err
+	}
+	if backflowv1alpha1.SourceType(sourceType) == backflowv1alpha1.SourceDirectory && !removesALine(change.diff()) {
+		// A Directory edit is not rendered: a replacement of a field the file does
+		// not have is an addition, and then the file does not define the option.
+		return nil, &verdictError{reason: rendermap.ReasonNoVerifiedCandidate, err: errors.New("the parent's file does not hold the current value of the option")}
 	}
 	edits := change.edits()
 	if len(edits) == 0 {
@@ -379,4 +395,14 @@ func applicationSentence(val *backflowv1alpha1.ApplicationValue, options []appva
 	}
 	b.WriteString("; no merge request is made, because no Argo CD API renders an Application with a changed option, so the new value cannot be verified")
 	return b.String()
+}
+
+// removesALine reports whether a unified diff removes a line of the file.
+func removesALine(diff string) bool {
+	for line := range strings.SplitSeq(diff, "\n") {
+		if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			return true
+		}
+	}
+	return false
 }
