@@ -126,10 +126,10 @@ noCache=true : grpc-test-fuymo jwt-test-bqwbk service-test-yrqht
 noCache=true : grpc-test-msx5v jwt-test-fky8f service-test-ygehg     <- real renders
 ```
 
-That is a simpler fix than the marker commit of `scratch.RenderFresh` (see
-the "Hooks and the manifest cache" section of `multi-source-mapping.md`):
-`GetManifestsByRevisions` could send `noCache=true` for the two renders of the
-unmodified files. Follow-up for that design, not part of B6.
+That is a simpler fix than the marker commit `scratch.RenderFresh` used to make,
+and it was adopted afterwards (see "Hooks and the manifest cache" in
+`multi-source-mapping.md`): `GetManifestsByRevisions` sends `noCache=true` for
+the two renders of the unmodified files.
 
 ### S2. Helm precedence as Argo CD applies it
 
