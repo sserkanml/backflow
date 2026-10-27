@@ -111,13 +111,13 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1alpha1.ScmConnection) (string, error) {
 	tokenBytes, err := r.secretValue(ctx, conn.Namespace, conn.Spec.TokenSecretRef)
 	if err != nil {
-		return "", &checkError{reason: "SecretError", msg: err.Error()}
+		return "", secretCheckError(err)
 	}
 	token := strings.TrimSpace(string(tokenBytes))
 
 	httpClient, err := r.httpClient(ctx, conn)
 	if err != nil {
-		return "", &checkError{reason: "SecretError", msg: err.Error()}
+		return "", secretCheckError(err)
 	}
 
 	baseURL := strings.TrimRight(conn.Spec.URL, "/")
@@ -144,6 +144,15 @@ func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1al
 	default:
 		return "", &checkError{reason: "UnsupportedProvider", msg: fmt.Sprintf("provider %q is not supported", conn.Spec.Provider)}
 	}
+}
+
+// secretCheckError is the Ready condition's error for a Secret that cannot be
+// used: SecretForbidden when the operator may not read it, SecretError otherwise.
+func secretCheckError(err error) error {
+	if isSecretForbidden(err) {
+		return err
+	}
+	return &checkError{reason: "SecretError", msg: err.Error()}
 }
 
 // secretValue returns one key of a Secret in the given namespace.
