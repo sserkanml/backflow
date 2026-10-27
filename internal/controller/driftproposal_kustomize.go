@@ -78,19 +78,21 @@ func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflow
 	if err != nil {
 		return nil, err
 	}
-	fields, err := kustomize.FieldsFor(src, files, located.Origins[key], located.Objects[key], kustomize.Policy{
+	pol := kustomize.Policy{
 		EditBases: policy.Spec.KustomizeEditsBases(), AddPatches: policy.Spec.KustomizeAddsPatches(),
 		Application: app.GetName(), OtherUsers: others,
-	}, dp.Spec.Changes)
+	}
+	if isParentLookup(ctx) {
+		// Where the value is defined, not where a patch could be added.
+		pol.EditBases, pol.AddPatches, pol.OtherUsers = true, false, nil
+	}
+	fields, err := kustomize.FieldsFor(src, files, located.Origins[key], located.Objects[key], pol, dp.Spec.Changes)
 	if err != nil {
 		return nil, err
 	}
 	out, err := kustomize.Verify(ctx, rend, kustomize.Input{
 		App: rapp, Resource: key, Changes: dp.Spec.Changes, Source: src, Files: files, Located: located, Fields: fields,
-		Policy: kustomize.Policy{
-			EditBases: policy.Spec.KustomizeEditsBases(), AddPatches: policy.Spec.KustomizeAddsPatches(),
-			Application: app.GetName(), OtherUsers: others,
-		},
+		Policy: pol,
 	}, rendermap.Options{AllowCollateral: allowedCollateral(policy), AllowPartial: policy.Spec.PartialAllowed()})
 	if err != nil {
 		return nil, renderFailure(ctx, err)
