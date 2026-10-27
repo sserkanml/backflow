@@ -18,6 +18,9 @@ var update = flag.Bool("update", false, "rewrite the golden files")
 func render(t *testing.T, args ...string) string {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("the helm binary is not installed; CI must install it, or these tests silently check nothing")
+		}
 		t.Skip("the helm binary is not installed")
 	}
 	base := []string{"template", "backflow", "../../charts/backflow", "--namespace", "backflow-system",
