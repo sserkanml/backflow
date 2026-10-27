@@ -40,6 +40,8 @@ type kustomizeApp struct {
 var kustomizeApps = []kustomizeApp{
 	{name: "kustomize-dev", path: "overlays/dev"},
 	{name: "kustomize-prod", path: "overlays/prod"},
+	// The resources, a strategic merge patch and a JSON 6902 patch are .json files.
+	{name: "kustomize-json", path: "overlays/json"},
 	// The Application sets the image itself, on top of Git.
 	{name: "kustomize-dev-images", path: "overlays/dev", options: kustomize.Options{Images: []string{"nginx=nginx:1.99"}}},
 }

@@ -65,6 +65,10 @@ var charts = []chartCase{
 		valueFiles: []string{"/values/nginx.yaml"}, release: "nginx-ms", namespace: "web", multi: true},
 	{name: "webapp-ms", dir: "webapp", env: "webapp.yaml", envRepoPath: "values/webapp.yaml",
 		valueFiles: []string{"/values/webapp.yaml"}, release: "webapp-ms", namespace: "apps", multi: true},
+	// The webapp chart with its environment values in a JSON file, which Helm reads
+	// as YAML and Backflow edits as JSON.
+	{name: "webapp-json", dir: "webapp", env: "webapp-json.json", envRepoPath: "charts/webapp-json/values-prod.json",
+		valueFiles: []string{"values-prod.json"}, release: "webapp-json", namespace: "apps"},
 	// A chart shaped like podinfo's: test hooks named at random, a default that
 	// only the chart sets (ui.color), podAnnotations and extraEnvs.
 	{name: "podinfo", dir: "podinfo", env: "podinfo.yaml", envRepoPath: "charts/podinfo/values-prod.yaml",

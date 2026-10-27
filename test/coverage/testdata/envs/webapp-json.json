@@ -1,0 +1,23 @@
+{
+  "replicaCount": 2,
+  "image": {
+    "tag": "1.4.3"
+  },
+  "config": {
+    "region": "eu-central-1"
+  },
+  "service": {
+    "port": 8080
+  },
+  "store": {
+    "maxMemory": 512
+  },
+  "tolerations": [
+    {
+      "key": "dedicated",
+      "operator": "Equal",
+      "value": "apps",
+      "effect": "NoSchedule"
+    }
+  ]
+}

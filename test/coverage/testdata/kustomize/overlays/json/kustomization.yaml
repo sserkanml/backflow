@@ -1,0 +1,12 @@
+resources:
+- ../../base-json
+- extra.json
+images:
+- name: nginx
+  newTag: "1.26"
+patches:
+- path: env.json
+- path: replicas.json
+  target:
+    kind: Deployment
+    name: web
