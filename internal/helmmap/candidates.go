@@ -183,6 +183,8 @@ func commonSuffixLen(a, b string) int {
 // find is the search of Find and FindFragments. match says how a scalar's
 // string form relates to the drifted field; a scalar that does not match gives
 // no occurrence.
+//
+//nolint:gocyclo // one pass over the layers that reports every kind of match
 func (s *Source) find(files map[string][]byte, match func(string) []occurrence, fragments bool) (*Result, error) {
 	res := &Result{RemoteValueFiles: slices.Clone(s.RemoteValueFiles)}
 

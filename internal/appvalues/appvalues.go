@@ -135,8 +135,8 @@ func HelmParameter(helm map[string]any, name, suggested string, hasSuggested boo
 // value keeps the type of the current one: a number stays a number, a boolean a
 // boolean.
 func HelmValuesObject(helm map[string]any, path []string, suggested string, hasSuggested bool) (Option, bool) {
-	var cur any = helm["valuesObject"]
-	pointer := "/spec/source/helm/valuesObject"
+	cur := helm["valuesObject"]
+	var escaped []string
 	for _, seg := range path {
 		m, ok := cur.(map[string]any)
 		if !ok {
@@ -145,7 +145,11 @@ func HelmValuesObject(helm map[string]any, path []string, suggested string, hasS
 		if cur, ok = m[seg]; !ok {
 			return Option{}, false
 		}
-		pointer += "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(seg)
+		escaped = append(escaped, strings.NewReplacer("~", "~0", "/", "~1").Replace(seg))
+	}
+	pointer := "/spec/source/helm/valuesObject"
+	if len(escaped) > 0 {
+		pointer += "/" + strings.Join(escaped, "/")
 	}
 	o := Option{Option: "spec.source.helm.valuesObject." + strings.Join(path, "."), Path: pointer, Current: jsonOf(cur)}
 	if hasSuggested {

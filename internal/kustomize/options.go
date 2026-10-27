@@ -41,16 +41,16 @@ type AppPatch struct {
 func ParseOptions(k map[string]any) Options {
 	o := Options{Raw: k}
 	str := func(key string) string { s, _ := k[key].(string); return s }
-	o.NamePrefix, o.NameSuffix, o.Namespace = str("namePrefix"), str("nameSuffix"), str(keyNamespace)
-	if l, ok := k["images"].([]any); ok {
+	o.NamePrefix, o.NameSuffix, o.Namespace = str(keyNamePrefix), str(keyNameSuffix), str(keyNamespace)
+	if l, ok := k[keyImages].([]any); ok {
 		for _, i := range l {
 			if s, ok := i.(string); ok {
 				o.Images = append(o.Images, s)
 			}
 		}
 	}
-	o.CommonLabels = stringMap(k["commonLabels"])
-	o.CommonAnnotations = stringMap(k["commonAnnotations"])
+	o.CommonLabels = stringMap(k[keyCommonLabels])
+	o.CommonAnnotations = stringMap(k[keyCommonAnnots])
 	o.Replicas = map[string]string{}
 	if l, ok := k[keyReplicas].([]any); ok {
 		for _, r := range l {
@@ -83,8 +83,8 @@ func ParseOptions(k map[string]any) Options {
 			o.Patches = append(o.Patches, ap)
 		}
 	}
-	modelled := map[string]bool{"namePrefix": true, "nameSuffix": true, keyNamespace: true, "images": true, "commonLabels": true,
-		"commonAnnotations": true, keyReplicas: true, "components": true, "ignoreMissingComponents": true, keyPatches: true, "version": true}
+	modelled := map[string]bool{keyNamePrefix: true, keyNameSuffix: true, keyNamespace: true, keyImages: true, keyCommonLabels: true,
+		keyCommonAnnots: true, keyReplicas: true, "components": true, "ignoreMissingComponents": true, keyPatches: true, "version": true}
 	for key, v := range k {
 		if !modelled[key] && !isZero(v) {
 			o.Other = append(o.Other, key)

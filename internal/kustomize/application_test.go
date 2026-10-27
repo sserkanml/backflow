@@ -3,12 +3,12 @@ package kustomize
 import (
 	"reflect"
 	"testing"
+	"testing/fstest"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/appvalues"
-	"testing/fstest"
 )
 
 func TestImageEntryWithTag(t *testing.T) {
