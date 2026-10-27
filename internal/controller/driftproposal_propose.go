@@ -933,6 +933,15 @@ func scmAccessForRepo(ctx context.Context, c client.Reader, namespace string,
 	return scmAccessByName(ctx, c, namespace, connName)
 }
 
+// forbiddenAsAuth makes an unreadable Secret (403) a held proposal, like a
+// missing one, with the message that names the namespace and the chart value.
+func forbiddenAsAuth(err error) error {
+	if isSecretForbidden(err) {
+		return fmt.Errorf("%w: %s", gitrepo.ErrAuth, err.Error())
+	}
+	return err
+}
+
 // scmAccessByName reads the token and CA bundle of a ScmConnection; nil for an
 // empty name.
 func scmAccessByName(ctx context.Context, c client.Reader, namespace, connName string) (*scmAccess, error) {
@@ -953,7 +962,7 @@ func scmAccessByName(ctx context.Context, c client.Reader, namespace, connName s
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: token Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ref.Name, connName)
 		}
-		return nil, err
+		return nil, forbiddenAsAuth(secretReadError(err, conn.Namespace, ref.Name))
 	}
 	token := strings.TrimSpace(string(secret.Data[ref.Key]))
 	if token == "" {
@@ -967,7 +976,7 @@ func scmAccessByName(ctx context.Context, c client.Reader, namespace, connName s
 			if apierrors.IsNotFound(err) {
 				return nil, fmt.Errorf("%w: CA Secret %q of ScmConnection %q not found", gitrepo.ErrAuth, ca.Name, connName)
 			}
-			return nil, err
+			return nil, forbiddenAsAuth(secretReadError(err, conn.Namespace, ca.Name))
 		}
 		bundle := caSecret.Data[ca.Key]
 		if len(bundle) == 0 {

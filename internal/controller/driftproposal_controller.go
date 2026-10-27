@@ -20,7 +20,6 @@ import (
 	"context"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
@@ -93,7 +92,7 @@ func (r *DriftProposalReconciler) trackEvery() time.Duration {
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=backflow.io,resources=backflowpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=backflow.io,resources=scmconnections,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 
 // isTerminalPhase reports whether a proposal has reached an end state that
@@ -207,9 +206,9 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&backflowv1alpha1.DriftProposal{},
 			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, lifecycleAnnotationsChanged()))).
 		// A held proposal goes on by itself once what holds it is changed: the
-		// token Secret or the ScmConnection is fixed, or the policy leaves
-		// ReportOnly mode.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals)).
+		// ScmConnection is fixed, or the policy leaves ReportOnly mode. Secrets
+		// are not watched: a held proposal retries with a growing delay, which
+		// picks up a fixed token Secret.
 		// The policy's status names the ScmConnection that matches a repository.
 		Watches(&backflowv1alpha1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals)).
 		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals),

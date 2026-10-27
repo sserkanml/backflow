@@ -94,7 +94,7 @@ type DriftReconciler struct {
 // +kubebuilder:rbac:groups=backflow.io,resources=driftproposals,verbs=get;list;watch;create;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
 
 // Reconcile runs one pass over the policy. Whatever it returns is logged at
@@ -353,6 +353,10 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 	managed, err := run.argo.GetManagedResources(ctx, run.summary.Name, run.policy.Spec.ArgoCDNamespace)
 	if err != nil {
 		run.apiOK = false
+		if errors.Is(err, argocd.ErrUnauthorized) {
+			// The token may have been rotated since its Secret was read: read it again next time.
+			forgetSecrets(r.Client, run.policy.Namespace)
+		}
 		log.Error(err, "Cannot read managed resources from Argo CD")
 		r.event(run.policy, corev1.EventTypeWarning, argoReason(err),
 			fmt.Sprintf("Application %s: %v", run.summary.Name, err))

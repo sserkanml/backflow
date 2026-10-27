@@ -27,7 +27,7 @@ func secretKey(ctx context.Context, c client.Reader, namespace string, ref corev
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("secret %q not found", ref.Name)
 		}
-		return nil, err
+		return nil, secretReadError(err, namespace, ref.Name)
 	}
 	value, ok := secret.Data[ref.Key]
 	if !ok || len(value) == 0 {
