@@ -886,7 +886,25 @@ LEVEL="$(gl GET "$(project_path "")" | jx 'max(d["permissions"]["project_access"
 (( LEVEL >= 40 )) || die "the token needs at least Maintainer access to restore main; it has level $LEVEL"
 pass "token accepted, access level $LEVEL"
 
-LEFTOVERS="$(gl GET "$(project_path "/repository/branches?search=backflow/&per_page=100")" | jx '" ".join(b["name"] for b in d if b["name"].startswith("backflow/"))')"
+# leftover_branches: the Backflow branches that still exist. GitLab's branch list
+# lags behind a deletion, so every listed branch is looked up by name too.
+leftover_branches() {
+  local listed name out=""
+  listed="$(gl GET "$(project_path "/repository/branches?search=backflow/&per_page=100")" 2>/dev/null |
+    jx '" ".join(b["name"] for b in d if b["name"].startswith("backflow/"))' 2>/dev/null)"
+  for name in $listed; do
+    if branch_exists "$name"; then out="$out $name"; fi
+  done
+  echo "${out# }"
+}
+# The previous run's cleanup may have deleted its branches a moment ago: look again
+# for up to 30s before treating a branch as a leftover.
+LEFTOVERS="$(leftover_branches)"
+for _ in 1 2 3 4 5 6; do
+  [[ -n "$LEFTOVERS" ]] || break
+  sleep 5
+  LEFTOVERS="$(leftover_branches)"
+done
 [[ -z "$LEFTOVERS" ]] || die "branches from an earlier run exist: $LEFTOVERS. Delete them (and their merge requests) first."
 OPEN_AT_START="$(open_mrs)"
 [[ "$OPEN_AT_START" == "0" ]] || die "$OPEN_AT_START merge request(s) are open in $GITLAB_PROJECT; close them first so this test can tell its own apart."
