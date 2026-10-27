@@ -9,9 +9,12 @@
 # diagnosis in status.mapping.application.
 #
 # It needs no GITLAB_TOKEN and writes nothing to gitlab.com: the parent
-# Application reads its Git repository from a git server pod in the cluster
-# (namespace av-git, built from a local repository), and the children deploy the
-# public demo chart (helm/demo) of the demo repository, read-only.
+# Application reads its Git repository from a small read-only git server this
+# script starts on the host (built from a local repository), and the children
+# deploy the public demo chart (helm/demo) of the demo repository, read-only. The
+# server listens on the address of this machine on the local network (HOST_IP
+# overrides the one the script finds), because both Argo CD, in the cluster, and the
+# operator, on the host, must reach the same URL.
 #
 #   a. Parameter of a Git-managed Application: av-parent (Directory, from the
 #      in-cluster repository) defines the Application av-child with
@@ -28,7 +31,7 @@
 #      so Git no longer says what runs): OutOfSync, no file.
 #   e. Secrets: the Argo CD token appears in no operator log line and no proposal.
 #
-# Requires ./hack/dev-up.sh (Argo CD and the CRDs) and git. The demo
+# Requires ./hack/dev-up.sh (Argo CD and the CRDs), git and python3. The demo
 # Applications of the other tests are not touched; the Applications of this one
 # carry the label backflow.io/demo=appvalues and not env=test.
 #
@@ -45,7 +48,9 @@ set -euo pipefail
 CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 NS="${NS:-backflow-appvalues-test}"
-GIT_NS="av-git"
+GIT_PORT=""
+GIT_PID=""
+GIT_LOG=""
 POLICY="appvalues-policy"
 DEMO_REPO="${DEMO_REPO:-https://gitlab.com/sserkanml/backflow-demo.git}"
 TOKEN_SECRET_NS="${TOKEN_SECRET_NS:-backflow-system}"
@@ -117,11 +122,19 @@ wait_for() {
   pass "$desc"
 }
 show_state() {
+  echo "    policy $NS/$POLICY:"
+  k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.conditions[*]}{.type}{"="}{.status}{" "}{.reason}{": "}{.message}{"\n"}{end}{"matched: "}{.status.matchedApplications}{"\n"}' 2>&1 | cut -c1-300 | sed 's/^/      /'
+  echo "    Applications:"
+  k -n "$ARGOCD_NS" get applications -o jsonpath='{range .items[*]}{.metadata.name}{" sync="}{.status.sync.status}{" health="}{.status.health.status}{" "}{.status.conditions[*].message}{"\n"}{end}' 2>&1 | cut -c1-300 | sed 's/^/      /'
   echo "    proposals:"
   k -n "$NS" get driftproposals -o jsonpath='{range .items[*]}{.metadata.name}{" phase="}{.status.phase}{" Mapped="}{.status.conditions[?(@.type=="Mapped")].reason}{"\n"}{end}' 2>/dev/null | sed 's/^/      /'
-  if [[ -f "$LOG_FILE" ]]; then
-    echo "    operator:"
-    grep -E "Cannot map|Proposal unmapped|Reconciler error" "$LOG_FILE" 2>/dev/null | tail -n 3 | cut -c1-300 | sed 's/^/      /'
+  echo "    git server log: ${GIT_LOG:-none}"
+  [[ -s "${GIT_LOG:-/nonexistent}" ]] && tail -n 5 "$GIT_LOG" | sed 's/^/      /'
+  echo "    operator log: $LOG_FILE (operator running: $([[ -n "$MANAGER_PID" ]] && kill -0 "$MANAGER_PID" 2>/dev/null && echo yes || echo NO))"
+  if [[ -s "$LOG_FILE" ]]; then
+    tail -n 15 "$LOG_FILE" | cut -c1-300 | sed 's/^/      /'
+  else
+    echo "      (the log is empty)"
   fi
 }
 
@@ -142,11 +155,12 @@ cleanup() {
   trap - EXIT
   if [[ -n "$MANAGER_PID" ]] && kill -0 "$MANAGER_PID" 2>/dev/null; then kill "$MANAGER_PID" 2>/dev/null; wait "$MANAGER_PID" 2>/dev/null; fi
   if [[ -n "$PF_PID" ]] && kill -0 "$PF_PID" 2>/dev/null; then kill "$PF_PID" 2>/dev/null; wait "$PF_PID" 2>/dev/null; fi
+  if [[ -n "$GIT_PID" ]] && kill -0 "$GIT_PID" 2>/dev/null; then kill "$GIT_PID" 2>/dev/null; wait "$GIT_PID" 2>/dev/null; fi
   if [[ "$KEEP" != "true" ]]; then
     # The ApplicationSet first, so the Application it generated goes with it.
     k -n "$ARGOCD_NS" delete applicationset "$SET" --ignore-not-found --wait=true >/dev/null 2>&1
     k -n "$ARGOCD_NS" delete application "$PARENT" "$CHILD" "$ORPHAN" "$SET_CHILD" --ignore-not-found --wait=false >/dev/null 2>&1
-    k delete namespace "$NS" "$GIT_NS" av-child av-orphan av-set --ignore-not-found --wait=false >/dev/null 2>&1
+    k delete namespace "$NS" av-child av-orphan av-set --ignore-not-found --wait=false >/dev/null 2>&1
   fi
   if [[ "$SUMMARY_PRINTED" != "true" ]]; then FAIL=$((FAIL + 1)); print_summary aborted; (( status != 0 )) || status=1; fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-appvalues-test.* ]]; then rm -rf "$WORKDIR"; fi
@@ -172,6 +186,16 @@ newest_proposal() {
   k -n "$NS" get driftproposals --sort-by=.metadata.creationTimestamp -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.application.name}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v a="$1" '$3 == a && $2 == "Unmapped" { last = $1 } END { print last }'
 }
+# proposal_events <proposal> <reason>: the text of the Events about the proposal.
+proposal_events() {
+  k -n "$NS" get events -o json 2>/dev/null | python3 -c '
+import sys, json
+want, reason = sys.argv[1], sys.argv[2]
+for e in json.load(sys.stdin)["items"]:
+    obj = e.get("regarding") or e.get("involvedObject") or {}
+    if obj.get("name") == want and e.get("reason") == reason:
+        print(e.get("note") or e.get("message") or "")' "$1" "$2"
+}
 app_block() { dp_field "$1" ".status.mapping.application$2"; }
 
 expect_nothing_written() {
@@ -181,7 +205,7 @@ expect_nothing_written() {
   expect_empty "edits of $dp" "$(dp_field "$dp" '.status.mapping.edits[*].file')"
   expect_eq "branches of the parent repository" "main" "$(repo_branches)"
 }
-repo_branches() { k -n "$GIT_NS" exec gitserver -- sh -c 'git --git-dir=/srv/repo.git branch --format="%(refname:short)" | tr "\n" " " | sed "s/ $//"' 2>/dev/null; }
+repo_branches() { git --git-dir="$WORKDIR/repo.git" branch --format="%(refname:short)" | tr '\n' ' ' | sed 's/ $//'; }
 
 cd "$ROOT"
 
@@ -195,7 +219,7 @@ if curl -fs -o /dev/null http://localhost:8081/healthz 2>/dev/null; then die "An
 if [[ "$(k -n "$MANAGER_NS" get deployment "$MANAGER_DEPLOY" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" =~ ^[1-9] ]]; then
   die "The operator is deployed in the cluster and would race the local one. Run: kubectl -n $MANAGER_NS scale deploy/$MANAGER_DEPLOY --replicas=0"
 fi
-for ns in "$NS" "$GIT_NS" av-child av-orphan av-set; do
+for ns in "$NS" av-child av-orphan av-set; do
   [[ -z "$(k get namespace "$ns" -o name 2>/dev/null)" ]] || die "namespace $ns exists (an earlier run?). Delete it first."
 done
 pass "cluster, Argo CD and git are available"
@@ -203,7 +227,7 @@ WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/backflow-appvalues-test.XXXXXX")"
 chmod 700 "$WORKDIR"
 
 # ---------------------------------------------------------------------------
-step "The parent's Git repository: a git server pod in the cluster"
+step "The parent's Git repository: a git server on the host"
 mkdir -p "$WORKDIR/work/apps/children"
 cat >"$WORKDIR/work/apps/children/child.yaml" <<EOF
 apiVersion: argoproj.io/v1alpha1
@@ -241,49 +265,86 @@ EOF
   cd "$WORKDIR"
   git clone -q --bare work repo.git
   (cd repo.git && git update-server-info)
-  tar czf repo.tgz -C repo.git .
 )
-k create namespace "$GIT_NS" >/dev/null
-k -n "$GIT_NS" create configmap repo --from-file=repo.tgz="$WORKDIR/repo.tgz" >/dev/null
-k apply -n "$GIT_NS" -f - >/dev/null <<'YAML'
-apiVersion: v1
-kind: Pod
-metadata: {name: gitserver, labels: {app: gitserver}}
-spec:
-  containers:
-  - name: git
-    image: alpine:3
-    command:
-    - sh
-    - -c
-    - |
-      apk add --no-cache git git-daemon lighttpd >/dev/null
-      git config --system safe.directory '*'
-      mkdir -p /srv/repo.git && tar xzf /data/repo.tgz -C /srv/repo.git
-      cat > /etc/lighttpd/git.conf <<'CONF'
-      server.modules = ("mod_alias", "mod_cgi", "mod_setenv")
-      server.document-root = "/srv"
-      server.port = 8080
-      alias.url = ("/git" => "/usr/libexec/git-core/git-http-backend")
-      $HTTP["url"] =~ "^/git" {
-        cgi.assign = ("" => "")
-        setenv.add-environment = ("GIT_PROJECT_ROOT" => "/srv", "GIT_HTTP_EXPORT_ALL" => "1")
-      }
-      CONF
-      exec lighttpd -D -f /etc/lighttpd/git.conf
-    volumeMounts: [{name: data, mountPath: /data}]
-    readinessProbe: {tcpSocket: {port: 8080}, periodSeconds: 2}
-  volumes: [{name: data, configMap: {name: repo}}]
----
-apiVersion: v1
-kind: Service
-metadata: {name: gitserver}
-spec: {selector: {app: gitserver}, ports: [{port: 8080}]}
-YAML
-wait_for "the git server is ready" k -n "$GIT_NS" wait pod/gitserver --for=condition=Ready --timeout=1s
-REPO_URL="http://gitserver.$GIT_NS.svc:8080/git/repo.git"
+# A read-only smart HTTP server for the repository (git upload-pack): enough for
+# Argo CD and the operator to clone and fetch.
+git --git-dir="$WORKDIR/repo.git" config uploadpack.allowAnySHA1InWant true
+cat >"$WORKDIR/gitserver.py" <<'PY'
+import gzip, http.server, os, subprocess, sys
+
+root, port = sys.argv[1], int(sys.argv[2])
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def repo(self, path, suffix):
+        name = path[: -len(suffix)].strip("/")
+        full = os.path.realpath(os.path.join(root, name))
+        return full if full.startswith(os.path.realpath(root)) and os.path.isdir(full) else None
+
+    def reply(self, code, ctype, body):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        repo = self.repo(path, "/info/refs") if path.endswith("/info/refs") else None
+        if repo is None or query != "service=git-upload-pack":
+            return self.reply(404, "text/plain", b"not found\n")
+        out = subprocess.run(["git", "upload-pack", "--stateless-rpc", "--advertise-refs", repo], capture_output=True).stdout
+        self.reply(200, "application/x-git-upload-pack-advertisement", b"001e# service=git-upload-pack\n0000" + out)
+
+    def body(self):
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            data = b""
+            while True:
+                size = int(self.rfile.readline().strip() or b"0", 16)
+                if size == 0:
+                    self.rfile.readline()
+                    break
+                data += self.rfile.read(size)
+                self.rfile.readline()
+        else:
+            data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        return gzip.decompress(data) if self.headers.get("Content-Encoding") == "gzip" else data
+
+    def do_POST(self):
+        path = self.path.partition("?")[0]
+        repo = self.repo(path, "/git-upload-pack") if path.endswith("/git-upload-pack") else None
+        data = self.body()
+        if repo is None:
+            return self.reply(404, "text/plain", b"not found\n")
+        out = subprocess.run(["git", "upload-pack", "--stateless-rpc", repo], input=data, capture_output=True).stdout
+        self.reply(200, "application/x-git-upload-pack-result", out)
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write("%s %s\n" % (self.command, self.path))
+
+
+http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+PY
+GIT_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+GIT_LOG="$LOG_DIR/test-application-values-git.log"
+mkdir -p "$LOG_DIR"
+python3 "$WORKDIR/gitserver.py" "$WORKDIR" "$GIT_PORT" >"$GIT_LOG" 2>&1 &
+GIT_PID=$!
+HOST_IP="${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+[[ -n "$HOST_IP" ]] || die "cannot find the address of this machine on the local network; set HOST_IP"
+REPO_URL="http://$HOST_IP:$GIT_PORT/repo.git"
+for _ in $(seq 1 20); do curl -fs -o /dev/null "http://$HOST_IP:$GIT_PORT/repo.git/info/refs?service=git-upload-pack" && break; sleep 0.5; done
+git ls-remote "$REPO_URL" >/dev/null 2>&1 && pass "the operator's side reaches $REPO_URL" || fail "the host cannot clone $REPO_URL (log: $GIT_LOG)"
+if k run av-reach --rm -i --restart=Never --image=busybox:1.36 --command -- wget -q -T 5 -O /dev/null "http://$HOST_IP:$GIT_PORT/repo.git/info/refs?service=git-upload-pack" >/dev/null 2>&1; then
+  pass "the cluster reaches $REPO_URL"
+else
+  die "pods of the cluster cannot reach $HOST_IP:$GIT_PORT (a firewall? set HOST_IP to an address of this machine they can reach)"
+fi
 expect_eq "branches of the parent repository" "main" "$(repo_branches)"
-MAIN_SHA="$(k -n "$GIT_NS" exec gitserver -- git --git-dir=/srv/repo.git rev-parse main 2>/dev/null)"
+MAIN_SHA="$(git --git-dir="$WORKDIR/repo.git" rev-parse main)"
 
 # ---------------------------------------------------------------------------
 step "Operator, policy and the app-of-apps"
@@ -336,7 +397,8 @@ spec:
       name: argocd-token
       key: token
 YAML
-wait_for "the policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+# The policy is Ready once an Application matches it: av-child does not exist
+# until the parent has synced, so Ready is waited for below.
 
 k apply -f - >/dev/null <<YAML
 apiVersion: argoproj.io/v1alpha1
@@ -358,6 +420,7 @@ spec:
 YAML
 wait_for "$PARENT is Synced" synced "$PARENT"
 wait_for "$CHILD exists and is Synced" synced "$CHILD"
+wait_for "the policy is Ready (it matches $CHILD)" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 expect_eq "tracking-id of $CHILD" "$PARENT:argoproj.io/Application:$ARGOCD_NS/$CHILD" "$(app_field "$CHILD" '{.metadata.annotations.argocd\.argoproj\.io/tracking-id}')"
 test_outofsync() { [[ "$(app_field "$1" '{.status.sync.status}')" == "OutOfSync" ]]; }
 newer_proposal() { local n; n="$(newest_proposal "$CHILD")"; [[ -n "$n" && "$n" != "${1:-}" ]]; }
@@ -394,8 +457,8 @@ if [[ -n "$P_A" ]]; then
   MSG_A="$(dp_field "$P_A" '.status.conditions[?(@.type=="Mapped")].message')"
   expect_eq "message" "Set by spec.source.helm.parameters[name=config.feature] of Application $ARGOCD_NS/$CHILD, defined in apps/children/child.yaml (parent $ARGOCD_NS/$PARENT). Set it to \"$NEW_FEATURE\" there; Backflow cannot verify an Application option by rendering, so no merge request is made." "$MSG_A"
   expect_nothing_written "$P_A"
-  expect_eq "main of the parent repository" "$MAIN_SHA" "$(k -n "$GIT_NS" exec gitserver -- git --git-dir=/srv/repo.git rev-parse main 2>/dev/null)"
-  EVENTS_A="$(k -n "$NS" get events --field-selector "involvedObject.name=$P_A,reason=ApplicationValue" -o jsonpath='{range .items[*]}{.note}{"\n"}{end}' 2>/dev/null)"
+  expect_eq "main of the parent repository" "$MAIN_SHA" "$(git --git-dir="$WORKDIR/repo.git" rev-parse main)"
+  EVENTS_A="$(proposal_events "$P_A" ApplicationValue)"
   expect_contains "the Event of the proposal" "Set by spec.source.helm.parameters[name=config.feature]" "$EVENTS_A"
   expect_eq "Events with that reason for the proposal" "1" "$(printf '%s\n' "$EVENTS_A" | grep -c . || true)"
 fi

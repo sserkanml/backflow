@@ -535,6 +535,8 @@ Decisions taken when building (B), where they differ from, or settle, the design
   parents, ApplicationSet, none, two, unsynced, unreadable parents) and the unit tests of
   `internal/appvalues`, `helmmap.ApplicationOptions` and `kustomize.ApplicationOptions`.
 - **End-to-end.** `hack/test-application-values.sh`: needs no `GITLAB_TOKEN` (the parent's
-  repository is a git server pod in the cluster; the children read the public demo
+  repository is served by a small read-only git server the script starts on the host, at
+  the machine's address on the local network, because Argo CD in the cluster and the
+  operator on the host must reach the same URL; the children read the public demo
   chart). Sections a (parameter, Git-managed parent), b (no parent), c (ApplicationSet),
   d (parent not synced), e (secrets).
