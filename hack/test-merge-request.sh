@@ -150,6 +150,9 @@ LABEL_PREEXISTED=true
 AUTOMATED_ORIG=""
 AUTOSYNC_DISABLED=false
 MAIN_ORIG_SHA=""
+ORIG_COUNT=""
+# Files this test creates on main; restore_main may delete these and nothing else.
+TEST_ADDED_FILES=("apps/demo/json-config.json")
 ORIG_LOG_LEVEL=""
 ORIG_REPLICAS=""
 PASS=0
@@ -529,9 +532,17 @@ remember_proposals() {
 
 # restore_main: put every original file back on main with one commit, if any differ.
 restore_main() {
-  python3 - "$WORKDIR" "$PID_ENC" <<'PY'
+  python3 - "$WORKDIR" "$PID_ENC" "$ORIG_COUNT" "${TEST_ADDED_FILES[@]}" <<'PY'
 import json, os, subprocess, sys, urllib.parse
 work, pid = sys.argv[1], sys.argv[2]
+# The copy must be the complete one taken at the start, or main is left alone.
+if len(sys.argv) < 4 or not sys.argv[3].isdigit():
+    sys.stderr.write("no complete copy of main; not touching it\n")
+    sys.exit(1)
+count = sum(len(files) for _, _, files in os.walk(os.path.join(sys.argv[1], "orig")))
+if count == 0 or count != int(sys.argv[3]):
+    sys.stderr.write("the copy of main has %d file(s), expected %s; not touching main\n" % (count, sys.argv[3]))
+    sys.exit(1)
 gl = os.path.join(work, "gl.py")
 def call(*args):
     return subprocess.run(["python3", gl, *args], capture_output=True, text=True)
@@ -547,12 +558,18 @@ for dirpath, _, files in os.walk(orig):
             actions.append({"action": "create", "file_path": rel, "content": want})
         elif r.stdout != want:
             actions.append({"action": "update", "file_path": rel, "content": want})
-# Files the test added to main are removed again.
+# Files the test itself added to main are removed again. Only the paths the
+# test creates (argv[4:]) can be deleted, and only if they are not part of the
+# original copy: a restore never deletes anything else.
+added = set(sys.argv[4:])
 tree = call("GET", "/projects/%s/repository/tree?recursive=true&per_page=100&ref=main" % pid)
 if tree.returncode == 0:
     for t in json.loads(tree.stdout):
-        if t["type"] == "blob" and not os.path.exists(os.path.join(orig, t["path"])):
+        if t["type"] == "blob" and t["path"] in added and not os.path.exists(os.path.join(orig, t["path"])):
             actions.append({"action": "delete", "file_path": t["path"]})
+if sum(1 for a in actions if a["action"] == "delete") > len(added):
+    sys.stderr.write("refusing to delete more files than the test adds\n")
+    sys.exit(1)
 if not actions:
     print("main already has its original content")
     sys.exit(0)
@@ -635,6 +652,7 @@ cleanup() {
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-mr-test.* ]]; then
     rm -f "$WORKDIR/gl.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/unrelated.json" "$WORKDIR/paths"
+    rm -rf "$WORKDIR/orig.part"
     find "$WORKDIR/orig" -type f -exec rm -f {} + 2>/dev/null
     find "$WORKDIR/orig" -depth -type d -exec rmdir {} + 2>/dev/null
     rmdir "$WORKDIR" 2>/dev/null
@@ -683,16 +701,28 @@ OPEN_MRS="$(gl GET "$(project_path "/merge_requests?state=opened&per_page=100")"
 [[ "$OPEN_MRS" == "0" ]] || die "$OPEN_MRS merge request(s) are open in $GITLAB_PROJECT; close them first so this test can tell its own apart."
 [[ "$(gl_status GET "$(project_path "/labels/$(enc "$LABEL")")")" == "200" ]] || LABEL_PREEXISTED=false
 
-MAIN_ORIG_SHA="$(main_sha)"
-# Remember every file of main so cleanup can restore it byte for byte.
+SNAPSHOT_SHA="$(main_sha)"
+# Remember every file of main so cleanup can restore it byte for byte. The copy
+# is built in orig.part and only counts once it is complete: MAIN_ORIG_SHA, which
+# enables restore_main, is set after the last file. An interrupted run (Ctrl-C,
+# a failing call) therefore never restores main from a partial copy.
 gl GET "$(project_path "/repository/tree?recursive=true&per_page=100&ref=main")" |
   jx '"\n".join(t["path"] for t in d if t["type"] == "blob")' >"$WORKDIR/paths"
+[[ -s "$WORKDIR/paths" ]] || die "could not list the files of main"
+[[ "$(wc -l <"$WORKDIR/paths" | tr -d ' ')" -lt 99 ]] || die "main has too many files for one page of the tree API; this test saves only the first page"
+rm -rf "$WORKDIR/orig.part"
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
-  mkdir -p "$WORKDIR/orig/$(dirname "$path")"
-  raw_file "$path" "$MAIN_ORIG_SHA" >"$WORKDIR/orig/$path"
+  mkdir -p "$WORKDIR/orig.part/$(dirname "$path")"
+  raw_file "$path" "$SNAPSHOT_SHA" >"$WORKDIR/orig.part/$path.tmp" || die "could not read $path from main"
+  mv "$WORKDIR/orig.part/$path.tmp" "$WORKDIR/orig.part/$path"
 done <"$WORKDIR/paths"
+ORIG_COUNT="$(grep -c . "$WORKDIR/paths")"
+[[ "$(find "$WORKDIR/orig.part" -type f | wc -l | tr -d ' ')" == "$ORIG_COUNT" ]] || die "the copy of main is incomplete"
 rm -f "$WORKDIR/paths"
+rm -rf "$WORKDIR/orig"
+mv "$WORKDIR/orig.part" "$WORKDIR/orig"
+MAIN_ORIG_SHA="$SNAPSHOT_SHA"
 ORIG_CONFIGMAP="$WORKDIR/orig/apps/demo/configmap.yaml"
 [[ -s "$ORIG_CONFIGMAP" ]] || die "apps/demo/configmap.yaml not found on main"
 grep -q 'LOG_LEVEL: ' "$ORIG_CONFIGMAP" || die "the demo ConfigMap has no LOG_LEVEL on main; this test expects the original demo content"
@@ -1191,7 +1221,7 @@ fi
 # ---------------------------------------------------------------------------
 if section_wanted h; then
 step "h. A JSON manifest: the merge request changes only the value line"
-JSON_FILE="apps/demo/json-config.json"
+JSON_FILE="${TEST_ADDED_FILES[0]}"
 JSON_CONTENT=$'{\n  "apiVersion": "v1",\n  "kind": "ConfigMap",\n  "metadata": {\n    "name": "demo-json",\n    "namespace": "demo"\n  },\n  "data": {\n    "GREETING": "hello",\n    "LOG_LEVEL": "info"\n  }\n}\n'
 NEW_GREETING="howdy"
 # main_commit <action> <file> <content> <message>: one commit to main; prints its SHA.
