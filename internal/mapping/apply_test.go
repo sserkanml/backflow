@@ -477,9 +477,13 @@ func TestApplyErrors(t *testing.T) {
 		{"trailing data after the value", "cm.yaml", 0, replace("/data/LOG_LEVEL", `"a" "b"`), ErrCannotApply},
 		{"unknown operation", "cm.yaml", 0, v1alpha1.FieldChange{Path: "/data/LOG_LEVEL", Op: "Move"}, ErrCannotApply},
 		{"document out of range", "cm.yaml", 5, replace("/data/LOG_LEVEL", `"x"`), ErrCannotApply},
-		{"JSON files cannot be edited yet", "cm.json", 0, replace("/data/LOG_LEVEL", `"x"`), ErrUnsupportedFileFormat},
+		{"Jsonnet cannot be edited", "cm.jsonnet", 0, replace("/data/LOG_LEVEL", `"x"`), ErrUnsupportedFileFormat},
+		{"a JSON file with two objects", "two.json", 0, replace("/a", `1`), ErrCannotApply},
+		{"unknown operation in a JSON file", "cm.json", 0, v1alpha1.FieldChange{Path: "/data/LOG_LEVEL", Op: "Move"}, ErrCannotApply},
+		{"a JSON document out of range", "cm.json", 3, replace("/data/LOG_LEVEL", `"x"`), ErrCannotApply},
+		{"a duplicate key in a JSON file", "dup.json", 0, replace("/data/a", `"x"`), ErrAmbiguous},
 	}
-	inputs := map[string]string{"cm.yaml": configMapYAML, "cm.json": `{"data": {"LOG_LEVEL": "info"}}`, "all.yaml": multiDocYAML}
+	inputs := map[string]string{"cm.yaml": configMapYAML, "cm.json": `{"data": {"LOG_LEVEL": "info"}}`, "cm.jsonnet": `{}`, "two.json": `{"a": 1} {"b": 2}`, "dup.json": `{"data": {"a": 1, "a": 2}}`, "all.yaml": multiDocYAML}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Apply(tt.file, []byte(inputs[tt.file]), tt.doc, []v1alpha1.FieldChange{tt.change})

@@ -40,7 +40,8 @@ type Location struct {
 	// File path inside the file system (relative to the repository root).
 	File string
 	// Document is the index of the YAML document in the file, counting every
-	// document delimited by "---", including empty ones.
+	// document delimited by "---", including empty ones; for a JSON file, 0
+	// for an object and the position of the item for a list.
 	Document int
 }
 
@@ -68,6 +69,19 @@ func Locate(fsys fs.FS, appPath string, opts DirectoryOptions, destNamespace str
 		data, err := fs.ReadFile(fsys, file)
 		if err != nil {
 			return nil, err
+		}
+		if isJSONFile(file) {
+			docs, err := jsonDocuments(data)
+			if err != nil {
+				unparsable = append(unparsable, file)
+				continue
+			}
+			for i, d := range docs {
+				if objectDefines(d.Obj, destNamespace, res) {
+					matches = append(matches, Location{File: file, Document: i})
+				}
+			}
+			continue
 		}
 		text := string(data)
 		for i, seg := range splitDocuments(text) {
