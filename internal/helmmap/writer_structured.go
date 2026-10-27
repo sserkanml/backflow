@@ -50,7 +50,7 @@ func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*re
 	}
 	pointer := key.Pointer()
 	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{{Path: pointer, Op: op, Live: text}})
-	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) {
+	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) && !isJSONFile(file) {
 		edited, err = appendKey(content, key, value)
 	}
 	if err != nil {

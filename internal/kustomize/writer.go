@@ -11,6 +11,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/jsonedit"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -20,6 +21,9 @@ import (
 type Writer struct{}
 
 var _ rendermap.ContextWriter = Writer{}
+
+// isJSONName reports whether a file is edited as JSON.
+func isJSONName(file string) bool { return strings.EqualFold(path.Ext(file), ".json") }
 
 // Write implements rendermap.Writer for an edit that touches no other file.
 func (w Writer) Write(c rendermap.Candidate, content []byte, value string) (*rendermap.Written, error) {
@@ -46,6 +50,11 @@ func (Writer) WriteWith(c rendermap.Candidate, files map[string][]byte, value st
 	case KindSetting, KindPatchFile, KindResource:
 		edited, err = applyPointer(c.File, content, e.Document, e.Pointer, e.Op, e.Desired, live)
 	case KindJSON6902File:
+		if isJSONName(c.File) {
+			// A patch in a .json file is a JSON list: edited as JSON, in place.
+			edited, err = jsonedit.Apply(content, jsonedit.Op{Kind: jsonedit.Replace, Pointer: e.Pointer, Value: live})
+			break
+		}
 		var s string
 		s, err = replaceScalar(string(content), e.Pointer, live)
 		edited = []byte(s)
@@ -72,7 +81,7 @@ func result(file string, edited []byte, location, live string) *rendermap.Writte
 func applyPointer(file string, content []byte, doc int, pointer string, op v1alpha1.ChangeOperation, desired, live string) ([]byte, error) {
 	// A scalar that is replaced is replaced where it stands, which keeps the
 	// layout of the line and of the list around it.
-	if op == v1alpha1.OpReplace && doc == 0 && live != "" {
+	if op == v1alpha1.OpReplace && doc == 0 && live != "" && !isJSONName(file) {
 		if docs, err := mapping.Documents(content); err == nil && len(docs) == 1 {
 			if n := nodeAt(docs[0].Root, pointer); n != nil && n.Kind == yaml.ScalarNode {
 				if s, err := replaceScalar(string(content), pointer, live); err == nil {
