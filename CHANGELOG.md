@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.0](https://github.com/sserkanml/backflow/compare/v0.11.0...v0.12.0) (2026-10-27)
+
+
+### Features
+
+* **policy:** a policy whose Argo CD Secret cannot be read is not Ready (SecretForbidden) ([3db26b1](https://github.com/sserkanml/backflow/commit/3db26b1af5b10d31ac3ce77088cdf54cea785164))
+* **scm:** get-only access to Secrets, cluster-wide or per namespace with secretNamespaces ([747ce03](https://github.com/sserkanml/backflow/commit/747ce032569e81d748963c829efd077cc57b46b4))
+* **scm:** read Secrets by name without the cache and drop the Secret watches ([d7366bc](https://github.com/sserkanml/backflow/commit/d7366bc97131751a0d28688610565bc6069f08eb))
+
+
+### Documentation
+
+* **scm:** Permissions section, Secret rotation delay and the upgrade note ([a5aa5ca](https://github.com/sserkanml/backflow/commit/a5aa5caa0e8394539f20fe88f95998c1f6684d35))
+
 ## [0.11.0](https://github.com/sserkanml/backflow/compare/v0.10.0...v0.11.0) (2026-10-27)
 
 
