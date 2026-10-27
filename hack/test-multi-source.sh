@@ -994,7 +994,7 @@ else
   mkdir -p "$LOG_DIR"
   # Every verification of a multi-source Application is a series of renders
   # through Argo CD: give it a budget that does not depend on how fast it is today.
-  "$ROOT/bin/manager" --merge-request-poll-interval="$POLL" --render-budget=10m >"$LOG_FILE" 2>&1 &
+  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" --render-budget=10m >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
     curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break

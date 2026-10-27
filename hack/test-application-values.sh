@@ -359,7 +359,7 @@ done
 make manifests install >/dev/null
 make build >/dev/null
 mkdir -p "$LOG_DIR"
-"$ROOT/bin/manager" >"$LOG_FILE" 2>&1 &
+"$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
 MANAGER_PID=$!
 for _ in $(seq 1 60); do
   curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
