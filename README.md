@@ -279,9 +279,9 @@ found by the two renders of the unmodified files: a resource that exists in one
 render only is a name that is not stable, and adding or removing a resource of its
 kind in that namespace is not counted as a change. The two renders are real renders:
 for a multi-source Application, whose renders Argo CD answers from its manifest cache
-for a commit it has rendered before, each is made from a commit of its own (a scratch
-commit that adds a marker file at the root of the repository), so the cache cannot make
-them one.
+for a revision it has rendered before, they are asked for with `noCache=true`, so the
+cache cannot make them one (no scratch branch is needed for them). Uploaded files
+(single-source Helm and Kustomize) are never cached.
 
 Like Directory proposals, a Helm proposal is made against the head of the target
 branch. When the head is the revision the proposal was mapped at, or only files
