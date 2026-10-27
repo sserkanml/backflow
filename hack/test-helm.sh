@@ -1357,7 +1357,7 @@ wait_for "proposal is Unmapped (FEATURE $GIT_FEATURE -> $NEW_FEATURE)" has_propo
 remember_proposals
 P_G2="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_FEATURE\"" | head -n 1)"
 if [[ -n "$P_G2" ]]; then
-  expect_unmapped "$P_G2" SetByApplication "Set by spec.source.helm.parameters[name=config.feature] of the Application $ARGOCD_NS/$DEMO_APP" "no merge request is made"
+  expect_unmapped "$P_G2" SetByApplication "Set by spec.source.helm.parameters[name=config.feature] of Application $ARGOCD_NS/$DEMO_APP" "no merge request is made"
   expect_eq "application option path" "/spec/source/helm/parameters/0/value" "$(dp_field "$P_G2" .status.mapping.application.optionPath)"
   expect_eq "suggested value" "\"$NEW_FEATURE\"" "$(dp_field "$P_G2" .status.mapping.application.suggested)"
 fi

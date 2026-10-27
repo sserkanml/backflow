@@ -719,11 +719,9 @@ verified by a render, and Backflow only proposes what a render verifies. What it
 it tells you, in `status.mapping.application` and in one sentence, which is also
 an Event on the proposal:
 
-> Set by spec.source.helm.parameters[name=config.feature] of the Application
-> argocd/child-web, which is defined in apps/children/child.yaml of https://git.example/apps.git
-> (Application argocd/root, at /spec/source/helm/parameters/0/value); set it to "gamma"
-> there; no merge request is made, because no Argo CD API renders an Application with a
-> changed option, so the new value cannot be verified
+> Set by spec.source.helm.parameters[name=config.feature] of Application argocd/child-web,
+> defined in apps/children/child.yaml (parent argocd/root). Set it to "gamma" there;
+> Backflow cannot verify an Application option by rendering, so no merge request is made.
 
 ```yaml
 status:

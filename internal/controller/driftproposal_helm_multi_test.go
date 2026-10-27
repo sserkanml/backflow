@@ -384,9 +384,9 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			setHelm(map[string]any{"valueFiles": []any{"$values/env/values.yaml"}, "parameters": []any{map[string]any{"name": "replicaCount", "value": "2"}}})
 			settle(backflowv1alpha1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(rendermap.ReasonSetByApplication))
-			Expect(mapped().Message).To(ContainSubstring("Set by spec.sources[0].helm.parameters[name=replicaCount] of the Application " + ns + "/ms-app"))
-			Expect(mapped().Message).To(ContainSubstring("not managed from Git"))
-			Expect(mapped().Message).To(ContainSubstring("no Argo CD API renders an Application with a changed option"))
+			Expect(mapped().Message).To(ContainSubstring("Set by spec.sources[0].helm.parameters[name=replicaCount] of Application " + ns + "/ms-app"))
+			Expect(mapped().Message).To(ContainSubstring("which is not managed from Git. Backflow cannot verify"))
+			Expect(mapped().Message).To(ContainSubstring("Backflow cannot verify an Application option by rendering, so no merge request is made."))
 			got := latest().Status.Mapping.Application
 			Expect(got).NotTo(BeNil())
 			Expect(got.OptionPath).To(Equal("/spec/sources/0/helm/parameters/0/value"))

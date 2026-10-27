@@ -378,7 +378,7 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 		settle(backflowv1alpha1.PhaseUnmapped)
 		c := meta.FindStatusCondition(latest().Status.Conditions, conditionMapped)
 		Expect(c.Reason).To(Equal(rendermap.ReasonSetByApplication))
-		Expect(c.Message).To(ContainSubstring("Set by spec.source.kustomize.images[nginx] of the Application " + ns + "/kust-app"))
+		Expect(c.Message).To(ContainSubstring("Set by spec.source.kustomize.images[nginx] of Application " + ns + "/kust-app"))
 		val := latest().Status.Mapping.Application
 		Expect(val).NotTo(BeNil())
 		Expect(val.OptionPath).To(Equal("/spec/source/kustomize/images/0"))

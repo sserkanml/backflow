@@ -69,9 +69,9 @@ func TestParentSourceProblem(t *testing.T) {
 		"helm":            {app(git, "Helm"), ""},
 		"kustomize":       {app(git, "Kustomize"), ""},
 		"several sources": {app(git, "Directory", map[string]any{}, map[string]any{}), "several sources"},
-		"a chart":         {app(map[string]any{"repoURL": "https://charts.test", "chart": "podinfo"}, "Helm"), "does not have a Git source"},
-		"no repository":   {app(map[string]any{}, "Directory"), "does not have a Git source"},
-		"credentials":     {app(map[string]any{"repoURL": "https://u:p@git.test/x.git"}, "Directory"), "contains credentials"},
+		"a chart":         {app(map[string]any{"repoURL": "https://charts.test", "chart": "podinfo"}, "Helm"), "has no Git source"},
+		"no repository":   {app(map[string]any{}, "Directory"), "has no Git source"},
+		"credentials":     {app(map[string]any{"repoURL": "https://u:p@git.test/x.git"}, "Directory"), "has credentials"},
 		"a plugin":        {app(git, "Plugin"), `"Plugin" source`},
 	} {
 		got := parentSourceProblem(tc.app)
