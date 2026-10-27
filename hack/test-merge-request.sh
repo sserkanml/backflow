@@ -35,6 +35,13 @@
 #      MergeRequest opens the merge request without any other change; the
 #      proposal is then retired and cleaned up as usual.
 #
+#   h. A JSON manifest: the script adds apps/demo/json-config.json (the ConfigMap
+#      demo-json) to main through the API. A drift of one value becomes a merge
+#      request whose branch differs from main in that one line only: the rest of the
+#      file, its indentation and its final newline are byte for byte the same, and
+#      the diff in the description changes only that line. Closing the merge request
+#      rejects the proposal; the file is deleted from main again (restored on exit).
+#
 # Requires the environment from ./hack/dev-up.sh and GITLAB_TOKEN with the api
 # and write_repository scopes (owner or maintainer of the demo project). Without
 # GITLAB_TOKEN the test is skipped with a message and exits 0.
@@ -51,7 +58,8 @@
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-merge-request.sh
 #   SECTIONS=c,e,f ./hack/test-merge-request.sh   # only those sections (default: all);
-#       b needs a; d and e need c; f needs c and e (the script refuses otherwise)
+#       b needs a; d and e need c; f needs c and e (the script refuses otherwise);
+#       g and h need nothing (SECTIONS=h is the JSON manifest alone)
 #   KEEP=true ./hack/test-merge-request.sh      # keep the test namespace
 
 set -euo pipefail
@@ -106,9 +114,9 @@ section_needs() {
 check_sections() {
   local s n
   for s in ${SECTIONS//,/ }; do
-    case " a b c d e f g " in
+    case " a b c d e f g h " in
       *" $s "*) ;;
-      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g)" >&2; exit 1 ;;
+      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h)" >&2; exit 1 ;;
     esac
     for n in $(section_needs "$s"); do
       section_wanted "$n" || { echo "SECTIONS: section $s needs section $n, before it (see the notes at SECTIONS); add it to the list, for example SECTIONS=$n,$s, or leave SECTIONS out" >&2; exit 1; }
@@ -397,6 +405,8 @@ restore_demo() {
   k -n "$DEMO_NS" patch configmap demo-config --type merge \
     -p "{\"data\":{\"LOG_LEVEL\":\"$ORIG_LOG_LEVEL\"}}" >/dev/null 2>&1 || true
   k -n "$DEMO_NS" scale deployment demo --replicas="$ORIG_REPLICAS" >/dev/null 2>&1 || true
+  # Argo CD does not prune: the ConfigMap of section h stays after its file is gone.
+  k -n "$DEMO_NS" delete configmap demo-json --ignore-not-found >/dev/null 2>&1 || true
   start_sync "$want" || return 1
   local i
   for i in $(seq 1 60); do
@@ -498,6 +508,9 @@ expect_eq() {
 expect_contains() {
   if [[ "$3" == *"$2"* ]]; then pass "$1 contains '$2'"; else fail "$1: expected to contain '$2', got '$3'"; fi
 }
+expect_not_contains() {
+  if [[ "$3" != *"$2"* ]]; then pass "$1 does not contain '$2'"; else fail "$1: expected not to contain '$2'"; fi
+}
 expect_nonempty() {
   if [[ -n "$2" ]]; then pass "$1 = $2"; else fail "$1 is empty"; fi
 }
@@ -534,6 +547,12 @@ for dirpath, _, files in os.walk(orig):
             actions.append({"action": "create", "file_path": rel, "content": want})
         elif r.stdout != want:
             actions.append({"action": "update", "file_path": rel, "content": want})
+# Files the test added to main are removed again.
+tree = call("GET", "/projects/%s/repository/tree?recursive=true&per_page=100&ref=main" % pid)
+if tree.returncode == 0:
+    for t in json.loads(tree.stdout):
+        if t["type"] == "blob" and not os.path.exists(os.path.join(orig, t["path"])):
+            actions.append({"action": "delete", "file_path": t["path"]})
 if not actions:
     print("main already has its original content")
     sys.exit(0)
@@ -1165,6 +1184,69 @@ if [[ -n "$P_G" ]]; then
 else
   set_log_level "$LEVEL_G"
   set_mode MergeRequest || true
+fi
+
+fi
+
+# ---------------------------------------------------------------------------
+if section_wanted h; then
+step "h. A JSON manifest: the merge request changes only the value line"
+JSON_FILE="apps/demo/json-config.json"
+JSON_CONTENT=$'{\n  "apiVersion": "v1",\n  "kind": "ConfigMap",\n  "metadata": {\n    "name": "demo-json",\n    "namespace": "demo"\n  },\n  "data": {\n    "GREETING": "hello",\n    "LOG_LEVEL": "info"\n  }\n}\n'
+NEW_GREETING="howdy"
+# main_commit <action> <file> <content> <message>: one commit to main; prints its SHA.
+main_commit() {
+  local body
+  body="$(python3 -c 'import json,sys; a={"action":sys.argv[1],"file_path":sys.argv[2]}
+if sys.argv[1] != "delete": a["content"]=sys.argv[3]
+print(json.dumps({"branch":"main","commit_message":sys.argv[4],"actions":[a]}))' "$1" "$2" "$3" "$4")"
+  gl POST "$(project_path "/repository/commits")" "$body" | jx 'd["id"]'
+}
+SHA_H="$(main_commit create "$JSON_FILE" "$JSON_CONTENT" "test: a JSON manifest in the demo directory (Backflow e2e)")" || SHA_H=""
+expect_nonempty "commit adding $JSON_FILE to main" "$SHA_H"
+if [[ -n "$SHA_H" ]]; then
+  wait_for "$APP is Synced at the commit that adds the JSON manifest" app_synced_at "$SHA_H"
+  if sync_app "$SHA_H"; then pass "one sync at that commit (Argo CD's automated sync will not reset the drift)"; else fail "$APP did not stay Synced"; fi
+  wait_for "the ConfigMap demo-json is in the cluster" k -n "$DEMO_NS" get configmap demo-json
+  k -n "$DEMO_NS" patch configmap demo-json --type merge -p "{\"data\":{\"GREETING\":\"$NEW_GREETING\"}}" >/dev/null
+  refresh_app
+  wait_for "proposal is Proposed (GREETING hello -> $NEW_GREETING)" has_proposal Proposed "/data/GREETING:Replace:\"hello\">\"$NEW_GREETING\""
+  remember_proposals
+  P_H="$(proposal_with Proposed "\"$NEW_GREETING\"" | head -n 1)"
+  if [[ -n "$P_H" ]]; then
+    BRANCH_H="$(branch_of "$P_H")"
+    IFS='|' read -r IID_H STATE_H _ _ <<<"$(mr_info "$BRANCH_H")"
+    expect_nonempty "merge request from $BRANCH_H" "$IID_H"
+    expect_eq "merge request state" "opened" "$STATE_H"
+    expect_eq "strategy" "Direct" "$(dp_field "$P_H" .status.mapping.strategy)"
+    expect_eq "edited file" "$JSON_FILE" "$(dp_field "$P_H" '.status.mapping.edits[*].file')"
+    expect_eq "edited location" "/data/GREETING" "$(dp_field "$P_H" '.status.mapping.edits[*].location')"
+
+    # The file on the branch is the file on main with the one value changed, byte
+    # for byte (a trailing newline survives the command substitution by sentinel).
+    ON_BRANCH="$(raw_file "$JSON_FILE" "$BRANCH_H"; echo x)"
+    WANT_H="$(printf '%s' "$JSON_CONTENT" | sed "s/\"GREETING\": \"hello\"/\"GREETING\": \"$NEW_GREETING\"/"; echo x)"
+    if [[ "$ON_BRANCH" == "$WANT_H" ]]; then pass "$JSON_FILE on the branch is the original with only the GREETING value changed"; else fail "$JSON_FILE on $BRANCH_H differs from the original in more than the GREETING value"; fi
+    printf '%s' "$JSON_CONTENT" >"$WORKDIR/json-main.txt"
+    raw_file "$JSON_FILE" "$BRANCH_H" >"$WORKDIR/json-branch.txt"
+    expect_eq "lines removed by the merge request" "1" "$(diff "$WORKDIR/json-main.txt" "$WORKDIR/json-branch.txt" | grep -c '^<' || true)"
+    expect_eq "lines added by the merge request" "1" "$(diff "$WORKDIR/json-main.txt" "$WORKDIR/json-branch.txt" | grep -c '^>' || true)"
+    BODY_H="$(gl GET "$(project_path "/merge_requests/$IID_H")" | jx 'd["description"]')"
+    expect_contains "description (removed line)" '-    "GREETING": "hello",' "$BODY_H"
+    expect_contains "description (added line)" '+    "GREETING": "'"$NEW_GREETING"'",' "$BODY_H"
+    expect_not_contains "description (the other line is not in the diff)" '-    "LOG_LEVEL"' "$BODY_H"
+    expect_eq "main still has the original file" "$SHA_H" "$(main_sha)"
+
+    gl PUT "$(project_path "/merge_requests/$IID_H")" '{"state_event":"close"}' >/dev/null || fail "could not close !$IID_H"
+    wait_for "proposal is Rejected" phase_is "$P_H" Rejected
+  fi
+  SHA_H2="$(main_commit delete "$JSON_FILE" "" "test: remove the JSON manifest again (Backflow e2e)")" || SHA_H2=""
+  expect_nonempty "commit removing $JSON_FILE from main" "$SHA_H2"
+  k -n "$DEMO_NS" delete configmap demo-json --ignore-not-found >/dev/null 2>&1 || true
+  if [[ -n "$SHA_H2" ]]; then
+    wait_for "$APP is Synced at the commit that removes the JSON manifest" app_synced_at "$SHA_H2"
+    if sync_app "$SHA_H2"; then pass "one sync at that commit"; else fail "$APP did not stay Synced"; fi
+  fi
 fi
 
 fi
