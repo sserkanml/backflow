@@ -109,6 +109,8 @@ type InlineValue struct {
 	// file parameters have none.
 	Value    string
 	HasValue bool
+	// Name is the name of the parameter, for LayerParameters.
+	Name string
 }
 
 // Source is the resolved Helm source of an Application: which files feed the
@@ -389,7 +391,7 @@ func (s *Source) parseInline(spec Spec) error {
 			if err != nil {
 				return fmt.Errorf("%w: %v", ErrInvalidInline, err)
 			}
-			s.Inline = append(s.Inline, InlineValue{Layer: LayerParameters, Path: kp, Value: p.Value, HasValue: true})
+			s.Inline = append(s.Inline, InlineValue{Layer: LayerParameters, Path: kp, Value: p.Value, HasValue: true, Name: p.Name})
 		}
 	}
 	for _, p := range spec.FileParameters {

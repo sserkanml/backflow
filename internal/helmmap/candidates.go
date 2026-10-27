@@ -22,6 +22,16 @@ type Controlled struct {
 	// LayerFileParameters.
 	Layer string
 	Path  rendermap.KeyPath
+	// Name is the name of the parameter, for LayerParameters.
+	Name string
+	// NewValue is what the setting must become to reproduce the drifted field,
+	// when that is known exactly: the new text of the part of the value the
+	// setting holds (Fragment), or empty for the whole value, which is the
+	// field's live value. HasNew is false when the setting is not the one whose
+	// own value matched the field.
+	NewValue string
+	Fragment bool
+	HasNew   bool
 }
 
 // Result is what Find reports.
@@ -221,11 +231,23 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 
 	target, targetWhy := s.overrideFile()
 	seen := map[string]bool{}
-	control := func(layer string, p rendermap.KeyPath) {
-		key := layer + "\x00" + p.String()
+	control := func(v InlineValue, own bool, occ []occurrence) {
+		key := v.Layer + "\x00" + v.Path.String()
+		c := Controlled{Layer: v.Layer, Path: v.Path, Name: v.Name}
+		// A setting whose own value matched the field is exactly what the field
+		// copies, so the new value is known when the match is unambiguous.
+		if own && v.HasValue && len(occ) == 1 {
+			c.NewValue, c.Fragment, c.HasNew = occ[0].newValue, fragments, true
+		}
 		if !seen[key] {
 			seen[key] = true
-			res.Controlled = append(res.Controlled, Controlled{Layer: layer, Path: p})
+			res.Controlled = append(res.Controlled, c)
+			return
+		}
+		for i := range res.Controlled {
+			if res.Controlled[i].Layer == v.Layer && res.Controlled[i].Path.Equal(v.Path) && !res.Controlled[i].HasNew && c.HasNew {
+				res.Controlled[i] = c
+			}
 		}
 	}
 
@@ -239,7 +261,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 				continue
 			}
 			if v, ok := s.inlineFor(d.path); ok {
-				control(v.Layer, v.Path)
+				control(v, false, nil)
 				continue
 			}
 			if l.isDefault {
@@ -272,7 +294,8 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 
 	// An inline setting whose own value matches.
 	for i, v := range s.Inline {
-		if !v.HasValue || len(match(v.Value)) == 0 {
+		occ := match(v.Value)
+		if !v.HasValue || len(occ) == 0 {
 			continue
 		}
 		shadowed := false
@@ -283,7 +306,7 @@ func (s *Source) find(files map[string][]byte, match func(string) []occurrence, 
 			}
 		}
 		if !shadowed {
-			control(v.Layer, v.Path)
+			control(v, true, occ)
 		}
 	}
 	return res, nil

@@ -223,7 +223,7 @@ func TestNewSourceInline(t *testing.T) {
 		{
 			name: "parameters",
 			spec: Spec{Path: "c", Parameters: []Parameter{{Name: "config.feature", Value: "beta"}}},
-			want: []InlineValue{{Layer: LayerParameters, Path: rendermap.KeyPath{"config", "feature"}, Value: "beta", HasValue: true}},
+			want: []InlineValue{{Layer: LayerParameters, Path: rendermap.KeyPath{"config", "feature"}, Value: "beta", HasValue: true, Name: "config.feature"}},
 		},
 		{
 			name: "values string",
@@ -247,15 +247,15 @@ func TestNewSourceInline(t *testing.T) {
 				FileParameters: []FileParameter{{Name: "f", Path: "f.txt"}}},
 			want: []InlineValue{
 				{Layer: LayerValues, Path: rendermap.KeyPath{"v"}, Value: "1", HasValue: true},
-				{Layer: LayerParameters, Path: rendermap.KeyPath{"p"}, Value: "2", HasValue: true},
-				{Layer: LayerParameters, Path: rendermap.KeyPath{"s"}, Value: "1", HasValue: true},
+				{Layer: LayerParameters, Path: rendermap.KeyPath{"p"}, Value: "2", HasValue: true, Name: "p"},
+				{Layer: LayerParameters, Path: rendermap.KeyPath{"s"}, Value: "1", HasValue: true, Name: "s"},
 				{Layer: LayerFileParameters, Path: rendermap.KeyPath{"f"}},
 			},
 		},
 		{
 			name: "parameter name with escaped dots",
 			spec: Spec{Path: "c", Parameters: []Parameter{{Name: `labels.app\.io/name`, Value: "x"}}},
-			want: []InlineValue{{Layer: LayerParameters, Path: rendermap.KeyPath{"labels", "app.io/name"}, Value: "x", HasValue: true}},
+			want: []InlineValue{{Layer: LayerParameters, Path: rendermap.KeyPath{"labels", "app.io/name"}, Value: "x", HasValue: true, Name: `labels.app\.io/name`}},
 		},
 		{
 			name:    "bad parameter name",
