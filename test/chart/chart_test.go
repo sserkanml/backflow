@@ -12,7 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -79,7 +79,7 @@ func normalise(t *testing.T, text string) []map[string]any {
 		}
 		objs = append(objs, obj)
 	}
-	sort.SliceStable(objs, func(i, j int) bool { return identity(objs[i]) < identity(objs[j]) })
+	slices.SortStableFunc(objs, func(a, b map[string]any) int { return strings.Compare(identity(a), identity(b)) })
 	return objs
 }
 
