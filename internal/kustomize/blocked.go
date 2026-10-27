@@ -1,6 +1,7 @@
 package kustomize
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -8,15 +9,18 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/appvalues"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // blocked says why a change cannot be mapped whatever is edited: the Application
 // sets the value on top of Git, or the value feeds a hashed generator name.
 func (f *finder) blocked(ch v1alpha1.FieldChange) *rendermap.Blocked {
-	if opt := f.setByApplication(ch); opt != "" {
-		return &rendermap.Blocked{Reason: rendermap.ReasonSetByApplication,
-			Message: fmt.Sprintf("set by spec.source.kustomize.%s of Application %s; Git cannot change it", opt, f.pol.Application)}
+	if kind := f.setByApplication(ch); kind != "" {
+		opt := f.appOption(kind, ch)
+		opt.Fields = []string{ch.Path}
+		return &rendermap.Blocked{Reason: rendermap.ReasonSetByApplication, Detail: &opt,
+			Message: fmt.Sprintf("set by spec.source.kustomize.%s of Application %s; Git cannot change it", kind, f.pol.Application)}
 	}
 	if f.origin.Generated {
 		if k, name, hashed := f.hashedGenerator(); hashed {
@@ -110,4 +114,116 @@ func (f *finder) appPatchSets(p AppPatch, ch v1alpha1.FieldChange, segs []string
 		return found
 	}
 	return false
+}
+
+// appOption describes the option of kind (the name setByApplication returned)
+// that sets the field: where it is in the Application and, when the option's
+// value is exactly what the field copies, the value that reproduces the live
+// state.
+func (f *finder) appOption(kind string, ch v1alpha1.FieldChange) appvalues.Option {
+	o := f.src.Options
+	base := "/spec/source/kustomize/"
+	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	switch kind {
+	case "images":
+		desired, _ := scalarJSON(ch.Desired)
+		entry := o.SetsImage(desired)
+		i := slices.Index(o.Images, entry)
+		left, _, _ := strings.Cut(entry, "=")
+		opt := appvalues.Option{Option: "spec.source.kustomize.images[" + imageName(left) + "]", Path: base + "images/" + fmt.Sprint(i), Current: j(entry)}
+		if live, ok := scalarJSON(ch.Live); ok {
+			if next, ok := imageEntryWithTag(entry, desired, live); ok {
+				opt.Suggested = j(next)
+			}
+		}
+		return opt
+	case keyReplicas:
+		list, _ := o.Raw[keyReplicas].([]any)
+		for i, it := range list {
+			m, _ := it.(map[string]any)
+			name, _ := m["name"].(string)
+			if name == f.obj.GetName() || name == f.declaredName() || strings.TrimPrefix(strings.TrimSuffix(f.obj.GetName(), o.NameSuffix), o.NamePrefix) == name {
+				opt := appvalues.Option{Option: "spec.source.kustomize.replicas[name=" + name + "]", Path: fmt.Sprintf("%sreplicas/%d/count", base, i), Current: j(m["count"])}
+				if _, isNum := scalarJSON(ch.Live); isNum && json.Valid([]byte(ch.Live)) {
+					var n float64
+					if json.Unmarshal([]byte(ch.Live), &n) == nil {
+						opt.Suggested = ch.Live
+					}
+				}
+				return opt
+			}
+		}
+	case "namePrefix", "nameSuffix", keyNamespace:
+		return appvalues.Option{Option: "spec.source.kustomize." + kind, Path: base + kind, Current: j(o.Raw[kind])}
+	case "commonLabels", "commonAnnotations":
+		key, _ := labelKey(parseSegments(ch.Path))
+		opt := appvalues.Option{Option: "spec.source.kustomize." + kind + "[" + key + "]", Path: base + kind + "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(key)}
+		if m, ok := o.Raw[kind].(map[string]any); ok {
+			opt.Current = j(m[key])
+		}
+		if live, ok := scalarJSON(ch.Live); ok {
+			opt.Suggested = j(live)
+		}
+		return opt
+	case keyPatches:
+		for i, p := range o.Patches {
+			if f.appPatchSets(p, ch, parseSegments(ch.Path)) {
+				return appvalues.Option{Option: fmt.Sprintf("spec.source.kustomize.patches[%d]", i), Path: fmt.Sprintf("%spatches/%d", base, i)}
+			}
+		}
+	}
+	return appvalues.Option{Option: "spec.source.kustomize." + kind, Path: base + kind}
+}
+
+// imageEntryWithTag rewrites an entry of spec.source.kustomize.images
+// ("name=newName:tag", "name:tag") so that the image it produces for desired
+// becomes live. It is exact only when live differs from desired in the tag
+// alone, and the entry sets that tag.
+func imageEntryWithTag(entry, desired, live string) (string, bool) {
+	dn, dt, dd := splitImage(desired)
+	ln, lt, ld := splitImage(live)
+	if dn != ln || dd != "" || ld != "" || lt == "" || dt == "" || dt == lt {
+		return "", false
+	}
+	left, right, replaces := strings.Cut(entry, "=")
+	target := entry
+	if replaces {
+		target = right
+	}
+	name, tag, digest := splitImage(target)
+	if tag != dt || digest != "" {
+		return "", false
+	}
+	next := name + ":" + lt
+	if replaces {
+		return left + "=" + next, true
+	}
+	return next, true
+}
+
+// ApplicationOptions returns the options of the Application
+// (spec.source.kustomize) that set the fields that could not be mapped, one per
+// option, with the fields each one sets.
+func ApplicationOptions(fields []rendermap.Field, unmapped map[string]bool) []appvalues.Option {
+	var out []appvalues.Option
+	for _, f := range fields {
+		if f.Found == nil || f.Found.Blocked == nil || !unmapped[f.Change.Path] {
+			continue
+		}
+		opt, ok := f.Found.Blocked.Detail.(*appvalues.Option)
+		if !ok {
+			continue
+		}
+		merged := false
+		for i := range out {
+			if out[i].Option == opt.Option {
+				out[i].Fields = append(out[i].Fields, opt.Fields...)
+				merged = true
+			}
+		}
+		if !merged {
+			out = append(out, *opt)
+		}
+	}
+	return out
 }

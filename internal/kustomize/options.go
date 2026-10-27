@@ -21,6 +21,9 @@ type Options struct {
 	IgnoreMissingComponents bool
 	// Patches are the inline patches of the Application.
 	Patches []AppPatch
+	// Raw is spec.source.kustomize as the Application has it, for the position
+	// of an option in its lists.
+	Raw map[string]any
 	// Other lists options that are set but not modelled (labelWithoutSelector,
 	// forceCommonLabels, ...); they are applied by Argo CD too.
 	Other []string
@@ -36,7 +39,7 @@ type AppPatch struct {
 // ParseOptions reads spec.source.kustomize from an Application's decoded
 // source (nil when there are none).
 func ParseOptions(k map[string]any) Options {
-	var o Options
+	o := Options{Raw: k}
 	str := func(key string) string { s, _ := k[key].(string); return s }
 	o.NamePrefix, o.NameSuffix, o.Namespace = str("namePrefix"), str("nameSuffix"), str(keyNamespace)
 	if l, ok := k["images"].([]any); ok {
