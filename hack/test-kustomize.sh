@@ -145,6 +145,7 @@ AUTOSYNC_OFF=""
 # Set while spec.source.kustomize of the Application holds options of this test.
 APP_OPTIONS_SET=false
 MAIN_ORIG_SHA=""
+ORIG_COUNT=""
 PASS=0
 FAIL=0
 
@@ -729,9 +730,17 @@ close_and_reset() {
 
 # restore_main: put every original file back on main with one commit, if any differ.
 restore_main() {
-  python3 - "$WORKDIR" "$PID_ENC" <<'PY'
+  python3 - "$WORKDIR" "$PID_ENC" "$ORIG_COUNT" <<'PY'
 import json, os, subprocess, sys, urllib.parse
 work, pid = sys.argv[1], sys.argv[2]
+# The copy must be the complete one taken at the start, or main is left alone.
+if len(sys.argv) < 4 or not sys.argv[3].isdigit():
+    sys.stderr.write("no complete copy of main; not touching it\n")
+    sys.exit(1)
+count = sum(len(files) for _, _, files in os.walk(os.path.join(sys.argv[1], "orig")))
+if count == 0 or count != int(sys.argv[3]):
+    sys.stderr.write("the copy of main has %d file(s), expected %s; not touching main\n" % (count, sys.argv[3]))
+    sys.exit(1)
 gl = os.path.join(work, "gl.py")
 def call(*args):
     return subprocess.run(["python3", gl, *args], capture_output=True, text=True)
@@ -865,6 +874,7 @@ cleanup() {
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-kust-test.* ]]; then
     rm -f "$WORKDIR/gl.py" "$WORKDIR/edit.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/paths"
+    rm -rf "$WORKDIR/orig.part"
     find "$WORKDIR/orig" -type f -exec rm -f {} + 2>/dev/null
     find "$WORKDIR/orig" -depth -type d -exec rmdir {} + 2>/dev/null
     rmdir "$WORKDIR" 2>/dev/null
@@ -916,16 +926,28 @@ OPEN_AT_START="$(open_mrs)"
 [[ "$OPEN_AT_START" == "0" ]] || die "$OPEN_AT_START merge request(s) are open in $GITLAB_PROJECT; close them first so this test can tell its own apart."
 [[ "$(gl_status GET "$(project_path "/labels/$(enc "$LABEL")")")" == "200" ]] || LABEL_PREEXISTED=false
 
-MAIN_ORIG_SHA="$(main_sha)"
-# Remember every file of main so cleanup can restore it byte for byte.
+SNAPSHOT_SHA="$(main_sha)"
+# Remember every file of main so cleanup can restore it byte for byte. The copy
+# is built in orig.part and only counts once it is complete: MAIN_ORIG_SHA, which
+# enables restore_main, is set after the last file. An interrupted run (Ctrl-C,
+# a failing call) therefore never restores main from a partial copy.
 gl GET "$(project_path "/repository/tree?recursive=true&per_page=100&ref=main")" |
   jx '"\n".join(t["path"] for t in d if t["type"] == "blob")' >"$WORKDIR/paths"
+[[ -s "$WORKDIR/paths" ]] || die "could not list the files of main"
+[[ "$(wc -l <"$WORKDIR/paths" | tr -d ' ')" -lt 99 ]] || die "main has too many files for one page of the tree API; this test saves only the first page"
+rm -rf "$WORKDIR/orig.part"
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
-  mkdir -p "$WORKDIR/orig/$(dirname "$path")"
-  raw_file "$path" "$MAIN_ORIG_SHA" >"$WORKDIR/orig/$path"
+  mkdir -p "$WORKDIR/orig.part/$(dirname "$path")"
+  raw_file "$path" "$SNAPSHOT_SHA" >"$WORKDIR/orig.part/$path.tmp" || die "could not read $path from main"
+  mv "$WORKDIR/orig.part/$path.tmp" "$WORKDIR/orig.part/$path"
 done <"$WORKDIR/paths"
+ORIG_COUNT="$(grep -c . "$WORKDIR/paths")"
+[[ "$(find "$WORKDIR/orig.part" -type f | wc -l | tr -d ' ')" == "$ORIG_COUNT" ]] || die "the copy of main is incomplete"
 rm -f "$WORKDIR/paths"
+rm -rf "$WORKDIR/orig"
+mv "$WORKDIR/orig.part" "$WORKDIR/orig"
+MAIN_ORIG_SHA="$SNAPSHOT_SHA"
 for f in "$OVERLAY_KUST" "$OVERLAY_PATCH" "$BASE_DEPLOY" kustomize/base/kustomization.yaml "$OTHER_FILE"; do
   [[ -s "$WORKDIR/orig/$f" ]] || die "$f not found on main; run GITLAB_TOKEN=... ./hack/dev-up.sh to copy hack/demo/kustomize/ into the demo repository."
 done
