@@ -47,7 +47,7 @@ func TestApplicationOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	unmapped := map[string]bool{"/data/FEATURE": true, "/spec/image": true, "/spec/replicas": true, "/data/COLOR": true, "/data/OTHER": true}
-	got := ApplicationOptions(fields, unmapped, helm)
+	got := ApplicationOptions(appvalues.SingleSource, fields, unmapped, helm)
 	want := []appvalues.Option{
 		{Option: "spec.source.helm.parameters[name=config.feature]", Path: "/spec/source/helm/parameters/0/value", Current: `"beta"`, Suggested: `"gamma"`, Fields: []string{"/data/FEATURE"}},
 		{Option: "spec.source.helm.parameters[name=image.tag]", Path: "/spec/source/helm/parameters/1/value", Current: `"1.27"`, Suggested: `"1.28"`, Fields: []string{"/spec/image"}},
@@ -57,10 +57,10 @@ func TestApplicationOptions(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got:\n%+v\nwant:\n%+v", got, want)
 	}
-	if only := ApplicationOptions(fields, map[string]bool{"/data/OTHER": true}, helm); len(only) != 0 {
+	if only := ApplicationOptions(appvalues.SingleSource, fields, map[string]bool{"/data/OTHER": true}, helm); len(only) != 0 {
 		t.Errorf("a field no option sets: %+v", only)
 	}
-	if none := ApplicationOptions(fields, map[string]bool{}, helm); len(none) != 0 {
+	if none := ApplicationOptions(appvalues.SingleSource, fields, map[string]bool{}, helm); len(none) != 0 {
 		t.Errorf("no unmapped field: %+v", none)
 	}
 }

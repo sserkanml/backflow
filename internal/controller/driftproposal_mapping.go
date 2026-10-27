@@ -186,6 +186,9 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	change, err := r.mapTree(ctx, dp, app, tree, writeTarget(dp).Revision)
 	if err != nil {
 		if verdict, ok := errors.AsType[*verdictError](err); ok {
+			if len(verdict.options) > 0 {
+				return r.unmappedByApplication(ctx, dp, app, verdict)
+			}
 			return ctrl.Result{}, r.unmapped(ctx, dp, verdict.reason, verdict.err.Error())
 		}
 		if held, ok := errors.AsType[*heldError](err); ok {
@@ -255,11 +258,18 @@ func mappingReason(err error) (reason string, ok bool) {
 // unmapped records that the change cannot be traced back to Git with
 // certainty. A human decides what to do with it.
 func (r *DriftProposalReconciler) unmapped(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string) error {
+	return r.unmappedWith(ctx, dp, reason, message, nil)
+}
+
+// unmappedWith is unmapped with the Application option that sets the value, when
+// one does.
+func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string,
+	application *backflowv1alpha1.ApplicationValue) error {
 	message = redactText(message)
 	orig := dp.DeepCopy()
 	dp.Status.Phase = backflowv1alpha1.PhaseUnmapped
 	dp.Status.Message = message
-	dp.Status.Mapping = &backflowv1alpha1.Mapping{Strategy: backflowv1alpha1.StrategyUnmapped, Reason: message}
+	dp.Status.Mapping = &backflowv1alpha1.Mapping{Strategy: backflowv1alpha1.StrategyUnmapped, Reason: message, Application: application}
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionMapped, Status: metav1.ConditionFalse, Reason: reason,
 		Message: message, ObservedGeneration: dp.Generation,

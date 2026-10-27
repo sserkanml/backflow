@@ -168,7 +168,13 @@ func (f *finder) appOption(kind string, ch v1alpha1.FieldChange) appvalues.Optio
 	case keyPatches:
 		for i, p := range o.Patches {
 			if f.appPatchSets(p, ch, parseSegments(ch.Path)) {
-				return appvalues.Option{Option: fmt.Sprintf("spec.source.kustomize.patches[%d]", i), Path: fmt.Sprintf("%spatches/%d", base, i)}
+				// The string that holds the patch (or names its file): a location,
+				// never a value.
+				field := "path"
+				if p.Patch != "" {
+					field = "patch"
+				}
+				return appvalues.Option{Option: fmt.Sprintf("spec.source.kustomize.patches[%d]", i), Path: fmt.Sprintf("%spatches/%d/%s", base, i, field)}
 			}
 		}
 	}

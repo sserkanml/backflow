@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sserkanml/backflow/internal/rendermap"
+
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-logr/logr/funcr"
 	. "github.com/onsi/ginkgo/v2"
@@ -381,10 +383,18 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 		It("a value that the Application sets inline", func() {
 			setHelm(map[string]any{"valueFiles": []any{"$values/env/values.yaml"}, "parameters": []any{map[string]any{"name": "replicaCount", "value": "2"}}})
 			settle(backflowv1alpha1.PhaseUnmapped)
-			Expect(mapped().Message).To(ContainSubstring("in the Application"))
-			Expect(mapped().Message).To(ContainSubstring("Backflow does not map values set in the Application yet"))
-			Expect(mapped().Message).To(ContainSubstring("spec.sources[0].helm"))
-			Expect(mapped().Message).NotTo(ContainSubstring("roadmap"))
+			Expect(mapped().Reason).To(Equal(rendermap.ReasonSetByApplication))
+			Expect(mapped().Message).To(ContainSubstring("Set by spec.sources[0].helm.parameters[name=replicaCount] of the Application " + ns + "/ms-app"))
+			Expect(mapped().Message).To(ContainSubstring("not managed from Git"))
+			Expect(mapped().Message).To(ContainSubstring("no Argo CD API renders an Application with a changed option"))
+			got := latest().Status.Mapping.Application
+			Expect(got).NotTo(BeNil())
+			Expect(got.OptionPath).To(Equal("/spec/sources/0/helm/parameters/0/value"))
+			Expect(got.Current).To(Equal(`"2"`))
+			Expect(got.Suggested).To(Equal(`"5"`))
+			Expect(got.Parent.State).To(Equal(backflowv1alpha1.ParentNotManagedFromGit))
+			Expect(provider.created).To(BeEmpty(), "nothing is proposed")
+			Expect(scratchBranches()).To(BeEmpty(), "nothing is pushed")
 		})
 
 		It("an Application outside the supported shape", func() {

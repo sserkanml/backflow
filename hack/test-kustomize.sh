@@ -1258,7 +1258,7 @@ wait_for "proposal is Unmapped (image $APP_IMAGE -> $OVERRIDE_TO)" has_proposal 
 remember_proposals
 P_F="$(proposal_with "$DEMO_APP" "$DEPLOY" Unmapped "\"$OVERRIDE_TO\"" | head -n 1)"
 if [[ -n "$P_F" ]]; then
-  expect_unmapped "$P_F" SetByApplication "spec.source.kustomize.images of Application $DEMO_APP; Git cannot change it"
+  expect_unmapped "$P_F" SetByApplication "Set by spec.source.kustomize.images[nginxinc/nginx-unprivileged] of the Application $ARGOCD_NS/$DEMO_APP"
   expect_eq "no merge request" "" "$(dp_field "$P_F" .status.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi

@@ -105,10 +105,22 @@ func jsonOf(v any) string {
 	return string(b)
 }
 
+// Where is the helm block of a source in the Application: its JSON pointer and
+// its name for people.
+type Where struct{ Pointer, Name string }
+
+// SingleSource is spec.source.helm.
+var SingleSource = Where{Pointer: "/spec/source/helm", Name: "spec.source.helm"}
+
+// SourceAt is spec.sources[i].helm of a multi-source Application.
+func SourceAt(i int) Where {
+	return Where{Pointer: fmt.Sprintf("/spec/sources/%d/helm", i), Name: fmt.Sprintf("spec.sources[%d].helm", i)}
+}
+
 // HelmParameter describes the helm.parameters entry named name. suggested is the
 // new value as text, when it is known exactly. The last entry of that name wins,
 // as in Helm.
-func HelmParameter(helm map[string]any, name, suggested string, hasSuggested bool) (Option, bool) {
+func HelmParameter(at Where, helm map[string]any, name, suggested string, hasSuggested bool) (Option, bool) {
 	items, _ := helm["parameters"].([]any)
 	idx := -1
 	for i, it := range items {
@@ -121,8 +133,8 @@ func HelmParameter(helm map[string]any, name, suggested string, hasSuggested boo
 	}
 	m, _ := items[idx].(map[string]any)
 	o := Option{
-		Option:  fmt.Sprintf("spec.source.helm.parameters[name=%s]", name),
-		Path:    fmt.Sprintf("/spec/source/helm/parameters/%d/value", idx),
+		Option:  fmt.Sprintf("%s.parameters[name=%s]", at.Name, name),
+		Path:    fmt.Sprintf("%s/parameters/%d/value", at.Pointer, idx),
 		Current: jsonOf(m["value"]),
 	}
 	if hasSuggested {
@@ -134,7 +146,7 @@ func HelmParameter(helm map[string]any, name, suggested string, hasSuggested boo
 // HelmValuesObject describes the key at path of helm.valuesObject. The suggested
 // value keeps the type of the current one: a number stays a number, a boolean a
 // boolean.
-func HelmValuesObject(helm map[string]any, path []string, suggested string, hasSuggested bool) (Option, bool) {
+func HelmValuesObject(at Where, helm map[string]any, path []string, suggested string, hasSuggested bool) (Option, bool) {
 	cur := helm["valuesObject"]
 	var escaped []string
 	for _, seg := range path {
@@ -147,11 +159,11 @@ func HelmValuesObject(helm map[string]any, path []string, suggested string, hasS
 		}
 		escaped = append(escaped, strings.NewReplacer("~", "~0", "/", "~1").Replace(seg))
 	}
-	pointer := "/spec/source/helm/valuesObject"
+	pointer := at.Pointer + "/valuesObject"
 	if len(escaped) > 0 {
 		pointer += "/" + strings.Join(escaped, "/")
 	}
-	o := Option{Option: "spec.source.helm.valuesObject." + strings.Join(path, "."), Path: pointer, Current: jsonOf(cur)}
+	o := Option{Option: at.Name + ".valuesObject." + strings.Join(path, "."), Path: pointer, Current: jsonOf(cur)}
 	if hasSuggested {
 		o.Suggested = typedLike(cur, suggested)
 	}
@@ -160,8 +172,8 @@ func HelmValuesObject(helm map[string]any, path []string, suggested string, hasS
 
 // HelmValues describes a key of helm.values, a string that holds YAML: where it
 // is, without a value.
-func HelmValues(path []string) Option {
-	return Option{Option: "spec.source.helm.values (key " + strings.Join(path, ".") + ")", Path: "/spec/source/helm/values"}
+func HelmValues(at Where, path []string) Option {
+	return Option{Option: at.Name + ".values (key " + strings.Join(path, ".") + ")", Path: at.Pointer + "/values"}
 }
 
 // typedLike renders text as JSON of the same type as like.
