@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -217,7 +218,7 @@ func AddValue(file string, content []byte, key rendermap.KeyPath, value, default
 	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{
 		{Path: pointer, Op: v1alpha1.OpAdd, Live: string(live)},
 	})
-	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) {
+	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) && !isJSONFile(file) {
 		edited, err = appendKey(content, key, nv)
 	}
 	if err != nil {
@@ -252,6 +253,11 @@ func AddValue(file string, content []byte, key rendermap.KeyPath, value, default
 		Text: text,
 	}, nil
 }
+
+// isJSONFile reports whether a value file is JSON by its name. Helm reads it as
+// YAML, which JSON is a subset of, but it is edited as JSON, in place, so that
+// the file stays JSON and the YAML editor never writes into it.
+func isJSONFile(file string) bool { return strings.EqualFold(path.Ext(file), ".json") }
 
 // hasMapRoot reports whether the file has a map at its top level (of any
 // style). A file with only comments, or with an explicit null, has none.

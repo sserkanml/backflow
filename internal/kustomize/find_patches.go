@@ -211,14 +211,14 @@ func jsonOp(list *yaml.Node, pointer, desired string) int {
 
 func (f *finder) resourceFile(ch v1alpha1.FieldChange) *rendermap.Candidate {
 	file := f.origin.File
-	if file == "" || path.Ext(file) == ".json" {
+	if file == "" {
 		return nil
 	}
 	content, ok := f.files[file]
 	if !ok {
 		return nil
 	}
-	docs, err := mapping.Documents(content)
+	docs, err := mapping.DocumentsOf(file, content)
 	if err != nil || f.origin.Index >= len(docs) || docs[f.origin.Index].Kind != f.obj.GetKind() {
 		return nil
 	}

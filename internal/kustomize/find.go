@@ -69,7 +69,7 @@ func FieldsFor(src *Source, files map[string][]byte, origin *Origin, obj *unstru
 		if !isKustomizationFile(name) {
 			continue
 		}
-		docs, err := mapping.Documents(files[name])
+		docs, err := mapping.DocumentsOf(name, files[name])
 		if err != nil || len(docs) == 0 || docs[0].Root == nil {
 			continue
 		}
@@ -327,7 +327,7 @@ func (f *finder) declaredName() string { return f.declaredNames()[0] }
 func (f *finder) declaredNames() []string {
 	rendered := f.obj.GetName()
 	if f.origin.File != "" {
-		docs, err := mapping.Documents(f.files[f.origin.File])
+		docs, err := mapping.DocumentsOf(f.origin.File, f.files[f.origin.File])
 		if err == nil && f.origin.Index < len(docs) && docs[f.origin.Index].Name != "" {
 			return []string{docs[f.origin.Index].Name}
 		}

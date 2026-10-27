@@ -163,3 +163,41 @@ func Documents(content []byte) ([]DocumentInfo, error) {
 	}
 	return out, nil
 }
+
+// DocumentsOf is Documents for the file with the given name: a file Argo CD reads
+// as JSON has one document per item when it is a list (an object with an "items"
+// array), and one otherwise (see jsondocs.go). The nodes are read with the YAML
+// parser, which JSON is a subset of, so their positions are not those of the file.
+func DocumentsOf(file string, content []byte) ([]DocumentInfo, error) {
+	if !isJSONFile(file) {
+		return Documents(content)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, nil
+	}
+	root := doc.Content[0]
+	nodes := []*yaml.Node{root}
+	if items := mapGet(root, "items"); items != nil {
+		switch {
+		case items.Kind == yaml.SequenceNode:
+			nodes = items.Content
+		case items.Kind == yaml.ScalarNode && items.Tag == "!!null":
+			nodes = nil
+		}
+	}
+	out := make([]DocumentInfo, len(nodes))
+	for i, n := range nodes {
+		d := DocumentInfo{Index: i, Root: n}
+		if n.Kind == yaml.MappingNode {
+			meta := mapGet(n, "metadata")
+			d.APIVersion, d.Kind = scalarOf(mapGet(n, "apiVersion")), scalarOf(mapGet(n, "kind"))
+			d.Name, d.Namespace = scalarOf(mapGet(meta, "name")), scalarOf(mapGet(meta, "namespace"))
+		}
+		out[i] = d
+	}
+	return out, nil
+}
