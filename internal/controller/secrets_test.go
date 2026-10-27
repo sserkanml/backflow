@@ -280,6 +280,82 @@ var _ = Describe("The token Secret of a proposal's ScmConnection that the operat
 	})
 })
 
+// selectiveReader refuses to read the Secrets named in forbidden.
+type selectiveReader struct {
+	client.Reader
+	forbidden map[string]bool
+}
+
+func (s selectiveReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if s.forbidden[key.Name] {
+		return apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, key.Name, nil)
+	}
+	return s.Reader.Get(ctx, key, obj, opts...)
+}
+
+var _ = Describe("BackflowPolicy with an Argo CD Secret the operator cannot read", func() {
+	for name, forbid := range map[string]string{"the token": "argocd-token", "the CA bundle": "argocd-ca"} {
+		It("is not Ready, with the reason SecretForbidden, when "+name+" is forbidden", func() {
+			policy := &backflowv1alpha1.BackflowPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "forbidden-policy-" + strings.ToLower(strings.ReplaceAll(name, " ", "-")), Namespace: "default"},
+				Spec: backflowv1alpha1.BackflowPolicySpec{
+					Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"not-there"}},
+					ArgoCD: &backflowv1alpha1.ArgoCDServer{
+						TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "argocd-token"}, Key: "token"},
+						CASecretRef:    &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "argocd-ca"}, Key: "ca.crt"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, policy) })
+
+			reader := selectiveReader{Reader: k8sClient, forbidden: map[string]bool{forbid: true}}
+			r := &BackflowPolicyReconciler{Client: NewSecretClient(k8sClient, reader, 0), Scheme: k8sClient.Scheme()}
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(Equal(scmRetryInterval), "Secrets are not watched, so look again soon")
+
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+			ready := meta.FindStatusCondition(policy.Status.Conditions, "Ready")
+			Expect(ready).NotTo(BeNil())
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("SecretForbidden"))
+			Expect(ready.Message).To(And(ContainSubstring(`"`+forbid+`"`), ContainSubstring(`namespace "default"`), ContainSubstring("secretNamespaces")))
+		})
+	}
+
+	It("does not report a missing Secret as forbidden", func() {
+		policy := &backflowv1alpha1.BackflowPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "missing-secret-policy", Namespace: "default"},
+			Spec: backflowv1alpha1.BackflowPolicySpec{
+				Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"not-there"}},
+				ArgoCD: &backflowv1alpha1.ArgoCDServer{
+					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "nope"}, Key: "token"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, policy) })
+
+		r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+		Expect(meta.FindStatusCondition(policy.Status.Conditions, "Ready").Reason).To(Equal("NoApplicationsMatched"))
+	})
+})
+
+var _ = Describe("The retry of a failing ScmConnection", func() {
+	It("is never later than the re-verification of a working one", func() {
+		r := &ScmConnectionReconciler{}
+		Expect(r.retryInterval()).To(Equal(scmRetryInterval))
+		r.RecheckInterval = 10 * time.Second
+		Expect(r.retryInterval()).To(Equal(10 * time.Second))
+		r.RecheckInterval = time.Hour
+		Expect(r.retryInterval()).To(Equal(scmRetryInterval))
+	})
+})
+
 // recordingCache records the kinds the manager's cache serves or watches.
 type recordingCache struct {
 	cache.Cache

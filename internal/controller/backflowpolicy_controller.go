@@ -140,12 +140,18 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	secretErr := r.argoCDSecretForbidden(ctx, &policy)
+
 	cond := metav1.Condition{Type: "Ready", ObservedGeneration: policy.Generation}
 	switch {
 	case matchErr != nil:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = reasonOf(matchErr)
 		cond.Message = matchErr.Error()
+	case secretErr != nil:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = reasonOf(secretErr)
+		cond.Message = secretErr.Error()
 	case len(apps) == 0:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "NoApplicationsMatched"
@@ -188,7 +194,33 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	log.Info("Policy resolved", "applications", names, "ready", cond.Status, "reason", cond.Reason)
+	if secretErr != nil {
+		// Secrets are not watched: look again soon, in case access was granted.
+		return ctrl.Result{RequeueAfter: min(scmRetryInterval, policyResyncInterval)}, nil
+	}
 	return ctrl.Result{RequeueAfter: policyResyncInterval}, nil
+}
+
+// argoCDSecretForbidden returns a SecretForbidden error when the operator may
+// not read the Argo CD token or CA Secret of the policy. A Secret that is
+// missing, or any other error, is not reported here.
+func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) error {
+	spec := policy.Spec.ArgoCD
+	if spec == nil {
+		return nil
+	}
+	refs := []corev1.SecretKeySelector{spec.TokenSecretRef}
+	if spec.CASecretRef != nil {
+		refs = append(refs, *spec.CASecretRef)
+	}
+	for _, ref := range refs {
+		var secret corev1.Secret
+		err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: ref.Name}, &secret)
+		if err = secretReadError(err, policy.Namespace, ref.Name); isSecretForbidden(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // credentialedRepoURL returns the redacted repoURL of the first source of the
