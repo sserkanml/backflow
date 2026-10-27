@@ -106,11 +106,14 @@ func TestMapPartialWithNothingToWriteIsNotMapped(t *testing.T) {
 	}
 }
 
-func TestMapPartialFailsAsAWholeWhenTheFileCannotBeEdited(t *testing.T) {
+func TestMapPartialEditsAJSONManifest(t *testing.T) {
 	repo := map[string]string{"apps/demo/deployment.json": `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"demo","namespace":"demo"},"spec":{"replicas":1}}`}
-	_, err := MapPartial(files(repo), "apps/demo", DirectoryOptions{}, "demo", deployment, scaleUpWithIt)
-	if !errors.Is(err, ErrUnsupportedFileFormat) {
-		t.Errorf("err = %v, want ErrUnsupportedFileFormat", err)
+	res, err := MapPartial(files(repo), "apps/demo", DirectoryOptions{}, "demo", deployment, scaleUpWithIt)
+	if err != nil {
+		t.Fatalf("a JSON manifest is edited like a YAML one: %v", err)
+	}
+	if !strings.Contains(string(res.Edited), `"replicas":3`) {
+		t.Errorf("edited = %s", res.Edited)
 	}
 }
 

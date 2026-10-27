@@ -237,6 +237,20 @@ var _ = Describe("DriftProposal mapping", func() {
 		Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
 	})
 
+	It("maps a JSON manifest in place, changing only the value", func() {
+		const manifest = "{\n  \"apiVersion\": \"v1\",\n  \"kind\": \"ConfigMap\",\n  \"metadata\": {\n    \"name\": \"demo-config\"\n  },\n  \"data\": {\n    \"LOG_LEVEL\": \"info\"\n  }\n}\n"
+		repos.files = tree(map[string]string{"apps/demo/configmap.json": manifest})
+		_, err := reconcileDP()
+		Expect(err).NotTo(HaveOccurred())
+		got := latest()
+		Expect(mapped().Reason).To(Equal(reasonMapped))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyDirect))
+		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+			File: "apps/demo/configmap.json", Location: "/data/LOG_LEVEL", Value: `"debug"`, ChangeIndex: 0,
+		}}))
+		Expect(got.Status.Mapping.Diff).To(ContainSubstring("-    \"LOG_LEVEL\": \"info\"\n+    \"LOG_LEVEL\": \"debug\"\n"))
+	})
+
 	It("never writes to the proposal spec", func() {
 		before := latest().Spec
 		_, err := reconcileDP()
@@ -329,9 +343,9 @@ var _ = Describe("DriftProposal mapping", func() {
 					}}
 				})
 			}, reasonCannotApply),
-		Entry("the manifest is JSON",
-			map[string]string{"apps/demo/configmap.json": `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"demo-config"},"data":{"LOG_LEVEL":"info"}}`},
-			nil, reasonUnsupportedFileFormat),
+		Entry("the manifest is a JSON file with two objects, which Argo CD refuses",
+			map[string]string{"apps/demo/configmap.json": `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"demo-config"},"data":{"LOG_LEVEL":"info"}} {"a":1}`},
+			nil, reasonNotFound),
 		Entry("an include pattern does not compile",
 			map[string]string{"apps/demo/configmap.yaml": mappingConfigMap},
 			func() { setDirectory(map[string]any{"include": "["}) }, reasonInvalidSourceOptions),

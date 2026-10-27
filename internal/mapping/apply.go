@@ -35,8 +35,11 @@ const mapTag = "!!map"
 // Array items are addressed by index. Apply does not check the result; use
 // Verify.
 func Apply(file string, original []byte, document int, changes []v1alpha1.FieldChange) ([]byte, error) {
+	if ext := path.Ext(file); ext == ".jsonnet" || ext == ".libsonnet" {
+		return nil, fmt.Errorf("%w: editing Jsonnet (%s)", ErrUnsupportedFileFormat, file)
+	}
 	if strings.EqualFold(path.Ext(file), ".json") {
-		return nil, fmt.Errorf("%w: editing JSON manifests (%s)", ErrUnsupportedFileFormat, file)
+		return applyJSON(file, original, document, changes)
 	}
 	text := string(original)
 	segs := splitDocuments(text)

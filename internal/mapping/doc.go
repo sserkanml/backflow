@@ -23,7 +23,7 @@ var (
 	// ErrCannotApply means a change could not be applied to the document.
 	ErrCannotApply = errors.New("mapping: change cannot be applied")
 	// ErrUnsupportedFileFormat means the file that defines the resource is in
-	// a format that cannot be edited yet (JSON).
+	// a format that cannot be edited (Jsonnet).
 	ErrUnsupportedFileFormat = errors.New("mapping: unsupported file format")
 	// ErrInvalidGlob means a directory include/exclude pattern does not compile.
 	ErrInvalidGlob = errors.New("mapping: invalid include/exclude pattern")

@@ -50,7 +50,7 @@ func Map(fsys fs.FS, appPath string, opts DirectoryOptions, destNamespace string
 	if err != nil {
 		return nil, err
 	}
-	if err := Verify(original, edited, loc.Document, changes); err != nil {
+	if err := VerifyFile(loc.File, original, edited, loc.Document, changes); err != nil {
 		return nil, err
 	}
 	edits := make([]Edit, len(changes))

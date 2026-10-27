@@ -67,7 +67,7 @@ func MapPartial(fsys fs.FS, appPath string, opts DirectoryOptions, destNamespace
 	if err != nil {
 		return nil, err
 	}
-	if err := Verify(original, edited, loc.Document, mapped); err != nil {
+	if err := VerifyFile(loc.File, original, edited, loc.Document, mapped); err != nil {
 		return nil, err
 	}
 	edits := make([]Edit, len(mapped))

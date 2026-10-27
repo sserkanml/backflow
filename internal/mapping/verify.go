@@ -25,6 +25,15 @@ import (
 // document holds exactly the live value at the proposal's path and the Add
 // contains nothing else.
 func Verify(original, edited []byte, document int, changes []v1alpha1.FieldChange) error {
+	return VerifyFile("", original, edited, document, changes)
+}
+
+// VerifyFile is Verify for the file with the given name: a file Argo CD reads as
+// JSON is compared as JSON.
+func VerifyFile(file string, original, edited []byte, document int, changes []v1alpha1.FieldChange) error {
+	if isJSONFile(file) {
+		return verifyJSON(original, edited, document, changes)
+	}
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, fmt.Sprintf(format, args...))
 	}
@@ -50,9 +59,17 @@ func Verify(original, edited []byte, document int, changes []v1alpha1.FieldChang
 	if err != nil {
 		return fail("the edited document: %v", err)
 	}
+	return verifyMaps(o, e, changes)
+}
+
+// verifyMaps checks that the edited resource differs from the original by the
+// changes and nothing else.
+func verifyMaps(o, e map[string]any, changes []v1alpha1.FieldChange) error {
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("%w: %s", ErrVerificationFailed, fmt.Sprintf(format, args...))
+	}
 	got := drift.Diff(o, e)
-	var want []v1alpha1.FieldChange
-	want, got, err = acceptDefaulted(o, e, got, changes)
+	want, got, err := acceptDefaulted(o, e, got, changes)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -61,6 +78,8 @@ func Verify(original, edited []byte, document int, changes []v1alpha1.FieldChang
 	}
 	return fail("the edit changes %s, the proposal expects %s", summarize(got), summarize(want))
 }
+
+func deepEqual(a, b any) bool { return reflect.DeepEqual(a, b) }
 
 // acceptDefaulted pairs each proposal Replace on a path that is absent in the
 // original with the Add in got that created it, checks the value, and returns

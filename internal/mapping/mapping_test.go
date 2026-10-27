@@ -131,10 +131,10 @@ func TestMapFailures(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
-	t.Run("a JSON manifest is located but not edited", func(t *testing.T) {
-		repo := map[string]string{"apps/demo/cm.json": `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"demo-config","namespace":"demo"},"data":{"LOG_LEVEL":"info"}}`}
+	t.Run("Jsonnet is not read, so what it would generate is not found", func(t *testing.T) {
+		repo := map[string]string{"apps/demo/cm.jsonnet": `{apiVersion: "v1", kind: "ConfigMap", metadata: {name: "demo-config", namespace: "demo"}}`}
 		_, err := Map(files(repo), "apps/demo", DirectoryOptions{}, "demo", cm, logLevel)
-		if !errors.Is(err, ErrUnsupportedFileFormat) {
+		if !errors.Is(err, ErrNotFound) {
 			t.Errorf("err = %v", err)
 		}
 	})
