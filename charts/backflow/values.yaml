@@ -18,6 +18,22 @@ leaderElection: true
 # How often the state of an open merge request is polled.
 mergeRequestPollInterval: 2m
 
+# How often a working ScmConnection is verified again. Secrets are not watched,
+# so this is also how long a rotated token or CA bundle can go unnoticed; a
+# change of the ScmConnection itself is verified at once.
+scmRecheckInterval: 5m
+
+# How long a Secret that was read stays in memory (0 reads it every time).
+secretCacheTTL: 30s
+
+# Where the operator may read Secrets (ScmConnection tokens and CA bundles, the
+# Argo CD token). Empty: a ClusterRole rule lets it get any Secret by name, in
+# every namespace. A list of namespaces replaces that rule with a Role and a
+# RoleBinding granting "get" on Secrets in each of them and in the release
+# namespace; an ScmConnection or BackflowPolicy whose Secret is anywhere else is
+# not Ready (SecretForbidden). The operator never lists or watches Secrets.
+secretNamespaces: []
+
 # The time all renders through Argo CD of one verification may take together.
 # A proposal that needs more is Unmapped (RenderBudgetExceeded). Raise it when
 # Argo CD takes seconds per render, which an Application with several sources
@@ -27,8 +43,8 @@ renderBudget: 2m
 # Extra command line arguments of the operator, e.g. ["--zap-log-level=debug"].
 extraArgs: []
 
-# Starting points, not guarantees: memory grows with the number of Secrets and
-# Argo CD Applications held in the informer caches and with the size of the Git
+# Starting points, not guarantees: memory grows with the number of
+# Argo CD Applications held in the informer cache and with the size of the Git
 # repositories being mapped. Tune per cluster.
 resources:
   limits:

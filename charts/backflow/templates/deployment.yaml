@@ -53,6 +53,8 @@ spec:
             - --repo-cache-dir=/var/cache/backflow
             - --merge-request-poll-interval={{ .Values.mergeRequestPollInterval }}
             - --render-budget={{ .Values.renderBudget }}
+            - --scm-recheck-interval={{ .Values.scmRecheckInterval }}
+            - --secret-cache-ttl={{ .Values.secretCacheTTL }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:8443
             {{- if .Values.metrics.certSecret }}

@@ -3,6 +3,21 @@ Backflow {{ .Chart.AppVersion }} is installed in the namespace {{ .Release.Names
 The operator reads Argo CD and writes to Git; it never writes to the cluster.
 It needs two credentials, both kept in Secrets of the namespace where you
 create your resources (here: {{ .Release.Namespace }}).
+{{- if .Values.secretNamespaces }}
+
+It may read Secrets only in {{ join ", " (append (without .Values.secretNamespaces .Release.Namespace) .Release.Namespace | uniq) }}
+(secretNamespaces). An ScmConnection or BackflowPolicy whose Secret is in another
+namespace is not Ready (SecretForbidden); add that namespace to secretNamespaces.
+{{- else }}
+
+It may get any Secret by name in every namespace. To narrow that to the
+namespaces you use, set secretNamespaces=\{a,b\} (see the README, "Permissions").
+{{- end }}
+
+Secrets are not watched. A rotated token is picked up within
+{{ .Values.scmRecheckInterval }} (scmRecheckInterval) for an ScmConnection and
+within {{ .Values.secretCacheTTL }} (secretCacheTTL) for the Argo CD token; changing the
+ScmConnection itself verifies it at once.
 
 1. A read-only Argo CD account "backflow"
 
