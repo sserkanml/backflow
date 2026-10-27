@@ -20,18 +20,18 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
 const (
-	// How often a working connection is re-verified.
-	scmRecheckInterval = 10 * time.Minute
+	// DefaultSCMRecheckInterval is how often a working connection is re-verified
+	// when the manager is not told otherwise. Secrets are not watched, so this is
+	// also how long a rotated token or CA bundle can go unnoticed.
+	DefaultSCMRecheckInterval = 5 * time.Minute
 	// How soon a failing connection is retried.
 	scmRetryInterval = 1 * time.Minute
 	// Timeout for a single call to the provider API.
@@ -43,12 +43,22 @@ const (
 type ScmConnectionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// RecheckInterval is how often a working connection is verified again, which
+	// picks up a rotated token. Zero means DefaultSCMRecheckInterval.
+	RecheckInterval time.Duration
+}
+
+func (r *ScmConnectionReconciler) recheckInterval() time.Duration {
+	if r.RecheckInterval > 0 {
+		return r.RecheckInterval
+	}
+	return DefaultSCMRecheckInterval
 }
 
 // +kubebuilder:rbac:groups=backflow.io,resources=scmconnections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=backflow.io,resources=scmconnections/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=backflow.io,resources=scmconnections/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -93,7 +103,7 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: scmRetryInterval}, nil
 	}
 	log.Info("SCM connection verified", "user", user)
-	return ctrl.Result{RequeueAfter: scmRecheckInterval}, nil
+	return ctrl.Result{RequeueAfter: r.recheckInterval()}, nil
 }
 
 // verify reads the token, calls the provider's "current user" endpoint
@@ -143,7 +153,7 @@ func (r *ScmConnectionReconciler) secretValue(ctx context.Context, namespace str
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("secret %q not found", ref.Name)
 		}
-		return nil, err
+		return nil, secretReadError(err, namespace, ref.Name)
 	}
 	value, ok := secret.Data[ref.Key]
 	if !ok || len(value) == 0 {
@@ -218,26 +228,6 @@ func reasonOf(err error) string {
 	return "CheckFailed"
 }
 
-// connectionsForSecret finds ScmConnections that reference a Secret,
-// so a token rotation is picked up immediately.
-func (r *ScmConnectionReconciler) connectionsForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list backflowv1alpha1.ScmConnectionList
-	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
-		return nil
-	}
-	var requests []reconcile.Request
-	for _, c := range list.Items {
-		usesSecret := c.Spec.TokenSecretRef.Name == obj.GetName() ||
-			(c.Spec.CASecretRef != nil && c.Spec.CASecretRef.Name == obj.GetName())
-		if usesSecret {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: types.NamespacedName{Namespace: c.Namespace, Name: c.Name},
-			})
-		}
-	}
-	return requests
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *ScmConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -245,8 +235,6 @@ func (r *ScmConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// trigger another reconcile (that would loop forever).
 		For(&backflowv1alpha1.ScmConnection{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.connectionsForSecret)).
 		Named("scmconnection").
 		Complete(r)
 }

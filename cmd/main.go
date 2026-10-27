@@ -30,7 +30,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -64,6 +63,7 @@ func main() {
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
 	var enableLeaderElection bool
+	var scmRecheckInterval, secretCacheTTL time.Duration
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -77,6 +77,11 @@ func main() {
 	flag.DurationVar(&renderBudget, "render-budget", 2*time.Minute,
 		"The time all renders of one verification may take together, for each proposal of a Helm or Kustomize source. "+
 			"Rendering goes through Argo CD, which can take seconds per render.")
+	flag.DurationVar(&scmRecheckInterval, "scm-recheck-interval", controller.DefaultSCMRecheckInterval,
+		"How often a working ScmConnection is verified again. Secrets are not watched, so this is how long a rotated "+
+			"token or CA bundle can go unnoticed (a change of the ScmConnection itself is verified at once).")
+	flag.DurationVar(&secretCacheTTL, "secret-cache-ttl", controller.DefaultSecretTTL,
+		"How long a Secret that was read by name stays in memory. 0 reads it from the API server every time.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -187,9 +192,9 @@ func main() {
 		// Get/List of an Application, once per application in the drift
 		// controller and once per older policy in the policy controller, would
 		// hit the API server although the controllers already watch them.
-		Client: client.Options{
-			Cache: &client.CacheOptions{Unstructured: true},
-		},
+		//
+		// Secrets are never cached: the operator may only get them by name.
+		Client: controller.ClientOptions(),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -207,15 +212,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Secrets are read by name straight from the API server (no informer, and
+	// the operator holds only "get" on them); every controller uses this client.
+	k8sClient := controller.NewSecretClient(mgr.GetClient(), mgr.GetAPIReader(), secretCacheTTL)
 	if err := (&controller.ScmConnectionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          k8sClient,
+		Scheme:          mgr.GetScheme(),
+		RecheckInterval: scmRecheckInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "scmconnection")
 		os.Exit(1)
 	}
 	if err := (&controller.BackflowPolicyReconciler{
-		Client:   mgr.GetClient(),
+		Client:   k8sClient,
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("backflow-policy"),
 	}).SetupWithManager(mgr); err != nil {
@@ -224,7 +233,7 @@ func main() {
 	}
 	repoCache := gitrepo.NewCache(repoCacheDir)
 	if err := (&controller.DriftProposalReconciler{
-		Client:        mgr.GetClient(),
+		Client:        k8sClient,
 		Scheme:        mgr.GetScheme(),
 		Repos:         controller.CacheReader{Cache: repoCache},
 		Writer:        repoCache,
@@ -236,7 +245,7 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.DriftReconciler{
-		Client:   mgr.GetClient(),
+		Client:   k8sClient,
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("backflow-drift"),
 		Git:      repoCache,
@@ -244,7 +253,7 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
 		os.Exit(1)
 	}
-	if err := mgr.Add(&controller.ScratchSweeper{Client: mgr.GetClient(), Git: repoCache}); err != nil {
+	if err := mgr.Add(&controller.ScratchSweeper{Client: k8sClient, Git: repoCache}); err != nil {
 		setupLog.Error(err, "Failed to add the scratch branch sweeper")
 		os.Exit(1)
 	}

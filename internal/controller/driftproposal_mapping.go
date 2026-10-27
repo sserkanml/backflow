@@ -299,7 +299,7 @@ func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha
 }
 
 // heldReasons are the reasons of a False Mapped or Proposed condition that the
-// user fixes by changing a Secret, an ScmConnection or a BackflowPolicy: access
+// user fixes by changing an ScmConnection or a BackflowPolicy: access
 // that is missing or refused, or a policy in ReportOnly mode that is switched to
 // one that writes to Git.
 var heldReasons = map[string]bool{
@@ -309,7 +309,7 @@ var heldReasons = map[string]bool{
 	reasonReportOnly: true,
 }
 
-// heldProposals enqueues the proposals in the namespace of a changed Secret,
+// heldProposals enqueues the proposals in the namespace of a changed
 // ScmConnection or BackflowPolicy that are waiting for the user to change
 // something: access to be fixed (the credentials were rejected, the repository
 // is not visible to them, no ScmConnection matched yet), or the policy to leave
