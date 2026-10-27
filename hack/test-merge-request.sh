@@ -457,11 +457,12 @@ app_compared_at() {
   [[ "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.revision}')" == "$1" ]]
 }
 
-# proposals: one line per DriftProposal of the policy for demo-config:
+# proposals: one line per DriftProposal of the policy for the resource named in
+# PROPOSALS_OF (demo-config unless a section looks at another ConfigMap):
 #   <name>|<phase>|<supersededBy>|<path>:<op>:<desired>><live>;...
 proposals() {
   k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resource.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
-    awk -F'|' '$3 == "demo-config" { print $1 "|" $2 "|" $4 "|" $5 }'
+    awk -F'|' -v r="${PROPOSALS_OF:-demo-config}" '$3 == r { print $1 "|" $2 "|" $4 "|" $5 }'
 }
 # proposal_with <phase regex> <changes substring>: names, one per line.
 proposal_with() {
@@ -695,7 +696,25 @@ LEVEL="$(gl GET "$(project_path "")" | jx 'max(d["permissions"]["project_access"
 (( LEVEL >= 40 )) || die "the token needs at least Maintainer access to restore main; it has level $LEVEL"
 pass "token accepted, access level $LEVEL"
 
-LEFTOVERS="$(gl GET "$(project_path "/repository/branches?search=backflow/&per_page=100")" | jx '" ".join(b["name"] for b in d if b["name"].startswith("backflow/"))')"
+# leftover_branches: the Backflow branches that still exist. GitLab's branch list
+# lags behind a deletion, so every listed branch is looked up by name too.
+leftover_branches() {
+  local listed name out=""
+  listed="$(gl GET "$(project_path "/repository/branches?search=backflow/&per_page=100")" 2>/dev/null |
+    jx '" ".join(b["name"] for b in d if b["name"].startswith("backflow/"))' 2>/dev/null)"
+  for name in $listed; do
+    if branch_exists "$name"; then out="$out $name"; fi
+  done
+  echo "${out# }"
+}
+# The previous run's cleanup may have deleted its branches a moment ago: look again
+# for up to 30s before treating a branch as a leftover.
+LEFTOVERS="$(leftover_branches)"
+for _ in 1 2 3 4 5 6; do
+  [[ -n "$LEFTOVERS" ]] || break
+  sleep 5
+  LEFTOVERS="$(leftover_branches)"
+done
 [[ -z "$LEFTOVERS" ]] || die "branches from an earlier run exist: $LEFTOVERS. Delete them (and their merge requests) first."
 OPEN_MRS="$(gl GET "$(project_path "/merge_requests?state=opened&per_page=100")" | jx 'len(d)')"
 [[ "$OPEN_MRS" == "0" ]] || die "$OPEN_MRS merge request(s) are open in $GITLAB_PROJECT; close them first so this test can tell its own apart."
@@ -1240,6 +1259,7 @@ if [[ -n "$SHA_H" ]]; then
   wait_for "the ConfigMap demo-json is in the cluster" k -n "$DEMO_NS" get configmap demo-json
   k -n "$DEMO_NS" patch configmap demo-json --type merge -p "{\"data\":{\"GREETING\":\"$NEW_GREETING\"}}" >/dev/null
   refresh_app
+  PROPOSALS_OF=demo-json
   wait_for "proposal is Proposed (GREETING hello -> $NEW_GREETING)" has_proposal Proposed "/data/GREETING:Replace:\"hello\">\"$NEW_GREETING\""
   remember_proposals
   P_H="$(proposal_with Proposed "\"$NEW_GREETING\"" | head -n 1)"
@@ -1270,6 +1290,7 @@ if [[ -n "$SHA_H" ]]; then
     gl PUT "$(project_path "/merge_requests/$IID_H")" '{"state_event":"close"}' >/dev/null || fail "could not close !$IID_H"
     wait_for "proposal is Rejected" phase_is "$P_H" Rejected
   fi
+  PROPOSALS_OF=""
   SHA_H2="$(main_commit delete "$JSON_FILE" "" "test: remove the JSON manifest again (Backflow e2e)")" || SHA_H2=""
   expect_nonempty "commit removing $JSON_FILE from main" "$SHA_H2"
   k -n "$DEMO_NS" delete configmap demo-json --ignore-not-found >/dev/null 2>&1 || true
