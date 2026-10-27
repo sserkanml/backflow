@@ -72,7 +72,7 @@ func golden(t *testing.T, name, got string) {
 		t.Fatalf("%v (run with -update to create it)", err)
 	}
 	if string(want) != got {
-		t.Errorf("%s differs from what the chart renders; run go test ./test/chart -update and review the diff.\n--- rendered ---\n%s", name, got)
+		t.Errorf("%s differs from the chart; run go test ./test/chart -update and review the diff.\n%s", name, got)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestSecretNamespacesReplaceTheClusterWideRule(t *testing.T) {
 	got := render(t, "--set", "secretNamespaces={team-a,team-b}")
 	golden(t, "rbac-secret-namespaces.yaml", got)
 	clusterRole := ""
-	for _, doc := range strings.Split(got, "\n---\n") {
+	for doc := range strings.SplitSeq(got, "\n---\n") {
 		if strings.Contains(doc, "kind: ClusterRole") {
 			clusterRole = doc
 		}
@@ -111,7 +111,7 @@ func TestSecretNamespacesReplaceTheClusterWideRule(t *testing.T) {
 // checkSecretVerbs fails when a rule on Secrets grants anything but get.
 func checkSecretVerbs(t *testing.T, manifest string) {
 	t.Helper()
-	for _, doc := range strings.Split(manifest, "\n- apiGroups:") {
+	for doc := range strings.SplitSeq(manifest, "\n- apiGroups:") {
 		if !strings.Contains(doc, "\n  - secrets\n") {
 			continue
 		}
