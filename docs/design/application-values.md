@@ -1,6 +1,8 @@
 # Values set in the Application manifest (roadmap B6)
 
-Status: design, after a spike. No production code yet.
+Status: option (B) is implemented (`internal/appvalues`, `driftproposal_application.go`). The spike
+findings are unchanged; "As implemented" at the end lists where the implementation differs
+from the design sections above it.
 
 Goal: drift whose value is set in the Argo CD Application itself, not in a file
 the source reads, is `Unmapped` today:
@@ -489,3 +491,50 @@ dangerous (it lets the holder create ApplicationSets).
    example `source` in `ManifestQuery`), A becomes possible and B would be
    upgraded to propose the merge request; the status block is designed so
    that `state: Located` plus a verified child render is the only addition.
+
+## As implemented
+
+Decisions taken when building (B), where they differ from, or settle, the design above:
+
+- **Reason.** `SetByApplication` for Helm (`parameters`, `values`, `valuesObject`, single
+  and multi-source) and Kustomize alike. It is used when options of the Application set
+  *every* field that could not be mapped; when some unmapped field has another cause the
+  engine's reason stays and the message adds the sentence. A Helm option is found from the
+  layer analysis that already existed (`helmmap.Result.Controlled`, now with the parameter
+  name and the new text of the part of the value it holds); a Kustomize option from
+  `kustomize.Options` (`rendermap.Blocked.Detail`).
+- **Status.** `status.mapping.application` as in the README: `application`, `option`,
+  `optionPath`, `current`, `suggested` and `parent{state, name, repoURL, revision, file,
+  location, diff, message}`. The states are `Located`, `NotManagedFromGit`,
+  `GeneratedByApplicationSet`, `OutOfSync`, `Ambiguous` and `NotVerifiable`; `NotInGit` of
+  the design is `NotVerifiable` with the engine's message.
+- **Finding the parent.** `status.resources` of the Applications first (it covers the
+  annotation and label tracking methods and other namespaces), with the tracking-id
+  annotation as the fast path; the annotation is only believed if the Application it names
+  lists the child. An ApplicationSet owner (`ownerReferences`) is reported by name; the
+  best-effort search in the ApplicationSet that the design mentions was not built, so the
+  operator needs no access to ApplicationSets.
+- **Suggested value.** A parameter, a `valuesObject` key (type kept), a Kustomize image tag
+  (the entry is rewritten: `name=newName:tag` or `name:tag`), a replica count,
+  `commonLabels`/`commonAnnotations` values. `helm.values` and Kustomize `patches` give a
+  location only, found by editing the string to a probe value and discarding the edit.
+- **Locating in the parent reuses the engines through a synthetic proposal** (the parent's
+  source, its synced revision, the child Application as the resource, the option as the
+  field), so `mapTree` is called unchanged. For a Kustomize parent the policy is overridden
+  to `editBases: true, addPatches: false` for this lookup, so the answer is the file that
+  holds the value and not a patch that could be added. A Directory parent is not rendered,
+  so the edit must remove a line of the file (otherwise the file does not hold the
+  option's current value and the answer is `NotVerifiable`).
+- **Events.** One `ApplicationValue` Event per proposal, with the sentence.
+- **Git-ahead.** Nothing is written, so there is no pause of its own; a parent that is not
+  Synced gives `OutOfSync`, and the diagnosis is made again whenever the proposal is mapped
+  again.
+- **Coverage suite.** Not extended: the diagnosis lives in the controller (it needs the
+  Application objects and their `status.resources`), and the suite runs the engines only.
+  The engine half is covered by the controller's envtests (Directory, Helm and Kustomize
+  parents, ApplicationSet, none, two, unsynced, unreadable parents) and the unit tests of
+  `internal/appvalues`, `helmmap.ApplicationOptions` and `kustomize.ApplicationOptions`.
+- **End-to-end.** `hack/test-application-values.sh`: needs no `GITLAB_TOKEN` (the parent's
+  repository is a git server pod in the cluster; the children read the public demo
+  chart). Sections a (parameter, Git-managed parent), b (no parent), c (ApplicationSet),
+  d (parent not synced), e (secrets).
