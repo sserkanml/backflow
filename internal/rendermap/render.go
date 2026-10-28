@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sserkanml/backflow/internal/argocd"
+	"github.com/sserkanml/backflow/internal/metrics"
 )
 
 // Errors of rendering.
@@ -90,9 +92,11 @@ func (r *ArgoRenderer) CloseIdleConnections() {
 // are; a source that does not render wraps ErrRenderFailed, and files over
 // the limits wrap ErrFilesTooLarge.
 func (r *ArgoRenderer) Render(ctx context.Context, app App, files map[string][]byte) ([]*unstructured.Unstructured, error) {
+	start := time.Now()
 	resp, err := r.Client.GetManifestsWithFiles(ctx, argocd.ManifestsQuery{
 		AppName: app.Name, AppNamespace: app.Namespace, Project: app.Project, Files: files,
 	})
+	metrics.Render(metrics.RendererUpload, err, errors.Is(err, argocd.ErrRenderFailed) || errors.Is(err, argocd.ErrArchiveTooLarge), time.Since(start))
 	switch {
 	case errors.Is(err, argocd.ErrRenderFailed):
 		return nil, fmt.Errorf("%w: %w", ErrRenderFailed, err)

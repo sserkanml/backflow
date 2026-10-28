@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sserkanml/backflow/internal/argocd"
+	"github.com/sserkanml/backflow/internal/metrics/metricstest"
 )
 
 type fakeManifests struct {
@@ -122,5 +123,29 @@ func TestArgoRendererErrors(t *testing.T) {
 				t.Errorf("err = %v must not be %v", err, tt.not)
 			}
 		})
+	}
+}
+
+func TestArgoRendererCountsRenders(t *testing.T) {
+	count := func(result string) float64 {
+		return metricstest.Value("backflow_renders_total", map[string]string{"renderer": "upload", "result": result})
+	}
+	ok, failed, bad := count("ok"), count("failed"), count("error")
+	for _, f := range []*fakeManifests{
+		{resp: &argocd.ManifestsResponse{}},
+		{err: argocd.ErrRenderFailed},
+		{err: argocd.ErrArchiveTooLarge},
+		{err: argocd.ErrUnreachable},
+	} {
+		_, _ = (&ArgoRenderer{Client: f}).Render(context.Background(), App{Name: "a"}, nil)
+	}
+	if got := count("ok") - ok; got != 1 {
+		t.Errorf("ok = %v, want 1", got)
+	}
+	if got := count("failed") - failed; got != 2 {
+		t.Errorf("failed = %v, want 2 (a source that does not render, files over the limits)", got)
+	}
+	if got := count("error") - bad; got != 1 {
+		t.Errorf("error = %v, want 1 (Argo CD unreachable is not a verdict about the source)", got)
 	}
 }

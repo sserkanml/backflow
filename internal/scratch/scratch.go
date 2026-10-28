@@ -21,6 +21,7 @@ import (
 
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -197,11 +198,13 @@ func (r *Renderer) pushLocked(ctx context.Context, pending map[string]string) er
 		err = r.cfg.Git.PushBranches(ctx, r.cfg.Repo, pending, nil, r.cfg.Auth)
 	}
 	if err != nil {
+		metrics.ScratchBranches(metrics.ScratchPushFailed, len(pending))
 		// A push can fail after it created some of the branches; the sweeper finds
 		// what this does not.
 		_ = r.cfg.Git.DeleteBranches(context.WithoutCancel(ctx), r.cfg.Repo, slices.Sorted(maps.Keys(pending)), r.cfg.Auth)
 		return fmt.Errorf("pushing the scratch branches: %w", err)
 	}
+	metrics.ScratchBranches(metrics.ScratchPushed, len(pending))
 	r.pushes++
 	r.branches = append(r.branches, slices.Sorted(maps.Keys(pending))...)
 	return nil
@@ -238,10 +241,12 @@ func (r *Renderer) renderAt(ctx context.Context, app rendermap.App, sha string, 
 	for i := range positions {
 		positions[i] = i + 1
 	}
+	start := time.Now()
 	resp, err := r.cfg.Argo.GetManifestsByRevisions(ctx, argocd.RevisionsQuery{
 		AppName: r.cfg.AppName, AppNamespace: r.cfg.AppNamespace, Revisions: revisions, SourcePositions: positions,
 		NoCache: noCache,
 	})
+	metrics.Render(metrics.RendererRevisions, err, errors.Is(err, argocd.ErrRenderFailed), time.Since(start))
 	r.mu.Lock()
 	r.renders++
 	r.mu.Unlock()
@@ -305,6 +310,7 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	if err := r.cfg.Git.DeleteBranches(ctx, r.cfg.Repo, r.branches, r.cfg.Auth); err != nil {
 		return fmt.Errorf("deleting the scratch branches: %w", err)
 	}
+	metrics.ScratchBranches(metrics.ScratchDeleted, len(r.branches))
 	r.branches = nil
 	return nil
 }
@@ -325,6 +331,7 @@ func Sweep(ctx context.Context, git Git, repo string, auth *gitrepo.Auth, maxAge
 	if err := git.DeleteBranches(ctx, repo, deleted, auth); err != nil {
 		return nil, err
 	}
+	metrics.ScratchBranches(metrics.ScratchSwept, len(deleted))
 	return deleted, nil
 }
 
@@ -345,5 +352,6 @@ func SweepPrefix(ctx context.Context, git Git, repo string, auth *gitrepo.Auth, 
 	if err := git.DeleteBranches(ctx, repo, deleted, auth); err != nil {
 		return nil, err
 	}
+	metrics.ScratchBranches(metrics.ScratchSwept, len(deleted))
 	return deleted, nil
 }
