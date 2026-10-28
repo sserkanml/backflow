@@ -32,7 +32,12 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
+# Which Git host the demo Applications use: SCM=gitlab (default) or SCM=github, DEMO_REPO.
+# These scripts read the repository anonymously and need no token.
+# shellcheck source=lib/scm.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/scm.sh"
+
+CLUSTER_NAME="${CLUSTER_NAME:-$SCM_CLUSTER}"
 NS="${NS:-backflow-mapping-test}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 APP="${APP:-demo-app}"
@@ -469,7 +474,7 @@ step "4. A repository that cannot be reached or seen is retried, not given up on
 create_proposal unreachable ConfigMap "$DEMO_NS" demo-config Directory "https://localhost:1/none.git" "$SYNCED_REV"
 # GitLab and GitHub answer 404 or 401 for a repository the caller cannot see;
 # either way it is a matter of access, which the user can fix.
-create_proposal no-access ConfigMap "$DEMO_NS" demo-config Directory "https://gitlab.com/sserkanml/backflow-no-such-repository.git" "$SYNCED_REV"
+create_proposal no-access ConfigMap "$DEMO_NS" demo-config Directory "$SCM_URL/sserkanml/backflow-no-such-repository.git" "$SYNCED_REV"
 wait_for "the unreachable proposal reports RepositoryUnavailable" reason_is unreachable RepositoryUnavailable
 sleep $((QUIET + 5))
 expect_eq "phase after waiting" "Mapping" "$(dp_field unreachable .status.phase)"

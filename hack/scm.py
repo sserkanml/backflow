@@ -317,17 +317,19 @@ class GitHub:
         return code == 409 and "empty" in text.lower()
 
     def seed_empty(self, r, branch, message, actions):
-        sha = ""
-        for a in actions:
-            if a["action"] != "create":
-                return 400, "scm.py: an empty repository takes only created files", None
-            body = {"message": message, "branch": branch,
-                    "content": base64.b64encode(a["content"].encode()).decode()}
-            code, data, retry, text = self.json("PUT", "%s/contents/%s" % (r, quote(a["file_path"], "/")), body)
-            if code not in (200, 201):
-                return code, text, retry
-            sha = data["commit"]["sha"]
-        return self.reply(201, {"id": sha, "message": message, "parent_ids": []})
+        """The first file of an empty repository goes in through the contents API,
+        which creates the branch; the rest follows as one ordinary commit."""
+        creates = [a for a in actions if a["action"] == "create"]
+        if len(creates) != len(actions) or not creates:
+            return 400, "scm.py: an empty repository takes only created files", None
+        first, rest = creates[0], creates[1:]
+        body = {"message": message, "branch": branch, "content": base64.b64encode(first["content"].encode()).decode()}
+        code, data, retry, text = self.json("PUT", "%s/contents/%s" % (r, quote(first["file_path"], "/")), body)
+        if code not in (200, 201):
+            return code, text, retry
+        if not rest:
+            return self.reply(201, {"id": data["commit"]["sha"], "message": message, "parent_ids": []})
+        return self.commit(r, {"branch": branch, "commit_message": message, "actions": rest})
 
     def raw_file(self, r, path, ref):
         q = "?ref=" + quote(ref) if ref else ""

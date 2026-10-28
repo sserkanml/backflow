@@ -12,8 +12,8 @@
 #      (plain manifests), the Helm ones demo-helm, shared-alpha, shared-beta and
 #      the Kustomize one demo-kustomize (kustomize/overlays/dev over
 #      kustomize/base). The Kustomize files live in hack/demo/kustomize/; with
-#      GITLAB_TOKEN set (api scope) this script copies the ones the demo
-#      repository lacks into it with one commit through the GitLab API. It never
+#      GITLAB_TOKEN (api scope) or GITHUB_TOKEN set this script copies the ones the demo
+#      repository lacks into it with one commit through the API of the host. It never
 #      overwrites a file. Without the token it only tells you what is missing.
 #      A fifth one, demo-multi, has several sources: the chart podinfo from the
 #      OCI registry ghcr.io (pinned version) and its values from the demo
@@ -25,12 +25,22 @@
 # Usage (from the repository root):
 #   ./hack/dev-up.sh
 #   DEMO_REPO=https://gitlab.com/<user>/backflow-demo.git ./hack/dev-up.sh
+#   SCM=github GITHUB_TOKEN=... ./hack/dev-up.sh   # the GitHub demo repository, in its own kind
+#                           cluster "backflow-gh": the Applications have the same names,
+#                           so GitLab and GitHub demos coexist as two clusters (CLUSTER_NAME=...
+#                           puts them in one). An empty repository is seeded with the content
+#                           of the GitLab one first.
 #
 # Podman users: KIND_EXPERIMENTAL_PROVIDER=podman ./hack/dev-up.sh
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
+# Which Git host the demo repository is on: SCM=gitlab (default) or SCM=github,
+# DEMO_REPO (owner/name or an https URL), GITLAB_TOKEN or GITHUB_TOKEN.
+# shellcheck source=lib/scm.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/scm.sh"
+
+CLUSTER_NAME="${CLUSTER_NAME:-$SCM_CLUSTER}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 # Argo CD is pinned to the version the real installation runs, so the tests do
 # not change under us when "stable" moves. Override with ARGOCD_VERSION, or
@@ -41,7 +51,7 @@ if [[ -z "${ARGOCD_MANIFEST:-}" ]]; then
   ARGOCD_MANIFEST="https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml"
   CHECK_ARGOCD_VERSION=true
 fi
-DEMO_REPO="${DEMO_REPO:-https://gitlab.com/sserkanml/backflow-demo.git}"
+DEMO_REPO="$DEMO_REPO_URL"
 DEMO_REVISION="${DEMO_REVISION:-main}"
 DEMO_PATH="${DEMO_PATH:-apps/demo}"
 
@@ -167,51 +177,33 @@ EOF
 
 # seed_demo_files <directory under hack/demo> <path in the demo repository> <what>:
 # add the files of the directory to the demo repository when they are missing
-# there, with one commit through the GitLab API. It never overwrites a file. The
-# token is read from the environment by python3 and is never printed or put in
-# an argument.
+# there, with one commit through the API of the Git host (hack/scm.py). It never
+# overwrites a file. The token is read from the environment by python3 and is
+# never printed or put in an argument.
 seed_demo_files() {
   local dir="$1" prefix="$2" what="$3"
-  local project="${DEMO_REPO#https://gitlab.com/}"
-  project="${project%.git}"
-  if [[ "$DEMO_REPO" != https://gitlab.com/* ]]; then
-    warn "the demo repository is not on gitlab.com; copy hack/demo/$dir/ to $prefix/ in $DEMO_REPO yourself"
+  if [[ -z "$SCM_TOKEN" ]]; then
+    warn "$SCM_TOKEN_VAR is not set: not checking that $prefix/ exists in $DEMO_REPO."
+    warn "$what needs hack/demo/$dir/ copied to $prefix/ there (rerun with $SCM_TOKEN_VAR=... to do it)"
     return 0
   fi
-  if [[ -z "${GITLAB_TOKEN:-}" ]]; then
-    warn "GITLAB_TOKEN is not set: not checking that $prefix/ exists in $DEMO_REPO."
-    warn "$what needs hack/demo/$dir/ copied to $prefix/ there (rerun with GITLAB_TOKEN=... to do it)"
-    return 0
-  fi
-  python3 - "$ROOT/hack/demo/$dir" "$project" "$DEMO_REVISION" "$prefix" "$what" <<'PY'
-import json, os, sys, urllib.error, urllib.parse, urllib.request
-src, project, ref, prefix, what = sys.argv[1:6]
-token = os.environ["GITLAB_TOKEN"]
-api = "https://gitlab.com/api/v4/projects/" + urllib.parse.quote(project, safe="")
-def call(method, url, body=None):
-    req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
-                                 headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
-    return urllib.request.urlopen(req, timeout=30)
-actions, present = [], 0
-for dirpath, _, files in os.walk(src):
-    for name in sorted(files):
-        full = os.path.join(dirpath, name)
-        rel = prefix + "/" + os.path.relpath(full, src)
-        url = "%s/repository/files/%s?ref=%s" % (api, urllib.parse.quote(rel, safe=""), urllib.parse.quote(ref, safe=""))
-        try:
-            call("HEAD", url)
-            present += 1
-        except urllib.error.HTTPError as e:
-            if e.code != 404:
-                sys.exit("checking %s: HTTP %d" % (rel, e.code))
-            actions.append({"action": "create", "file_path": rel, "content": open(full, encoding="utf-8").read()})
-if not actions:
-    print("  %s/ is complete in the demo repository (%d files)" % (prefix, present))
-    sys.exit(0)
-call("POST", api + "/repository/commits", {"branch": ref, "commit_message": "demo: add " + what, "actions": actions})
-print("  added %d file(s) to %s/ in the demo repository" % (len(actions), prefix))
-PY
+  SCM_REF="$DEMO_REVISION" python3 "$ROOT/hack/scm.py" seed-local "$ROOT/hack/demo/$dir" "$prefix" "$what"
 }
+
+# seed_demo_repository: SCM=github only. The GitHub demo repository starts empty;
+# it gets the content of the public GitLab one (apps/demo, the Helm charts, the
+# README and the rest), only the files it lacks. SEED_SOURCE is the GitLab
+# project to copy from.
+seed_demo_repository() {
+  [[ "$SCM" == "github" ]] || return 0
+  local source="${SEED_SOURCE:-sserkanml/backflow-demo}"
+  if [[ -z "$SCM_TOKEN" ]]; then
+    warn "$SCM_TOKEN_VAR is not set: not seeding $DEMO_REPO from gitlab.com/$source (rerun with $SCM_TOKEN_VAR=... to do it)"
+    return 0
+  fi
+  SCM_REF="$DEMO_REVISION" python3 "$ROOT/hack/scm.py" seed-remote "$source"
+}
+seed_demo_repository
 seed_demo_files kustomize kustomize "the Kustomize demo (base and dev overlay)"
 seed_demo_files multi multi "the values of the multi-source demo"
 

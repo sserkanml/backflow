@@ -26,7 +26,12 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
+# Which Git host the demo Applications use: SCM=gitlab (default) or SCM=github, DEMO_REPO.
+# These scripts read the repository anonymously and need no token.
+# shellcheck source=lib/scm.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/scm.sh"
+
+CLUSTER_NAME="${CLUSTER_NAME:-$SCM_CLUSTER}"
 NS="${NS:-backflow-policy-test}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 APP="${APP:-demo-app}"
@@ -226,7 +231,7 @@ metadata:
   name: test-scm
   namespace: $NS
 spec:
-  provider: gitlab
+  provider: $SCM
   url: https://$REPO_HOST
   tokenSecretRef:
     name: scm-token

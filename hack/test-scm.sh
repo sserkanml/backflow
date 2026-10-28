@@ -7,7 +7,8 @@
 #   - CRD validation rejects bad input
 #   - CRD defaults are filled in
 #   - ScmConnection reports Unreachable / SecretError / Unauthorized correctly
-#   - A real token turns Ready=True (only when GITLAB_TOKEN is set)
+#   - A real token turns Ready=True (only when GITLAB_TOKEN, or with SCM=github
+#     GITHUB_TOKEN, is set)
 #   - A rotated or created token Secret is picked up at the next verification
 #     (Secrets are not watched; the operator runs with --scm-recheck-interval=10s)
 #
@@ -15,6 +16,7 @@
 #   ./hack/test-scm.sh
 #   GITLAB_TOKEN=glpat-xxxx ./hack/test-scm.sh
 #   GITLAB_URL=https://gitlab.example.com GITLAB_TOKEN=... ./hack/test-scm.sh
+#   SCM=github GITHUB_TOKEN=... ./hack/test-scm.sh
 #   KEEP=true ./hack/test-scm.sh        # keep test resources for inspection
 #   IN_CLUSTER=true ./hack/test-scm.sh  # test the operator deployed in the cluster
 #
@@ -22,10 +24,15 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
+# Which Git host the real-token checks use: SCM=gitlab (default) or SCM=github.
+# shellcheck source=lib/scm.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/scm.sh"
+
+CLUSTER_NAME="${CLUSTER_NAME:-$SCM_CLUSTER}"
 NS="${NS:-backflow-test}"
-GITLAB_URL="${GITLAB_URL:-https://gitlab.com}"
-GITLAB_TOKEN="${GITLAB_TOKEN:-}"
+# The host of the real-token checks; GITLAB_URL still sets a self-managed GitLab.
+SCM_REAL_URL="$SCM_URL"
+if [[ "$SCM" == "gitlab" ]]; then SCM_REAL_URL="${GITLAB_URL:-$SCM_URL}"; fi
 KEEP="${KEEP:-false}"
 # With IN_CLUSTER=true the operator is the one deployed in the cluster (by the
 # Helm chart or 'make deploy'); the script then starts no local operator.
@@ -116,7 +123,7 @@ set_token() {
 }
 
 apply_scm() {
-  local name="$1" url="$2" secret="$3"
+  local name="$1" url="$2" secret="$3" provider="${4:-gitlab}"
   k apply -f - >/dev/null <<EOF
 apiVersion: backflow.io/v1alpha1
 kind: ScmConnection
@@ -124,7 +131,7 @@ metadata:
   name: $name
   namespace: $NS
 spec:
-  provider: gitlab
+  provider: $provider
   url: $url
   tokenSecretRef:
     name: $secret
@@ -286,10 +293,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step "ScmConnection: $GITLAB_URL"
-if [[ -n "$GITLAB_TOKEN" ]]; then
-  set_token real-token "$GITLAB_TOKEN"
-  apply_scm real "$GITLAB_URL" real-token
+step "ScmConnection: $SCM_REAL_URL"
+if [[ -n "$SCM_TOKEN" ]]; then
+  set_token real-token "$SCM_TOKEN"
+  apply_scm real "$SCM_REAL_URL" real-token "$SCM"
   expect_reason real Authenticated "$WAIT_TIMEOUT" "Valid token"
   user="$(k -n "$NS" get scm real -o jsonpath='{.status.authenticatedAs}')"
   if [[ -n "$user" ]]; then
@@ -301,12 +308,12 @@ if [[ -n "$GITLAB_TOKEN" ]]; then
   set_token real-token wrong-token
   expect_reason real Unauthorized "$ROTATE_TIMEOUT" "Token replaced with a wrong one, picked up at the next verification"
 
-  set_token real-token "$GITLAB_TOKEN"
+  set_token real-token "$SCM_TOKEN"
   expect_reason real Authenticated "$ROTATE_TIMEOUT" "Token restored, picked up at the next verification"
 else
-  skip "GITLAB_TOKEN not set, valid token test skipped"
+  skip "$SCM_TOKEN_VAR not set, valid token test skipped"
   set_token wrong-token wrong-token
-  apply_scm wrong "$GITLAB_URL" wrong-token
+  apply_scm wrong "$SCM_REAL_URL" wrong-token "$SCM"
   expect_reason wrong Unauthorized "$WAIT_TIMEOUT" "Wrong token (requires internet access)"
 fi
 
