@@ -6,7 +6,6 @@ import (
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/metrics/metricstest"
@@ -51,9 +50,9 @@ func TestGuardCatchesInconsistentPolicyLabels(t *testing.T) {
 	family := func(labels ...[2]string) []*dto.MetricFamily {
 		m := &dto.Metric{}
 		for _, l := range labels {
-			m.Label = append(m.Label, &dto.LabelPair{Name: proto.String(l[0]), Value: proto.String(l[1])})
+			m.Label = append(m.Label, &dto.LabelPair{Name: new(l[0]), Value: new(l[1])})
 		}
-		return []*dto.MetricFamily{{Name: proto.String("backflow_x"), Metric: []*dto.Metric{m}}}
+		return []*dto.MetricFamily{{Name: new("backflow_x"), Metric: []*dto.Metric{m}}}
 	}
 	for name, tt := range map[string]struct {
 		fams []*dto.MetricFamily
