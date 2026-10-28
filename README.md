@@ -465,6 +465,44 @@ IN_CLUSTER=true ./hack/test-mapping.sh
 IN_CLUSTER=true ./hack/test-kustomize.sh    # needs kustomize/ in the demo repository (dev-up.sh copies it)
 ```
 
+### End-to-end tests against GitLab or GitHub
+
+The scenarios that push branches and merge merge requests
+(`test-merge-request.sh`, `test-helm.sh`, `test-kustomize.sh`,
+`test-multi-source.sh`) run against a demo repository on GitLab or on GitHub.
+`SCM=gitlab` (the default) or `SCM=github` picks the host; `DEMO_REPO` is the
+repository, as `owner/name` or an https URL. Both are read by every `hack/`
+script, and `hack/scm.py` (tested by `python3 hack/test_scm.py`, which needs no
+network) is the one place that knows the two APIs.
+
+| | GitLab | GitHub |
+|---|---|---|
+| `DEMO_REPO` | `sserkanml/backflow-demo` | `sserkanml/backflow-demo-gh` |
+| token | `GITLAB_TOKEN`: `api` and `write_repository` | `GITHUB_TOKEN`: fine-grained, the demo repository only, Contents: read and write, Pull requests: read and write, Metadata: read |
+| kind cluster | `backflow` | `backflow-gh` |
+
+To run them against GitHub:
+
+1. Create an empty **public** repository (the Applications and the read-only
+   scripts read it without credentials; do not add a README or a license) and
+   a fine-grained token with the permissions above, for that repository only. The
+   token needs *Actions: read* as well if you want the check that no workflow run
+   starts for a scratch branch; without it that one check is skipped with a
+   message.
+2. `SCM=github GITHUB_TOKEN=... DEMO_REPO=<owner>/<repo> ./hack/dev-up.sh` creates
+   the cluster `backflow-gh`, copies the content of the GitLab demo repository
+   into the empty one (only files it lacks; set `SEED_SOURCE` to copy from another
+   public GitLab project) and points the demo Applications at it. The
+   Applications have the same names as on GitLab, so the two demos live in two
+   clusters and coexist; set `CLUSTER_NAME` to put both in one (the second
+   `dev-up.sh` then re-points the Applications).
+3. `SCM=github GITHUB_TOKEN=... DEMO_REPO=<owner>/<repo> ./hack/test-merge-request.sh`
+   (and the others). `SECTIONS=a,b` runs only some sections.
+
+The scripts need write access to the demo repository, not Maintainer: unlike the
+GitLab project, `main` of the GitHub demo repository is not protected. Tokens are
+read from the environment only and are never printed or written down.
+
 Releases are made by [release-please](https://github.com/googleapis/release-please)
 from Conventional Commits on `main`; the tag it creates publishes the image and
 the chart.
