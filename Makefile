@@ -223,7 +223,10 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   [ -n "$$v" ] || { echo "Set ENVTEST_K8S_VERSION manually (k8s.io/api replace has no tag)" >&2; exit 1; }; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
-GOLANGCI_LINT_VERSION ?= v2.13.1
+# v2.13 could not read the export data of Go 1.27.2 and later ("export data version
+# 5 is greater than maximum supported version 4"), so it failed type-checking on a
+# machine with a current Go; v2.15 reads it, and still builds with the Go of go.mod.
+GOLANGCI_LINT_VERSION ?= v2.15.0
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
