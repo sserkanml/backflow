@@ -45,7 +45,8 @@ type RevisionsQuery struct {
 // The data of Secrets in the response is masked (see maskManifests).
 // Errors wrap ErrUnauthorized, ErrNotFound, ErrUnreachable, ErrUnsupported or
 // ErrRenderFailed.
-func (c *Client) GetManifestsByRevisions(ctx context.Context, q RevisionsQuery) (*ManifestsResponse, error) {
+func (c *Client) GetManifestsByRevisions(ctx context.Context, q RevisionsQuery) (_ *ManifestsResponse, err error) {
+	defer c.observe(endpointManifestsRevs)(&err)
 	if q.AppName == "" {
 		return nil, errors.New("argocd: application name is required")
 	}
@@ -116,7 +117,8 @@ type HelmDetails struct {
 // ErrUnauthorized (the account needs applications get and repositories get),
 // ErrNotFound, ErrUnreachable or ErrAppDetailsFailed.
 func (c *Client) GetHelmDetails(ctx context.Context, appName, appNamespace, appProject string,
-	source map[string]any, index int) (*HelmDetails, error) {
+	source map[string]any, index int) (_ *HelmDetails, err error) {
+	defer c.observe(endpointAppDetails)(&err)
 	repoURL, _ := source["repoURL"].(string)
 	if appName == "" || repoURL == "" {
 		return nil, errors.New("argocd: application name and repository are required")

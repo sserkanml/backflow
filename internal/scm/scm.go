@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sserkanml/backflow/internal/metrics"
 )
 
 var (
@@ -208,6 +210,16 @@ type api struct {
 	base    string // API root, without trailing slash
 	headers map[string]string
 	http    *http.Client
+	// kind is the provider, for the metrics.
+	kind string
+}
+
+// host is the host of the API, for the metrics.
+func (a *api) host() string {
+	if u, err := url.Parse(a.base); err == nil {
+		return CanonicalHost(u.Hostname())
+	}
+	return ""
 }
 
 // do sends a request and decodes a JSON response into out (when non-nil).
@@ -237,7 +249,13 @@ func (a *api) do(ctx context.Context, method, path string, query url.Values, bod
 		req.Header.Set(k, v)
 	}
 
+	start := time.Now()
 	resp, err := a.http.Do(req)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	metrics.SCMRequest(a.kind, a.host(), status, err, time.Since(start))
 	if err != nil {
 		// url.Error may embed the request URL; it never contains the token
 		// because the token travels in a header.

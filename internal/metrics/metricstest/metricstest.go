@@ -87,3 +87,49 @@ func Guard(t *testing.T, maxSeries int) {
 		t.Error(p)
 	}
 }
+
+// Value is the value of the series with exactly these labels: a counter or a
+// gauge, or the number of observations of a histogram. It is 0 when there is no
+// such series, so a test can take it before and after.
+func Value(name string, labels map[string]string) float64 {
+	fams, err := Gather()
+	if err != nil {
+		return 0
+	}
+	for _, f := range fams {
+		if f.GetName() != name {
+			continue
+		}
+	series:
+		for _, m := range f.GetMetric() {
+			if len(m.GetLabel()) != len(labels) {
+				continue
+			}
+			for _, l := range m.GetLabel() {
+				if labels[l.GetName()] != l.GetValue() {
+					continue series
+				}
+			}
+			switch {
+			case m.GetCounter() != nil:
+				return m.GetCounter().GetValue()
+			case m.GetGauge() != nil:
+				return m.GetGauge().GetValue()
+			case m.GetHistogram() != nil:
+				return float64(m.GetHistogram().GetSampleCount())
+			}
+		}
+	}
+	return 0
+}
+
+// Series is how many series a metric has.
+func Series(name string) int {
+	fams, _ := Gather()
+	for _, f := range fams {
+		if f.GetName() == name {
+			return len(f.GetMetric())
+		}
+	}
+	return 0
+}

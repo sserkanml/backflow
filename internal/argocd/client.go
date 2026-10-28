@@ -154,7 +154,8 @@ type managedResourcesResponse struct {
 
 // GetManagedResources returns the managed resources of an Application.
 // Errors wrap ErrUnauthorized, ErrNotFound or ErrUnreachable.
-func (c *Client) GetManagedResources(ctx context.Context, appName, appNamespace string) ([]ManagedResource, error) {
+func (c *Client) GetManagedResources(ctx context.Context, appName, appNamespace string) (_ []ManagedResource, err error) {
+	defer c.observe(endpointManagedResources)(&err)
 	u := fmt.Sprintf("%s/api/v1/applications/%s/managed-resources?appNamespace=%s",
 		c.baseURL, url.PathEscape(appName), url.QueryEscape(appNamespace))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

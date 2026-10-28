@@ -21,6 +21,7 @@ func newGitHub(base, token string, c *http.Client) *github {
 			"X-GitHub-Api-Version": "2022-11-28",
 		},
 		http: c,
+		kind: "github",
 	}}
 }
 

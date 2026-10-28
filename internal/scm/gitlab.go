@@ -16,6 +16,7 @@ func newGitLab(base, token string, c *http.Client) *gitlab {
 		base:    base + "/api/v4",
 		headers: map[string]string{"PRIVATE-TOKEN": token},
 		http:    c,
+		kind:    "gitlab",
 	}}
 }
 
