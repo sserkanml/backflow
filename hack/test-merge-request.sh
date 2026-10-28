@@ -941,8 +941,8 @@ if [[ -n "$P_A" ]]; then
   expect_metric_at_least "backflow_drifts_detected_total for $APP" backflow_drifts_detected_total "application=\"$APP\"" 1
   expect_metric_at_least "backflow_mapping_results_total{reason=Mapped}" backflow_mapping_results_total 'reason="Mapped"' 1
   expect_metric_at_least "backflow_merge_requests_total{action=opened}" backflow_merge_requests_total 'action="opened"' 1
-  expect_metric_at_least "backflow_scm_connection_ready" backflow_scm_connection_ready "name=\"$SCM_NAME\"" 1
-  expect_metric_at_least "backflow_policy_ready" backflow_policy_ready "name=\"$POLICY\"" 1
+  expect_metric_at_least "backflow_scm_connection_ready" backflow_scm_connection_ready "scm=\"$SCM_NAME\"" 1
+  expect_metric_at_least "backflow_policy_ready" backflow_policy_ready "policy=\"$POLICY\"" 1
   expect_metric_at_least "backflow_scm_requests_total{provider=gitlab}" backflow_scm_requests_total 'provider="gitlab"' 1
   expect_metric_at_least "backflow_argocd_requests_total{code_class=2xx}" backflow_argocd_requests_total 'code_class="2xx"' 1
   COMMIT_JSON="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_A")")")"

@@ -269,15 +269,22 @@ with it. A metric never blocks or fails a reconcile.
 
 Counters start at zero when the operator starts, so use `rate` and `increase`.
 
+The names of a policy and of a connection are always two labels, never one joined
+value: `policy_namespace` and `policy` on every metric that refers to a
+BackflowPolicy, `scm_namespace` and `scm` on the one that refers to an
+ScmConnection. (They are not called `namespace` and `name`: Prometheus gives those
+to the scrape target, and renames the label of the metric to `exported_namespace`.)
+Metric names and labels are a contract; a change to one is a breaking change.
+
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `backflow_build_info` | gauge | `version`, `commit` | always 1; the version and the commit of the binary |
-| `backflow_scm_connection_ready` | gauge | `namespace`, `name` | 1 when an ScmConnection is Ready (its token is accepted), else 0 |
-| `backflow_policy_ready` | gauge | `namespace`, `name` | 1 when a BackflowPolicy is Ready, else 0 |
-| `backflow_policy_applications` | gauge | `namespace`, `name` | Applications a policy selects |
-| `backflow_detection_paused` | gauge | `policy`, `application`, `reason` | 1 while drift detection for an Application is paused; `reason` is `GitAhead`, `ApplicationChanged` or `Settling` |
-| `backflow_proposals` | gauge | `policy`, `phase` | DriftProposals as they are now, read on every scrape; a proposal without a phase is `Pending` |
-| `backflow_drifts_detected_total` | counter | `policy`, `application`, `source_type` | drifts that became a proposal |
+| `backflow_scm_connection_ready` | gauge | `scm_namespace`, `scm` | 1 when an ScmConnection is Ready (its token is accepted), else 0 |
+| `backflow_policy_ready` | gauge | `policy_namespace`, `policy` | 1 when a BackflowPolicy is Ready, else 0 |
+| `backflow_policy_applications` | gauge | `policy_namespace`, `policy` | Applications a policy selects |
+| `backflow_detection_paused` | gauge | `policy_namespace`, `policy`, `application`, `reason` | 1 while drift detection for an Application is paused; `reason` is `GitAhead`, `ApplicationChanged` or `Settling` |
+| `backflow_proposals` | gauge | `policy_namespace`, `policy`, `phase` | DriftProposals as they are now, read on every scrape; a proposal without a phase is `Pending` |
+| `backflow_drifts_detected_total` | counter | `policy_namespace`, `policy`, `application`, `source_type` | drifts that became a proposal |
 | `backflow_mapping_results_total` | counter | `source_type`, `strategy`, `reason` | outcomes of mapping: `Mapped` (or `PartiallyMapped`), or the reason a proposal is `Unmapped`; a mapping that is retried later is not counted |
 | `backflow_merge_requests_total` | counter | `provider`, `action` | `opened`, `merged`, `closed`, and `push_rejected` (a Git push the server declined; `provider` is `git` for it) |
 | `backflow_verification_duration_seconds` | histogram | `source_type`, `result` | time to map and verify a proposal by rendering; `result` is `mapped`, `unmapped` or `retry` |
@@ -402,7 +409,7 @@ sum by (reason) (increase(backflow_mapping_results_total{reason!~"Mapped|Partial
   / scalar(sum(increase(backflow_mapping_results_total[1d])))
 
 # Proposals waiting for a human
-sum by (policy) (backflow_proposals{phase=~"Proposed|Unmapped"})
+sum by (policy_namespace, policy) (backflow_proposals{phase=~"Proposed|Unmapped"})
 
 # Drifts per application over a week
 sum by (application) (increase(backflow_drifts_detected_total[7d]))

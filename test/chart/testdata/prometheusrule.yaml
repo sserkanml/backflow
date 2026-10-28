@@ -17,26 +17,27 @@ spec:
     rules:
     - alert: BackflowScmConnectionNotReady
       annotations:
-        description: The token of the ScmConnection {{ $labels.namespace }}/{{ $labels.name
-          }} has not been accepted by the Git host for 15 minutes, so Backflow cannot
-          map or propose drift to repositories on that host. Run kubectl -n {{ $labels.namespace
-          }} describe scm {{ $labels.name }} for the reason.
+        description: The token of the ScmConnection {{ $labels.scm_namespace }}/{{
+          $labels.scm }} has not been accepted by the Git host for 15 minutes, so
+          Backflow cannot map or propose drift to repositories on that host. Run kubectl
+          -n {{ $labels.scm_namespace }} describe scm {{ $labels.scm }} for the reason.
         runbook: See the README, section "Metrics and alerts", alert BackflowScmConnectionNotReady.
-        summary: ScmConnection {{ $labels.namespace }}/{{ $labels.name }} is not Ready
+        summary: ScmConnection {{ $labels.scm_namespace }}/{{ $labels.scm }} is not
+          Ready
       expr: backflow_scm_connection_ready == 0
       for: 15m
       labels:
         severity: warning
     - alert: BackflowPolicyNotReady
       annotations:
-        description: The BackflowPolicy {{ $labels.namespace }}/{{ $labels.name }}
-          has not been Ready for 15 minutes (no matching Application, a missing ScmConnection,
-          an Application conflict or a Secret it may not read), so it detects no drift.
-          Run kubectl -n {{ $labels.namespace }} describe bfp {{ $labels.name }} for
-          the reason.
+        description: The BackflowPolicy {{ $labels.policy_namespace }}/{{ $labels.policy
+          }} has not been Ready for 15 minutes (no matching Application, a missing
+          ScmConnection, an Application conflict or a Secret it may not read), so
+          it detects no drift. Run kubectl -n {{ $labels.policy_namespace }} describe
+          bfp {{ $labels.policy }} for the reason.
         runbook: See the README, section "Metrics and alerts", alert BackflowPolicyNotReady.
-        summary: BackflowPolicy {{ $labels.namespace }}/{{ $labels.name }} is not
-          Ready
+        summary: BackflowPolicy {{ $labels.policy_namespace }}/{{ $labels.policy }}
+          is not Ready
       expr: backflow_policy_ready == 0
       for: 15m
       labels:
@@ -70,13 +71,15 @@ spec:
     - alert: BackflowDetectionPausedLong
       annotations:
         description: Drift detection for the Application {{ $labels.application }}
-          (policy {{ $labels.policy }}) has been paused for an hour, reason {{ $labels.reason
-          }}. It resumes after a complete, successful sync of the current source;
-          if nothing syncs the Application, drift stays unseen.
+          (policy {{ $labels.policy_namespace }}/{{ $labels.policy }}) has been paused
+          for an hour, reason {{ $labels.reason }}. It resumes after a complete, successful
+          sync of the current source; if nothing syncs the Application, drift stays
+          unseen.
         runbook: See the README, section "Metrics and alerts", alert BackflowDetectionPausedLong.
         summary: Drift detection for {{ $labels.application }} has been paused for
           an hour
-      expr: max by (policy, application, reason) (backflow_detection_paused) == 1
+      expr: max by (policy_namespace, policy, application, reason) (backflow_detection_paused)
+        == 1
       for: 1h
       labels:
         severity: warning

@@ -29,11 +29,12 @@ const namespace = "backflow"
 // The label names, used more than once.
 const (
 	lPolicy      = "policy"
+	lPolicyNS    = "policy_namespace"
+	lSCM         = "scm"
+	lSCMNS       = "scm_namespace"
 	lApplication = "application"
 	lProvider    = "provider"
 	lResult      = "result"
-	lName        = "name"
-	lNamespace   = "namespace"
 	lSourceType  = "source_type"
 	lRenderer    = "renderer"
 	lEndpoint    = "endpoint"
@@ -50,7 +51,7 @@ var (
 	driftsDetected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "drifts_detected_total",
 		Help: "Drifts that became a proposal, by policy, application and source type.",
-	}, []string{lPolicy, lApplication, lSourceType})
+	}, []string{lPolicyNS, lPolicy, lApplication, lSourceType})
 	mappingResults = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "mapping_results_total",
 		Help: "Outcomes of mapping a proposal to Git, by source type, strategy and reason (Mapped, or why the proposal is Unmapped); a mapping that is tried again later is not counted.",
@@ -105,19 +106,19 @@ var (
 	scmConnectionReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "scm_connection_ready",
 		Help: "1 when an ScmConnection is Ready (its token is accepted), else 0.",
-	}, []string{lNamespace, lName})
+	}, []string{lSCMNS, lSCM})
 	policyReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "policy_ready",
 		Help: "1 when a BackflowPolicy is Ready, else 0.",
-	}, []string{lNamespace, lName})
+	}, []string{lPolicyNS, lPolicy})
 	policyApplications = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "policy_applications",
 		Help: "Argo CD Applications a BackflowPolicy selects.",
-	}, []string{lNamespace, lName})
+	}, []string{lPolicyNS, lPolicy})
 	detectionPaused = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "detection_paused",
 		Help: "1 while drift detection for an Application is paused, by the reason (GitAhead, ApplicationChanged, Settling).",
-	}, []string{lPolicy, lApplication, lReason})
+	}, []string{lPolicyNS, lPolicy, lApplication, lReason})
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "build_info",
 		Help: "Always 1; the version and the commit of the operator.",
@@ -176,8 +177,24 @@ func safe(f func()) {
 	f()
 }
 
-// PolicyLabel is the value of the policy label: namespace/name.
-func PolicyLabel(namespace, name string) string { return namespace + "/" + name }
+// Policy names a BackflowPolicy. Every metric that refers to one carries its two
+// parts as the labels policy_namespace and policy, never as a joined value.
+type Policy struct{ Namespace, Name string }
+
+// labels are the label values of a policy metric, bounded.
+func (p Policy) labels() (namespace, name string) {
+	return bound(lPolicyNS, p.Namespace), bound(lPolicy, p.Name)
+}
+
+// match selects the series of the policy, and of one Application of it when
+// application is not empty.
+func (p Policy) match(application string) prometheus.Labels {
+	l := prometheus.Labels{lPolicyNS: p.Namespace, lPolicy: p.Name}
+	if application != "" {
+		l[lApplication] = application
+	}
+	return l
+}
 
 // CodeClass is the status class of a response: 2xx, 3xx, 4xx, 5xx, or error when
 // there is no response (err is set, or the status is 0).
@@ -208,10 +225,10 @@ const (
 // for ForgetApplicationsExcept.
 var (
 	appsMu   sync.Mutex
-	appsSeen = map[string]map[string]struct{}{}
+	appsSeen = map[Policy]map[string]struct{}{}
 )
 
-func seeApplication(policy, application string) {
+func seeApplication(policy Policy, application string) {
 	appsMu.Lock()
 	defer appsMu.Unlock()
 	if appsSeen[policy] == nil {
@@ -222,7 +239,7 @@ func seeApplication(policy, application string) {
 
 // ForgetApplicationsExcept removes the series of the Applications of a policy
 // that are not in keep.
-func ForgetApplicationsExcept(policy string, keep map[string]bool) {
+func ForgetApplicationsExcept(policy Policy, keep map[string]bool) {
 	appsMu.Lock()
 	var gone []string
 	for app := range appsSeen[policy] {
@@ -238,10 +255,11 @@ func ForgetApplicationsExcept(policy string, keep map[string]bool) {
 }
 
 // DriftDetected counts a drift that became a proposal.
-func DriftDetected(policy, application, sourceType string) {
+func DriftDetected(policy Policy, application, sourceType string) {
 	seeApplication(policy, application)
 	safe(func() {
-		driftsDetected.WithLabelValues(bound(lPolicy, policy), bound(lApplication, application), bound(lSourceType, sourceType)).Inc()
+		ns, n := policy.labels()
+		driftsDetected.WithLabelValues(ns, n, bound(lApplication, application), bound(lSourceType, sourceType)).Inc()
 	})
 }
 
@@ -360,7 +378,7 @@ func b2f(b bool) float64 {
 // SetSCMConnection records whether an ScmConnection is Ready.
 func SetSCMConnection(namespace, name string, ready bool) {
 	safe(func() {
-		scmConnectionReady.WithLabelValues(bound(lNamespace, namespace), bound(lName, name)).Set(b2f(ready))
+		scmConnectionReady.WithLabelValues(bound(lSCMNS, namespace), bound(lSCM, name)).Set(b2f(ready))
 	})
 }
 
@@ -371,22 +389,21 @@ func ForgetSCMConnection(namespace, name string) {
 
 // SetPolicy records whether a BackflowPolicy is Ready and how many Applications
 // it selects.
-func SetPolicy(namespace, name string, ready bool, applications int) {
+func SetPolicy(policy Policy, ready bool, applications int) {
 	safe(func() {
-		ns, n := bound(lNamespace, namespace), bound(lName, name)
+		ns, n := policy.labels()
 		policyReady.WithLabelValues(ns, n).Set(b2f(ready))
 		policyApplications.WithLabelValues(ns, n).Set(float64(applications))
 	})
 }
 
 // ForgetPolicy removes every series of a deleted BackflowPolicy.
-func ForgetPolicy(namespace, name string) {
+func ForgetPolicy(policy Policy) {
 	safe(func() {
-		policyReady.DeleteLabelValues(namespace, name)
-		policyApplications.DeleteLabelValues(namespace, name)
-		policy := PolicyLabel(namespace, name)
-		detectionPaused.DeletePartialMatch(prometheus.Labels{lPolicy: policy})
-		driftsDetected.DeletePartialMatch(prometheus.Labels{lPolicy: policy})
+		policyReady.DeleteLabelValues(policy.Namespace, policy.Name)
+		policyApplications.DeleteLabelValues(policy.Namespace, policy.Name)
+		detectionPaused.DeletePartialMatch(policy.match(""))
+		driftsDetected.DeletePartialMatch(policy.match(""))
 		appsMu.Lock()
 		delete(appsSeen, policy)
 		appsMu.Unlock()
@@ -395,27 +412,28 @@ func ForgetPolicy(namespace, name string) {
 
 // SetDetectionPaused records why drift detection for an Application is paused
 // ("" when it is not): only the current reason has a series, set to 1.
-func SetDetectionPaused(policy, application, reason string) {
+func SetDetectionPaused(policy Policy, application, reason string) {
 	if reason != "" {
 		seeApplication(policy, application)
 	}
 	safe(func() {
-		p, a := bound(lPolicy, policy), bound(lApplication, application)
-		detectionPaused.DeletePartialMatch(prometheus.Labels{lPolicy: p, lApplication: a})
+		ns, n := policy.labels()
+		a := bound(lApplication, application)
+		detectionPaused.DeletePartialMatch(Policy{ns, n}.match(a))
 		if reason != "" {
-			detectionPaused.WithLabelValues(p, a, bound(lReason, reason)).Set(1)
+			detectionPaused.WithLabelValues(ns, n, a, bound(lReason, reason)).Set(1)
 		}
 	})
 }
 
 // ForgetApplication removes the series of an Application a policy no longer has.
-func ForgetApplication(policy, application string) {
+func ForgetApplication(policy Policy, application string) {
 	appsMu.Lock()
 	delete(appsSeen[policy], application)
 	appsMu.Unlock()
 	safe(func() {
-		detectionPaused.DeletePartialMatch(prometheus.Labels{lPolicy: policy, lApplication: application})
-		driftsDetected.DeletePartialMatch(prometheus.Labels{lPolicy: policy, lApplication: application})
+		detectionPaused.DeletePartialMatch(policy.match(application))
+		driftsDetected.DeletePartialMatch(policy.match(application))
 	})
 }
 

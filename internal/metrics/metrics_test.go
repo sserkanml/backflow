@@ -24,7 +24,7 @@ func TestCounters(t *testing.T) {
 		c    prometheus.Collector
 		do   func()
 	}{
-		{"drifts", driftsDetected.WithLabelValues("ns/p", "app", "Helm"), func() { DriftDetected("ns/p", "app", "Helm") }},
+		{"drifts", driftsDetected.WithLabelValues("ns", "p", "app", "Helm"), func() { DriftDetected(Policy{"ns", "p"}, "app", "Helm") }},
 		{"mapping", mappingResults.WithLabelValues("Helm", "HelmValues", "Mapped"), func() { MappingResult("Helm", "HelmValues", "Mapped") }},
 		{"merge request", mergeRequests.WithLabelValues("gitlab", "opened"), func() { MergeRequest("gitlab", MROpened) }},
 		{"render", renders.WithLabelValues("upload", "ok"), func() { Render(RendererUpload, nil, false, time.Second) }},
@@ -111,32 +111,32 @@ func TestStateGaugesAndForgetting(t *testing.T) {
 		t.Errorf("series left after the connection was deleted: %d", n)
 	}
 
-	SetPolicy("ns", "p1", true, 3)
-	SetPolicy("ns", "p2", false, 0)
+	SetPolicy(Policy{"ns", "p1"}, true, 3)
+	SetPolicy(Policy{"ns", "p2"}, false, 0)
 	if got := testutil.ToFloat64(policyApplications.WithLabelValues("ns", "p1")); got != 3 {
 		t.Errorf("applications = %v", got)
 	}
-	DriftDetected(PolicyLabel("ns", "p1"), "app", "Helm")
-	SetDetectionPaused(PolicyLabel("ns", "p1"), "app", "GitAhead")
-	ForgetPolicy("ns", "p1")
+	DriftDetected(Policy{"ns", "p1"}, "app", "Helm")
+	SetDetectionPaused(Policy{"ns", "p1"}, "app", "GitAhead")
+	ForgetPolicy(Policy{"ns", "p1"})
 	if n := testutil.CollectAndCount(policyReady); n != 1 {
 		t.Errorf("policy_ready series = %d, want only p2", n)
 	}
 	if n := testutil.CollectAndCount(detectionPaused); n != 0 {
 		t.Errorf("detection_paused series left for a deleted policy: %d", n)
 	}
-	ForgetPolicy("ns", "p2")
+	ForgetPolicy(Policy{"ns", "p2"})
 }
 
 func TestDetectionPausedHasOnlyTheCurrentReason(t *testing.T) {
-	p := PolicyLabel("ns", "p")
+	p := Policy{"ns", "p"}
 	SetDetectionPaused(p, "app", "GitAhead")
 	SetDetectionPaused(p, "app", "ApplicationChanged")
 	SetDetectionPaused(p, "other", "Settling")
 	if n := testutil.CollectAndCount(detectionPaused); n != 2 {
 		t.Fatalf("series = %d, want one per application", n)
 	}
-	if got := testutil.ToFloat64(detectionPaused.WithLabelValues(p, "app", "ApplicationChanged")); got != 1 {
+	if got := testutil.ToFloat64(detectionPaused.WithLabelValues("ns", "p", "app", "ApplicationChanged")); got != 1 {
 		t.Errorf("value = %v", got)
 	}
 	SetDetectionPaused(p, "app", "")
