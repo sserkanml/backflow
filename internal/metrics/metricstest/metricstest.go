@@ -16,8 +16,8 @@ import (
 // Allowed are the label names a Backflow metric may have. Anything else fails
 // the guard: a new label has to be a conscious, reviewed decision.
 var Allowed = []string{
-	"policy", "application", "source_type", "strategy", "reason", "phase", "renderer", "provider",
-	"host", "endpoint", "code_class", "result", "action", "namespace", "name", "version", "commit", "le",
+	"policy_namespace", "policy", "scm_namespace", "scm", "application", "source_type", "strategy", "reason", "phase", "renderer", "provider",
+	"host", "endpoint", "code_class", "result", "action", "version", "commit", "le",
 }
 
 // Forbidden are names that would carry an unbounded value; they are called out in
@@ -66,6 +66,14 @@ func Problems(families []*dto.MetricFamily, maxSeries int) []string {
 					out = append(out, fmt.Sprintf("%s has the label %q, which is not on the list of allowed labels", f.GetName(), name))
 				}
 				seen[name] = true
+				if (name == "policy" || name == "scm") && strings.Contains(l.GetValue(), "/") {
+					out = append(out, fmt.Sprintf("%s has %s=%q: a name never holds a joined namespace/name", f.GetName(), name, l.GetValue()))
+				}
+			}
+		}
+		for _, pair := range [][2]string{{"policy_namespace", "policy"}, {"scm_namespace", "scm"}} {
+			if seen[pair[0]] != seen[pair[1]] {
+				out = append(out, fmt.Sprintf("%s has one of the labels %s and %s, a metric that refers to one has both", f.GetName(), pair[0], pair[1]))
 			}
 		}
 		// A histogram series is one per label set; its buckets are not counted.

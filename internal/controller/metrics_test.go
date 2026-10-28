@@ -34,7 +34,7 @@ func TestProposalCountsByPolicyAndPhase(t *testing.T) {
 	).Build()
 	got := map[string]int{}
 	for _, p := range ProposalCounts(c)() {
-		got[p.Policy+"/"+p.Phase] = p.Count
+		got[p.Policy.Namespace+"/"+p.Policy.Name+"/"+p.Phase] = p.Count
 	}
 	want := map[string]int{"ns/p/Unmapped": 2, "ns/p/Pending": 1, "ns/q/Proposed": 1}
 	if len(got) != len(want) {
@@ -75,13 +75,13 @@ func TestProviderOf(t *testing.T) {
 
 func TestDetectionPausedMetricFollowsTheApplication(t *testing.T) {
 	value := func(reason string) float64 {
-		return metricstest.Value("backflow_detection_paused", map[string]string{"policy": "ns/p", "application": "app", "reason": reason})
+		return metricstest.Value("backflow_detection_paused", map[string]string{"policy_namespace": "ns", "policy": "p", "application": "app", "reason": reason})
 	}
-	metrics.SetDetectionPaused("ns/p", "app", metrics.PausedGitAhead)
+	metrics.SetDetectionPaused(metrics.Policy{Namespace: "ns", Name: "p"}, "app", metrics.PausedGitAhead)
 	if value("GitAhead") != 1 {
 		t.Fatal("no series while paused")
 	}
-	metrics.SetDetectionPaused("ns/p", "app", metrics.PausedSettling)
+	metrics.SetDetectionPaused(metrics.Policy{Namespace: "ns", Name: "p"}, "app", metrics.PausedSettling)
 	if value("GitAhead") != 0 || value("Settling") != 1 {
 		t.Error("only the current reason has a series")
 	}

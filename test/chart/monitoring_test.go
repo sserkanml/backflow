@@ -2,6 +2,7 @@ package chart
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +56,13 @@ func TestPrometheusRule(t *testing.T) {
 		for _, key := range []string{"summary", "description", "runbook"} {
 			if v, _ := annotations[key].(string); strings.TrimSpace(v) == "" {
 				t.Errorf("%s: no %s", name, key)
+			}
+		}
+		expr, _ := rule["expr"].(string)
+		all := expr + fmt.Sprint(annotations)
+		for _, old := range []string{"$labels.name", "$labels.namespace", "by (policy,", "by (name", "by (namespace"} {
+			if strings.Contains(all, old) {
+				t.Errorf("%s uses %q: policies carry policy_namespace and policy, connections scm_namespace and scm", name, old)
 			}
 		}
 		if v, _ := annotations["runbook"].(string); !strings.Contains(v, name) || !strings.Contains(v, "Metrics and alerts") {

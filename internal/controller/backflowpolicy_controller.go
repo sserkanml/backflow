@@ -77,7 +77,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
-			metrics.ForgetPolicy(req.Namespace, req.Name)
+			metrics.ForgetPolicy(metrics.Policy{Namespace: req.Namespace, Name: req.Name})
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -197,7 +197,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	metrics.SetPolicy(policy.Namespace, policy.Name, cond.Status == metav1.ConditionTrue, len(apps)-len(withCredentials))
+	metrics.SetPolicy(metrics.Policy{Namespace: policy.Namespace, Name: policy.Name}, cond.Status == metav1.ConditionTrue, len(apps)-len(withCredentials))
 	log.Info("Policy resolved", "applications", names, "ready", cond.Status, "reason", cond.Reason)
 	if secretErr != nil {
 		// Secrets are not watched: look again soon, in case access was granted.

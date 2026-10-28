@@ -6,7 +6,7 @@ import (
 
 // ProposalCount is how many DriftProposals a policy has in a phase.
 type ProposalCount struct {
-	Policy string
+	Policy Policy
 	Phase  string
 	Count  int
 }
@@ -25,7 +25,7 @@ func NewProposalsCollector(list func() []ProposalCount) prometheus.Collector {
 	return &proposalsCollector{
 		list: list,
 		desc: prometheus.NewDesc(namespace+"_proposals",
-			"DriftProposals by policy and phase, as they are now.", []string{lPolicy, "phase"}, nil),
+			"DriftProposals by policy and phase, as they are now.", []string{lPolicyNS, lPolicy, "phase"}, nil),
 	}
 }
 
@@ -40,7 +40,8 @@ func (c *proposalsCollector) Describe(ch chan<- *prometheus.Desc) { ch <- c.desc
 func (c *proposalsCollector) Collect(ch chan<- prometheus.Metric) {
 	defer func() { _ = recover() }() // a metric never fails a scrape
 	for _, p := range c.list() {
-		m, err := prometheus.NewConstMetric(c.desc, prometheus.GaugeValue, float64(p.Count), bound(lPolicy, p.Policy), bound("phase", p.Phase))
+		ns, n := p.Policy.labels()
+		m, err := prometheus.NewConstMetric(c.desc, prometheus.GaugeValue, float64(p.Count), ns, n, bound("phase", p.Phase))
 		if err == nil {
 			ch <- m
 		}

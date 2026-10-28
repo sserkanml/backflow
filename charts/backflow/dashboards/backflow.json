@@ -422,8 +422,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (policy, application) (increase(backflow_drifts_detected_total[$__rate_interval]))",
-          "legendFormat": "{{policy}} / {{application}}",
+          "expr": "sum by (policy_namespace, policy, application) (increase(backflow_drifts_detected_total[$__rate_interval]))",
+          "legendFormat": "{{policy_namespace}}/{{policy}} / {{application}}",
           "refId": "A"
         }
       ],
@@ -1167,7 +1167,7 @@
               "service": true,
               "pod": true,
               "container": true,
-              "namespace_1": true
+              "namespace": true
             }
           }
         }
@@ -1234,7 +1234,7 @@
               "service": true,
               "pod": true,
               "container": true,
-              "namespace_1": true
+              "namespace": true
             }
           }
         }
@@ -1289,7 +1289,7 @@
               "service": true,
               "pod": true,
               "container": true,
-              "namespace_1": true
+              "namespace": true
             }
           }
         }
@@ -1344,7 +1344,7 @@
               "service": true,
               "pod": true,
               "container": true,
-              "namespace_1": true
+              "namespace": true
             }
           }
         }

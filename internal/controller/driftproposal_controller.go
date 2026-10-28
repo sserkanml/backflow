@@ -229,7 +229,10 @@ func ProposalCounts(c client.Reader) func() []metrics.ProposalCount {
 		if err := c.List(ctx, &list); err != nil {
 			return nil
 		}
-		type key struct{ policy, phase string }
+		type key struct {
+			policy metrics.Policy
+			phase  string
+		}
 		counts := map[key]int{}
 		for i := range list.Items {
 			dp := &list.Items[i]
@@ -237,7 +240,7 @@ func ProposalCounts(c client.Reader) func() []metrics.ProposalCount {
 			if phase == "" {
 				phase = "Pending"
 			}
-			counts[key{metrics.PolicyLabel(dp.Namespace, dp.Spec.PolicyName), phase}]++
+			counts[key{metrics.Policy{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, phase}]++
 		}
 		out := make([]metrics.ProposalCount, 0, len(counts))
 		for k, n := range counts {
