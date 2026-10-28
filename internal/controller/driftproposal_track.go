@@ -16,6 +16,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -185,14 +186,22 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 		dp.Status.Message = mergedMessage(ref.URL)
 		leaveProposed(dp, reasonMergeRequestMerged, mergedConditionMessage(ref.URL, cur.MergeCommitSHA))
 		log.Info("Merge request merged", "proposal", dp.Name, "url", ref.URL, "commit", cur.MergeCommitSHA)
-		return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
+		if err := r.patchStatus(ctx, dp, orig); err != nil {
+			return ctrl.Result{}, err
+		}
+		metrics.MergeRequest(providerOf(c.access), metrics.MRMerged)
+		return ctrl.Result{}, nil
 	case scm.StateClosed:
 		dp.Status.Phase = backflowv1alpha1.PhaseRejected
 		ref.State = string(scm.StateClosed)
 		dp.Status.Message = closedMessage(ref.URL)
 		leaveProposed(dp, reasonMergeRequestClosed, closedConditionMessage(ref.URL))
 		log.Info("Merge request closed without merging", "proposal", dp.Name, "url", ref.URL)
-		return ctrl.Result{}, r.patchStatus(ctx, dp, orig)
+		if err := r.patchStatus(ctx, dp, orig); err != nil {
+			return ctrl.Result{}, err
+		}
+		metrics.MergeRequest(providerOf(c.access), metrics.MRClosed)
+		return ctrl.Result{}, nil
 	}
 
 	// Still open.

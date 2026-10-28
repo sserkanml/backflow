@@ -34,6 +34,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/drift"
+	"github.com/sserkanml/backflow/internal/metrics"
 )
 
 const (
@@ -285,7 +286,12 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	// While Git is ahead of the last sync, an OutOfSync resource may differ
 	// from the cluster only because a commit has not been applied yet. A
 	// proposal made now could undo that commit, so no new one is made.
-	run.paused = len(run.candidates) > 0 && r.detectionPaused(ctx, policy, summary, app)
+	reason := ""
+	if len(run.candidates) > 0 {
+		reason = r.detectionPausedReason(ctx, policy, summary, app)
+	}
+	run.paused = reason != ""
+	metrics.SetDetectionPaused(policy.Namespace+"/"+policy.Name, summary.Name, reason)
 	if len(run.candidates) == 0 {
 		log.V(1).Info("No resource of the Application is OutOfSync and allowed by the policy", "outOfSync", len(run.outOfSync))
 		r.forgetStable(ctx, policy, summary.Name, nil, run.outOfSync)
@@ -589,6 +595,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		if err := r.Create(ctx, dp); err != nil {
 			return err // AlreadyExists means a stale cache; the retry sees the object.
 		}
+		metrics.DriftDetected(policy.Namespace+"/"+policy.Name, summary.Name, string(srcType))
 		log.Info("Drift detected", "proposal", dp.Name, "kind", res.Kind, "resource", res.Name, "changes", len(changes))
 		r.event(policy, corev1.EventTypeNormal, "DriftDetected",
 			fmt.Sprintf("%s %s in application %s drifted (proposal %s)", res.Kind, res.Name, summary.Name, dp.Name))
@@ -818,11 +825,13 @@ func (r *DriftReconciler) forgetPolicy(pol string) {
 // forgetApplications drops what is kept for the policy's Applications that are
 // not in keep (all of them when keep is empty).
 func (r *DriftReconciler) forgetApplications(pol string, keep map[string]bool) {
+	metrics.ForgetApplicationsExcept(pol, keep)
 	r.forgetWhere(pol, func(app string) bool { return !keep[app] })
 }
 
 // forgetApplication drops what is kept for one Application of a policy.
 func (r *DriftReconciler) forgetApplication(pol, app string) {
+	metrics.ForgetApplication(pol, app)
 	r.forgetWhere(pol, func(name string) bool { return name == app })
 }
 

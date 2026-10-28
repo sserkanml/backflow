@@ -62,7 +62,7 @@ var (
 
 	verificationDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: namespace, Name: "verification_duration_seconds",
-		Help:    "Time to verify the edits of one proposal by rendering, by source type and result (mapped, unmapped, error).",
+		Help:    "Time to verify the edits of one proposal by rendering, by source type and result (mapped, unmapped, retry).",
 		Buckets: []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600},
 	}, []string{lSourceType, lResult})
 	renders = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -197,8 +197,49 @@ func CodeClass(status int, err error) string {
 	return "5xx"
 }
 
+// The reasons of SetDetectionPaused.
+const (
+	PausedGitAhead           = "GitAhead"
+	PausedApplicationChanged = "ApplicationChanged"
+	PausedSettling           = "Settling"
+)
+
+// appsSeen are the Applications of each policy that have a series by Application,
+// for ForgetApplicationsExcept.
+var (
+	appsMu   sync.Mutex
+	appsSeen = map[string]map[string]struct{}{}
+)
+
+func seeApplication(policy, application string) {
+	appsMu.Lock()
+	defer appsMu.Unlock()
+	if appsSeen[policy] == nil {
+		appsSeen[policy] = map[string]struct{}{}
+	}
+	appsSeen[policy][application] = struct{}{}
+}
+
+// ForgetApplicationsExcept removes the series of the Applications of a policy
+// that are not in keep.
+func ForgetApplicationsExcept(policy string, keep map[string]bool) {
+	appsMu.Lock()
+	var gone []string
+	for app := range appsSeen[policy] {
+		if !keep[app] {
+			gone = append(gone, app)
+			delete(appsSeen[policy], app)
+		}
+	}
+	appsMu.Unlock()
+	for _, app := range gone {
+		ForgetApplication(policy, app)
+	}
+}
+
 // DriftDetected counts a drift that became a proposal.
 func DriftDetected(policy, application, sourceType string) {
+	seeApplication(policy, application)
 	safe(func() {
 		driftsDetected.WithLabelValues(bound(lPolicy, policy), bound(lApplication, application), bound(lSourceType, sourceType)).Inc()
 	})
@@ -346,12 +387,18 @@ func ForgetPolicy(namespace, name string) {
 		policy := PolicyLabel(namespace, name)
 		detectionPaused.DeletePartialMatch(prometheus.Labels{lPolicy: policy})
 		driftsDetected.DeletePartialMatch(prometheus.Labels{lPolicy: policy})
+		appsMu.Lock()
+		delete(appsSeen, policy)
+		appsMu.Unlock()
 	})
 }
 
 // SetDetectionPaused records why drift detection for an Application is paused
 // ("" when it is not): only the current reason has a series, set to 1.
 func SetDetectionPaused(policy, application, reason string) {
+	if reason != "" {
+		seeApplication(policy, application)
+	}
 	safe(func() {
 		p, a := bound(lPolicy, policy), bound(lApplication, application)
 		detectionPaused.DeletePartialMatch(prometheus.Labels{lPolicy: p, lApplication: a})
@@ -363,6 +410,9 @@ func SetDetectionPaused(policy, application, reason string) {
 
 // ForgetApplication removes the series of an Application a policy no longer has.
 func ForgetApplication(policy, application string) {
+	appsMu.Lock()
+	delete(appsSeen[policy], application)
+	appsMu.Unlock()
 	safe(func() {
 		detectionPaused.DeletePartialMatch(prometheus.Labels{lPolicy: policy, lApplication: application})
 		driftsDetected.DeletePartialMatch(prometheus.Labels{lPolicy: policy, lApplication: application})

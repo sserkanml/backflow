@@ -33,6 +33,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
+	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -215,4 +216,33 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("driftproposal").
 		Complete(r)
+}
+
+// ProposalCounts returns what the backflow_proposals gauge reports: the
+// proposals of each policy by phase, read from the cache of the manager. A
+// proposal that has no phase yet is Pending.
+func ProposalCounts(c client.Reader) func() []metrics.ProposalCount {
+	return func() []metrics.ProposalCount {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var list backflowv1alpha1.DriftProposalList
+		if err := c.List(ctx, &list); err != nil {
+			return nil
+		}
+		type key struct{ policy, phase string }
+		counts := map[key]int{}
+		for i := range list.Items {
+			dp := &list.Items[i]
+			phase := string(dp.Status.Phase)
+			if phase == "" {
+				phase = "Pending"
+			}
+			counts[key{metrics.PolicyLabel(dp.Namespace, dp.Spec.PolicyName), phase}]++
+		}
+		out := make([]metrics.ProposalCount, 0, len(counts))
+		for k, n := range counts {
+			out = append(out, metrics.ProposalCount{Policy: k.policy, Phase: k.phase, Count: n})
+		}
+		return out
+	}
 }

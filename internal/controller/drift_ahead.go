@@ -14,6 +14,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/metrics"
 )
 
 const (
@@ -546,36 +547,40 @@ func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflow
 	return aheadCheck{changed: countUnderPath(paths, summary.Path, recurse)}, nil
 }
 
-// detectionPaused reports whether no new proposal may be made for the
-// Application now, and says why in an Event when that is Git being ahead.
-func (r *DriftReconciler) detectionPaused(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) bool {
+// detectionPausedReason says why no new proposal may be made for the
+// Application now ("" when one may), and says so in an Event when that is Git
+// being ahead.
+func (r *DriftReconciler) detectionPausedReason(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
+	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) string {
 	st := gitAhead(app)
 	if st.settling {
 		logf.FromContext(ctx).V(1).Info("A sync is running or not yet compared; no new proposals", "application", summary.Name)
-		return true
+		return metrics.PausedSettling
 	}
 	if st.hold() != "" {
 		logf.FromContext(ctx).V(1).Info("Detection is paused: the Application's source changed since the last sync",
 			"application", summary.Name, "why", st.hold(), "compared", shortRevision(st.compared))
 		r.reportHeld(policy, summary, st)
-		return true
+		if st.holdKind == holdApplicationChanged {
+			return metrics.PausedApplicationChanged
+		}
+		return metrics.PausedGitAhead
 	}
 	if !st.paused {
-		return false
+		return ""
 	}
 	changed, checked := r.changedUnderPath(ctx, policy, summary, app, st)
 	if checked && changed == 0 {
 		// A commit elsewhere in the repository: nothing the Application is made of changed.
 		logf.FromContext(ctx).V(1).Info("Git is ahead of the last sync, but nothing the Application is made of changed",
 			"application", summary.Name, "compared", shortRevision(st.compared), "synced", shortRevision(st.synced))
-		return false
+		return ""
 	}
 	logf.FromContext(ctx).V(1).Info("Detection is paused: Git is ahead of the last sync",
 		"application", summary.Name, "compared", shortRevision(st.compared), "synced", shortRevision(st.synced),
 		"changedFiles", changed, "checked", checked)
 	r.reportGitAhead(policy, summary, st, changed, checked)
-	return true
+	return metrics.PausedGitAhead
 }
 
 // holdResource tells ensureProposal whether drift of the resource must not be

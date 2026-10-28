@@ -23,6 +23,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -112,6 +113,14 @@ type scmAccess struct {
 	ca    []byte
 	// auth is the HTTPS credential for Git operations.
 	auth *gitrepo.Auth
+}
+
+// providerOf is the kind of Git host of a connection, for the metrics.
+func providerOf(a *scmAccess) string {
+	if a == nil || a.conn == nil {
+		return ""
+	}
+	return string(a.conn.Spec.Provider)
 }
 
 func (r *DriftProposalReconciler) newProvider(cfg scm.Config) (scm.Provider, error) {
@@ -534,6 +543,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		}
 		return r.scmFailure(ctx, dp, err)
 	}
+	metrics.MergeRequest(providerOf(access), metrics.MROpened)
 	for _, w := range mr.Warnings {
 		logf.FromContext(ctx).Info("Merge request created with a warning", "proposal", dp.Name, "warning", w)
 	}
@@ -808,6 +818,7 @@ const crdsOutdatedMessage = "CRDs are outdated: the driftproposals CRD does not 
 func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
 	what string, err error) (ctrl.Result, error) {
 	declines := int(dp.Status.PushRejections) + 1
+	metrics.MergeRequest("git", metrics.MRPushRejected) // a push is the same on every host
 	if declines >= maxPushRejections {
 		return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
 			"The server declined %s %d times (a protected branch, a hook, or the Git host having trouble): %v", what, declines, err))

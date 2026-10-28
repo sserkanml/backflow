@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -71,7 +72,10 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	var conn backflowv1alpha1.ScmConnection
 	if err := r.Get(ctx, req.NamespacedName, &conn); err != nil {
-		// Deleted in the meantime: nothing to do.
+		// Deleted in the meantime: its series go with it.
+		if apierrors.IsNotFound(err) {
+			metrics.ForgetSCMConnection(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -103,6 +107,7 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
+	metrics.SetSCMConnection(conn.Namespace, conn.Name, checkErr == nil)
 
 	if checkErr != nil {
 		log.Info("SCM connection check failed", "reason", cond.Reason, "error", checkErr.Error())

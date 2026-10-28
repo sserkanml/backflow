@@ -22,6 +22,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/mapping"
+	"github.com/sserkanml/backflow/internal/metrics"
 )
 
 const (
@@ -183,7 +184,9 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	}
 	defer func() { _ = tree.Close() }()
 
+	started := time.Now()
 	change, err := r.mapTree(ctx, dp, app, tree, writeTarget(dp).Revision)
+	metrics.Verification(string(dp.Spec.Source.Type), verificationResult(err), time.Since(started))
 	if err != nil {
 		if verdict, ok := errors.AsType[*verdictError](err); ok {
 			if len(verdict.options) > 0 {
@@ -230,8 +233,22 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
+	metrics.MappingResult(string(dp.Spec.Source.Type), string(change.strategy), reason)
 	log.Info("Proposal mapped", "proposal", dp.Name, "strategy", change.strategy, "files", change.paths(), "edits", len(edits), "renders", change.renders)
 	return ctrl.Result{}, nil
+}
+
+// verificationResult is the result label of a verification: "mapped" when it
+// verified, "unmapped" for a verdict about the source, "retry" when the source
+// could not be read or rendered right now.
+func verificationResult(err error) string {
+	if err == nil {
+		return "mapped"
+	}
+	if _, ok := errors.AsType[*verdictError](err); ok {
+		return "unmapped"
+	}
+	return "retry"
 }
 
 // mappingReason maps a mapping error to a Mapped condition reason. ok is
@@ -275,7 +292,11 @@ func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflow
 		Message: message, ObservedGeneration: dp.Generation,
 	})
 	logf.FromContext(ctx).Info("Proposal unmapped", "proposal", dp.Name, "reason", reason, "message", message)
-	return r.patchStatus(ctx, dp, orig)
+	if err := r.patchStatus(ctx, dp, orig); err != nil {
+		return err
+	}
+	metrics.MappingResult(string(dp.Spec.Source.Type), string(backflowv1alpha1.StrategyUnmapped), reason)
+	return nil
 }
 
 // retry records that the source cannot be read right now and asks for
