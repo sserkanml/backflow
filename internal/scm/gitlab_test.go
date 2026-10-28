@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sserkanml/backflow/internal/metrics/metricstest"
 )
 
 const glMR = `{"iid":7,"web_url":"https://gitlab.example.com/g/p/-/merge_requests/7","state":"opened",
@@ -295,4 +297,44 @@ func TestGitLabLookupUser(t *testing.T) {
 	if _, err := p.LookupUser(t.Context(), "carol"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
+}
+
+func TestRequestsAreCounted(t *testing.T) {
+	count := func(provider, host, class string) float64 {
+		return metricstest.Value("backflow_scm_requests_total", map[string]string{"provider": provider, "host": host, "code_class": class})
+	}
+	const path = "GET /api/v4/projects/g%2Fp/merge_requests"
+	p, srv := newGitLabTest(t, map[string]reply{path: {200, "[]"}})
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+	host = host[:strings.LastIndex(host, ":")]
+	before := count("gitlab", host, "2xx")
+	if _, err := p.FindOpenMergeRequest(t.Context(), "g/p", "b"); err != nil && !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if got := count("gitlab", host, "2xx"); got != before+1 {
+		t.Errorf("2xx = %v, want %v", got, before+1)
+	}
+	if got := metricstest.Value("backflow_scm_request_duration_seconds", map[string]string{"provider": "gitlab", "host": host}); got < 1 {
+		t.Errorf("no duration observed")
+	}
+
+	t.Run("a refusal is 4xx", func(t *testing.T) {
+		p, _ := newGitLabTest(t, map[string]reply{path: {401, `{"message":"401 Unauthorized"}`}})
+		before := count("gitlab", host, "4xx")
+		_, _ = p.FindOpenMergeRequest(t.Context(), "g/p", "b")
+		if got := count("gitlab", host, "4xx"); got != before+1 {
+			t.Errorf("4xx = %v, want %v", got, before+1)
+		}
+	})
+	t.Run("a host that cannot be reached is an error", func(t *testing.T) {
+		p, err := New(Config{Provider: "github", BaseURL: "https://127.0.0.1:1", Token: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := count("github", "127.0.0.1", "error")
+		_, _ = p.FindOpenMergeRequest(t.Context(), "o/r", "b")
+		if got := count("github", "127.0.0.1", "error"); got != before+1 {
+			t.Errorf("error = %v, want %v", got, before+1)
+		}
+	})
 }

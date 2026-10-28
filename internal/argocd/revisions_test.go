@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sserkanml/backflow/internal/metrics/metricstest"
 )
 
 func TestGetManifestsByRevisions(t *testing.T) {
@@ -231,4 +233,58 @@ func TestSanitizeMessage(t *testing.T) {
 			t.Errorf("sanitizeMessage(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
+}
+
+func TestRequestsAreCounted(t *testing.T) {
+	count := func(endpoint, class string) float64 {
+		return metricstest.Value("backflow_argocd_requests_total", map[string]string{"endpoint": endpoint, "code_class": class})
+	}
+	t.Run("a render by revision that works", func(t *testing.T) {
+		before := count("manifests_by_revisions", "2xx")
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"manifests":[]}`)) })
+		if _, err := c.GetManifestsByRevisions(t.Context(), RevisionsQuery{AppName: "a", Revisions: []string{"x"}, SourcePositions: []int{1}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := count("manifests_by_revisions", "2xx"); got != before+1 {
+			t.Errorf("2xx = %v, want %v", got, before+1)
+		}
+	})
+	t.Run("a refusal and a render failure are 4xx, an Argo CD that is down is not", func(t *testing.T) {
+		before4, before5, beforeE := count("manifests_by_revisions", "4xx"), count("manifests_by_revisions", "5xx"), count("manifests_by_revisions", "error")
+		for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+			c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"message":"x"}`))
+			})
+			_, _ = c.GetManifestsByRevisions(t.Context(), RevisionsQuery{AppName: "a", Revisions: []string{"x"}, SourcePositions: []int{1}})
+		}
+		if got := count("manifests_by_revisions", "4xx") - before4; got != 2 {
+			t.Errorf("4xx = %v, want 2 (denied, and a render that failed)", got)
+		}
+		if got := count("manifests_by_revisions", "5xx") - before5; got != 1 {
+			t.Errorf("5xx = %v, want 1", got)
+		}
+		if got := count("manifests_by_revisions", "error") - beforeE; got != 0 {
+			t.Errorf("error = %v", got)
+		}
+	})
+	t.Run("an unreachable server is an error", func(t *testing.T) {
+		before := count("managed_resources", "error")
+		c := newTestClient(t, func(http.ResponseWriter, *http.Request) {})
+		c.baseURL = "https://127.0.0.1:1"
+		_, _ = c.GetManagedResources(t.Context(), "a", "argocd")
+		if got := count("managed_resources", "error") - before; got != 1 {
+			t.Errorf("error = %v, want 1", got)
+		}
+	})
+	t.Run("the duration is observed per endpoint, and the other endpoints are counted", func(t *testing.T) {
+		c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"helm":{"values":"a: 1\n"}}`)) })
+		before := metricstest.Value("backflow_argocd_request_duration_seconds", map[string]string{"endpoint": "app_details"})
+		if _, err := c.GetHelmDetails(t.Context(), "a", "argocd", "default", map[string]any{"repoURL": "r"}, 0); err != nil {
+			t.Fatal(err)
+		}
+		if got := metricstest.Value("backflow_argocd_request_duration_seconds", map[string]string{"endpoint": "app_details"}); got != before+1 {
+			t.Errorf("observations = %v", got)
+		}
+	})
 }

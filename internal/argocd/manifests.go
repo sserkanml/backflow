@@ -115,7 +115,8 @@ type ManifestsResponse struct {
 // GetManifestsWithFiles renders an Application from the given files. Errors
 // wrap ErrUnauthorized, ErrNotFound, ErrUnreachable, ErrRenderFailed or
 // ErrArchiveTooLarge.
-func (c *Client) GetManifestsWithFiles(ctx context.Context, q ManifestsQuery) (*ManifestsResponse, error) {
+func (c *Client) GetManifestsWithFiles(ctx context.Context, q ManifestsQuery) (_ *ManifestsResponse, err error) {
+	defer c.observe(endpointManifestsUpload)(&err)
 	if q.AppName == "" {
 		return nil, errors.New("argocd: application name is required")
 	}
