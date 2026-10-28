@@ -125,10 +125,50 @@ var (
 	}, []string{"version", "commit"})
 )
 
+// collectors are the metrics of this package, registered by init.
+var collectors = []prometheus.Collector{
+	driftsDetected, mappingResults, mergeRequests, verificationDuration, renders, renderDuration,
+	scratchBranches, argocdRequests, argocdDuration, scmRequests, scmDuration, secretReads,
+	scmConnectionReady, policyReady, policyApplications, detectionPaused, buildInfo,
+}
+
 func init() {
-	Registry.MustRegister(driftsDetected, mappingResults, mergeRequests, verificationDuration, renders, renderDuration,
-		scratchBranches, argocdRequests, argocdDuration, scmRequests, scmDuration, secretReads,
-		scmConnectionReady, policyReady, policyApplications, detectionPaused, buildInfo)
+	Registry.MustRegister(collectors...)
+}
+
+// Labels returns the label names of every Backflow metric by name, with the
+// proposals gauge included, whether or not it has a series yet. A histogram is
+// listed under its base name. Tests use it to check what an alert or a dashboard
+// refers to.
+func Labels() map[string][]string {
+	out := map[string][]string{}
+	all := append([]prometheus.Collector{NewProposalsCollector(nil)}, collectors...)
+	for _, c := range all {
+		ch := make(chan *prometheus.Desc, 8)
+		go func() { c.Describe(ch); close(ch) }()
+		for d := range ch {
+			name, labels := parseDesc(d.String())
+			out[name] = labels
+		}
+	}
+	return out
+}
+
+// parseDesc reads the name and the variable labels from Desc.String, which has
+// the form Desc{fqName: "n", help: "...", constLabels: {}, variableLabels: {a,b}}.
+func parseDesc(desc string) (name string, labels []string) {
+	if _, rest, ok := strings.Cut(desc, `fqName: "`); ok {
+		name, _, _ = strings.Cut(rest, `"`)
+	}
+	if _, rest, ok := strings.Cut(desc, "variableLabels: {"); ok {
+		list, _, _ := strings.Cut(rest, "}")
+		for l := range strings.SplitSeq(list, ",") {
+			if l = strings.TrimSpace(l); l != "" {
+				labels = append(labels, l)
+			}
+		}
+	}
+	return name, labels
 }
 
 // maxValuesPerLabel bounds the distinct values one label name takes: more, and

@@ -3,6 +3,7 @@ package metrics
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -187,4 +188,21 @@ func TestAMetricNeverPanics(t *testing.T) {
 	safe(func() { panic("boom") })
 	// A label count that does not fit would panic in the client library.
 	safe(func() { driftsDetected.WithLabelValues("only one") })
+}
+
+func TestLabelsListsEveryMetric(t *testing.T) {
+	got := Labels()
+	for name, want := range map[string][]string{
+		"backflow_policy_ready":       {"policy_namespace", "policy"},
+		"backflow_proposals":          {"policy_namespace", "policy", "phase"},
+		"backflow_build_info":         {"version", "commit"},
+		"backflow_scm_requests_total": {"provider", "host", "code_class"},
+	} {
+		if !slices.Equal(got[name], want) {
+			t.Errorf("%s labels = %v, want %v", name, got[name], want)
+		}
+	}
+	if len(got) != 18 {
+		t.Errorf("%d metrics, want 18: %v", len(got), got)
+	}
 }
