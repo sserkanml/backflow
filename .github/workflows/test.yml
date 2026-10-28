@@ -29,6 +29,21 @@ jobs:
         with:
           version: v4.2.0
 
+      # test/chart checks the alert rules with promtool; with CI=true a missing
+      # promtool fails the test. The archive is checked against the SHA-256 that
+      # Prometheus publishes for the release.
+      - name: Set up promtool
+        env:
+          PROMETHEUS_VERSION: 3.5.0
+          PROMETHEUS_SHA256: e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a
+        run: |
+          archive="prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          curl -sSfL -o "${RUNNER_TEMP}/${archive}" "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/${archive}"
+          echo "${PROMETHEUS_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check
+          mkdir -p "${RUNNER_TEMP}/promtool"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/promtool" --strip-components=1 "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          echo "${RUNNER_TEMP}/promtool" >> "$GITHUB_PATH"
+
       - name: Running Tests
         run: |
           go mod tidy

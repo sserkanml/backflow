@@ -1,0 +1,104 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- $runbook := "See the README, section \"Metrics and alerts\"" }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "backflow.managerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: backflow
+      {{- with .Values.prometheusRule.interval }}
+      interval: {{ . }}
+      {{- end }}
+      rules:
+        - alert: BackflowScmConnectionNotReady
+          expr: backflow_scm_connection_ready == 0
+          for: 15m
+          labels:
+            severity: warning
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: ScmConnection {{`{{ $labels.namespace }}/{{ $labels.name }}`}} is not Ready
+            description: The token of the ScmConnection {{`{{ $labels.namespace }}/{{ $labels.name }}`}} has not been accepted by the Git host for 15 minutes, so Backflow cannot map or propose drift to repositories on that host. Run kubectl -n {{`{{ $labels.namespace }}`}} describe scm {{`{{ $labels.name }}`}} for the reason.
+            runbook: {{ $runbook }}, alert BackflowScmConnectionNotReady.
+        - alert: BackflowPolicyNotReady
+          expr: backflow_policy_ready == 0
+          for: 15m
+          labels:
+            severity: warning
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: BackflowPolicy {{`{{ $labels.namespace }}/{{ $labels.name }}`}} is not Ready
+            description: The BackflowPolicy {{`{{ $labels.namespace }}/{{ $labels.name }}`}} has not been Ready for 15 minutes (no matching Application, a missing ScmConnection, an Application conflict or a Secret it may not read), so it detects no drift. Run kubectl -n {{`{{ $labels.namespace }}`}} describe bfp {{`{{ $labels.name }}`}} for the reason.
+            runbook: {{ $runbook }}, alert BackflowPolicyNotReady.
+        - alert: BackflowArgoCDUnreachable
+          expr: |
+            sum(rate(backflow_argocd_requests_total{code_class="error"}[5m]))
+              / sum(rate(backflow_argocd_requests_total[5m])) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Backflow cannot reach the Argo CD API
+            description: More than half of the requests of Backflow to the Argo CD API got no answer for 10 minutes. Without Argo CD it detects no drift and maps no proposal. Check the Argo CD server, the URL, the CA and the network policy.
+            runbook: {{ $runbook }}, alert BackflowArgoCDUnreachable.
+        - alert: BackflowRenderErrors
+          expr: sum by (renderer) (increase(backflow_renders_total{result="error"}[15m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Renders through Argo CD fail ({{`{{ $labels.renderer }}`}})
+            description: Argo CD did not answer, or refused, renders of the {{`{{ $labels.renderer }}`}} renderer in the last 15 minutes. This is not a verdict about a chart (that is result="failed"); proposals of Helm and Kustomize sources are retried until it is fixed.
+            runbook: {{ $runbook }}, alert BackflowRenderErrors.
+        - alert: BackflowDetectionPausedLong
+          expr: max by (policy, application, reason) (backflow_detection_paused) == 1
+          for: 1h
+          labels:
+            severity: warning
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Drift detection for {{`{{ $labels.application }}`}} has been paused for an hour
+            description: Drift detection for the Application {{`{{ $labels.application }}`}} (policy {{ `{{ $labels.policy }}` }}) has been paused for an hour, reason {{`{{ $labels.reason }}`}}. It resumes after a complete, successful sync of the current source; if nothing syncs the Application, drift stays unseen.
+            runbook: {{ $runbook }}, alert BackflowDetectionPausedLong.
+        - alert: BackflowPushRejected
+          expr: sum(increase(backflow_merge_requests_total{action="push_rejected"}[15m])) > 0
+          labels:
+            severity: warning
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: A Git host refused a push of Backflow
+            description: A Git host declined a push of Backflow in the last 15 minutes (a protected branch, a hook, or the host having trouble). Backflow retries and then marks the proposal Failed.
+            runbook: {{ $runbook }}, alert BackflowPushRejected.
+        - alert: BackflowScratchBranchesSwept
+          expr: sum(increase(backflow_scratch_branches_total{action="swept"}[1h])) > 0
+          labels:
+            severity: info
+            {{- with .Values.prometheusRule.alertLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            summary: Backflow deleted scratch branches a verification left behind
+            description: The sweeper found and deleted scratch branches (backflow/scratch/*) that a verification did not clean up, which means an operator crashed or lost the Git host while verifying. One now and then is expected; a stream of them is not.
+            runbook: {{ $runbook }}, alert BackflowScratchBranchesSwept.
+{{- end }}

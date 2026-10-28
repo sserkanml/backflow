@@ -53,7 +53,7 @@ var (
 	}, []string{lPolicy, lApplication, lSourceType})
 	mappingResults = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "mapping_results_total",
-		Help: "Outcomes of mapping a proposal to Git, by source type, strategy and reason (Mapped, or why it was not; Retry for a mapping that is tried again).",
+		Help: "Outcomes of mapping a proposal to Git, by source type, strategy and reason (Mapped, or why the proposal is Unmapped); a mapping that is tried again later is not counted.",
 	}, []string{lSourceType, "strategy", lReason})
 	mergeRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "merge_requests_total",
@@ -116,7 +116,7 @@ var (
 	}, []string{lNamespace, lName})
 	detectionPaused = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "detection_paused",
-		Help: "1 while drift detection for an Application is paused, by the reason (GitAhead, ApplicationChanged, Settling, Held).",
+		Help: "1 while drift detection for an Application is paused, by the reason (GitAhead, ApplicationChanged, Settling).",
 	}, []string{lPolicy, lApplication, lReason})
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "build_info",
