@@ -318,6 +318,7 @@ class GitHubTests(unittest.TestCase):
         code, out, err = run("github", server.url, "POST", "/projects/%s/repository/commits" % PID, body)
         self.assertEqual(code, 0, err)
         self.assertEqual(s.commits[s.heads["main"]]["tree"], {"README.md": "hi\n", "a/b.yaml": "k: v\n"})
+        self.assertEqual(len(s.commits), 2, "one commit for the first file, one for the rest")
 
     def test_merge_requests(self):
         s = self.state

@@ -22,7 +22,7 @@ case "$SCM" in
     SCM_LABEL="GitLab"; SCM_TOKEN_VAR="GITLAB_TOKEN"; SCM_CLUSTER="backflow"
     SCM_DEFAULT_REPO="${GITLAB_PROJECT:-sserkanml/backflow-demo}"
     SCM_DEFAULT_HOST="gitlab.com"
-    SCM_TOKEN_SCOPES="the api and write_repository scopes"
+    SCM_TOKEN_SCOPES="a token with the api and write_repository scopes"
     SCM_MIN_LEVEL=40  # Maintainer: main is protected, and the scripts restore it
     ;;
   github)

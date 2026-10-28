@@ -168,8 +168,8 @@ LOG_FILE="$LOG_DIR/test-helm-manager.log"
 
 if [[ -z "${SCM_TOKEN:-}" ]]; then
   echo "SKIPPED: $SCM_TOKEN_VAR is not set."
-  echo "This test pushes branches and merges into $SCM_PROJECT on $SCM_HOST and needs a"
-  echo "token with $SCM_TOKEN_SCOPES: $SCM_TOKEN_VAR=... $0"
+  echo "This test pushes branches and merges into $SCM_PROJECT on $SCM_HOST and needs"
+  echo "$SCM_TOKEN_SCOPES: $SCM_TOKEN_VAR=... $0"
   exit 0
 fi
 
