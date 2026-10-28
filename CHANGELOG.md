@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.0](https://github.com/sserkanml/backflow/compare/v0.12.0...v0.13.0) (2026-10-28)
+
+
+### Features
+
+* **build:** report the release version and commit in backflow_build_info ([cb3857c](https://github.com/sserkanml/backflow/commit/cb3857c2339218b447619cc14341fa28cb773492))
+* **chart:** a PrometheusRule and a Grafana dashboard for the metrics ([616d084](https://github.com/sserkanml/backflow/commit/616d0842472fcdd9f1c32fc8aa901d79e13a574f))
+* **metrics:** count the renders, the scratch branches and the reads of Secrets ([0120987](https://github.com/sserkanml/backflow/commit/01209876728ab12e23508fc3266f1f583dd2e95f))
+* **metrics:** count the requests to Argo CD and to the Git hosts ([73c282e](https://github.com/sserkanml/backflow/commit/73c282ed3284f8a191046a0bb53b89865750e970))
+* **metrics:** label policies with policy_namespace and policy, connections with scm_namespace and scm ([0244b80](https://github.com/sserkanml/backflow/commit/0244b808748891ba14e51500f7395018c0cd8e5a))
+* **metrics:** the Prometheus metrics of Backflow, on controller-runtime's registry ([3d804ff](https://github.com/sserkanml/backflow/commit/3d804ff6ed9d9529520a8c43983e8ae8e3c9cf3b))
+* **metrics:** wire the metrics into the controllers and the manager ([f767924](https://github.com/sserkanml/backflow/commit/f76792414ee4c753ac2fd998e1f317dcb707befc))
+
+
+### Documentation
+
+* the metrics, the alerts and the dashboard ([a5b9923](https://github.com/sserkanml/backflow/commit/a5b9923daa27a6066b2644611c39091a78342572))
+
 ## [0.12.0](https://github.com/sserkanml/backflow/compare/v0.11.0...v0.12.0) (2026-10-27)
 
 
