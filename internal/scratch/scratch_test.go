@@ -12,6 +12,7 @@ import (
 
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/metrics/metricstest"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -323,5 +324,60 @@ func TestRenderFreshAsksArgoCDNotToUseItsCache(t *testing.T) {
 	last := a.queries[len(a.queries)-1]
 	if !last.NoCache || last.Revisions[1] == parent || len(g.commits) != 1 {
 		t.Errorf("query = %+v, commits = %d", last, len(g.commits))
+	}
+}
+
+func TestScratchMetrics(t *testing.T) {
+	branches := func(action string) float64 {
+		return metricstest.Value("backflow_scratch_branches_total", map[string]string{"action": action})
+	}
+	renders := func(result string) float64 {
+		return metricstest.Value("backflow_renders_total", map[string]string{"renderer": "revisions", "result": result})
+	}
+	pushed, deleted, swept, pushFailed := branches("pushed"), branches("deleted"), branches("swept"), branches("push_failed")
+	ok, failed := renders("ok"), renders("failed")
+
+	g, a := &fakeGit{}, &fakeArgo{}
+	r := newRenderer(g, a, nil)
+	if err := r.Prepare(t.Context(), []map[string][]byte{
+		edited(map[string]string{"env/values.yaml": "a: 2\n"}), edited(map[string]string{"env/values.yaml": "a: 3\n"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Render(t.Context(), rendermap.App{}, edited(map[string]string{"env/values.yaml": "a: 2\n"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finish(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := branches("pushed") - pushed; got != 2 {
+		t.Errorf("pushed = %v, want 2", got)
+	}
+	if got := branches("deleted") - deleted; got != 2 {
+		t.Errorf("deleted = %v, want 2", got)
+	}
+	if got := renders("ok") - ok; got != 1 {
+		t.Errorf("renders ok = %v, want 1", got)
+	}
+
+	set := edited(map[string]string{"env/values.yaml": "a: 9\n"})
+	failing := newRenderer(&fakeGit{}, &fakeArgo{err: fmt.Errorf("%w: x", argocd.ErrRenderFailed)}, nil)
+	_, _ = failing.Render(t.Context(), rendermap.App{}, set)
+	if got := renders("failed") - failed; got != 1 {
+		t.Errorf("renders failed = %v, want 1", got)
+	}
+
+	_, _ = newRenderer(&fakeGit{pushErr: gitrepo.ErrPushRejected}, &fakeArgo{}, nil).Render(t.Context(), rendermap.App{}, set)
+	if got := branches("push_failed") - pushFailed; got != 1 {
+		t.Errorf("push_failed = %v, want 1", got)
+	}
+
+	now := time.Unix(1_700_000_000, 0)
+	old := &fakeGit{branches: []gitrepo.RemoteBranch{{Name: BranchPrefix + "old-1", When: now.Add(-2 * time.Hour)}, {Name: BranchPrefix + "new-1", When: now}}}
+	if _, err := Sweep(t.Context(), old, "https://x/y.git", nil, time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := branches("swept") - swept; got != 1 {
+		t.Errorf("swept = %v, want 1", got)
 	}
 }

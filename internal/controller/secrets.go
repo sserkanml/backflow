@@ -11,6 +11,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/sserkanml/backflow/internal/metrics"
 )
 
 const (
@@ -69,7 +71,9 @@ func (s *secretClient) Get(ctx context.Context, key client.ObjectKey, obj client
 			return nil
 		}
 	}
-	if err := s.reader.Get(ctx, key, secret, opts...); err != nil {
+	err := s.reader.Get(ctx, key, secret, opts...)
+	metrics.SecretRead(metrics.SecretResult(err, apierrors.IsForbidden(err), apierrors.IsNotFound(err)))
+	if err != nil {
 		return err
 	}
 	if s.ttl > 0 {
