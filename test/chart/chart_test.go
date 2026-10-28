@@ -29,6 +29,12 @@ var templates = []string{"templates/clusterrole.yaml", "templates/secrets-role.y
 // objects.
 func render(t *testing.T, args ...string) []map[string]any {
 	t.Helper()
+	return renderTemplates(t, templates, args...)
+}
+
+// renderTemplates is render for the given templates.
+func renderTemplates(t *testing.T, templates []string, args ...string) []map[string]any {
+	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		if os.Getenv("CI") == "true" {
 			t.Fatal("the helm binary is not installed; CI must install it, or these tests silently check nothing")

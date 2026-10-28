@@ -76,6 +76,26 @@ ScmConnection itself verifies it at once.
        tokenSecretRef: {name: argocd-token, key: token}
    YAML
 
+{{- if .Values.metrics.enabled }}
+
+Metrics are served over HTTPS on port 8443 of the Service {{ include "backflow.managerName" . }}-metrics. A scraper needs
+the ClusterRole {{ include "backflow.managerName" . }}-metrics-reader (get on /metrics), for example:
+
+   kubectl create clusterrolebinding backflow-metrics-reader \
+     --clusterrole={{ include "backflow.managerName" . }}-metrics-reader \
+     --serviceaccount=<prometheus namespace>:<prometheus service account>
+{{- if not .Values.serviceMonitor.enabled }}
+
+Set serviceMonitor.enabled=true for the Prometheus Operator; on OpenShift the
+user workload monitoring reads a ServiceMonitor of this namespace.
+{{- end }}
+{{- end }}
+{{- if or .Values.prometheusRule.enabled .Values.grafanaDashboard.enabled }}
+
+Alerts: {{ if .Values.prometheusRule.enabled }}the PrometheusRule {{ include "backflow.managerName" . }}{{ else }}off (prometheusRule.enabled){{ end }}.
+Dashboard: {{ if .Values.grafanaDashboard.enabled }}the ConfigMap {{ include "backflow.fullname" . }}-dashboard, label {{ range $k, $v := .Values.grafanaDashboard.labels }}{{ $k }}={{ $v }}{{ end }}{{ else }}off (grafanaDashboard.enabled){{ end }}.
+{{- end }}
+
 Check on it:
 
    kubectl -n {{ .Release.Namespace }} get scm,bfp,dp

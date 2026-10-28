@@ -105,6 +105,31 @@ serviceMonitor:
   tlsConfig:
     insecureSkipVerify: true
 
+prometheusRule:
+  # Alerts on the metrics of the operator, for the Prometheus Operator (needs its
+  # CRDs, and Prometheus must scrape the operator: see serviceMonitor). The
+  # alerts are explained in the README, "Metrics and alerts".
+  enabled: false
+  # Labels the Prometheus of your installation selects rules by, for example
+  # release: kube-prometheus-stack.
+  labels: {}
+  # Added to the labels of every alert, next to severity.
+  alertLabels: {}
+  interval: ""
+
+grafanaDashboard:
+  # A ConfigMap with the Backflow dashboard, which the Grafana sidecar loads
+  # from the ConfigMaps that carry the label below.
+  enabled: false
+  # The label the sidecar looks for (grafana_dashboard is the default of the
+  # Grafana and kube-prometheus-stack charts).
+  labels:
+    grafana_dashboard: "1"
+  annotations: {}
+  # Where to put the ConfigMap; defaults to the release namespace. Some sidecars
+  # watch one namespace only.
+  namespace: ""
+
 networkPolicy:
   # Needs metrics.enabled. Allows ingress to the metrics port from the
   # namespaces that match metricsNamespaceSelector; nothing else is allowed in.

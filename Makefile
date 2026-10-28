@@ -102,6 +102,8 @@ helm-sync: manifests ## Copy the CRDs and regenerate the RBAC rules of the Helm 
 helm-lint: ## Lint the Helm chart.
 	helm lint charts/backflow
 	helm lint charts/backflow --set metrics.enabled=true --set serviceMonitor.enabled=true --set networkPolicy.enabled=true
+	helm lint charts/backflow --set prometheusRule.enabled=true --set grafanaDashboard.enabled=true
+	helm template backflow charts/backflow --set prometheusRule.enabled=true --set grafanaDashboard.enabled=true > /dev/null
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

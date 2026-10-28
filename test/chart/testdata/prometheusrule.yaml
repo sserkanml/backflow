@@ -1,0 +1,104 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/version: <version>
+    control-plane: controller-manager
+    helm.sh/chart: backflow-<version>
+  name: backflow-controller-manager
+  namespace: backflow-system
+spec:
+  groups:
+  - name: backflow
+    rules:
+    - alert: BackflowScmConnectionNotReady
+      annotations:
+        description: The token of the ScmConnection {{ $labels.namespace }}/{{ $labels.name
+          }} has not been accepted by the Git host for 15 minutes, so Backflow cannot
+          map or propose drift to repositories on that host. Run kubectl -n {{ $labels.namespace
+          }} describe scm {{ $labels.name }} for the reason.
+        runbook: See the README, section "Metrics and alerts", alert BackflowScmConnectionNotReady.
+        summary: ScmConnection {{ $labels.namespace }}/{{ $labels.name }} is not Ready
+      expr: backflow_scm_connection_ready == 0
+      for: 15m
+      labels:
+        severity: warning
+    - alert: BackflowPolicyNotReady
+      annotations:
+        description: The BackflowPolicy {{ $labels.namespace }}/{{ $labels.name }}
+          has not been Ready for 15 minutes (no matching Application, a missing ScmConnection,
+          an Application conflict or a Secret it may not read), so it detects no drift.
+          Run kubectl -n {{ $labels.namespace }} describe bfp {{ $labels.name }} for
+          the reason.
+        runbook: See the README, section "Metrics and alerts", alert BackflowPolicyNotReady.
+        summary: BackflowPolicy {{ $labels.namespace }}/{{ $labels.name }} is not
+          Ready
+      expr: backflow_policy_ready == 0
+      for: 15m
+      labels:
+        severity: warning
+    - alert: BackflowArgoCDUnreachable
+      annotations:
+        description: More than half of the requests of Backflow to the Argo CD API
+          got no answer for 10 minutes. Without Argo CD it detects no drift and maps
+          no proposal. Check the Argo CD server, the URL, the CA and the network policy.
+        runbook: See the README, section "Metrics and alerts", alert BackflowArgoCDUnreachable.
+        summary: Backflow cannot reach the Argo CD API
+      expr: |
+        sum(rate(backflow_argocd_requests_total{code_class="error"}[5m]))
+          / sum(rate(backflow_argocd_requests_total[5m])) > 0.5
+      for: 10m
+      labels:
+        severity: warning
+    - alert: BackflowRenderErrors
+      annotations:
+        description: Argo CD did not answer, or refused, renders of the {{ $labels.renderer
+          }} renderer in the last 15 minutes. This is not a verdict about a chart
+          (that is result="failed"); proposals of Helm and Kustomize sources are retried
+          until it is fixed.
+        runbook: See the README, section "Metrics and alerts", alert BackflowRenderErrors.
+        summary: Renders through Argo CD fail ({{ $labels.renderer }})
+      expr: sum by (renderer) (increase(backflow_renders_total{result="error"}[15m]))
+        > 0
+      for: 5m
+      labels:
+        severity: warning
+    - alert: BackflowDetectionPausedLong
+      annotations:
+        description: Drift detection for the Application {{ $labels.application }}
+          (policy {{ $labels.policy }}) has been paused for an hour, reason {{ $labels.reason
+          }}. It resumes after a complete, successful sync of the current source;
+          if nothing syncs the Application, drift stays unseen.
+        runbook: See the README, section "Metrics and alerts", alert BackflowDetectionPausedLong.
+        summary: Drift detection for {{ $labels.application }} has been paused for
+          an hour
+      expr: max by (policy, application, reason) (backflow_detection_paused) == 1
+      for: 1h
+      labels:
+        severity: warning
+    - alert: BackflowPushRejected
+      annotations:
+        description: A Git host declined a push of Backflow in the last 15 minutes
+          (a protected branch, a hook, or the host having trouble). Backflow retries
+          and then marks the proposal Failed.
+        runbook: See the README, section "Metrics and alerts", alert BackflowPushRejected.
+        summary: A Git host refused a push of Backflow
+      expr: sum(increase(backflow_merge_requests_total{action="push_rejected"}[15m]))
+        > 0
+      labels:
+        severity: warning
+    - alert: BackflowScratchBranchesSwept
+      annotations:
+        description: The sweeper found and deleted scratch branches (backflow/scratch/*)
+          that a verification did not clean up, which means an operator crashed or
+          lost the Git host while verifying. One now and then is expected; a stream
+          of them is not.
+        runbook: See the README, section "Metrics and alerts", alert BackflowScratchBranchesSwept.
+        summary: Backflow deleted scratch branches a verification left behind
+      expr: sum(increase(backflow_scratch_branches_total{action="swept"}[1h])) > 0
+      labels:
+        severity: info
