@@ -2,7 +2,7 @@
 #
 # Backflow - merge request end-to-end test
 #
-# Runs the full path against the real demo repository on gitlab.com:
+# Runs the full path against the real demo repository on gitlab.com (SCM=github: github.com):
 #   a. A LOG_LEVEL drift becomes a merge request from backflow/<proposal>-<uid8> into
 #      main. The file on the branch has the live value and keeps its comment
 #      line; the proposal is Proposed with the merge request URL; main is not
@@ -60,6 +60,7 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-merge-request.sh
+#   SCM=github GITHUB_TOKEN=... ./hack/test-merge-request.sh   # against the GitHub demo repository (see the README)
 #   SECTIONS=c,e,f ./hack/test-merge-request.sh   # only those sections (default: all);
 #       b needs a; d and e need c; f needs c and e (the script refuses otherwise);
 #       g and h need nothing (SECTIONS=h is the JSON manifest alone)
@@ -67,18 +68,20 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
+# Which Git host: SCM=gitlab (default) or SCM=github, DEMO_REPO, GITLAB_TOKEN / GITHUB_TOKEN.
+# shellcheck source=lib/scm.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/scm.sh"
+
+CLUSTER_NAME="${CLUSTER_NAME:-$SCM_CLUSTER}"
 NS="${NS:-backflow-mr-test}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 APP="${APP:-demo-app}"
 DEMO_NS="${DEMO_NS:-demo}"
 POLICY="mr-policy"
-SCM_NAME="gitlab"
+SCM_NAME="$SCM"
 LABEL="backflow-e2e"
 TOKEN_SECRET_NS="${TOKEN_SECRET_NS:-backflow-system}"
 TOKEN_SECRET="${TOKEN_SECRET:-argocd-token}"
-GITLAB_API="${GITLAB_API:-https://gitlab.com/api/v4}"
-GITLAB_PROJECT="${GITLAB_PROJECT:-sserkanml/backflow-demo}"
 KEEP="${KEEP:-false}"
 IN_CLUSTER="${IN_CLUSTER:-false}"
 MANAGER_NS="${MANAGER_NS:-backflow-system}"
@@ -95,7 +98,7 @@ if ! [[ "$WINDOW_S" =~ ^[0-9]+$ ]]; then
   echo "WINDOW must be a number of seconds like 10s, got '$WINDOW'" >&2
   exit 1
 fi
-# Seconds to wait for Argo CD, the operator and GitLab to react.
+# Seconds to wait for Argo CD, the operator and the Git host to react.
 if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-360}"; else WAIT="${WAIT:-150}"; fi
 # Seconds to wait before asserting that nothing happened: long enough for the
 # two observations a proposal needs, plus a margin.
@@ -132,10 +135,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
 LOG_FILE="$LOG_DIR/test-merge-request-manager.log"
 
-if [[ -z "${GITLAB_TOKEN:-}" ]]; then
-  echo "SKIPPED: GITLAB_TOKEN is not set."
-  echo "This test pushes branches and merges into $GITLAB_PROJECT on gitlab.com and needs a"
-  echo "token with the api and write_repository scopes: GITLAB_TOKEN=... $0"
+if [[ -z "${SCM_TOKEN:-}" ]]; then
+  echo "SKIPPED: $SCM_TOKEN_VAR is not set."
+  echo "This test pushes branches and merges into $SCM_PROJECT on $SCM_HOST and needs a"
+  echo "token with $SCM_TOKEN_SCOPES: $SCM_TOKEN_VAR=... $0"
   exit 0
 fi
 
@@ -201,7 +204,7 @@ note() { echo "    $*"; }
 k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
 
 # ---------------------------------------------------------------------------
-# GitLab API. The token travels in the environment only: never in an argument
+# Git host API (hack/scm.py: GitLab or GitHub). The token travels in the environment only: never in an argument
 # list, a log or a file other than the 0600 Secret input.
 # ---------------------------------------------------------------------------
 
@@ -209,37 +212,13 @@ WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/backflow-mr-test.XXXXXX")"
 chmod 700 "$WORKDIR"
 mkdir -p "$WORKDIR/orig"
 
-cat >"$WORKDIR/gl.py" <<'PY'
-import json, os, sys, urllib.error, urllib.request
+cp "$SCM_HACK_DIR/scm.py" "$WORKDIR/scm.py"
 
-base = os.environ.get("GITLAB_API", "https://gitlab.com/api/v4")
-token = os.environ["GITLAB_TOKEN"]
-method, path = sys.argv[1], sys.argv[2]
-body = sys.argv[3].encode() if len(sys.argv) > 3 else None
-status_only = method.startswith("STATUS-")
-if status_only:
-    method = method[len("STATUS-"):]
-req = urllib.request.Request(base + path, data=body, method=method,
-                             headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
-try:
-    resp = urllib.request.urlopen(req, timeout=30)
-    code, data = resp.status, resp.read().decode()
-except urllib.error.HTTPError as e:
-    code, data = e.code, e.read().decode()
-if status_only:
-    print(code)
-    sys.exit(0)
-if code >= 400:
-    sys.stderr.write("HTTP %d: %s\n" % (code, data[:300]))
-    sys.exit(22)
-sys.stdout.write(data)
-PY
-
-PID_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$GITLAB_PROJECT")"
+PID_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$SCM_PROJECT")"
 enc() { python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
-gl() { python3 "$WORKDIR/gl.py" "$@"; }
+gl() { python3 "$WORKDIR/scm.py" "$@"; }
 # gl_status <METHOD> <path>: HTTP status code only.
-gl_status() { python3 "$WORKDIR/gl.py" "STATUS-$1" "$2"; }
+gl_status() { python3 "$WORKDIR/scm.py" "STATUS-$1" "$2"; }
 # jx <python expression on d>: read JSON on stdin.
 jx() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
@@ -565,7 +544,7 @@ count = sum(len(files) for _, _, files in os.walk(os.path.join(sys.argv[1], "ori
 if count == 0 or count != int(sys.argv[3]):
     sys.stderr.write("the copy of main has %d file(s), expected %s; not touching main\n" % (count, sys.argv[3]))
     sys.exit(1)
-gl = os.path.join(work, "gl.py")
+gl = os.path.join(work, "scm.py")
 def call(*args):
     return subprocess.run(["python3", gl, *args], capture_output=True, text=True)
 actions = []
@@ -624,9 +603,9 @@ cleanup() {
     k -n "$NS" delete bfp "$POLICY" --ignore-not-found >/dev/null 2>&1
   fi
 
-  if [[ -n "$WORKDIR" && -f "$WORKDIR/gl.py" ]]; then
+  if [[ -n "$WORKDIR" && -f "$WORKDIR/scm.py" ]]; then
     echo
-    echo "Cleaning up gitlab.com/$GITLAB_PROJECT..."
+    echo "Cleaning up $SCM_HOST/$SCM_PROJECT..."
     remember_proposals
     local name branch info iid state
     # Every branch with the Backflow prefix was created by this run: the test
@@ -673,7 +652,7 @@ cleanup() {
     k delete namespace "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-mr-test.* ]]; then
-    rm -f "$WORKDIR/gl.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/unrelated.json" "$WORKDIR/paths"
+    rm -f "$WORKDIR/scm.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/unrelated.json" "$WORKDIR/paths"
     rm -rf "$WORKDIR/orig.part"
     find "$WORKDIR/orig" -type f -exec rm -f {} + 2>/dev/null
     find "$WORKDIR/orig" -depth -type d -exec rmdir {} + 2>/dev/null
@@ -708,16 +687,16 @@ fi
 
 AUTOMATED_ORIG="$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.syncPolicy.automated}')"
 APP_REPO="$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.spec.source.repoURL}')"
-[[ "$APP_REPO" == *"gitlab.com/$GITLAB_PROJECT"* ]] || die "$APP tracks $APP_REPO, not gitlab.com/$GITLAB_PROJECT"
+[[ "$APP_REPO" == *"$SCM_HOST/$SCM_PROJECT"* ]] || die "$APP tracks $APP_REPO, not $SCM_HOST/$SCM_PROJECT"
 
-step "GitLab project: $GITLAB_PROJECT"
-gl GET /user >/dev/null || die "GitLab rejected the token"
+step "$SCM_LABEL project: $SCM_PROJECT"
+gl GET /user >/dev/null || die "$SCM_LABEL rejected the token"
 LEVEL="$(gl GET "$(project_path "")" | jx 'max(d["permissions"]["project_access"]["access_level"] if d["permissions"].get("project_access") else 0, d["permissions"]["group_access"]["access_level"] if d["permissions"].get("group_access") else 0)')" ||
-  die "project $GITLAB_PROJECT is not reachable with this token"
-(( LEVEL >= 40 )) || die "the token needs at least Maintainer access to restore main; it has level $LEVEL"
+  die "project $SCM_PROJECT is not reachable with this token"
+(( LEVEL >= SCM_MIN_LEVEL )) || die "the token needs write access to $SCM_PROJECT to restore main (access level $SCM_MIN_LEVEL, GitLab's numbers); it has level $LEVEL"
 pass "token accepted, access level $LEVEL"
 
-# leftover_branches: the Backflow branches that still exist. GitLab's branch list
+# leftover_branches: the Backflow branches that still exist. The branch list of the host
 # lags behind a deletion, so every listed branch is looked up by name too.
 leftover_branches() {
   local listed name out=""
@@ -738,7 +717,7 @@ for _ in 1 2 3 4 5 6; do
 done
 [[ -z "$LEFTOVERS" ]] || die "branches from an earlier run exist: $LEFTOVERS. Delete them (and their merge requests) first."
 OPEN_MRS="$(gl GET "$(project_path "/merge_requests?state=opened&per_page=100")" | jx 'len(d)')"
-[[ "$OPEN_MRS" == "0" ]] || die "$OPEN_MRS merge request(s) are open in $GITLAB_PROJECT; close them first so this test can tell its own apart."
+[[ "$OPEN_MRS" == "0" ]] || die "$OPEN_MRS merge request(s) are open in $SCM_PROJECT; close them first so this test can tell its own apart."
 [[ "$(gl_status GET "$(project_path "/labels/$(enc "$LABEL")")")" == "200" ]] || LABEL_PREEXISTED=false
 
 SNAPSHOT_SHA="$(main_sha)"
@@ -857,9 +836,9 @@ k create namespace "$NS" >/dev/null
 ARGO_TOKEN="$(k -n "$TOKEN_SECRET_NS" get secret "$TOKEN_SECRET" -o jsonpath='{.data.token}' | base64 -d)"
 k -n "$NS" create secret generic argocd-token --from-literal=token="$ARGO_TOKEN" >/dev/null
 ARGO_TOKEN=""
-# The GitLab token goes into the Secret through a 0600 file, not an argument.
-(umask 077; printf '%s' "$GITLAB_TOKEN" >"$WORKDIR/token")
-k -n "$NS" create secret generic gitlab-token --from-file=token="$WORKDIR/token" >/dev/null
+# The token goes into the Secret through a 0600 file, not an argument.
+(umask 077; printf '%s' "$SCM_TOKEN" >"$WORKDIR/token")
+k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token" >/dev/null
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
@@ -869,10 +848,10 @@ metadata:
   name: $SCM_NAME
   namespace: $NS
 spec:
-  provider: gitlab
-  url: https://gitlab.com
+  provider: $SCM
+  url: $SCM_URL
   tokenSecretRef:
-    name: gitlab-token
+    name: $SCM-token
     key: token
 YAML
 k apply -f - >/dev/null <<YAML
@@ -898,7 +877,7 @@ spec:
     labels: ["$LABEL"]
     assignActor: false
 YAML
-wait_for "ScmConnection is Ready (token accepted by gitlab.com)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
+wait_for "ScmConnection is Ready (token accepted by $SCM_HOST)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 policy_has_connection() { [[ "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.applications[0].scmConnection}')" == "$SCM_NAME" ]]; }
 wait_for "policy matched the repository to the ScmConnection" policy_has_connection
@@ -943,7 +922,7 @@ if [[ -n "$P_A" ]]; then
   expect_metric_at_least "backflow_merge_requests_total{action=opened}" backflow_merge_requests_total 'action="opened"' 1
   expect_metric_at_least "backflow_scm_connection_ready" backflow_scm_connection_ready "scm=\"$SCM_NAME\"" 1
   expect_metric_at_least "backflow_policy_ready" backflow_policy_ready "policy=\"$POLICY\"" 1
-  expect_metric_at_least "backflow_scm_requests_total{provider=gitlab}" backflow_scm_requests_total 'provider="gitlab"' 1
+  expect_metric_at_least "backflow_scm_requests_total{provider=$SCM}" backflow_scm_requests_total "provider=\"$SCM\"" 1
   expect_metric_at_least "backflow_argocd_requests_total{code_class=2xx}" backflow_argocd_requests_total 'code_class="2xx"' 1
   COMMIT_JSON="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_A")")")"
   expect_eq "committer" "Backflow" "$(echo "$COMMIT_JSON" | jx 'd["committer_name"]')"
@@ -1341,17 +1320,17 @@ fi
 # ---------------------------------------------------------------------------
 step "Secrets"
 refresh_log
-if grep -qF -- "$GITLAB_TOKEN" "$LOG_FILE" 2>/dev/null; then
-  fail "the GitLab token appears in the operator log"
+if grep -qF -- "$SCM_TOKEN" "$LOG_FILE" 2>/dev/null; then
+  fail "the $SCM_LABEL token appears in the operator log"
 else
-  pass "the GitLab token does not appear in the operator log"
+  pass "the $SCM_LABEL token does not appear in the operator log"
 fi
 LEAK=false
 for p in "$P_A" "$P_C" "$P_D" "$P_E" "$P_F1" "$P_F"; do
   [[ -n "$p" ]] || continue
-  if k -n "$NS" get driftproposal "$p" -o yaml | grep -qF -- "$GITLAB_TOKEN"; then LEAK=true; fi
+  if k -n "$NS" get driftproposal "$p" -o yaml | grep -qF -- "$SCM_TOKEN"; then LEAK=true; fi
 done
-if [[ "$LEAK" == "true" ]]; then fail "the GitLab token appears in a DriftProposal"; else pass "the GitLab token does not appear in any DriftProposal"; fi
+if [[ "$LEAK" == "true" ]]; then fail "the $SCM_LABEL token appears in a DriftProposal"; else pass "the $SCM_LABEL token does not appear in any DriftProposal"; fi
 
 # ---------------------------------------------------------------------------
 echo
