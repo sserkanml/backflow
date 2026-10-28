@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
 
@@ -75,6 +76,9 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
+		if apierrors.IsNotFound(err) {
+			metrics.ForgetPolicy(req.Namespace, req.Name)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -193,6 +197,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	metrics.SetPolicy(policy.Namespace, policy.Name, cond.Status == metav1.ConditionTrue, len(apps)-len(withCredentials))
 	log.Info("Policy resolved", "applications", names, "ready", cond.Status, "reason", cond.Reason)
 	if secretErr != nil {
 		// Secrets are not watched: look again soon, in case access was granted.
