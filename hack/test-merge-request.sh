@@ -53,7 +53,10 @@
 #
 # The operator runs locally (bin/manager, polling merge requests every POLL)
 # unless IN_CLUSTER=true, which uses the deployed operator (polling every two
-# minutes by default; raise WAIT accordingly).
+# minutes by default; raise WAIT accordingly). The local operator serves its
+# metrics over plain HTTP on a free local port (--metrics-secure=false), and
+# sections a and b check the Backflow counters and gauges there; with IN_CLUSTER
+# those checks are skipped.
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-merge-request.sh
@@ -519,6 +522,24 @@ expect_nonempty() {
   if [[ -n "$2" ]]; then pass "$1 = $2"; else fail "$1 is empty"; fi
 }
 
+# The metrics of the local operator. METRICS_URL is empty for the deployed
+# operator, which serves them over HTTPS behind Kubernetes authentication.
+METRICS_URL="${METRICS_URL:-}"
+# metric_sum NAME TEXT: the sum of the series called NAME whose labels contain
+# TEXT, for example: metric_sum backflow_merge_requests_total 'action="opened"'.
+metric_sum() {
+  curl -fs "$METRICS_URL" | awk -v n="$1" -v t="${2:-}" '
+    index($0, n "{") == 1 && index($0, t) > 0 { s += $NF }
+    END { printf "%d\n", s }'
+}
+# expect_metric_at_least DESC NAME TEXT MIN
+expect_metric_at_least() {
+  local got
+  [[ -n "$METRICS_URL" ]] || return 0
+  got="$(metric_sum "$2" "$3")"
+  if (( got >= $4 )); then pass "metric $1 = $got"; else fail "metric $1: expected at least $4, got $got"; fi
+}
+
 # Branches and merge requests this run may have created: every proposal name
 # seen in the namespace, remembered here so cleanup survives deleting the namespace.
 SEEN_FILE="$WORKDIR/seen"
@@ -812,7 +833,13 @@ else
   make manifests install >/dev/null
   make build >/dev/null
   mkdir -p "$LOG_DIR"
-  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" >"$LOG_FILE" 2>&1 &
+  # The metrics are served over plain HTTP on a free local port, so the script
+  # can read them without a token (the deployed operator serves HTTPS behind
+  # Kubernetes authentication; the checks below are skipped with IN_CLUSTER).
+  METRICS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
+  METRICS_URL="http://127.0.0.1:$METRICS_PORT/metrics"
+  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
+    --metrics-bind-address="127.0.0.1:$METRICS_PORT" --metrics-secure=false >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
     curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -910,6 +937,14 @@ if [[ -n "$P_A" ]]; then
   fi
   expect_contains "comment line on the branch" "# Log verbosity: debug, info, warn, error, trace" "$(raw_file apps/demo/configmap.yaml "$BRANCH_A")"
   expect_eq "main was not touched" "$MAIN_ORIG_SHA" "$(main_sha)"
+  # The operator counted what it did (the local operator starts with its counters at zero).
+  expect_metric_at_least "backflow_drifts_detected_total for $APP" backflow_drifts_detected_total "application=\"$APP\"" 1
+  expect_metric_at_least "backflow_mapping_results_total{reason=Mapped}" backflow_mapping_results_total 'reason="Mapped"' 1
+  expect_metric_at_least "backflow_merge_requests_total{action=opened}" backflow_merge_requests_total 'action="opened"' 1
+  expect_metric_at_least "backflow_scm_connection_ready" backflow_scm_connection_ready "name=\"$SCM_NAME\"" 1
+  expect_metric_at_least "backflow_policy_ready" backflow_policy_ready "name=\"$POLICY\"" 1
+  expect_metric_at_least "backflow_scm_requests_total{provider=gitlab}" backflow_scm_requests_total 'provider="gitlab"' 1
+  expect_metric_at_least "backflow_argocd_requests_total{code_class=2xx}" backflow_argocd_requests_total 'code_class="2xx"' 1
   COMMIT_JSON="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_A")")")"
   expect_eq "committer" "Backflow" "$(echo "$COMMIT_JSON" | jx 'd["committer_name"]')"
   expect_contains "commit message trailer" "Proposal: $P_A" "$(echo "$COMMIT_JSON" | jx 'd["message"]')"
@@ -925,6 +960,7 @@ if [[ -n "${P_A:-}" ]]; then
   wait_for "proposal is Rejected" phase_is "$P_A" Rejected
   expect_eq "status.mergeRequest.state" "closed" "$(dp_field "$P_A" .status.mergeRequest.state)"
   expect_contains "message" "Argo CD can revert" "$(dp_field "$P_A" .status.message)"
+  expect_metric_at_least "backflow_merge_requests_total{action=closed}" backflow_merge_requests_total 'action="closed"' 1
   expect_eq "the branch is left for the reviewer" "true" "$(branch_exists "$BRANCH_A" && echo true || echo false)"
 
   BEFORE_B="$(proposal_count)"
