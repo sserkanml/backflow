@@ -13,10 +13,16 @@ import (
 	"github.com/sserkanml/backflow/internal/metrics"
 )
 
+// The label names of a policy and of a connection, which are checked by value.
+const (
+	labelPolicy = "policy"
+	labelSCM    = "scm"
+)
+
 // Allowed are the label names a Backflow metric may have. Anything else fails
 // the guard: a new label has to be a conscious, reviewed decision.
 var Allowed = []string{
-	"policy_namespace", "policy", "scm_namespace", "scm", "application", "source_type", "strategy", "reason", "phase", "renderer", "provider",
+	"policy_namespace", labelPolicy, "scm_namespace", labelSCM, "application", "source_type", "strategy", "reason", "phase", "renderer", "provider",
 	"host", "endpoint", "code_class", "result", "action", "version", "commit", "le",
 }
 
@@ -66,12 +72,12 @@ func Problems(families []*dto.MetricFamily, maxSeries int) []string {
 					out = append(out, fmt.Sprintf("%s has the label %q, which is not on the list of allowed labels", f.GetName(), name))
 				}
 				seen[name] = true
-				if (name == "policy" || name == "scm") && strings.Contains(l.GetValue(), "/") {
+				if (name == labelPolicy || name == labelSCM) && strings.Contains(l.GetValue(), "/") {
 					out = append(out, fmt.Sprintf("%s has %s=%q: a name never holds a joined namespace/name", f.GetName(), name, l.GetValue()))
 				}
 			}
 		}
-		for _, pair := range [][2]string{{"policy_namespace", "policy"}, {"scm_namespace", "scm"}} {
+		for _, pair := range [][2]string{{"policy_namespace", labelPolicy}, {"scm_namespace", labelSCM}} {
 			if seen[pair[0]] != seen[pair[1]] {
 				out = append(out, fmt.Sprintf("%s has one of the labels %s and %s, a metric that refers to one has both", f.GetName(), pair[0], pair[1]))
 			}
