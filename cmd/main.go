@@ -20,7 +20,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
-	"runtime/debug"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -41,6 +40,7 @@ import (
 	"github.com/sserkanml/backflow/internal/controller"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/metrics"
+	"github.com/sserkanml/backflow/internal/version"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -261,7 +261,7 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	metrics.SetBuildInfo(buildInfo())
+	metrics.SetBuildInfo(version.Get())
 	if err := metrics.RegisterProposals(controller.ProposalCounts(mgr.GetCache())); err != nil {
 		setupLog.Error(err, "Failed to register the proposals metric")
 		os.Exit(1)
@@ -281,23 +281,4 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
-}
-
-// buildInfo is the version and the commit of this binary, from what the Go
-// toolchain recorded in it: "unknown" when it recorded nothing.
-func buildInfo() (version, commit string) {
-	version, commit = "unknown", "unknown"
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return version, commit
-	}
-	if v := info.Main.Version; v != "" && v != "(devel)" {
-		version = v
-	}
-	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" && setting.Value != "" {
-			commit = setting.Value[:min(len(setting.Value), 12)]
-		}
-	}
-	return version, commit
 }
