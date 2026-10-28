@@ -182,11 +182,13 @@ def make_handler(state):
                     return self.send(200, {"sha": p["merge_commit_sha"], "merged": True})
             if len(pr) == 4 and pr[1] == "issues" and pr[3] == "comments":
                 return self.send(200, s.comments.get(int(pr[2]), []))
-            if len(pr) == 3 and pr[1] == "labels" and method == "DELETE":
-                if pr[2] in s.labels:
-                    s.labels.discard(pr[2])
-                    return self.send(204)
-                return self.send(404, {"message": "Not Found"})
+            if len(pr) == 3 and pr[1] == "labels":
+                if pr[2] not in s.labels:
+                    return self.send(404, {"message": "Not Found"})
+                if method == "GET":
+                    return self.send(200, {"name": pr[2]})
+                s.labels.discard(pr[2])
+                return self.send(204)
             if rest == "/actions/runs":
                 return self.send(200, {"total_count": len(s.runs), "workflow_runs": s.runs})
             return self.send(404, {"message": "Not Found " + rest})
@@ -347,6 +349,7 @@ class GitHubTests(unittest.TestCase):
         s.comments[1] = [{"id": 1, "body": "hello"}]
         notes = self.json("GET", "/projects/%s/merge_requests/1/notes?per_page=50" % PID)
         self.assertEqual([(n["body"], n["system"]) for n in notes], [("hello", False)])
+        self.assertEqual(self.call("STATUS-GET", "/projects/%s/labels/backflow-e2e" % PID)[1].strip(), "200")
         self.assertEqual(self.call("STATUS-DELETE", "/projects/%s/labels/backflow-e2e" % PID)[1].strip(), "204")
         self.assertEqual(self.call("STATUS-DELETE", "/projects/%s/labels/backflow-e2e" % PID)[1].strip(), "404")
         s.runs = [{"id": 5, "head_branch": "backflow/scratch/x", "status": "completed", "head_sha": "s" * 40}]

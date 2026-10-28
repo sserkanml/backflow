@@ -3,7 +3,7 @@
 # Backflow - Kustomize mapping end-to-end test
 #
 # Runs the full path for the Kustomize demo Application against the real demo
-# repository on gitlab.com. Backflow renders the overlay through Argo CD to
+# repository on gitlab.com (SCM=github: github.com). Backflow renders the overlay through Argo CD to
 # verify every edit, so this needs the Argo CD of ./hack/dev-up.sh.
 #
 #   a. An image tag drift on demo-kustomize becomes a merge request that edits
@@ -26,7 +26,7 @@
 #   g. Git ahead, with automated sync off: a commit to the shared base pauses
 #      demo-kustomize (a file its kustomization builds from, although outside its
 #      path); a commit to a file of another source type does not.
-#   h. Secrets: the GitLab token never appears in the operator log or in a proposal.
+#   h. Secrets: the $SCM_LABEL token never appears in the operator log or in a proposal.
 #
 # Requires the environment from ./hack/dev-up.sh (the Application demo-kustomize,
 # label backflow.io/demo=kustomize; run dev-up.sh with GITLAB_TOKEN once so that the demo repository
@@ -45,6 +45,7 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-kustomize.sh
+#   SCM=github GITHUB_TOKEN=... ./hack/test-kustomize.sh   # against the GitHub demo repository (see the README)
 #   SECTIONS=a,c ./hack/test-kustomize.sh   # only those sections (default: all);
 #                                           # every section works on its own
 #   WINDOW=10s POLL=3s QUIET=25              # batchWindow, merge request polling, quiet waits
@@ -52,16 +53,18 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-backflow}"
+# Which Git host: SCM=gitlab (default) or SCM=github, DEMO_REPO, GITLAB_TOKEN / GITHUB_TOKEN.
+# shellcheck source=lib/scm.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/scm.sh"
+
+CLUSTER_NAME="${CLUSTER_NAME:-$SCM_CLUSTER}"
 NS="${NS:-backflow-kust-test}"
 ARGOCD_NS="${ARGOCD_NS:-argocd}"
 POLICY="kust-policy"
-SCM_NAME="gitlab"
+SCM_NAME="$SCM"
 LABEL="backflow-e2e"
 TOKEN_SECRET_NS="${TOKEN_SECRET_NS:-backflow-system}"
 TOKEN_SECRET="${TOKEN_SECRET:-argocd-token}"
-GITLAB_API="${GITLAB_API:-https://gitlab.com/api/v4}"
-GITLAB_PROJECT="${GITLAB_PROJECT:-sserkanml/backflow-demo}"
 KEEP="${KEEP:-false}"
 IN_CLUSTER="${IN_CLUSTER:-false}"
 MANAGER_NS="${MANAGER_NS:-backflow-system}"
@@ -78,7 +81,7 @@ if ! [[ "$WINDOW_S" =~ ^[0-9]+$ ]]; then
   echo "WINDOW must be a number of seconds like 10s, got '$WINDOW'" >&2
   exit 1
 fi
-# Seconds to wait for Argo CD, the operator and GitLab to react.
+# Seconds to wait for Argo CD, the operator and the Git host to react.
 if [[ "$IN_CLUSTER" == "true" ]]; then WAIT="${WAIT:-360}"; else WAIT="${WAIT:-180}"; fi
 # Seconds to wait before asserting that nothing happened: long enough for the
 # two observations a proposal needs, plus a margin.
@@ -128,10 +131,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$ROOT/tmp"
 LOG_FILE="$LOG_DIR/test-kustomize-manager.log"
 
-if [[ -z "${GITLAB_TOKEN:-}" ]]; then
-  echo "SKIPPED: GITLAB_TOKEN is not set."
-  echo "This test pushes branches and merges into $GITLAB_PROJECT on gitlab.com and needs a"
-  echo "token with the api and write_repository scopes: GITLAB_TOKEN=... $0"
+if [[ -z "${SCM_TOKEN:-}" ]]; then
+  echo "SKIPPED: $SCM_TOKEN_VAR is not set."
+  echo "This test pushes branches and merges into $SCM_PROJECT on $SCM_HOST and needs a"
+  echo "token with $SCM_TOKEN_SCOPES: $SCM_TOKEN_VAR=... $0"
   exit 0
 fi
 
@@ -190,12 +193,12 @@ note() { echo "    $*"; }
 k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
 
 # ---------------------------------------------------------------------------
-# GitLab API. The token travels in the environment only: never in an argument
+# Git host API (hack/scm.py: GitLab or GitHub). The token travels in the environment only: never in an argument
 # list, a log or a file other than the 0600 Secret input.
 #
-# gitlab.com is sometimes slow or down for a minute, so gl.py retries: 4 attempts
-# with a 60s read timeout and a growing delay (GITLAB_ATTEMPTS, GITLAB_TIMEOUT,
-# GITLAB_BACKOFF). Reads and idempotent writes (closing a merge request,
+# The Git host is sometimes slow or down for a minute, so scm.py retries: 4 attempts
+# with a 60s read timeout and a growing delay (SCM_ATTEMPTS, SCM_TIMEOUT,
+# SCM_BACKOFF). Reads and idempotent writes (closing a merge request,
 # deleting a branch) are repeated freely. A write whose outcome is unknown after
 # a timeout or a 5xx is only repeated after checking that it did not happen: a
 # commit is looked for at the head of its branch (same message, on top of the
@@ -206,142 +209,16 @@ WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/backflow-kust-test.XXXXXX")"
 chmod 700 "$WORKDIR"
 mkdir -p "$WORKDIR/orig"
 
-cat >"$WORKDIR/gl.py" <<'PY'
-import http.client, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
-
-base = os.environ.get("GITLAB_API", "https://gitlab.com/api/v4")
-token = os.environ["GITLAB_TOKEN"]
-# gitlab.com is sometimes slow or unavailable for a minute. Reads and
-# idempotent writes are retried with a growing delay; a write whose outcome is
-# unknown (a commit, a merge) is only repeated after checking that it did not
-# happen. GITLAB_ATTEMPTS, GITLAB_TIMEOUT and GITLAB_BACKOFF tune this.
-ATTEMPTS = int(os.environ.get("GITLAB_ATTEMPTS", "4"))
-TIMEOUT = float(os.environ.get("GITLAB_TIMEOUT", "60"))
-BACKOFF = float(os.environ.get("GITLAB_BACKOFF", "3"))
-RETRIABLE = (0, 429, 500, 502, 503, 504)
-
-
-def retriable(code, text):
-    """gitlab.com sometimes answers 400, 502 or 503 with "Deadline Exceeded" when a
-    commit takes too long on its side. The commit may or may not have landed:
-    send() checks that before repeating a commit."""
-    return code in RETRIABLE or (code in (400, 502, 503) and "deadline exceeded" in text.lower())
-
-
-def log(msg):
-    sys.stderr.write("gitlab: " + msg + "\n")
-
-
-def once(method, path, body=None):
-    """One attempt. Returns (status, text, retry_after); status 0 is a network
-    error or a timeout (text says which)."""
-    req = urllib.request.Request(base + path, data=body.encode() if body else None, method=method,
-                                 headers={"PRIVATE-TOKEN": token, "Content-Type": "application/json"})
-    try:
-        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
-        return resp.status, resp.read().decode(), None
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(), e.headers.get("Retry-After")
-    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
-        return 0, "%s: %s" % (type(e).__name__, e), None
-
-
-def get_json(path):
-    """A GET with retries; None when it cannot be read."""
-    code, text = send("GET", path)
-    if code >= 400 or code == 0:
-        return None
-    return json.loads(text)
-
-
-def commit_check(pid, body):
-    """For POST .../repository/commits: remember the head of the branch, and
-    return a function that says whether this very commit has since landed on it."""
-    spec = json.loads(body)
-    branch, message = spec["branch"], spec["commit_message"].rstrip("\n")
-    head_path = "/projects/%s/repository/branches/%s" % (pid, urllib.parse.quote(branch, safe=""))
-    before = get_json(head_path)
-    pre = before["commit"]["id"] if before else None
-
-    def landed():
-        now = get_json(head_path)
-        if not now or not pre or now["commit"]["id"] == pre:
-            return None
-        info = get_json("/projects/%s/repository/commits/%s" % (pid, now["commit"]["id"]))
-        if info and info.get("message", "").rstrip("\n") == message and pre in info.get("parent_ids", []):
-            return 201, json.dumps(info)
-        return None
-    return landed
-
-
-def merge_check(pid, iid):
-    def merged():
-        mr = get_json("/projects/%s/merge_requests/%s" % (pid, iid))
-        if mr and mr.get("state") == "merged":
-            return 200, json.dumps(mr)
-        return None
-    return merged
-
-
-def send(method, path, body=None):
-    """The request with retries. Returns (status, text)."""
-    check = None
-    if method == "POST" and (m := re.fullmatch(r"/projects/([^/]+)/repository/commits", path)):
-        check = commit_check(m.group(1), body)
-    elif method == "PUT" and (m := re.fullmatch(r"/projects/([^/]+)/merge_requests/(\d+)/merge", path)):
-        check = merge_check(m.group(1), m.group(2))
-    code, text, retry_after = 0, "", None
-    for attempt in range(ATTEMPTS):
-        if attempt:
-            delay = BACKOFF * 2 ** (attempt - 1)
-            if retry_after and retry_after.isdigit():
-                delay = max(delay, min(int(retry_after), 60))
-            time.sleep(delay)
-            if check:  # the previous attempt may have worked although we did not see its answer
-                done = check()
-                if done:
-                    log("%s %s: the earlier attempt had worked" % (method, path.split("?")[0]))
-                    return done
-        code, text, retry_after = once(method, path, body)
-        if not retriable(code, text):
-            # A DELETE that finds the thing gone after an unseen first attempt is done.
-            if method == "DELETE" and attempt and code == 404:
-                return 204, ""
-            return code, text
-        log("%s %s: attempt %d of %d failed (%s)" % (method, path.split("?")[0], attempt + 1, ATTEMPTS,
-                                                      "HTTP %d" % code if code else text[:120]))
-    if check:
-        done = check()
-        if done:
-            log("%s %s: the last attempt had worked" % (method, path.split("?")[0]))
-            return done
-    return code, text
-
-
-if __name__ == "__main__":
-    method, path = sys.argv[1], sys.argv[2]
-    body = sys.argv[3] if len(sys.argv) > 3 else None
-    status_only = method.startswith("STATUS-")
-    if status_only:
-        method = method[len("STATUS-"):]
-    code, text = send(method, path, body)
-    if status_only:
-        print(code)
-        sys.exit(0)
-    if code >= 400 or code == 0:
-        sys.stderr.write("HTTP %d: %s\n" % (code, text[:300]))
-        sys.exit(22)
-    sys.stdout.write(text)
-PY
+cp "$SCM_HACK_DIR/scm.py" "$WORKDIR/scm.py"
 
 # edit.py <project id> <file> <regex> <replacement> <message>: commit to main
 # the file with the first match of the regex (multi-line mode) replaced. Prints
-# the new commit's SHA. The token is read by gl.py from the environment.
+# the new commit's SHA. The token is read by scm.py from the environment.
 cat >"$WORKDIR/edit.py" <<'PY'
 import json, os, re, subprocess, sys, urllib.parse
 
 pid, path, pattern, repl, message = sys.argv[1:6]
-gl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gl.py")
+gl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scm.py")
 
 def call(*args):
     r = subprocess.run(["python3", gl, *args], capture_output=True, text=True)
@@ -361,11 +238,11 @@ body = json.dumps({"branch": "main", "commit_message": message,
 print(json.loads(call("POST", "/projects/%s/repository/commits" % pid, body))["id"])
 PY
 
-PID_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$GITLAB_PROJECT")"
+PID_ENC="$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$SCM_PROJECT")"
 enc() { python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"; }
-gl() { python3 "$WORKDIR/gl.py" "$@"; }
+gl() { python3 "$WORKDIR/scm.py" "$@"; }
 # gl_status <METHOD> <path>: HTTP status code only.
-gl_status() { python3 "$WORKDIR/gl.py" "STATUS-$1" "$2"; }
+gl_status() { python3 "$WORKDIR/scm.py" "STATUS-$1" "$2"; }
 # jx <python expression on d>: read JSON on stdin.
 jx() { python3 -c "import sys,json; d=json.load(sys.stdin); print($1)"; }
 
@@ -741,7 +618,7 @@ count = sum(len(files) for _, _, files in os.walk(os.path.join(sys.argv[1], "ori
 if count == 0 or count != int(sys.argv[3]):
     sys.stderr.write("the copy of main has %d file(s), expected %s; not touching main\n" % (count, sys.argv[3]))
     sys.exit(1)
-gl = os.path.join(work, "gl.py")
+gl = os.path.join(work, "scm.py")
 def call(*args):
     return subprocess.run(["python3", gl, *args], capture_output=True, text=True)
 actions = []
@@ -812,9 +689,9 @@ cleanup() {
     k -n "$NS" delete bfp "$POLICY" --ignore-not-found >/dev/null 2>&1
   fi
 
-  if [[ -n "$WORKDIR" && -f "$WORKDIR/gl.py" ]]; then
+  if [[ -n "$WORKDIR" && -f "$WORKDIR/scm.py" ]]; then
     echo
-    echo "Cleaning up gitlab.com/$GITLAB_PROJECT..."
+    echo "Cleaning up $SCM_HOST/$SCM_PROJECT..."
     remember_proposals
     local branch info iid state branches
     # Every branch with the Backflow prefix was created by this run: the test
@@ -873,7 +750,7 @@ cleanup() {
     (( status != 0 )) || status=1
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-kust-test.* ]]; then
-    rm -f "$WORKDIR/gl.py" "$WORKDIR/edit.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/paths"
+    rm -f "$WORKDIR/scm.py" "$WORKDIR/edit.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/paths"
     rm -rf "$WORKDIR/orig.part"
     find "$WORKDIR/orig" -type f -exec rm -f {} + 2>/dev/null
     find "$WORKDIR/orig" -depth -type d -exec rmdir {} + 2>/dev/null
@@ -895,10 +772,10 @@ for a in $APPS; do
   k -n "$ARGOCD_NS" get application "$a" >/dev/null 2>&1 || die "Application $a not found. Run ./hack/dev-up.sh first."
   [[ "$(app_field "$a" '{.metadata.labels.backflow\.io/demo}')" == "kustomize" ]] || die "Application $a has no label backflow.io/demo=kustomize. Run ./hack/dev-up.sh first."
   [[ "$(app_field "$a" '{.metadata.labels.env}')" != "test" ]] || die "Application $a has the label env=test, which the policies of the other tests select. Run ./hack/dev-up.sh first."
-  [[ "$(app_field "$a" '{.status.sourceType}')" == "Kustomize" ]] || die "Application $a is not a Kustomize Application (sourceType '$(app_field "$a" '{.status.sourceType}')'). Does the demo repository have kustomize/? Run GITLAB_TOKEN=... ./hack/dev-up.sh."
+  [[ "$(app_field "$a" '{.status.sourceType}')" == "Kustomize" ]] || die "Application $a is not a Kustomize Application (sourceType '$(app_field "$a" '{.status.sourceType}')'). Does the demo repository have kustomize/? Run $SCM_TOKEN_VAR=... ./hack/dev-up.sh."
   autosync_enabled "$a" || die "Application $a has no automated sync; this test expects the state ./hack/dev-up.sh creates."
   [[ -z "$(app_field "$a" '{.spec.source.kustomize}')" ]] || die "Application $a has spec.source.kustomize options; this test expects none."
-  [[ "$(app_field "$a" '{.spec.source.repoURL}')" == *"gitlab.com/$GITLAB_PROJECT"* ]] || die "$a does not track gitlab.com/$GITLAB_PROJECT"
+  [[ "$(app_field "$a" '{.spec.source.repoURL}')" == *"$SCM_HOST/$SCM_PROJECT"* ]] || die "$a does not track $SCM_HOST/$SCM_PROJECT"
 done
 k -n "$TOKEN_SECRET_NS" get secret "$TOKEN_SECRET" >/dev/null 2>&1 || die "Secret $TOKEN_SECRET_NS/$TOKEN_SECRET not found. Run ./hack/dev-up.sh first."
 
@@ -913,14 +790,14 @@ else
   fi
 fi
 
-step "GitLab project: $GITLAB_PROJECT"
-gl GET /user >/dev/null || die "GitLab rejected the token"
+step "$SCM_LABEL project: $SCM_PROJECT"
+gl GET /user >/dev/null || die "$SCM_LABEL rejected the token"
 LEVEL="$(gl GET "$(project_path "")" | jx 'max(d["permissions"]["project_access"]["access_level"] if d["permissions"].get("project_access") else 0, d["permissions"]["group_access"]["access_level"] if d["permissions"].get("group_access") else 0)')" ||
-  die "project $GITLAB_PROJECT is not reachable with this token"
-(( LEVEL >= 40 )) || die "the token needs at least Maintainer access to restore main; it has level $LEVEL"
+  die "project $SCM_PROJECT is not reachable with this token"
+(( LEVEL >= SCM_MIN_LEVEL )) || die "the token needs write access to $SCM_PROJECT to restore main (access level $SCM_MIN_LEVEL, GitLab's numbers); it has level $LEVEL"
 pass "token accepted, access level $LEVEL"
 
-# leftover_branches: the Backflow branches that still exist. GitLab's branch list
+# leftover_branches: the Backflow branches that still exist. The branch list of the host
 # lags behind a deletion, so every listed branch is looked up by name too.
 leftover_branches() {
   local listed name out=""
@@ -941,7 +818,7 @@ for _ in 1 2 3 4 5 6; do
 done
 [[ -z "$LEFTOVERS" ]] || die "branches from an earlier run exist: $LEFTOVERS. Delete them (and their merge requests) first."
 OPEN_AT_START="$(open_mrs)"
-[[ "$OPEN_AT_START" == "0" ]] || die "$OPEN_AT_START merge request(s) are open in $GITLAB_PROJECT; close them first so this test can tell its own apart."
+[[ "$OPEN_AT_START" == "0" ]] || die "$OPEN_AT_START merge request(s) are open in $SCM_PROJECT; close them first so this test can tell its own apart."
 [[ "$(gl_status GET "$(project_path "/labels/$(enc "$LABEL")")")" == "200" ]] || LABEL_PREEXISTED=false
 
 SNAPSHOT_SHA="$(main_sha)"
@@ -967,7 +844,7 @@ rm -rf "$WORKDIR/orig"
 mv "$WORKDIR/orig.part" "$WORKDIR/orig"
 MAIN_ORIG_SHA="$SNAPSHOT_SHA"
 for f in "$OVERLAY_KUST" "$OVERLAY_PATCH" "$BASE_DEPLOY" kustomize/base/kustomization.yaml "$OTHER_FILE"; do
-  [[ -s "$WORKDIR/orig/$f" ]] || die "$f not found on main; run GITLAB_TOKEN=... ./hack/dev-up.sh to copy hack/demo/kustomize/ into the demo repository."
+  [[ -s "$WORKDIR/orig/$f" ]] || die "$f not found on main; run $SCM_TOKEN_VAR=... ./hack/dev-up.sh to copy hack/demo/kustomize/ into the demo repository."
 done
 pass "main is at ${MAIN_ORIG_SHA:0:8}; $(find "$WORKDIR/orig" -type f | wc -l | tr -d ' ') file(s) saved for restoring"
 
@@ -1032,9 +909,9 @@ k create namespace "$NS" >/dev/null
 ARGO_TOKEN="$(k -n "$TOKEN_SECRET_NS" get secret "$TOKEN_SECRET" -o jsonpath='{.data.token}' | base64 -d)"
 k -n "$NS" create secret generic argocd-token --from-literal=token="$ARGO_TOKEN" >/dev/null
 ARGO_TOKEN=""
-# The GitLab token goes into the Secret through a 0600 file, not an argument.
-(umask 077; printf '%s' "$GITLAB_TOKEN" >"$WORKDIR/token")
-k -n "$NS" create secret generic gitlab-token --from-file=token="$WORKDIR/token" >/dev/null
+# The token goes into the Secret through a 0600 file, not an argument.
+(umask 077; printf '%s' "$SCM_TOKEN" >"$WORKDIR/token")
+k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token" >/dev/null
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
@@ -1044,10 +921,10 @@ metadata:
   name: $SCM_NAME
   namespace: $NS
 spec:
-  provider: gitlab
-  url: https://gitlab.com
+  provider: $SCM
+  url: $SCM_URL
   tokenSecretRef:
-    name: gitlab-token
+    name: $SCM-token
     key: token
 YAML
 k apply -f - >/dev/null <<YAML
@@ -1078,7 +955,7 @@ spec:
     labels: ["$LABEL"]
     assignActor: false
 YAML
-wait_for "ScmConnection is Ready (token accepted by gitlab.com)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
+wait_for "ScmConnection is Ready (token accepted by $SCM_HOST)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 policy_matched() {
   local n
@@ -1376,15 +1253,15 @@ fi
 if section_wanted h; then
 step "h. Secrets"
 refresh_log
-if grep -qF -- "$GITLAB_TOKEN" "$LOG_FILE" 2>/dev/null; then
-  fail "the GitLab token appears in the operator log"
+if grep -qF -- "$SCM_TOKEN" "$LOG_FILE" 2>/dev/null; then
+  fail "the $SCM_LABEL token appears in the operator log"
 else
-  pass "the GitLab token does not appear in the operator log"
+  pass "the $SCM_LABEL token does not appear in the operator log"
 fi
-if k -n "$NS" get driftproposals -o yaml | grep -qF -- "$GITLAB_TOKEN"; then
-  fail "the GitLab token appears in a DriftProposal"
+if k -n "$NS" get driftproposals -o yaml | grep -qF -- "$SCM_TOKEN"; then
+  fail "the $SCM_LABEL token appears in a DriftProposal"
 else
-  pass "the GitLab token does not appear in any DriftProposal"
+  pass "the $SCM_LABEL token does not appear in any DriftProposal"
 fi
 
 fi

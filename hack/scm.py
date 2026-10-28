@@ -25,7 +25,7 @@ back, so every script, retry and check below it is the same for both hosts:
     PUT  .../merge_requests/N {state_event}    PATCH pulls/N
     PUT  .../merge_requests/N/merge            PUT pulls/N/merge (merge commit)
     GET  .../merge_requests/N/notes            issue comments
-    DEL  .../labels/L                          DELETE labels/L
+    GET, DEL .../labels/L                      labels/L
     GET  .../pipelines                         actions/runs (workflow runs; needs Actions: read)
 
 The token is read from GITLAB_TOKEN or GITHUB_TOKEN, only from the environment, and
@@ -206,8 +206,9 @@ class GitHub:
             return self.merge(r, n.group(1))
         if (n := re.fullmatch(r"/merge_requests/(\d+)/notes", rest)) and method == "GET":
             return self.notes(r, n.group(1))
-        if (lab := re.fullmatch(r"/labels/(.+)", rest)) and method == "DELETE":
-            return self.call("DELETE", "%s/labels/%s" % (r, quote(urllib.parse.unquote(lab.group(1)))))[:1] + ("", None)
+        if (lab := re.fullmatch(r"/labels/(.+)", rest)) and method in ("GET", "DELETE"):
+            code, text, retry = self.call(method, "%s/labels/%s" % (r, quote(urllib.parse.unquote(lab.group(1)))))
+            return code, text, retry
         if rest == "/pipelines" and method == "GET":
             return self.runs(r, pull(path, "updated_after"), pull(path, "per_page"))
         return 501, "scm.py: %s %s is not supported for github" % (method, path), None
