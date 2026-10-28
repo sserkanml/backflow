@@ -43,6 +43,8 @@ jobs:
           version="${TAG#v}"
           sha="$(git rev-parse --short=7 HEAD)"
           {
+            echo "version=${version}"
+            echo "commit=$(git rev-parse --short=12 HEAD)"
             echo "tags<<EOF"
             echo "${IMAGE}:${version}"
             echo "${IMAGE}:sha-${sha}"
@@ -69,6 +71,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # backflow_build_info reports these: the release version (the tag
+          # without its v, as in Chart.yaml) and the commit of the tag.
+          build-args: |
+            VERSION=${{ steps.tags.outputs.version }}
+            COMMIT=${{ steps.tags.outputs.commit }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ inputs.tag || github.ref_name }}
