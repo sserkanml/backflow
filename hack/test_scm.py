@@ -367,6 +367,21 @@ class GitHubTests(unittest.TestCase):
         self.state.fail_next = [403]
         self.assertEqual(self.call("GET", "/user")[0], 22)  # a refusal is not retried
 
+    def test_cleanup_closes_and_deletes_only_what_is_backflows(self):
+        s = self.state
+        s.commit("backflow/a-1", "x", {"README.md": "x"})
+        s.commit("backflow/scratch/ab12-1", "x", {"README.md": "x"})
+        s.commit("feature/other", "x", {"README.md": "x"})
+        s.pulls[1] = pr(1, "backflow/a-1", labels=["backflow-e2e"])
+        s.pulls[2] = pr(2, "feature/other", labels=["something"])
+        s.pulls[3] = pr(3, "feature/labelled", labels=["backflow-e2e"])
+        env = dict(os.environ, SCM="github", GITHUB_TOKEN=TOKEN, GITHUB_API=self.server.url, SCM_PROJECT="o/r", SCM_BACKOFF="0")
+        r = subprocess.run([sys.executable, SCM_PY, "cleanup"], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("closed 2 merge request(s), deleted 2 branch(es)", r.stdout)
+        self.assertEqual(sorted(s.heads), ["feature/other", "main"])
+        self.assertEqual([s.pulls[n]["state"] for n in (1, 2, 3)], ["closed", "open", "closed"])
+
     def test_seed_adds_only_missing_files(self):
         import tempfile
         with tempfile.TemporaryDirectory() as d:
