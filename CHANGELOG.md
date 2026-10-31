@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.2](https://github.com/sserkanml/backflow/compare/v0.13.1...v0.13.2) (2026-10-31)
+
+
+### Documentation
+
+* the e2e scripts in CI ([d02fcba](https://github.com/sserkanml/backflow/commit/d02fcba69d6acb5fb0cb39f744955bc6962c395f))
+
 ## [0.13.1](https://github.com/sserkanml/backflow/compare/v0.13.0...v0.13.1) (2026-10-31)
 
 
