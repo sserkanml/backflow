@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/sserkanml/backflow/compare/v0.13.0...v0.13.1) (2026-10-31)
+
+
+### Documentation
+
+* run the e2e scripts against GitHub ([1ee8cc9](https://github.com/sserkanml/backflow/commit/1ee8cc93cd2bf6a15ecac65086424c11328c20ef))
+
 ## [0.13.0](https://github.com/sserkanml/backflow/compare/v0.12.0...v0.13.0) (2026-10-28)
 
 
