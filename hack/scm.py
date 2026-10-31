@@ -5,6 +5,8 @@
     scm.py STATUS-METHOD PATH [BODY]   print only the HTTP status
     scm.py seed-local DIR PREFIX WHAT  add the files of DIR below PREFIX when the demo repository lacks them
     scm.py seed-remote PROJECT         the same for the files of the public GitLab project PROJECT
+    scm.py cleanup                     close the open merge requests that carry the label backflow-e2e (or come
+                                       from a backflow/ branch) and delete the backflow/ branches; never main
 
 The scripts speak one vocabulary, the one of the GitLab API: paths like
 /projects/<url-encoded project>/merge_requests/3 and answers shaped like GitLab's
@@ -577,7 +579,44 @@ def read_public_gitlab(project, ref="main"):
         page += 1
 
 
+def cleanup(project, label="backflow-e2e", prefix="backflow/", rounds=10):
+    """What an e2e run may leave behind: open merge requests of Backflow and its
+    branches (the proposal branches backflow/<name> and the scratch branches
+    backflow/scratch/...). Only names that start with prefix are touched, so main
+    never is. Repeats until a listing shows nothing, because a list is one page."""
+    pid = quote(project)
+    closed = deleted = 0
+    for _ in range(rounds):
+        busy = False
+        code, text = send("GET", "/projects/%s/merge_requests?state=opened&per_page=100" % pid)
+        if code != 200:
+            sys.exit("listing the open merge requests: HTTP %d" % code)
+        for mr in json.loads(text):
+            if label in mr.get("labels", []) or mr.get("source_branch", "").startswith(prefix):
+                code, _ = send("PUT", "/projects/%s/merge_requests/%s" % (pid, mr["iid"]), '{"state_event":"close"}')
+                if code >= 400:
+                    sys.exit("closing !%s: HTTP %d" % (mr["iid"], code))
+                closed += 1
+                busy = True
+        code, text = send("GET", "/projects/%s/repository/branches?search=%s&per_page=100" % (pid, quote(prefix)))
+        if code != 200:
+            sys.exit("listing the branches: HTTP %d" % code)
+        for b in json.loads(text):
+            if b["name"].startswith(prefix):
+                code, _ = send("DELETE", "/projects/%s/repository/branches/%s" % (pid, quote(b["name"])))
+                if code >= 400 and code != 404:
+                    sys.exit("deleting the branch %s: HTTP %d" % (b["name"], code))
+                deleted += 1
+                busy = True
+        if not busy:
+            break
+    print("cleanup of %s: closed %d merge request(s), deleted %d branch(es)" % (project, closed, deleted))
+
+
 def main(argv):
+    if len(argv) >= 2 and argv[1] == "cleanup":
+        cleanup(os.environ["SCM_PROJECT"])
+        return 0
     if len(argv) >= 2 and argv[1] == "seed-local":
         directory, prefix, what = argv[2:5]
         seed(os.environ["SCM_PROJECT"], os.environ.get("SCM_REF", "main"), read_local(directory, prefix), what)

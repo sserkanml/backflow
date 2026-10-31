@@ -97,7 +97,8 @@ if kind get clusters 2>/dev/null | grep -qx "$CLUSTER_NAME"; then
     ok "cluster is running"
   fi
 else
-  kind create cluster --name "$CLUSTER_NAME"
+  # KIND_NODE_IMAGE pins the Kubernetes version (the CI workflow does); unset, kind picks its default.
+  kind create cluster --name "$CLUSTER_NAME" ${KIND_NODE_IMAGE:+--image "$KIND_NODE_IMAGE"}
   ok "cluster created"
 fi
 kubectl config use-context "$CONTEXT" >/dev/null
