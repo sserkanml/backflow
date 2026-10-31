@@ -194,8 +194,7 @@ restore_demo() {
     -p "{\"data\":{\"LOG_LEVEL\":\"$ORIG_LOG_LEVEL\"}}" >/dev/null 2>&1 || true
   k -n "$DEMO_NS" scale deployment demo --replicas="$ORIG_REPLICAS" >/dev/null 2>&1 || true
   full_sync
-  local i
-  for i in $(seq 1 45); do
+  for _ in $(seq 1 45); do
     refresh_app
     app_ready && return 0
     sleep 2

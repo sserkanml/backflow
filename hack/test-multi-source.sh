@@ -119,6 +119,7 @@ section_needs() {
 check_sections() {
   local s n
   for s in ${SECTIONS//,/ }; do
+    # shellcheck disable=SC2194 # a membership test: the constant list is the subject of the case
     case " a b c d e f g " in
       *" $s "*) ;;
       *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g)" >&2; exit 1 ;;
@@ -810,11 +811,10 @@ rm -rf "$WORKDIR/orig"
 mv "$WORKDIR/orig.part" "$WORKDIR/orig"
 MAIN_ORIG_SHA="$SNAPSHOT_SHA"
 [[ -s "$WORKDIR/orig/$VALUES" ]] || die "$VALUES not found on main; run ./hack/dev-up.sh with $SCM_TOKEN_VAR set, which adds hack/demo/multi/ to the demo repository."
-for key in replicaCount; do
-  [[ -n "$(yaml_value "$VALUES" main "$key")" ]] || die "$VALUES has no $key"
-done
-grep -q "owner:" "$WORKDIR/orig/$VALUES" && grep -q "DEMO_REGION" "$WORKDIR/orig/$VALUES" ||
+[[ -n "$(yaml_value "$VALUES" main replicaCount)" ]] || die "$VALUES has no replicaCount"
+if ! { grep -q "owner:" "$WORKDIR/orig/$VALUES" && grep -q "DEMO_REGION" "$WORKDIR/orig/$VALUES"; }; then
   die "$VALUES lacks the annotation owner or the env var DEMO_REGION that section c removes; compare it with hack/demo/multi/values-dev.yaml"
+fi
 pass "main is at ${MAIN_ORIG_SHA:0:8}; $(find "$WORKDIR/orig" -type f | wc -l | tr -d ' ') file(s) saved for restoring"
 
 # Start from a settled Argo CD: a test that begins while the Application syncs a
@@ -1240,7 +1240,11 @@ expect_eq "proposals for $APP (none new while it is paused)" "$PROPOSALS_BEFORE"
 k -n "$ARGOCD_NS" patch application "$APP" --type json -p "[{\"op\":\"replace\",\"path\":\"/spec/sources/0/targetRevision\",\"value\":\"$CHART_ORIG\"}]" >/dev/null ||
   fail "could not restore the chart version of the Application"
 RESTORE_TARGET=""
-restore_autosync && pass "automated sync of $APP is on again" || fail "could not switch automated sync of $APP on again"
+if restore_autosync; then
+  pass "automated sync of $APP is on again"
+else
+  fail "could not switch automated sync of $APP on again"
+fi
 refresh_app hard
 wait_for "Argo CD compares against chart $CHART_ORIG again" chart_is "$CHART_ORIG"
 reset_cluster

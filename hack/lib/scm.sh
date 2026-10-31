@@ -1,3 +1,5 @@
+# shellcheck shell=bash
+# shellcheck disable=SC2034 # the variables are the output of this file: the scripts that source it use them
 # Which Git host the e2e scripts run against. Source it, do not run it.
 #
 #   SCM=gitlab|github   the host (default gitlab)

@@ -92,7 +92,6 @@ APPS="demo-kustomize"
 DEMO_APP="demo-kustomize"
 DEMO_NS="demo-kustomize"
 DEPLOY="demo-kustomize"
-SETTINGS_CM="kust-settings"
 OVERLAY="kustomize/overlays/dev"
 OVERLAY_KUST="$OVERLAY/kustomization.yaml"
 OVERLAY_PATCH="$OVERLAY/replicas.yaml"
@@ -116,6 +115,7 @@ section_needs() {
 check_sections() {
   local s n
   for s in ${SECTIONS//,/ }; do
+    # shellcheck disable=SC2194 # a membership test: the constant list is the subject of the case
     case " a b c d e f g h " in
       *" $s "*) ;;
       *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h)" >&2; exit 1 ;;
@@ -416,7 +416,9 @@ reset_cluster() {
   head="$(main_sha)"
   for a in $apps; do refresh_app "$a" hard; done
   sleep 3
+  # shellcheck disable=SC2086 # $apps is a space separated list of Application names
   SYNC_SHA="$head" sync_all $apps || { fail "an Application did not become Synced: $(app_state "$DEMO_APP")"; return 0; }
+  # shellcheck disable=SC2086 # $apps is a space separated list of Application names
   wait_all_settled "$head" $apps || fail "Argo CD did not settle at ${head:0:8} within ${WAIT}s: $(app_state "$DEMO_APP")"
 }
 
