@@ -1,0 +1,204 @@
+name: E2E scripts
+
+# The hack/ end-to-end scripts against the real demo repositories on GitLab and
+# GitHub. They push branches and merge merge requests there, so only trusted
+# triggers start them: a pull request of this repository that carries the label
+# "e2e" (never a fork, never pull_request_target), the nightly schedule, and a
+# run started by hand. The tokens live in the environment "e2e" and are given to
+# the steps that need them, one by one.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      scm:
+        description: The Git host to test
+        type: choice
+        options: [both, gitlab, github]
+        default: both
+      scripts:
+        description: "Scripts to run, comma separated (for example helm,merge-request); empty runs all of them"
+        type: string
+        default: ""
+      sections:
+        description: "SECTIONS for the script, when exactly one script is selected (for example a,b)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    # A pull request of this repository with the label e2e. A label other than e2e
+    # added to a pull request that has the label does not start another run.
+    if: >-
+      github.event_name != 'pull_request' || (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(github.event.pull_request.labels.*.name, 'e2e') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'e2e'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Choose the hosts
+        id: matrix
+        env:
+          EVENT: ${{ github.event_name }}
+          SCM_INPUT: ${{ inputs.scm }}
+        run: |
+          choice="both"
+          if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$SCM_INPUT" ]; then choice="$SCM_INPUT"; fi
+          gitlab='{"scm":"gitlab","demo_repo":"sserkanml/backflow-demo"}'
+          github='{"scm":"github","demo_repo":"sserkanml/backflow-demo-gh"}'
+          case "$choice" in
+            gitlab) include="$gitlab" ;;
+            github) include="$github" ;;
+            *) include="$gitlab,$github" ;;
+          esac
+          echo "matrix={\"include\":[$include]}" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    name: e2e (${{ matrix.scm }})
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: e2e
+    # One run at a time per demo repository: two runs would close each other's
+    # merge requests. A run that waits is not cancelled by a newer one that starts.
+    concurrency:
+      group: e2e-${{ matrix.scm }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      SCM: ${{ matrix.scm }}
+      DEMO_REPO: ${{ matrix.demo_repo }}
+      SCRIPTS: ${{ inputs.scripts }}
+      SECTIONS: ${{ inputs.sections }}
+      E2E_LOG_DIR: ${{ github.workspace }}/tmp/e2e-logs
+      # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
+      KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Choose the scripts
+        id: plan
+        run: |
+          scripts="$(./hack/ci-e2e.sh plan)"
+          if [ -z "$scripts" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "### e2e on ${SCM}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "None of the selected scripts runs on this host." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Scripts: $(echo $scripts)"
+          fi
+
+      - name: Setup Go
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        if: steps.plan.outputs.run == 'true'
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.0
+
+      # kind and kubectl are pinned and checked against their published SHA-256.
+      - name: Install kind and kubectl
+        if: steps.plan.outputs.run == 'true'
+        run: ./hack/ci-install-tools.sh
+
+      # Argo CD and the operator start many pods that watch files.
+      - name: Raise the inotify limits
+        if: steps.plan.outputs.run == 'true'
+        run: |
+          sudo sysctl -w fs.inotify.max_user_watches=524288
+          sudo sysctl -w fs.inotify.max_user_instances=512
+
+      # The token of the host being tested is mapped to the name the scripts read,
+      # in the steps below that need it and nowhere else; the other host's secret
+      # is never read. No step uses the token for gh or for another action.
+      - name: Create the cluster, install Argo CD and seed the demo repository
+        if: steps.plan.outputs.run == 'true'
+        env:
+          GITLAB_TOKEN: ${{ matrix.scm == 'gitlab' && secrets.GITLAB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ matrix.scm == 'github' && secrets.E2E_GITHUB || '' }}
+        run: ./hack/dev-up.sh
+
+      - name: Build the operator
+        if: steps.plan.outputs.run == 'true'
+        run: make build
+
+      # A run that was cancelled can leave branches behind, and the scripts refuse
+      # to start when they find any.
+      - name: Remove what an earlier run left in the demo repository
+        if: steps.plan.outputs.run == 'true'
+        env:
+          GITLAB_TOKEN: ${{ matrix.scm == 'gitlab' && secrets.GITLAB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ matrix.scm == 'github' && secrets.E2E_GITHUB || '' }}
+        run: ./hack/ci-e2e.sh cleanup
+
+      - name: Run the scripts
+        id: scripts
+        if: steps.plan.outputs.run == 'true'
+        env:
+          GITLAB_TOKEN: ${{ matrix.scm == 'gitlab' && secrets.GITLAB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ matrix.scm == 'github' && secrets.E2E_GITHUB || '' }}
+        run: ./hack/ci-e2e.sh run
+
+      - name: Cluster state of a failed run
+        if: failure() && steps.plan.outputs.run == 'true'
+        run: |
+          mkdir -p "$E2E_LOG_DIR"
+          {
+            kubectl get applications.argoproj.io -A -o wide
+            kubectl get pods -A
+            kubectl get scm,bfp,dp -A
+            kubectl -n argocd get events --sort-by=.lastTimestamp | tail -n 50
+          } > "$E2E_LOG_DIR/cluster-state.txt" 2>&1 || true
+
+      - name: Clean the demo repository
+        if: always() && steps.plan.outputs.run == 'true'
+        env:
+          GITLAB_TOKEN: ${{ matrix.scm == 'gitlab' && secrets.GITLAB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ matrix.scm == 'github' && secrets.E2E_GITHUB || '' }}
+        run: ./hack/ci-e2e.sh cleanup
+
+      # Fails the job when a token value is in a log, and replaces it in the files
+      # either way, before they are uploaded.
+      - name: Scrub the logs
+        if: always() && steps.plan.outputs.run == 'true'
+        env:
+          GITLAB_TOKEN: ${{ matrix.scm == 'gitlab' && secrets.GITLAB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ matrix.scm == 'github' && secrets.E2E_GITHUB || '' }}
+        run: |
+          mkdir -p "$E2E_LOG_DIR"
+          cp tmp/*.log "$E2E_LOG_DIR"/ 2>/dev/null || true
+          ./hack/ci-e2e.sh scrub "$E2E_LOG_DIR"
+
+      - name: Upload the logs
+        if: always() && steps.plan.outputs.run == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-logs-${{ matrix.scm }}
+          path: tmp/e2e-logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Delete the cluster
+        if: always() && steps.plan.outputs.run == 'true'
+        run: kind delete cluster --name "$([ "$SCM" = github ] && echo backflow-gh || echo backflow)" || true
