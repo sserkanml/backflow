@@ -109,6 +109,18 @@ helm-lint: ## Lint the Helm chart.
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
 
+# actionlint checks the workflows (and, when they are installed, the shell in them with
+# shellcheck). Pinned like the other tools.
+ACTIONLINT ?= $(LOCALBIN)/actionlint
+ACTIONLINT_VERSION ?= v1.7.12
+
+.PHONY: actionlint
+actionlint: $(ACTIONLINT) ## Lint the GitHub Actions workflows.
+	"$(ACTIONLINT)" -color
+
+$(ACTIONLINT): $(LOCALBIN)
+	$(call go-install-tool,$(ACTIONLINT),github.com/rhysd/actionlint/cmd/actionlint,$(ACTIONLINT_VERSION))
+
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	"$(GOLANGCI_LINT)" run --fix
