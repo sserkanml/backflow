@@ -28,5 +28,10 @@ jobs:
       - name: Run linter
         run: make lint
 
-      - name: Lint the workflows
+      # The shell of the workflows and the scripts is checked with the shellcheck
+      # that the Makefile downloads and verifies, not the one of the runner.
+      - name: Lint the workflows and their shell
         run: make actionlint
+
+      - name: Lint the shell scripts
+        run: make shellcheck
