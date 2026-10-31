@@ -109,14 +109,46 @@ helm-lint: ## Lint the Helm chart.
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
 
-# actionlint checks the workflows (and, when they are installed, the shell in them with
-# shellcheck). Pinned like the other tools.
+# shellcheck is a release binary, not a Go program: it is downloaded for this platform
+# and checked against the SHA-256 written here (the ones of the release assets, taken
+# when the version was pinned), so that a machine without shellcheck lints the same as CI.
+SHELLCHECK ?= $(LOCALBIN)/shellcheck
+SHELLCHECK_VERSION ?= v0.11.0
+SHELLCHECK_PLATFORM := $(shell uname -s | tr '[:upper:]' '[:lower:]').$(shell uname -m | sed 's/arm64/aarch64/')
+SHELLCHECK_SHA256_linux.x86_64 = 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+SHELLCHECK_SHA256_linux.aarch64 = 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588
+SHELLCHECK_SHA256_darwin.x86_64 = 3c89db4edcab7cf1c27bff178882e0f6f27f7afdf54e859fa041fca10febe4c6
+SHELLCHECK_SHA256_darwin.aarch64 = 56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79
+
+$(SHELLCHECK): $(LOCALBIN)
+	@[ -f "$(SHELLCHECK)-$(SHELLCHECK_VERSION)" ] && [ "$$(readlink -- "$(SHELLCHECK)" 2>/dev/null)" = "$(SHELLCHECK)-$(SHELLCHECK_VERSION)" ] || { \
+	set -e; \
+	want="$(SHELLCHECK_SHA256_$(SHELLCHECK_PLATFORM))"; \
+	[ -n "$$want" ] || { echo "no shellcheck checksum for $(SHELLCHECK_PLATFORM); install shellcheck $(SHELLCHECK_VERSION) and set SHELLCHECK=<path>" >&2; exit 1; }; \
+	archive="shellcheck-$(SHELLCHECK_VERSION).$(SHELLCHECK_PLATFORM).tar.xz"; \
+	tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	echo "Downloading $$archive"; \
+	curl -sSfL --retry 3 -o "$$tmp/$$archive" "https://github.com/koalaman/shellcheck/releases/download/$(SHELLCHECK_VERSION)/$$archive"; \
+	got="$$( (sha256sum "$$tmp/$$archive" 2>/dev/null || shasum -a 256 "$$tmp/$$archive") | cut -d' ' -f1)"; \
+	[ "$$got" = "$$want" ] || { echo "$$archive: checksum $$got, want $$want" >&2; exit 1; }; \
+	tar -xJf "$$tmp/$$archive" -C "$$tmp"; \
+	rm -f "$(SHELLCHECK)"; \
+	mv "$$tmp/shellcheck-$(SHELLCHECK_VERSION)/shellcheck" "$(SHELLCHECK)-$(SHELLCHECK_VERSION)"; \
+	} ; \
+	ln -sf "$$(realpath "$(SHELLCHECK)-$(SHELLCHECK_VERSION)")" "$(SHELLCHECK)"
+
+.PHONY: shellcheck
+shellcheck: $(SHELLCHECK) ## Lint the shell scripts of hack/ with shellcheck.
+	"$(SHELLCHECK)" -x -P SCRIPTDIR hack/*.sh hack/lib/*.sh
+
+# actionlint checks the workflows, and with -shellcheck it checks the shell of every
+# run: block with the pinned shellcheck above, never with whatever the machine has.
 ACTIONLINT ?= $(LOCALBIN)/actionlint
 ACTIONLINT_VERSION ?= v1.7.12
 
 .PHONY: actionlint
-actionlint: $(ACTIONLINT) ## Lint the GitHub Actions workflows.
-	"$(ACTIONLINT)" -color
+actionlint: $(ACTIONLINT) $(SHELLCHECK) ## Lint the GitHub Actions workflows, and the shell in them.
+	"$(ACTIONLINT)" -color -shellcheck="$(SHELLCHECK)"
 
 $(ACTIONLINT): $(LOCALBIN)
 	$(call go-install-tool,$(ACTIONLINT),github.com/rhysd/actionlint/cmd/actionlint,$(ACTIONLINT_VERSION))

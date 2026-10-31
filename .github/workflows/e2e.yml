@@ -97,12 +97,14 @@ jobs:
           scripts="$(./hack/ci-e2e.sh plan)"
           if [ -z "$scripts" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "### e2e on ${SCM}" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "None of the selected scripts runs on this host." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "### e2e on ${SCM}"
+              echo ""
+              echo "None of the selected scripts runs on this host."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Scripts: $(echo $scripts)"
+            echo "Scripts: ${scripts//$'\n'/ }"
           fi
 
       - name: Setup Go
