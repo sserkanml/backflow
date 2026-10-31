@@ -122,8 +122,7 @@ restore_demo() {
   k -n "$DEMO_NS" scale deployment demo --replicas="$ORIG_REPLICAS" >/dev/null 2>&1 || true
   k -n "$ARGOCD_NS" patch application "$APP" --type merge \
     -p '{"operation":{"initiatedBy":{"username":"backflow-test"},"sync":{}}}' >/dev/null 2>&1 || true
-  local i
-  for i in $(seq 1 45); do
+  for _ in $(seq 1 45); do
     refresh_app
     [[ "$(app_sync_status)" == "Synced" ]] && return 0
     sleep 2

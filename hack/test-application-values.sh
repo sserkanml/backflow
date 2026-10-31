@@ -93,7 +93,6 @@ MANAGER_PID=""
 PF_PID=""
 WORKDIR=""
 SUMMARY_PRINTED=false
-CHILD_PARAM_CHANGED=false
 
 k() { kubectl --context "kind-$CLUSTER_NAME" "$@"; }
 end_section() {
@@ -109,6 +108,7 @@ fail() { echo "  ${RED}✘${NC} $*"; FAIL=$((FAIL + 1)); }
 die() { echo "${RED}ERROR:${NC} $*" >&2; exit 1; }
 section_wanted() { [[ -z "$SECTIONS" || ",$SECTIONS," == *",$1,"* ]]; }
 for s in ${SECTIONS//,/ }; do
+  # shellcheck disable=SC2194 # a membership test: the constant list is the subject of the case
   case " a b c d e " in *" $s "*) ;; *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e)" >&2; exit 1 ;; esac
 done
 
@@ -342,7 +342,11 @@ HOST_IP="${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr e
 [[ -n "$HOST_IP" ]] || die "cannot find the address of this machine on the local network; set HOST_IP"
 REPO_URL="http://$HOST_IP:$GIT_PORT/repo.git"
 for _ in $(seq 1 20); do curl -fs -o /dev/null "http://$HOST_IP:$GIT_PORT/repo.git/info/refs?service=git-upload-pack" && break; sleep 0.5; done
-git ls-remote "$REPO_URL" >/dev/null 2>&1 && pass "the operator's side reaches $REPO_URL" || fail "the host cannot clone $REPO_URL (log: $GIT_LOG)"
+if git ls-remote "$REPO_URL" >/dev/null 2>&1; then
+  pass "the operator's side reaches $REPO_URL"
+else
+  fail "the host cannot clone $REPO_URL (log: $GIT_LOG)"
+fi
 if k run av-reach --rm -i --restart=Never --image=busybox:1.36 --command -- wget -q -T 5 -O /dev/null "http://$HOST_IP:$GIT_PORT/repo.git/info/refs?service=git-upload-pack" >/dev/null 2>&1; then
   pass "the cluster reaches $REPO_URL"
 else
@@ -571,7 +575,6 @@ fi
 # ---------------------------------------------------------------------------
 if section_wanted d; then
 step "d. The parent is not synced: Git does not say what runs, so no file is pointed to"
-CHILD_PARAM_CHANGED=true
 k -n "$ARGOCD_NS" patch application "$CHILD" --type json \
   -p '[{"op":"replace","path":"/spec/source/helm/parameters/0/value","value":"omega"}]' >/dev/null
 refresh_app "$PARENT" hard
@@ -589,7 +592,6 @@ fi
 # Git is the truth: put the child back.
 k -n "$ARGOCD_NS" patch application "$CHILD" --type json \
   -p '[{"op":"replace","path":"/spec/source/helm/parameters/0/value","value":"beta"}]' >/dev/null
-CHILD_PARAM_CHANGED=false
 refresh_app "$PARENT" hard
 wait_for "$PARENT is Synced again" synced "$PARENT"
 

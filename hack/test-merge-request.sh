@@ -120,6 +120,7 @@ section_needs() {
 check_sections() {
   local s n
   for s in ${SECTIONS//,/ }; do
+    # shellcheck disable=SC2194 # a membership test: the constant list is the subject of the case
     case " a b c d e f g h " in
       *" $s "*) ;;
       *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h)" >&2; exit 1 ;;
@@ -379,9 +380,9 @@ sync_app() {
 # With a revision, first wait until Argo CD has seen that commit, so the sync
 # does not apply a stale one.
 restore_demo() {
-  local want="${1:-}" j
+  local want="${1:-}"
   if [[ -n "$want" ]]; then
-    for j in $(seq 1 60); do
+    for _ in $(seq 1 60); do
       refresh_app hard
       [[ "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.revision}' 2>/dev/null)" == "$want" ]] && break
       sleep 2
@@ -977,7 +978,7 @@ remember_proposals
 P_C="$(proposal_with Proposed '"warn"' | head -n 1)"
 if [[ -n "$P_C" ]]; then
   BRANCH_C="$(branch_of "$P_C")"
-  IFS='|' read -r IID_C STATE_C URL_C _ <<<"$(mr_info "$BRANCH_C")"
+  IFS='|' read -r IID_C STATE_C _ _ <<<"$(mr_info "$BRANCH_C")"
   expect_nonempty "merge request from $BRANCH_C" "$IID_C"
   expect_eq "merge request state" "opened" "$STATE_C"
   expect_eq "main was not touched" "$MAIN_ORIG_SHA" "$(main_sha)"
