@@ -80,6 +80,16 @@ func overlap(a, b []string) bool {
 	return false
 }
 
+// Window is the span of time in which the change of a proposal can have been made, from the
+// history of the Application: after the last successful sync (which put the resource back to Git's
+// state) and until the proposal is made.
+type Window struct {
+	// After is when the last successful sync of the Application finished. Zero: not known.
+	After time.Time
+	// Before is when the proposal is made.
+	Before time.Time
+}
+
 // MatchSubresource is Match for the records that have no field manager. The API server leaves
 // options.fieldManager empty for a write to a subresource (kubectl scale, oc scale) although it
 // writes a managedFields entry for it, with the manager derived from the user agent and the
@@ -90,18 +100,20 @@ func overlap(a, b []string) bool {
 //
 // The entry of a subresource has no time (observed for kubectl scale: the API server writes the
 // entry without one). When it has one, the record's last change must be within tolerance of it and
-// the closest wins, as in Match. When it has none, the time cannot tie the record to the change,
-// so uid, subresource and path are all there is: the record is believed only if every record that
-// fits names the same user. Records of different users that fit are ambiguous and name no one.
+// the closest wins, as in Match. When it has none, the time cannot tie the record to the change, so
+// the history of the Application does: only records after the last successful sync (the change was
+// made after the resource was put back to Git's state) and not after the proposal (plus tolerance)
+// count. Without a known sync there is no window and nobody is named (no_window). Of the records in
+// the window the name is used only if they all name the same user; different users are ambiguous.
 func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfields.Entry, records []Record,
-	tolerance time.Duration) Verdict {
+	tolerance time.Duration, window Window) Verdict {
 	if tolerance <= 0 {
 		tolerance = DefaultTolerance
 	}
 	best, bestDelta := -1, time.Duration(math.MaxInt64)
 	var timeless []int
 	result := metrics.ActorNoRecord
-	rank := map[string]int{metrics.ActorNoRecord: 0, metrics.ActorManagerMismatch: 1, metrics.ActorTimeMismatch: 2, metrics.ActorPathMismatch: 3}
+	rank := map[string]int{metrics.ActorNoRecord: 0, metrics.ActorManagerMismatch: 1, metrics.ActorTimeMismatch: 2, metrics.ActorPathMismatch: 3, metrics.ActorNoWindow: 4}
 	note := func(r string) {
 		if rank[r] > rank[result] {
 			result = r
@@ -126,7 +138,14 @@ func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfi
 			case !overlap(rec.Paths, e.Paths):
 				note(metrics.ActorPathMismatch)
 			case e.Time.IsZero():
-				timeless = append(timeless, i)
+				switch {
+				case window.After.IsZero():
+					note(metrics.ActorNoWindow)
+				case rec.LastSeen.After(window.After) && (window.Before.IsZero() || !rec.LastSeen.After(window.Before.Add(tolerance))):
+					timeless = append(timeless, i)
+				default:
+					note(metrics.ActorTimeMismatch)
+				}
 			case delta > tolerance:
 				note(metrics.ActorTimeMismatch)
 			case delta < bestDelta:

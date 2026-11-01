@@ -82,6 +82,8 @@ type aheadState struct {
 	// the revision of the last sync, or there was none.
 	paused           bool
 	compared, synced string // revisions, joined with commas for several sources
+	// syncedAt is when the last successful sync of the Application finished; zero when none is known.
+	syncedAt time.Time
 	// unfinished is set when the last sync cannot be taken as "Git was applied
 	// up to the synced revision" for every resource: it failed, or it touched
 	// only some resources. Only the resources it did not apply are then held
@@ -161,6 +163,7 @@ func gitAhead(app *unstructured.Unstructured) aheadState {
 			[]string{fieldStatus, fieldOperationState, fieldSyncResult, "revisions"}),
 	}
 	st.paused = st.compared != "" && st.compared != st.synced
+	st.syncedAt = lastSyncedAt(app)
 
 	if why := chartChange(app); why != "" {
 		st.sourceChanged, st.holdKind = why, holdApplicationChanged
@@ -673,4 +676,30 @@ func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy
 	}
 	r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
 		"Git is ahead of the last sync of %s (%s); drift detection for it is paused until Argo CD syncs.", summary.Name, revs))
+}
+
+// lastSyncedAt is when the last successful sync of the Application finished: the later of
+// status.operationState.finishedAt when its phase is Succeeded, and the newest
+// status.history[].deployedAt. Zero when the Application has neither. It is the Application's last
+// sync, not necessarily one that touched a given resource: a later window is the safe error.
+func lastSyncedAt(app *unstructured.Unstructured) time.Time {
+	var latest time.Time
+	parse := func(v any) {
+		if str, ok := v.(string); ok {
+			if t, err := time.Parse(time.RFC3339, str); err == nil && t.After(latest) {
+				latest = t
+			}
+		}
+	}
+	if phase, _, _ := unstructured.NestedString(app.Object, fieldStatus, fieldOperationState, "phase"); phase == "Succeeded" {
+		finished, _, _ := unstructured.NestedString(app.Object, fieldStatus, fieldOperationState, "finishedAt")
+		parse(finished)
+	}
+	history, _, _ := unstructured.NestedSlice(app.Object, fieldStatus, "history")
+	for _, h := range history {
+		if m, ok := h.(map[string]any); ok {
+			parse(m["deployedAt"])
+		}
+	}
+	return latest
 }

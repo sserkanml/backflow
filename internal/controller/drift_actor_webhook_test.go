@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
@@ -68,7 +69,7 @@ var _ = Describe("Actor records", func() {
 		created = nil
 	})
 	refine := func(a *ActorRecords, uid string, mgr string) *backflowv1alpha1.Actor {
-		return a.Refine(ctx, live(uid, mgr, t0), changes, phase1(mgr))
+		return a.Refine(ctx, live(uid, mgr, t0), changes, phase1(mgr), actorwebhook.Window{})
 	}
 	actors := func() *ActorRecords { return &ActorRecords{Reader: k8sClient, Namespace: ns} }
 
@@ -112,10 +113,10 @@ var _ = Describe("Actor records", func() {
 		Expect(refine(actors(), "uid-none", "kubectl-edit")).To(Equal(phase1("kubectl-edit")))
 		failing := &ActorRecords{Reader: failingLister{k8sClient}, Namespace: ns}
 		Expect(refine(failing, "uid-actor-1", "kubectl-edit")).To(Equal(phase1("kubectl-edit")))
-		Expect(actors().Refine(ctx, map[string]any{}, changes, phase1("kubectl-edit"))).To(Equal(phase1("kubectl-edit")))
+		Expect(actors().Refine(ctx, map[string]any{}, changes, phase1("kubectl-edit"), actorwebhook.Window{})).To(Equal(phase1("kubectl-edit")))
 		var off *ActorRecords
-		Expect(off.Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, phase1("kubectl-edit"))).To(Equal(phase1("kubectl-edit")))
-		Expect(actors().Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, nil)).To(BeNil(), "no managedFields actor, nothing to refine")
+		Expect(off.Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, phase1("kubectl-edit"), actorwebhook.Window{})).To(Equal(phase1("kubectl-edit")))
+		Expect(actors().Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, nil, actorwebhook.Window{})).To(BeNil(), "no managedFields actor, nothing to refine")
 	})
 
 	It("uses the tolerance it is given", func() {
@@ -270,7 +271,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 
 	It("names the user who patched the ConfigMap", func() {
 		a := flow(true, review("alice", "kubectl-patch", "uid-e2e-1"))
-		got := a.Refine(ctx, live("uid-e2e-1", "kubectl-patch"), changes, actor("kubectl-patch"))
+		got := a.Refine(ctx, live("uid-e2e-1", "kubectl-patch"), changes, actor("kubectl-patch"), actorwebhook.Window{})
 		Expect(got.Username).To(Equal("alice"))
 		Expect(got.Groups).To(ConsistOf("devs", "system:authenticated"))
 		Expect(string(got.Kind)).To(Equal("person"))
@@ -281,7 +282,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		// naming another manager and another time.
 		forged := review("mallory", "kubectl-edit", "uid-e2e-2")
 		a := flow(true, forged)
-		got := a.Refine(ctx, live("uid-e2e-2", "kubectl-patch"), changes, actor("kubectl-patch"))
+		got := a.Refine(ctx, live("uid-e2e-2", "kubectl-patch"), changes, actor("kubectl-patch"), actorwebhook.Window{})
 		Expect(got.Username).To(BeEmpty())
 	})
 
@@ -292,7 +293,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		Expect(list.Items).To(HaveLen(1))
 		stored, _ := json.Marshal(list.Items[0])
 		Expect(string(stored)).NotTo(Or(ContainSubstring("alice"), ContainSubstring("devs")))
-		got := a.Refine(ctx, live("uid-e2e-3", "kubectl-patch"), changes, actor("kubectl-patch"))
+		got := a.Refine(ctx, live("uid-e2e-3", "kubectl-patch"), changes, actor("kubectl-patch"), actorwebhook.Window{})
 		Expect(got.Username).To(BeEmpty())
 		Expect(string(got.Kind)).To(Equal("person"))
 	})
@@ -325,11 +326,13 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			}
 			return map[string]any{"metadata": map[string]any{"uid": uid, "managedFields": []any{entry}}, "spec": map[string]any{"replicas": 3}}
 		}
+		// The Application was last synced an hour ago; the proposal is made now.
+		sinceSync := actorwebhook.Window{After: now.Add(-time.Hour), Before: now.Add(time.Minute)}
 		replicas := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "3"}}
 
 		It("names the user from the scale entry of managedFields, which has no time", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-1"))
-			got := a.Refine(ctx, scaled("uid-scale-1", "scale"), replicas, actor("kubectl"))
+			got := a.Refine(ctx, scaled("uid-scale-1", "scale"), replicas, actor("kubectl"), sinceSync)
 			Expect(got.Username).To(Equal("alice"))
 			Expect(string(got.Kind)).To(Equal("person"))
 			Expect(got.Manager).To(Equal("kubectl"))
@@ -337,12 +340,56 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 
 		It("does not name a user when the entry is not a scale entry", func() {
 			a := flow(true, scaleReview("mallory", "uid-scale-2"))
-			Expect(a.Refine(ctx, scaled("uid-scale-2", ""), replicas, actor("kubectl")).Username).To(BeEmpty())
+			Expect(a.Refine(ctx, scaled("uid-scale-2", ""), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
+		})
+
+		It("names nobody when no successful sync of the Application is known", func() {
+			a := flow(true, scaleReview("alice", "uid-scale-4"))
+			Expect(a.Refine(ctx, scaled("uid-scale-4", "scale"), replicas, actor("kubectl"), actorwebhook.Window{Before: now.Add(time.Minute)}).Username).To(BeEmpty())
+		})
+
+		It("names nobody when the record is from before the last sync", func() {
+			a := flow(true, scaleReview("alice", "uid-scale-5"))
+			after := actorwebhook.Window{After: now.Add(time.Minute), Before: now.Add(2 * time.Minute)}
+			Expect(a.Refine(ctx, scaled("uid-scale-5", "scale"), replicas, actor("kubectl"), after).Username).To(BeEmpty())
 		})
 
 		It("names nobody when the records of two users fit", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-3"), scaleReview("mallory", "uid-scale-3"))
-			Expect(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, actor("kubectl")).Username).To(BeEmpty())
+			Expect(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
 		})
 	})
+})
+
+var _ = Describe("The last successful sync of an Application", func() {
+	app := func(status map[string]any) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{"status": status}}
+	}
+	at := func(s string) time.Time {
+		t, err := time.Parse(time.RFC3339, s)
+		Expect(err).NotTo(HaveOccurred())
+		return t
+	}
+	DescribeTable("lastSyncedAt",
+		func(status map[string]any, want string) {
+			got := lastSyncedAt(app(status))
+			if want == "" {
+				Expect(got.IsZero()).To(BeTrue())
+			} else {
+				Expect(got).To(Equal(at(want)))
+			}
+		},
+		Entry("a succeeded operation", map[string]any{"operationState": map[string]any{"phase": "Succeeded", "finishedAt": "2026-11-02T14:05:00Z"}}, "2026-11-02T14:05:00Z"),
+		Entry("a failed operation does not count", map[string]any{"operationState": map[string]any{"phase": "Failed", "finishedAt": "2026-11-02T14:05:00Z"}}, ""),
+		Entry("a running operation does not count", map[string]any{"operationState": map[string]any{"phase": "Running"}}, ""),
+		Entry("the newest history entry", map[string]any{"history": []any{
+			map[string]any{"deployedAt": "2026-11-02T10:00:00Z"}, map[string]any{"deployedAt": "2026-11-02T12:00:00Z"}, map[string]any{"deployedAt": "2026-11-02T11:00:00Z"},
+		}}, "2026-11-02T12:00:00Z"),
+		Entry("the later of the two", map[string]any{
+			"operationState": map[string]any{"phase": "Succeeded", "finishedAt": "2026-11-02T13:00:00Z"},
+			"history":        []any{map[string]any{"deployedAt": "2026-11-02T12:00:00Z"}},
+		}, "2026-11-02T13:00:00Z"),
+		Entry("a time that cannot be read", map[string]any{"history": []any{map[string]any{"deployedAt": "yesterday"}}}, ""),
+		Entry("neither", map[string]any{}, ""),
+	)
 })
