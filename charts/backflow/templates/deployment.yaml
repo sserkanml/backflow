@@ -67,6 +67,10 @@ spec:
             - --argocd-ca-file={{ .Values.argocd.caFile }}
             {{- end }}
             {{- end }}
+            - --operator-namespace={{ .Release.Namespace }}
+            {{- range .Values.argocd.defaultAccess }}
+            - --argocd-default-access={{ join "," (required "argocd.defaultAccess[].policyNamespaces needs at least one namespace" .policyNamespaces) }}:{{ join "," (required "argocd.defaultAccess[].projects needs at least one project" .projects) }}
+            {{- end }}
             {{- if not .Values.unpackFileDependencies }}
             - --unpack-file-dependencies=false
             {{- end }}

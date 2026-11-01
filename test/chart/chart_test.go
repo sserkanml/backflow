@@ -211,3 +211,91 @@ func contains(list any, want string) bool {
 	}
 	return false
 }
+
+// operatorArgs renders the Deployment and returns the arguments of the operator.
+func operatorArgs(t *testing.T, args ...string) []string {
+	t.Helper()
+	if _, err := exec.LookPath("helm"); err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("the helm binary is not installed")
+		}
+		t.Skip("the helm binary is not installed")
+	}
+	cmd := append([]string{"template", "backflow", "../../charts/backflow", "--namespace", "backflow-system",
+		"--show-only", "templates/deployment.yaml"}, args...)
+	out, err := exec.Command("helm", cmd...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm %s: %v\n%s", strings.Join(cmd, " "), err, out)
+	}
+	var dep struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Args []string `json:"args"`
+					} `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal(out, &dep); err != nil {
+		t.Fatalf("not valid YAML: %v\n%s", err, out)
+	}
+	return dep.Spec.Template.Spec.Containers[0].Args
+}
+
+// accessArgs are the flags that carry the access of the default Argo CD connection.
+func accessArgs(args []string) []string {
+	var out []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--argocd-default-access=") || strings.HasPrefix(a, "--operator-namespace=") {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func TestDefaultAccessValuesBecomeFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		set  []string
+		want []string
+	}{
+		{name: "default: no rule, only the operator's namespace", want: []string{"--operator-namespace=backflow-system"}},
+		{
+			name: "one rule",
+			set:  []string{"--set", "argocd.defaultAccess[0].policyNamespaces={team-a}", "--set", "argocd.defaultAccess[0].projects={team-a}"},
+			want: []string{"--operator-namespace=backflow-system", "--argocd-default-access=team-a:team-a"},
+		},
+		{
+			name: "several namespaces and projects, and a wildcard rule",
+			set: []string{
+				"--set", "argocd.defaultAccess[0].policyNamespaces={team-a,team-b}", "--set", "argocd.defaultAccess[0].projects={one,two}",
+				"--set", "argocd.defaultAccess[1].policyNamespaces={*}", "--set", "argocd.defaultAccess[1].projects={*}",
+			},
+			want: []string{
+				"--operator-namespace=backflow-system",
+				"--argocd-default-access=team-a,team-b:one,two", "--argocd-default-access=*:*",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := accessArgs(operatorArgs(t, tt.set...))
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("flags %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultAccessNeedsNamespacesAndProjects(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("the helm binary is not installed")
+	}
+	out, err := exec.Command("helm", "template", "backflow", "../../charts/backflow",
+		"--set", "argocd.defaultAccess[0].projects={p}").CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "policyNamespaces needs at least one namespace") {
+		t.Errorf("a rule without namespaces should fail the render, got %v\n%s", err, out)
+	}
+}

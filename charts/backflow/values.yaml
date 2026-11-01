@@ -57,6 +57,23 @@ argocd:
   # used to verify the server. For a server with a serving certificate signed by
   # the service CA, like openshift-gitops-server.
   serviceCA: false
+  # Which Applications the policies of which namespaces may match through this
+  # connection, which can read every Application. A policy without spec.argoCD sees
+  # only the Applications whose spec.project is allowed for its namespace; the others
+  # are only counted in its status. "*" matches any namespace or project.
+  #
+  #   defaultAccess:
+  #     - policyNamespaces: [team-a]
+  #       projects: [team-a]
+  #     - policyNamespaces: [platform]
+  #       projects: ["*"]
+  #
+  # Empty (the default): only the policies in the namespace the operator is installed
+  # in may use it, for every project. A policy in any other namespace is not Ready
+  # (ArgoCDDefaultNotAllowed). A single-tenant cluster that wants every policy to
+  # see everything sets [{policyNamespaces: ["*"], projects: ["*"]}].
+  # A policy with its own spec.argoCD is not affected: Argo CD decides what its token sees.
+  defaultAccess: []
 
 # OpenShift: a ConfigMap labelled config.openshift.io/inject-trusted-cabundle that
 # OpenShift fills in with the cluster's trusted CA bundle (the proxy's trustedCA),
