@@ -334,6 +334,27 @@ set_log_level() {
   refresh_app
 }
 
+# git_replicas: the replicas that apps/demo/deployment.yaml has on main now.
+git_replicas() { raw_file apps/demo/deployment.yaml main | sed -n 's/^ *replicas: *\([0-9]*\).*/\1/p' | head -n 1; }
+# open_proposals_of <resource>: how many proposals of the policy for the resource are not finished.
+open_proposals_of() {
+  PROPOSALS_OF="$1" proposals | awk -F'|' '$2 == "" || $2 ~ /^(Detected|Mapping|Proposed|Unmapped)$/ { n++ } END { print n + 0 }'
+}
+# settle_demo: the state a section that makes its own drift starts from, whatever ran before: the live values of
+# the ConfigMap demo-config and the Deployment demo are Git's, and no proposal of either is open (a proposal whose
+# drift is gone ends Reverted and its merge request is closed). The sections that need what an earlier one left
+# do not call it.
+settle_demo() {
+  local git repl
+  git="$(git_level)"
+  repl="$(git_replicas)"
+  [[ "$(live_log_level)" == "$git" ]] || set_log_level "$git"
+  [[ -z "$repl" || "$(k -n "$DEMO_NS" get deploy demo -o jsonpath='{.spec.replicas}')" == "$repl" ]] ||
+    k -n "$DEMO_NS" scale deploy demo --replicas="$repl" >/dev/null
+  no_open_demo_proposals() { [[ "$(open_proposals_of demo-config)" == "0" && "$(open_proposals_of demo)" == "0" ]]; }
+  wait_for "no proposal of demo-config or demo is open and their live values are Git's" no_open_demo_proposals
+}
+
 # app_idle_at <sha>: the Application is Synced at the commit
 # and has no operation requested or running: the state needed before a
 # commit that the Application is expected to be "ahead" of. A pending sync would
@@ -1331,6 +1352,7 @@ if section_wanted g; then
 step "g. A proposal made in ReportOnly is proposed when the mode is switched"
 held_by_report_only() { [[ "$(condition "$1" Proposed status)/$(condition "$1" Proposed reason)" == "False/ReportOnly" ]]; }
 set_mode() { k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"mode\":\"$1\"}}" >/dev/null; }
+settle_demo
 LEVEL_G="$(live_log_level)"
 GIT_G="$(git_level)"
 TARGET_G=""
@@ -1440,6 +1462,7 @@ if [[ "$ACTOR_WEBHOOK" == "true" ]] && section_wanted i; then
 [[ "$IN_CLUSTER" != "true" ]] || die "ACTOR_WEBHOOK=true does not work with IN_CLUSTER"
 step "i. The actor webhook names the user"
 set_mode_i() { k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"mode\":\"$1\"}}" >/dev/null; }
+settle_demo
 LEVEL_I="$(live_log_level)"
 GIT_I="$(git_level)"
 TARGET_I=""
