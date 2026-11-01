@@ -246,7 +246,7 @@ func (r *Renderer) renderAt(ctx context.Context, app rendermap.App, sha string, 
 		AppName: r.cfg.AppName, AppNamespace: r.cfg.AppNamespace, Revisions: revisions, SourcePositions: positions,
 		NoCache: noCache,
 	})
-	metrics.Render(metrics.RendererRevisions, err, errors.Is(err, argocd.ErrRenderFailed), time.Since(start))
+	metrics.Render(metrics.RendererRevisions, metrics.DepsNone, err, errors.Is(err, argocd.ErrRenderFailed), time.Since(start))
 	r.mu.Lock()
 	r.renders++
 	r.mu.Unlock()

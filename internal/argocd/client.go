@@ -217,3 +217,34 @@ func decodeState(s string) (map[string]any, error) {
 	}
 	return m, nil
 }
+
+// Version returns the version of the Argo CD server, as it reports it (for example
+// "v3.5.3+a1b2c3d"). Errors wrap ErrUnreachable.
+func (c *Client) Version(ctx context.Context) (_ string, err error) {
+	defer c.observe(endpointVersion)(&err)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/version", nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("%w: reading response: %v", ErrUnreachable, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: HTTP %d", ErrUnreachable, resp.StatusCode)
+	}
+	var parsed struct {
+		Version string `json:"Version"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Version == "" {
+		return "", fmt.Errorf("%w: invalid version response", ErrUnreachable)
+	}
+	return parsed.Version, nil
+}

@@ -128,7 +128,7 @@ func TestArgoRendererErrors(t *testing.T) {
 
 func TestArgoRendererCountsRenders(t *testing.T) {
 	count := func(result string) float64 {
-		return metricstest.Value("backflow_renders_total", map[string]string{"renderer": "upload", "result": result})
+		return metricstest.Value("backflow_renders_total", map[string]string{"renderer": "upload", "deps": "none", "result": result})
 	}
 	ok, failed, bad := count("ok"), count("failed"), count("error")
 	for _, f := range []*fakeManifests{

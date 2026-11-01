@@ -67,6 +67,9 @@ spec:
             - --argocd-ca-file={{ .Values.argocd.caFile }}
             {{- end }}
             {{- end }}
+            {{- if not .Values.unpackFileDependencies }}
+            - --unpack-file-dependencies=false
+            {{- end }}
             {{- if .Values.trustedCABundle }}
             - --trusted-ca-file={{ include "backflow.trustedCAFile" . }}
             {{- end }}

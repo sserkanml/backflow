@@ -440,6 +440,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1alp
 	if err != nil {
 		return nil, err
 	}
+	rend = r.FileDeps.Wrap(rend, src) // file:// dependencies unpacked, when that renders the same
 	res := dp.Spec.Resource
 	out, err := r.verify(ctx, dp, rend, helmmap.Input{
 		App:      helmAppOf(app),

@@ -37,6 +37,7 @@ const (
 	lResult      = "result"
 	lSourceType  = "source_type"
 	lRenderer    = "renderer"
+	lDeps        = "deps"
 	lEndpoint    = "endpoint"
 	lHost        = "host"
 	lReason      = "reason"
@@ -68,13 +69,17 @@ var (
 	}, []string{lSourceType, lResult})
 	renders = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "renders_total",
-		Help: "Renders through Argo CD by renderer (upload: GetManifestsWithFiles, revisions: by commit) and result (ok, failed, error).",
-	}, []string{lRenderer, lResult})
+		Help: "Renders through Argo CD by renderer (upload: GetManifestsWithFiles, revisions: by commit), how the file:// dependencies of the chart were provided (deps: none, built, unpacked) and result (ok, failed, error).",
+	}, []string{lRenderer, lDeps, lResult})
 	renderDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: namespace, Name: "render_duration_seconds",
-		Help:    "Time of one render through Argo CD, by renderer.",
+		Help:    "Time of one render through Argo CD, by renderer and how the file:// dependencies were provided (deps).",
 		Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40, 80},
-	}, []string{lRenderer})
+	}, []string{lRenderer, lDeps})
+	depsChecks = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace, Name: "deps_equivalence_checks_total",
+		Help: "Checks that a chart with file:// dependencies renders the same with them unpacked as with Argo CD building them, by result (identical, different, error).",
+	}, []string{lResult})
 	scratchBranches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "scratch_branches_total",
 		Help: "Scratch branches by action: pushed, deleted, swept (found left behind and deleted), push_failed.",
@@ -128,7 +133,7 @@ var (
 // collectors are the metrics of this package, registered by init.
 var collectors = []prometheus.Collector{
 	driftsDetected, mappingResults, mergeRequests, verificationDuration, renders, renderDuration,
-	scratchBranches, argocdRequests, argocdDuration, scmRequests, scmDuration, secretReads,
+	scratchBranches, depsChecks, argocdRequests, argocdDuration, scmRequests, scmDuration, secretReads,
 	scmConnectionReady, policyReady, policyApplications, detectionPaused, buildInfo,
 }
 
@@ -339,7 +344,7 @@ const (
 // Render records one render through Argo CD: err is nil for a render that worked,
 // failed says the source did not render (a verdict about the source, not about
 // Argo CD), anything else is an error.
-func Render(renderer string, err error, failed bool, d time.Duration) {
+func Render(renderer, deps string, err error, failed bool, d time.Duration) {
 	safe(func() {
 		result := "ok"
 		switch {
@@ -348,9 +353,31 @@ func Render(renderer string, err error, failed bool, d time.Duration) {
 		case err != nil:
 			result = resultError
 		}
-		renders.WithLabelValues(bound(lRenderer, renderer), result).Inc()
-		renderDuration.WithLabelValues(bound(lRenderer, renderer)).Observe(d.Seconds())
+		renders.WithLabelValues(bound(lRenderer, renderer), bound(lDeps, deps), result).Inc()
+		renderDuration.WithLabelValues(bound(lRenderer, renderer), bound(lDeps, deps)).Observe(d.Seconds())
 	})
+}
+
+// How the file:// dependencies of a chart reached a render.
+const (
+	// DepsNone: the chart has none, or it is not rendered from uploaded files.
+	DepsNone = "none"
+	// DepsBuilt: Argo CD ran helm dependency build.
+	DepsBuilt = "built"
+	// DepsUnpacked: the dependencies were uploaded unpacked under charts/.
+	DepsUnpacked = "unpacked"
+)
+
+// The results of DepsCheck.
+const (
+	DepsIdentical = "identical"
+	DepsDifferent = "different"
+	DepsCheckErr  = resultError
+)
+
+// DepsCheck counts the check of a chart with unpacked dependencies against the build.
+func DepsCheck(result string) {
+	safe(func() { depsChecks.WithLabelValues(bound(lResult, result)).Inc() })
 }
 
 // The actions of ScratchBranches.

@@ -65,6 +65,11 @@ argocd:
 # trusted CA bundle (the Proxy resource's spec.trustedCA) for this to help.
 trustedCABundle: false
 
+# Upload the file:// dependencies of a Helm chart unpacked under charts/, so that Argo CD
+# does not run helm dependency build on every render of a proposal. It is used for a
+# chart only after one render both ways gave identical resources; false switches it off.
+unpackFileDependencies: true
+
 # Extra volumes and mounts of the manager pod, e.g. a CA bundle for argocd.caFile.
 extraVolumes: []
 extraVolumeMounts: []
