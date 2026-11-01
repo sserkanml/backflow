@@ -687,10 +687,10 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	// withManagedFields is the live ConfigMap with managedFields: who wrote LOG_LEVEL, and Argo CD.
-	withManagedFields := func(manager, operation string) map[string]any {
+	withManagedFields := func(manager string) map[string]any {
 		live := configMapState("debug")
 		live["metadata"].(map[string]any)["managedFields"] = []any{
-			map[string]any{"manager": manager, "operation": operation, "time": "2026-11-01T13:26:26Z", "fieldsType": "FieldsV1",
+			map[string]any{"manager": manager, "operation": "Update", "time": "2026-11-01T13:26:26Z", "fieldsType": "FieldsV1",
 				"fieldsV1": map[string]any{"f:data": map[string]any{"f:LOG_LEVEL": map[string]any{}}}},
 			map[string]any{"manager": "argocd-controller", "operation": "Update", "time": "2026-11-01T13:30:00Z", "fieldsType": "FieldsV1",
 				"fieldsV1": map[string]any{"f:data": map[string]any{".": map[string]any{}, "f:FEATURE": map[string]any{}}}},
@@ -711,7 +711,7 @@ var _ = Describe("Drift detection", func() {
 
 	It("records the manager that wrote the drifted field, and counts the drift as interactive", func() {
 		before := detectedBy("interactive")
-		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch", "Update")
+		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch")
 		dp := driftedProposal()
 		Expect(dp.Spec.Actor).NotTo(BeNil())
 		Expect(dp.Spec.Actor.Manager).To(Equal("kubectl-patch"), "Argo CD's own manager is not the actor, although it wrote later")
@@ -724,7 +724,7 @@ var _ = Describe("Drift detection", func() {
 
 	It("counts a drift made by a controller as such", func() {
 		before := detectedBy("controller")
-		argo.items[0].NormalizedLiveState = withManagedFields("kube-controller-manager", "Update")
+		argo.items[0].NormalizedLiveState = withManagedFields("kube-controller-manager")
 		dp := driftedProposal()
 		Expect(dp.Spec.Actor).NotTo(BeNil())
 		Expect(dp.Spec.Actor.Manager).To(Equal("kube-controller-manager"))
@@ -742,9 +742,9 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	It("does not change the actor of an existing proposal when another manager writes later", func() {
-		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch", "Update")
+		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch")
 		first := driftedProposal()
-		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-edit", "Update")
+		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-edit")
 		reconcileOnce()
 		Expect(proposals()).To(HaveLen(1))
 		Expect(proposals()[0].Name).To(Equal(first.Name))
