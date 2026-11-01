@@ -69,6 +69,11 @@ func TestPolicyWithoutArgoCDUsesTheOperatorDefault(t *testing.T) {
 	if cfg.URL != "https://openshift-gitops-server.openshift-gitops.svc" || cfg.Token != "default-token" || cfg.InsecureSkipTLSVerify {
 		t.Errorf("config = %+v", cfg)
 	}
+	dev := operatorDefault()
+	dev.InsecureSkipTLSVerify = true
+	if cfg, _ = argoCDConfig(context.Background(), c, policy, dev); !cfg.InsecureSkipTLSVerify {
+		t.Error("--argocd-insecure-skip-tls-verify is not passed on")
+	}
 	source, ok := argoCDSource(policy, operatorDefault())
 	if !ok || source != backflowv1alpha1.ArgoCDSourceOperatorDefault {
 		t.Errorf("source = %q, %v", source, ok)
