@@ -85,15 +85,21 @@ func overlap(a, b []string) bool {
 // writes a managedFields entry for it, with the manager derived from the user agent and the
 // subresource in it. Such a record counts when an entry of the same manager and operation as
 // the actor (the latest owner, so the name goes with the manager that is shown) has the
-// record's subresource, the object's uid is the record's, the entry was written within
-// tolerance of the record's last change, and it owns a path the record names. A record that has
-// a manager is never looked at here: Match keeps the strict check for those.
+// record's subresource, the object's uid is the record's, and the entry owns a path the record
+// names. A record that has a manager is never looked at here: Match keeps the strict check.
+//
+// The entry of a subresource has no time (observed for kubectl scale: the API server writes the
+// entry without one). When it has one, the record's last change must be within tolerance of it and
+// the closest wins, as in Match. When it has none, the time cannot tie the record to the change,
+// so uid, subresource and path are all there is: the record is believed only if every record that
+// fits names the same user. Records of different users that fit are ambiguous and name no one.
 func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfields.Entry, records []Record,
 	tolerance time.Duration) Verdict {
 	if tolerance <= 0 {
 		tolerance = DefaultTolerance
 	}
 	best, bestDelta := -1, time.Duration(math.MaxInt64)
+	var timeless []int
 	result := metrics.ActorNoRecord
 	rank := map[string]int{metrics.ActorNoRecord: 0, metrics.ActorManagerMismatch: 1, metrics.ActorTimeMismatch: 2, metrics.ActorPathMismatch: 3}
 	note := func(r string) {
@@ -116,19 +122,38 @@ func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfi
 			continue
 		}
 		for _, e := range near {
-			delta := rec.LastSeen.Sub(e.Time).Abs()
-			switch {
-			case e.Time.IsZero() || delta > tolerance:
-				note(metrics.ActorTimeMismatch)
+			switch delta := rec.LastSeen.Sub(e.Time).Abs(); {
 			case !overlap(rec.Paths, e.Paths):
 				note(metrics.ActorPathMismatch)
+			case e.Time.IsZero():
+				timeless = append(timeless, i)
+			case delta > tolerance:
+				note(metrics.ActorTimeMismatch)
 			case delta < bestDelta:
 				best, bestDelta = i, delta
 			}
 		}
 	}
-	if best < 0 {
-		return Verdict{Result: result}
+	if best >= 0 {
+		return Verdict{Record: records[best], Result: metrics.ActorMatched}
 	}
-	return Verdict{Record: records[best], Result: metrics.ActorMatched}
+	return pickTimeless(records, timeless, result)
+}
+
+// pickTimeless decides among the records that fit an entry without a time: the latest of one
+// user's, or nothing when two users fit.
+func pickTimeless(records []Record, fits []int, otherwise string) Verdict {
+	if len(fits) == 0 {
+		return Verdict{Result: otherwise}
+	}
+	latest := fits[0]
+	for _, i := range fits {
+		if records[i].Username != records[fits[0]].Username || records[i].Kind != records[fits[0]].Kind {
+			return Verdict{Result: metrics.ActorAmbiguous}
+		}
+		if records[i].LastSeen.After(records[latest].LastSeen) {
+			latest = i
+		}
+	}
+	return Verdict{Record: records[latest], Result: metrics.ActorMatched}
 }

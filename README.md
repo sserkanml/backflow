@@ -969,14 +969,19 @@ details follow the documentation and were not run on a cluster; the kind spike a
 
 - An admission request carries **no user agent** (the API server's own is all there is), so
   `spec.actor.userAgent` is never filled and is deprecated; the field manager is the hint for the tool.
-- `kubectl scale` and `oc scale` go through the `scale` subresource and the request carries **no field
-  manager**, although the API server writes a managedFields entry for it (manager from the user agent,
-  `subresource: scale`). A record without a manager is therefore accepted only against such an entry: the
-  entry has the record's subresource, belongs to the manager shown as the actor, was written within
-  `actorWebhook.tolerance` of the record, and owns the drifted path. A record that has a manager keeps the
-  strict check. The weaker check is not weaker where it matters (uid, subresource, time and path must all
-  agree), but the manager no longer ties the record to a tool: anyone who can post to the webhook port could
-  attribute a scale they know the time of, which the NetworkPolicy is there to prevent.
+- `kubectl scale` and `oc scale` go through the `scale` subresource. The request carries **no field
+  manager**, and the managedFields entry the API server writes for it (manager from the user agent,
+  `subresource: scale`) has **no time**. So a scale cannot be checked like other changes. A record without a
+  manager is accepted only against such an entry: it has the record's subresource, belongs to the manager shown
+  as the actor, and owns the drifted path, with the same object uid. When the entry has a time, the record must
+  be within `actorWebhook.tolerance` of it, as usual. When it has none, nothing ties the record to the change
+  but the uid, so the name is used only if every record that fits names the same user; records of different
+  users are ambiguous and name no one (`backflow_actor_matches_total{result="ambiguous"}`). A record that has a
+  manager keeps the strict check. This is the weakest check of the feature: anyone who can post to the webhook
+  port could name a user for a scale, which the NetworkPolicy is there to prevent. The Scale object has no
+  annotations either, so a scale of any Deployment, StatefulSet or ReplicaSet in a watched namespace is
+  recorded, tracked by Argo CD or not; only the records of a drifted, tracked object are ever read, and the
+  others expire with the retention.
 - A change made as a shared account (a CI token) is that account; impersonation shows the impersonated user.
 - Changes made while the webhook, or the operator, is down are not named (fail open is the point).
 - The records are in a pod's memory for up to the flush interval, so a crash can lose the last seconds.

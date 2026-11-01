@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -460,7 +461,25 @@ func TestMatchSubresourceForRecordsWithoutAManager(t *testing.T) {
 		{"another object", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.UID = "U2" })}, metrics.ActorNoRecord, ""},
 		{"a path the entry does not own", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.Paths = []string{"/spec/template"} })}, metrics.ActorPathMismatch, ""},
 		{"the entry of a manager that is not the actor", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Manager = "oc" })}, []Record{scale(func(*Record) {})}, metrics.ActorManagerMismatch, ""},
-		{"an entry with no time", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{scale(func(*Record) {})}, metrics.ActorTimeMismatch, ""},
+		{"an entry with no time, which is how the API server writes a scale", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{scale(func(*Record) {})}, metrics.ActorMatched, "alice"},
+		{"an entry with no time, other fields", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{scale(func(r *Record) { r.Paths = []string{"/spec/template"} })}, metrics.ActorPathMismatch, ""},
+		{"an entry with no time, another object", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{scale(func(r *Record) { r.UID = "U2" })}, metrics.ActorNoRecord, ""},
+		{"an entry with no time, two records of one user: the latest", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{
+			scale(func(r *Record) { r.LastSeen = at.Add(time.Hour) }),
+			scale(func(r *Record) { r.LastSeen = at.Add(2 * time.Hour); r.Groups = []string{"later"} }),
+		}, metrics.ActorMatched, "alice"},
+		{"an entry with no time, records of two users: nobody is named", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{
+			scale(func(*Record) {}),
+			scale(func(r *Record) { r.Username = "mallory" }),
+		}, metrics.ActorAmbiguous, ""},
+		{"an entry with no time, a person and a controller: nobody is named", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{
+			scale(func(*Record) {}),
+			scale(func(r *Record) { r.Kind = KindController }),
+		}, metrics.ActorAmbiguous, ""},
+		{"an entry with a time is decided by the time, whatever the timeless one says", []managedfields.Entry{
+			entry(func(*managedfields.Entry) {}),
+			entry(func(e *managedfields.Entry) { e.Time = time.Time{} }),
+		}, []Record{scale(func(*Record) {}), scale(func(r *Record) { r.Username = "mallory"; r.LastSeen = at.Add(time.Hour) })}, metrics.ActorMatched, "alice"},
 		{"a record that has a manager is not accepted here", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.FieldManager = "kubectl" })}, metrics.ActorNoRecord, ""},
 		{"a record without a subresource is not accepted here", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.SubResource = "" })}, metrics.ActorNoRecord, ""},
 		{"the closest entry in time wins among two writes", []managedfields.Entry{
@@ -485,4 +504,49 @@ func TestStrictMatchStillRefusesARecordWithoutAManager(t *testing.T) {
 	if v := Match("U1", owner, []Record{rec}, DefaultTolerance); v.Result != metrics.ActorManagerMismatch {
 		t.Errorf("Match must keep refusing an empty manager, got %q", v.Result)
 	}
+}
+
+// TestARealScaleAdmissionRequest uses a real AdmissionReview of kubectl scale (kind 1.35, credential id redacted).
+func TestARealScaleAdmissionRequest(t *testing.T) {
+	raw, err := os.ReadFile("testdata/scale-admissionreview.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review map[string]any
+	if err := json.Unmarshal(raw, &review); err != nil {
+		t.Fatal(err)
+	}
+	req := review["request"].(map[string]any)
+
+	t.Run("it passes the match conditions, though the Scale object has no tracking annotation", func(t *testing.T) {
+		obj := req["object"].(map[string]any)
+		if _, has := obj["metadata"].(map[string]any)["annotations"]; has {
+			t.Fatal("the sample is expected to carry no annotations: that is the point")
+		}
+		ok, err := passes(t, celEnv(t), Conditions([]string{"system:serviceaccount:argocd:argocd-application-controller"}), req, obj)
+		if err != nil || !ok {
+			t.Errorf("ok=%v err=%v", ok, err)
+		}
+	})
+	t.Run("the handler records it under the uid of the Deployment, with no manager", func(t *testing.T) {
+		b := NewBuffer(10)
+		post(t, NewHandler(Options{Buffer: b, RecordUsername: true}), string(raw))
+		got := b.Drain()
+		if len(got) != 1 {
+			t.Fatalf("records: %d", len(got))
+		}
+		r := got[0]
+		if r.UID != "8d8cf295-3e22-4a2a-bcd6-c0526788a889" || r.SubResource != "scale" || r.Resource != "deployments" || r.Group != "apps" ||
+			r.FieldManager != "" || r.Username != "kubernetes-admin" || !reflect.DeepEqual(r.Paths, []string{"/spec/replicas"}) {
+			t.Errorf("record: %+v", r)
+		}
+	})
+	t.Run("it is the same request with a dry run, which is not recorded", func(t *testing.T) {
+		dry := strings.Replace(string(raw), `"dryRun": false`, `"dryRun": true`, 1)
+		b := NewBuffer(10)
+		post(t, NewHandler(Options{Buffer: b, RecordUsername: true}), dry)
+		if b.Len() != 0 {
+			t.Error("a dry run was recorded")
+		}
+	})
 }
