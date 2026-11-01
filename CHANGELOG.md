@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.0](https://github.com/sserkanml/backflow/compare/v0.13.2...v0.14.0) (2026-11-01)
+
+
+### Features
+
+* **chart:** argocd.server and argocd.tokenSecret, argocd.serviceCA and trustedCABundle for OpenShift ([e04ae90](https://github.com/sserkanml/backflow/commit/e04ae905e298c7f0460a62e12294afd77d5e0086))
+* **controller:** --argocd-insecure-skip-tls-verify for the default connection in development ([65f5a47](https://github.com/sserkanml/backflow/commit/65f5a47e535b4ab396b1abb0fe8312cd593b306f))
+* **controller:** Argo CD connection defaults set by the installer, for policies without spec.argoCD ([646d0f9](https://github.com/sserkanml/backflow/commit/646d0f9557c000b37fd17cf0a666b06cdb370356))
+
+
+### Documentation
+
+* install on OpenShift GitOps with a local user ([f67446d](https://github.com/sserkanml/backflow/commit/f67446d96e14d819826cb5e979a3d8b30b02d852))
+
 ## [0.13.2](https://github.com/sserkanml/backflow/compare/v0.13.1...v0.13.2) (2026-10-31)
 
 
