@@ -68,7 +68,8 @@ func renderFails(t *testing.T, tpl, want string, args ...string) {
 		}
 		t.Skip("the helm binary is not installed")
 	}
-	cmd := append([]string{"template", "backflow", "../../charts/backflow", "--namespace", "backflow-system", "--show-only", tpl}, args...)
+	cmd := append([]string{"template", "backflow", "../../charts/backflow", "--namespace", "backflow-system",
+		"--show-only", tpl}, args...)
 	out, err := exec.Command("helm", cmd...).CombinedOutput()
 	if err == nil {
 		t.Errorf("helm accepted %v", args)

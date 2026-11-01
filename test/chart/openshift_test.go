@@ -108,7 +108,8 @@ func TestEachCAOptionStandsAlone(t *testing.T) {
 	// serviceCA is the CA of the Argo CD server: without argocd.server it is refused.
 	renderFails(t, deploymentTemplate, "need argocd.server", "--set", "argocd.serviceCA=true")
 	renderFails(t, deploymentTemplate, "needs argocd.tokenSecret.namespace", "--set", "argocd.server=https://x")
-	renderFails(t, deploymentTemplate, "not both", append(slices.Clone(argocdSet), "--set", "argocd.serviceCA=true", "--set", "argocd.caFile=/x.crt")...)
+	both := append(slices.Clone(argocdSet), "--set", "argocd.serviceCA=true", "--set", "argocd.caFile=/x.crt")
+	renderFails(t, deploymentTemplate, "not both", both...)
 }
 
 func TestTokenSecretNamespaceGetsARole(t *testing.T) {
