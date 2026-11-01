@@ -259,6 +259,7 @@ func main() {
 
 	// Secrets are read by name straight from the API server (no informer, and
 	// the operator holds only "get" on them); every controller uses this client.
+	visibility := &controller.ApplicationVisibility{}
 	k8sClient := controller.NewSecretClient(mgr.GetClient(), mgr.GetAPIReader(), secretCacheTTL)
 	if err := (&controller.ScmConnectionReconciler{
 		Client:          k8sClient,
@@ -269,10 +270,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.BackflowPolicyReconciler{
-		Client:   k8sClient,
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("backflow-policy"),
-		ArgoCD:   &argoCD,
+		Client:     k8sClient,
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorder("backflow-policy"),
+		ArgoCD:     &argoCD,
+		Visibility: visibility,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "backflowpolicy")
 		os.Exit(1)
@@ -291,6 +293,7 @@ func main() {
 		TrackInterval: mrPollInterval,
 		RenderBudget:  renderBudget,
 		ArgoCD:        &argoCD,
+		Visibility:    visibility,
 		FileDeps:      fileDeps,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")

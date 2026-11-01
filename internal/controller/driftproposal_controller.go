@@ -74,6 +74,9 @@ type DriftProposalReconciler struct {
 	NewChartArgo func(argocd.Config) (ChartArgo, error)
 	// ArgoCD is the connection policies without spec.argoCD use. Optional.
 	ArgoCD *ArgoCDDefaults
+	// Visibility tells which Applications the token of a policy with its own
+	// spec.argoCD may get. Nil: not asked.
+	Visibility *ApplicationVisibility
 	// FileDeps lets the renders of charts with file:// dependencies upload them
 	// unpacked, where that was shown to render the same. Nil switches it off.
 	FileDeps *helmmap.UnpackedDeps

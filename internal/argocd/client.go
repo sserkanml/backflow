@@ -206,6 +206,38 @@ func (c *Client) GetManagedResources(ctx context.Context, appName, appNamespace 
 	return out, nil
 }
 
+// GetApplication asks Argo CD for an Application and returns nothing of it: the
+// answer is only whether the token of the client may get it. Errors wrap
+// ErrUnauthorized (no permission, or an unknown token), ErrNotFound or
+// ErrUnreachable. Argo CD answers 403 for an Application that exists and one that
+// does not, so a token cannot tell the two apart.
+func (c *Client) GetApplication(ctx context.Context, appName, appNamespace string) (err error) {
+	defer c.observe(endpointApplication)(&err)
+	u := fmt.Sprintf("%s/api/v1/applications/%s?appNamespace=%s",
+		c.baseURL, url.PathEscape(appName), url.QueryEscape(appNamespace))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<20))
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return fmt.Errorf("%w: HTTP %d", ErrUnauthorized, resp.StatusCode)
+	case http.StatusNotFound:
+		return fmt.Errorf("%w: HTTP 404", ErrNotFound)
+	}
+	return fmt.Errorf("%w: HTTP %d", ErrUnreachable, resp.StatusCode)
+}
+
 // decodeState decodes a JSON-encoded object. Empty and "null" yield nil.
 func decodeState(s string) (map[string]any, error) {
 	if s == "" || s == "null" {
