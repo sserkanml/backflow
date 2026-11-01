@@ -632,9 +632,19 @@ demo repositories, so only these start them:
 ```bash
 gh workflow run e2e.yml -f scm=github -f scripts=merge-request -f sections=a,b
 gh workflow run e2e.yml -f scm=gitlab -f scripts=helm,kustomize
+gh workflow run e2e.yml -f scm=github -f argocd_path=policy -f scripts=merge-request   # the policy path on GitHub
 gh run watch
 ```
 
+`argocd_path` picks how the operator reaches Argo CD in the run: `policy` (every policy has
+`spec.argoCD`), `default` (the connection the installer gave the operator, as with the
+OpenShift GitOps local user: `dev-up.sh` is run with `ARGOCD_LOCAL_USER_SECRET=true`, the
+operator is started with `--argocd-server` and `--argocd-token-secret-*`, and the policies
+have no `spec.argoCD`) or `matrix` (the default, and what the nightly run does: GitLab
+keeps `policy`, GitHub uses `default`, so both paths are tested every night). Only
+`merge-request`, `helm`, `kustomize` and `multi-source` can use `default`; the other
+scripts keep the policy path, and the summary of the run says which path each script and
+each job used. Locally: `ARGOCD_DEFAULT=true ARGOCD_LOCAL_USER_SECRET=true`.
 `scm` is `both` (default), `gitlab` or `github`; `scripts` is a comma separated
 list of `policy`, `drift`, `mapping`, `application-values`, `scm`, `merge-request`,
 `helm`, `kustomize`, `multi-source` (empty: all). The first four need no token and
