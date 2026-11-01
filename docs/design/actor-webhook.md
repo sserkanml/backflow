@@ -1,7 +1,9 @@
 # Actor webhook (actor phase 2)
 
-Status: **design, spiked on kind; nothing is implemented.** Off by default
-(`actorWebhook.enabled: false`).
+Status: **implemented** (`internal/actorwebhook`, chart `actorWebhook.*`), off by default
+(`actorWebhook.enabled: false`). The spike below was run first; where the implementation chose
+differently from the spike's recommendation, the section "Decisions of the implementation" says so
+and the earlier text is kept as the evidence.
 
 `DriftProposal.spec.actor.manager/operation/time` (phase 1) come from `managedFields`, so
 `username` and `groups` stay empty and `manager` is a string the client chooses. An
@@ -15,6 +17,27 @@ afterwards. The receiver was a 100-line Python HTTPS server that answered `allow
 kept compact records (no values). Numbers are from one run on a laptop; they show orders of
 magnitude, not benchmarks. Statements marked *(docs)* come from the Kubernetes or OpenShift
 documentation or from memory of it and were **not** tested here.
+
+## Decisions of the implementation
+
+The design below was implemented with these decisions, which override the recommendation where they differ:
+
+| Topic | Decision |
+|---|---|
+| Retention | **2 hours** (`actorWebhook.retention`), not 15 minutes. |
+| Tolerance of the cross-check | **10 seconds** (`actorWebhook.tolerance`), not 30. |
+| Storage | The spike's option D: a memory buffer per pod, flushed every 2 s (`flushInterval`) to **namespaced `ChangeRecord`s in the operator namespace**, key `(uid, user, manager, subresource)`, paths merged; the operator's RBAC for them is a **Role** in the release namespace (the cache of ChangeRecords is restricted to that namespace). Every replica writes; **the leader sweeps**. A cap on the number of records (`maxRecords`, 5000): the oldest are deleted (and the oldest in a full buffer dropped), counted in `backflow_actor_records_dropped_total{reason}`. |
+| Names | `actorWebhook.recordUsername` (default `true`). `false` stores only `kind` (`person`, or `controller` for a service account): no username, no groups, and the record key holds no name. `storeGroups` of the spike is gone: groups are stored with the name. `usernameInMergeRequest` (default `false`) keeps the name out of merge request and commit text. |
+| Matching | At proposal creation, for the latest owner of the drifted paths: record with the object's uid, **the same field manager** as the managedFields entry, `|record.lastSeen - entry.time| <= tolerance`, and a path equal to, above or below a path the entry owns; the closest in time wins. Anything else leaves the actor as phase 1 made it. Never delays or fails a proposal (one cached list, errors logged at V(1)). |
+| `scale` | `kubectl scale` sends no `options.fieldManager`, so its record has no manager and is refused by the manager check; a scale is recorded but never names a user. |
+| Endpoint | The NetworkPolicy and the random path of the recommendation; `apiserverCIDRs` is required outside OpenShift when the policy is enabled. |
+| TLS | `auto`: OpenShift service CA, else cert-manager if `cert-manager.io/v1` is there, else Helm-generated; or `serviceCA`, `certManager`, `helm`, `secret`. |
+| API | `Actor.userAgent` is marked deprecated (never filled), not removed. `Actor.kind` is new. The merge request no longer prints the user agent. |
+| Source of truth for the CEL | `internal/actorwebhook.Conditions` generates the chart's `_actor_conditions.tpl` (`hack/genactorconditions`, run by `make helm-sync`) and a chart test compares the rendered conditions to it; the unit tests evaluate them with cel-go against sample requests, including an absent `subResource`. |
+| e2e | `ACTOR_WEBHOOK=true` adds section i to `hack/test-merge-request.sh`: the local operator serves the webhook, registered with `clientConfig.url` to the host. |
+
+Not decided here, left open: whether a record should survive an operator restart *before* its flush (it
+does not), and the metric for fail-open counts (the apiserver has it; Backflow cannot scrape it).
 
 ## Recommendation in one page
 
