@@ -320,6 +320,14 @@ is kept for a minute per token and Application). Argo CD answers 403 for an Appl
 that exists and one that does not, so a refused one is hidden either way. Which
 Applications the token may get is the Argo CD RBAC of that account.
 
+If Argo CD cannot be reached, the policy fails closed: an Application whose visibility was
+confirmed earlier stays visible, however old the answer, and one that was never confirmed
+is not shown (it is counted in `excludedApplications` with the reason `VisibilityUnknown`,
+and the `Ready` message says the check is retried, every 30 seconds). Only a definite
+401, 403 or 404 hides an Application or retires its proposals; an outage never does. The
+confirmed answers live in the operator's memory, so after a restart during an outage
+nothing is shown until Argo CD answers.
+
 **A policy without `spec.argoCD`** uses the operator's default connection, whose account
 can usually read every Application. Which Applications such a policy may match is
 defined by the administrator who installs the operator, never by a policy:
