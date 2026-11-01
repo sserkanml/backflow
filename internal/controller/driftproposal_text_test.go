@@ -398,6 +398,19 @@ func TestTextNamesTheManager(t *testing.T) {
 			t.Errorf("no note in\n%s", body)
 		}
 	})
+	t.Run("a manager nobody has verified gets no note", func(t *testing.T) {
+		for _, manager := range []string{"some-custom-tool", "ocp-manager", "horizontal-pod-autoscaler"} {
+			dp := textProposal()
+			dp.Spec.Actor = managedActor(manager)
+			body := mergeRequestBody(dp, nil, nil, "")
+			if strings.Contains(body, "Note:") || strings.Contains(body, "not by a person") {
+				t.Errorf("%s: the note says it was not a person:\n%s", manager, body)
+			}
+			if !strings.Contains(body, "- **Changed with:** "+manager+" (Update)") {
+				t.Errorf("%s: no Changed with line:\n%s", manager, body)
+			}
+		}
+	})
 	t.Run("other managers are listed", func(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor = managedActor("kubectl-set")

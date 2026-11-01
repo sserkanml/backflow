@@ -52,7 +52,7 @@ var Registry = ctrlmetrics.Registry
 var (
 	driftsDetected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "drifts_detected_total",
-		Help: "Drifts that became a proposal, by policy, application, source type and who changed the resource (changed_by: interactive, controller, unknown).",
+		Help: "Drifts that became a proposal, by policy, application, source type and who changed the resource (changed_by: interactive, controller, unknown for a manager that is neither, none when no manager could be named).",
 	}, []string{lPolicyNS, lPolicy, lApplication, lSourceType, lChangedBy})
 	mappingResults = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "mapping_results_total",
@@ -303,7 +303,7 @@ func ForgetApplicationsExcept(policy Policy, keep map[string]bool) {
 // changedByLabel keeps the label to its three values, whatever the caller passes.
 func changedByLabel(v string) string {
 	switch v {
-	case "interactive", "controller":
+	case "interactive", "controller", "unknown", "none":
 		return v
 	}
 	return "unknown"

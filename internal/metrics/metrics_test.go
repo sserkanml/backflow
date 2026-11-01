@@ -208,7 +208,7 @@ func TestLabelsListsEveryMetric(t *testing.T) {
 }
 
 func TestChangedByIsBounded(t *testing.T) {
-	for in, want := range map[string]string{"interactive": "interactive", "controller": "controller", "unknown": "unknown", "": "unknown", "kubectl-patch": "unknown"} {
+	for in, want := range map[string]string{"interactive": "interactive", "controller": "controller", "unknown": "unknown", "none": "none", "": "unknown", "kubectl-patch": "unknown"} {
 		if got := changedByLabel(in); got != want {
 			t.Errorf("changedByLabel(%q) = %q, want %q", in, got, want)
 		}

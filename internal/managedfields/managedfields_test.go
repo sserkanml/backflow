@@ -256,8 +256,14 @@ func TestClassify(t *testing.T) {
 		"kubectl": Interactive, "kubectl-edit": Interactive, "kubectl-patch": Interactive, "kubectl-client-side-apply": Interactive,
 		"kubectl-set": Interactive, "oc": Interactive, "oc-edit": Interactive, "Mozilla": Interactive, "Mozilla/5.0": Interactive,
 		"k9s": Interactive, "helm": Interactive,
-		"kube-controller-manager": Controller, "horizontal-pod-autoscaler": Controller, "octopus": Controller, "ocp-operator": Controller,
-		"cert-manager-controller": Controller, "kubelet": Controller, "": Unknown,
+		// Known controllers, by name and by the way controllers name themselves.
+		"kube-controller-manager": Controller, "kube-scheduler": Controller, "kubelet": Controller, "cloud-controller-manager": Controller,
+		"cluster-autoscaler": Controller, "cert-manager-controller": Controller, "kustomize-controller": Controller,
+		"helm-controller": Controller, "openshift-controller-manager": Controller, "cluster-version-operator": Controller,
+		"Some-Operator": Controller,
+		// Neither: a name nobody has verified is not called a controller (and not a person).
+		"horizontal-pod-autoscaler": Unknown, "octopus": Unknown, "ocp-manager": Unknown, "my-custom-tool": Unknown,
+		"controller": Unknown, "operator-sdk": Unknown, "": Unknown,
 	} {
 		if got := Classify(manager); got != want {
 			t.Errorf("Classify(%q) = %s, want %s", manager, got, want)
