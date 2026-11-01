@@ -231,7 +231,8 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(err).NotTo(HaveOccurred())
 		cache := gitrepo.NewCache(cacheDir)
 		r = &DriftProposalReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Repos: CacheReader{Cache: cache}, Writer: cache,
+			UsernameInMergeRequest: true, // these tests read the user name in the text
+			Client:                 k8sClient, Scheme: k8sClient.Scheme(), Repos: CacheReader{Cache: cache}, Writer: cache,
 			NewProvider: func(scm.Config) (scm.Provider, error) { return provider, nil },
 			NewRenderer: func(argocd.Config) (rendermap.Renderer, error) { return renderer, nil },
 		}

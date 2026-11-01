@@ -58,3 +58,14 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - backflow.io
+  resources:
+  - changerecords
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch

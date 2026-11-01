@@ -91,6 +91,10 @@ unpackFileDependencies: true
 extraVolumes: []
 extraVolumeMounts: []
 
+# The actor webhook (see the README, "Who changed it"): off by default.
+actorWebhook:
+  enabled: false
+
 # The time all renders through Argo CD of one verification may take together.
 # A proposal that needs more is Unmapped (RenderBudgetExceeded). Raise it when
 # Argo CD takes seconds per render, which an Application with several sources

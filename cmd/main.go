@@ -73,6 +73,7 @@ func main() {
 	var enableHTTP2 bool
 	var argoCD controller.ArgoCDDefaults
 	var trustedCAFile string
+	var actor actorOptions
 	var unpackFileDeps bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -125,6 +126,7 @@ func main() {
 	flag.StringVar(&argoCD.OperatorNamespace, "operator-namespace", operatorNamespace(),
 		"The namespace the operator runs in (defaults to the one of its service account). Its policies may use "+
 			"--argocd-server for every project when --argocd-default-access is not set.")
+	actor.bind()
 	flag.BoolVar(&unpackFileDeps, "unpack-file-dependencies", true,
 		"Upload the file:// dependencies of a Helm chart unpacked under charts/, so that Argo CD does not run "+
 			"helm dependency build on every render. Only used for a chart whose render was shown to be identical "+
@@ -151,6 +153,10 @@ func main() {
 			"tokenSecret", argoCD.TokenSecretNamespace+"/"+argoCD.TokenSecretName, "caFile", argoCD.CAFile)
 	}
 	controller.UseTrustedCAFile(trustedCAFile)
+	if err := actor.validate(argoCD.OperatorNamespace); err != nil {
+		setupLog.Error(err, "Invalid actor webhook flags")
+		os.Exit(1)
+	}
 
 	// Fail at startup, not after minutes of retries, when the repository
 	// cache cannot be written (for example a read-only root file system
@@ -228,6 +234,7 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
+		Cache:                  actor.cacheOptions(argoCD.OperatorNamespace),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "7e904218.io",
@@ -285,19 +292,30 @@ func main() {
 		fileDeps = helmmap.NewUnpackedDeps()
 	}
 	if err := (&controller.DriftProposalReconciler{
-		Client:        k8sClient,
-		Scheme:        mgr.GetScheme(),
-		Repos:         controller.CacheReader{Cache: repoCache},
-		Writer:        repoCache,
-		Recorder:      mgr.GetEventRecorder("backflow-driftproposal"),
-		TrackInterval: mrPollInterval,
-		RenderBudget:  renderBudget,
-		ArgoCD:        &argoCD,
-		Visibility:    visibility,
-		FileDeps:      fileDeps,
+		Client:                 k8sClient,
+		Scheme:                 mgr.GetScheme(),
+		Repos:                  controller.CacheReader{Cache: repoCache},
+		Writer:                 repoCache,
+		Recorder:               mgr.GetEventRecorder("backflow-driftproposal"),
+		TrackInterval:          mrPollInterval,
+		UsernameInMergeRequest: actor.usernameInMR,
+		RenderBudget:           renderBudget,
+		ArgoCD:                 &argoCD,
+		Visibility:             visibility,
+		FileDeps:               fileDeps,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)
+	}
+	var actors *controller.ActorRecords
+	if actor.enabled {
+		var err error
+		if actors, err = actor.setup(mgr, k8sClient, argoCD.OperatorNamespace); err != nil {
+			setupLog.Error(err, "Failed to set up the actor webhook")
+			os.Exit(1)
+		}
+		setupLog.Info("The actor webhook is on", "path", actor.path, "namespace", argoCD.OperatorNamespace,
+			"recordUsername", actor.recordUsername, "retention", actor.retention.String())
 	}
 	if err := (&controller.DriftReconciler{
 		Client:   k8sClient,
@@ -305,6 +323,7 @@ func main() {
 		Recorder: mgr.GetEventRecorder("backflow-drift"),
 		Git:      repoCache,
 		ArgoCD:   &argoCD,
+		Actors:   actors,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
 		os.Exit(1)

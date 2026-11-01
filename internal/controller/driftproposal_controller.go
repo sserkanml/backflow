@@ -64,6 +64,9 @@ type DriftProposalReconciler struct {
 	CommitScanLimit int
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
+	// UsernameInMergeRequest puts the user name of the actor into the text of the merge
+	// request and the commit. Off by default: Git keeps it for ever.
+	UsernameInMergeRequest bool
 	// Recorder emits Events about proposals. Optional.
 	Recorder events.EventRecorder
 	// NewRenderer builds the renderer of Helm sources from the Argo CD
