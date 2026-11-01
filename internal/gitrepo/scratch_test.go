@@ -55,7 +55,13 @@ func TestPushBranchesCreatesManyInOnePush(t *testing.T) {
 	})
 
 	t.Run("a commit that is not in the cache", func(t *testing.T) {
-		err := cache.PushBranches(t.Context(), src.url(), map[string]string{"backflow/scratch/x": base[:39] + "0"}, nil, nil)
+		// A commit that does not exist: the base with its last digit changed (never the base itself, which a
+		// last digit of 0 would make it one time in sixteen).
+		missing := base[:39] + "0"
+		if missing == base {
+			missing = base[:39] + "1"
+		}
+		err := cache.PushBranches(t.Context(), src.url(), map[string]string{"backflow/scratch/x": missing}, nil, nil)
 		if !errors.Is(err, ErrRevisionNotFound) {
 			t.Errorf("err = %v", err)
 		}
