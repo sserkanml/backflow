@@ -403,7 +403,7 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 			log.V(1).Info("Drift seen, but no proposal is made now", "kind", res.Kind, "name", res.Name,
 				"applicationPaused", run.paused, "resourceHold", run.st.resourceHold(res))
 		}
-		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st, proposalSources(run.app)); err != nil && firstErr == nil {
+		if err := r.ensureProposal(ctx, run.policy, run.summary, res, changes, run.all, hold, run.st, proposalSources(run.app), m.NormalizedLiveState); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -509,7 +509,7 @@ func (r *DriftReconciler) trackedResources(policy *backflowv1alpha1.BackflowPoli
 func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
 	summary backflowv1alpha1.ApplicationSummary, res appResource,
 	changes []backflowv1alpha1.FieldChange, all []backflowv1alpha1.DriftProposal, paused bool, st aheadState,
-	sources []backflowv1alpha1.ApplicationSource) error {
+	sources []backflowv1alpha1.ApplicationSource, live map[string]any) error {
 	log := logf.FromContext(ctx)
 
 	srcType, ok := proposalSourceType(summary.SourceType)
@@ -570,6 +570,10 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		for names[proposalName(policy.Spec.ArgoCDNamespace, summary.Name, res, changes, attempt)] {
 			attempt++
 		}
+		// Who wrote the drifted fields, from the managedFields of the live object. It is
+		// set now and never again: spec is immutable. No managedFields, or ones that cannot be
+		// read, leave it empty; they never hold a proposal back.
+		actor, changedBy := actorOf(ctx, live, changes)
 		dp := &backflowv1alpha1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proposalName(policy.Spec.ArgoCDNamespace, summary.Name, res, changes, attempt),
@@ -595,6 +599,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 				},
 				Sources:    sources,
 				Changes:    changes,
+				Actor:      actor,
 				DetectedAt: metav1.Now(),
 			},
 		}
@@ -604,7 +609,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		if err := r.Create(ctx, dp); err != nil {
 			return err // AlreadyExists means a stale cache; the retry sees the object.
 		}
-		metrics.DriftDetected(metrics.Policy{Namespace: policy.Namespace, Name: policy.Name}, summary.Name, string(srcType))
+		metrics.DriftDetected(metrics.Policy{Namespace: policy.Namespace, Name: policy.Name}, summary.Name, string(srcType), changedBy)
 		log.Info("Drift detected", "proposal", dp.Name, "kind", res.Kind, "resource", res.Name, "changes", len(changes))
 		r.event(policy, corev1.EventTypeNormal, "DriftDetected",
 			fmt.Sprintf("%s %s in application %s drifted (proposal %s)", res.Kind, res.Name, summary.Name, dp.Name))

@@ -16,7 +16,7 @@ import (
 func TestCardinality(t *testing.T) {
 	for i := range 20 {
 		app := fmt.Sprintf("app-%d", i)
-		metrics.DriftDetected(metrics.Policy{Namespace: "ns", Name: "policy"}, app, "Helm")
+		metrics.DriftDetected(metrics.Policy{Namespace: "ns", Name: "policy"}, app, "Helm", "controller")
 		metrics.SetDetectionPaused(metrics.Policy{Namespace: "ns", Name: "policy"}, app, "GitAhead")
 		metrics.MappingResult("Helm", "HelmValues", "Mapped")
 		metrics.MappingResult("Helm", "Unmapped", "NoVerifiedCandidate")
