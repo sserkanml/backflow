@@ -84,7 +84,8 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	apps, matchErr := r.matchApplications(ctx, &policy)
+	res, matchErr := r.resolveApplications(ctx, &policy)
+	apps := res.apps
 	if _, isCheck := errors.AsType[*checkError](matchErr); matchErr != nil && !isCheck {
 		// Transient API error: retry with backoff, keep the old status.
 		return ctrl.Result{}, matchErr
@@ -183,6 +184,9 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			cond.Message += fmt.Sprintf("; not tracked because a repository URL contains credentials: %s",
 				strings.Join(withCredentials, ", "))
 		}
+		if n := len(res.excluded); n > 0 {
+			cond.Message += fmt.Sprintf("; %d selected application(s) excluded: %s", n, excludedExplanation(res.excludedReason))
+		}
 	}
 
 	policy.Status.ObservedGeneration = policy.Generation
@@ -190,6 +194,11 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	policy.Status.Applications = summaries
 	policy.Status.OpenProposals = open
 	policy.Status.ArgoCD = argoCDStatus(&policy, r.ArgoCD)
+	policy.Status.ExcludedApplications = int32(len(res.excluded))
+	policy.Status.ExcludedReason = ""
+	if len(res.excluded) > 0 {
+		policy.Status.ExcludedReason = res.excludedReason
+	}
 	meta.SetStatusCondition(&policy.Status.Conditions, cond)
 
 	if err := r.Status().Update(ctx, &policy); err != nil {
@@ -203,6 +212,10 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	notAllowed := reasonOf(matchErr) == reasonArgoCDDefaultNotAllowed
+	if err := r.retireExcluded(ctx, proposals.Items, res.excluded, notAllowed); err != nil {
+		return ctrl.Result{}, err
+	}
 	metrics.SetPolicy(metrics.Policy{Namespace: policy.Namespace, Name: policy.Name}, cond.Status == metav1.ConditionTrue, len(apps)-len(withCredentials))
 	log.Info("Policy resolved", "applications", names, "ready", cond.Status, "reason", cond.Reason)
 	if secretErr != nil {
@@ -238,6 +251,36 @@ func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, po
 		var secret corev1.Secret
 		err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: ref.Name}, &secret)
 		if err = secretReadError(err, policy.Namespace, ref.Name); isSecretForbidden(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// retireExcluded marks the open proposals of the Applications the policy may no
+// longer see (annotation backflow.io/access-revoked), so that the proposal
+// controller ends them without a call to Argo CD. A proposal is the policy's own
+// resource and shows nothing about the Application that its policy cannot see.
+func (r *BackflowPolicyReconciler) retireExcluded(ctx context.Context,
+	proposals []backflowv1alpha1.DriftProposal, excluded []string, all bool) error {
+	if len(excluded) == 0 && !all {
+		return nil
+	}
+	gone := make(map[string]bool, len(excluded))
+	for _, n := range excluded {
+		gone[n] = true
+	}
+	for i := range proposals {
+		p := &proposals[i]
+		if (!all && !gone[p.Spec.Application.Name]) || !isOpenPhase(p.Status.Phase) || p.Annotations[annotationAccessRevoked] != "" {
+			continue
+		}
+		orig := p.DeepCopy()
+		if p.Annotations == nil {
+			p.Annotations = map[string]string{}
+		}
+		p.Annotations[annotationAccessRevoked] = "true"
+		if err := r.Patch(ctx, p, client.MergeFrom(orig)); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 	}
@@ -304,10 +347,69 @@ func (r *BackflowPolicyReconciler) forgetCredentialReports(policy *backflowv1alp
 	}
 }
 
-// matchApplications lists Applications in the Argo CD namespace that match
-// the policy. When both names and selector are set, an Application must
-// match both. Spec problems are returned as *checkError.
+// resolution is the Applications a policy selects and may see. excluded are the
+// names of the ones it selects but may not see: they are used to retire proposals
+// and are never written to status, Events or logs; only their number is.
+type resolution struct {
+	apps           []unstructured.Unstructured
+	excluded       []string
+	excludedReason string
+}
+
+// Reasons Applications are excluded (status.excludedReason).
+const (
+	excludedProjectNotAllowed = "ProjectNotAllowed"
+	excludedNotVisibleToToken = "NotVisibleToToken"
+)
+
+func excludedExplanation(reason string) string {
+	if reason == excludedNotVisibleToToken {
+		return "the Argo CD token of the policy cannot get them"
+	}
+	return "their Argo CD project is not allowed for this namespace (argocd.defaultAccess)"
+}
+
+// resolveApplications is the one place that decides which Applications a policy
+// may see. Everything else (drift detection, mapping, rendering, status, metrics)
+// works from its result. A policy without spec.argoCD sees the Applications of
+// the Argo CD projects the administrator allowed for its namespace
+// (--argocd-default-access); a policy with its own spec.argoCD sees the ones its
+// own token can get from Argo CD.
+func (r *BackflowPolicyReconciler) resolveApplications(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (resolution, error) {
+	if usesDefaultAccess(policy.Spec.ArgoCD != nil, r.ArgoCD) && !r.ArgoCD.NamespaceAllowed(policy.Namespace) {
+		return resolution{}, &checkError{reason: reasonArgoCDDefaultNotAllowed, msg: defaultNotAllowedMessage(policy.Namespace)}
+	}
+	apps, err := r.selectApplications(ctx, policy)
+	if err != nil {
+		return resolution{}, err
+	}
+	res := resolution{}
+	switch {
+	case usesDefaultAccess(policy.Spec.ArgoCD != nil, r.ArgoCD):
+		res.excludedReason = excludedProjectNotAllowed
+		for i := range apps {
+			if r.ArgoCD.ProjectAllowed(policy.Namespace, applicationProject(&apps[i])) {
+				res.apps = append(res.apps, apps[i])
+			} else {
+				res.excluded = append(res.excluded, apps[i].GetName())
+			}
+		}
+	default:
+		res.apps = apps
+	}
+	return res, nil
+}
+
+// matchApplications is the Applications a policy selects and may see.
 func (r *BackflowPolicyReconciler) matchApplications(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) ([]unstructured.Unstructured, error) {
+	res, err := r.resolveApplications(ctx, policy)
+	return res.apps, err
+}
+
+// selectApplications lists Applications in the Argo CD namespace that match
+// the policy, whether it may see them or not. When both names and selector are
+// set, an Application must match both. Spec problems are returned as *checkError.
+func (r *BackflowPolicyReconciler) selectApplications(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) ([]unstructured.Unstructured, error) {
 	sel := policy.Spec.Applications
 	if len(sel.Names) == 0 && sel.Selector == nil {
 		return nil, &checkError{reason: "InvalidSpec", msg: "spec.applications needs at least one of names or selector"}

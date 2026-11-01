@@ -287,7 +287,7 @@ type Mapping struct {
 
 // ApplicationParentState says what is known about the Git file that defines the
 // Application whose option sets the value.
-// +kubebuilder:validation:Enum=Located;NotManagedFromGit;GeneratedByApplicationSet;NotVerifiable;OutOfSync;Ambiguous
+// +kubebuilder:validation:Enum=Located;NotManagedFromGit;GeneratedByApplicationSet;NotVerifiable;OutOfSync;Ambiguous;NotVisible
 type ApplicationParentState string
 
 const (
@@ -305,6 +305,9 @@ const (
 	ParentOutOfSync ApplicationParentState = "OutOfSync"
 	// ParentAmbiguous: more than one Application manages the child.
 	ParentAmbiguous ApplicationParentState = "Ambiguous"
+	// ParentNotVisible: the parent exists, or may exist, but the policy may not see
+	// it. Nothing else about it is said.
+	ParentNotVisible ApplicationParentState = "NotVisible"
 )
 
 // ApplicationValue says which option of an Argo CD Application sets a drifted

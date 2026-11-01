@@ -633,6 +633,17 @@ spec:
                   - type
                   type: object
                 type: array
+              excludedApplications:
+                description: |-
+                  How many Applications the spec selects that the policy may not see: their
+                  Argo CD project is not allowed for the policy's namespace (operator default
+                  connection), or the policy's own token cannot get them. Only the count is
+                  shown, never a name, repository, path or project.
+                format: int32
+                type: integer
+              excludedReason:
+                description: 'Why they are excluded: ProjectNotAllowed or NotVisibleToToken.'
+                type: string
               matchedApplications:
                 description: Applications currently matched.
                 items:

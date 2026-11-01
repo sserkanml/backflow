@@ -143,6 +143,12 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
+	// Defense in depth: whatever the policy controller recorded, a proposal of an
+	// Application the policy may not see makes no call to Argo CD.
+	if done, res, err := r.retireIfRevoked(ctx, &dp, orig); done {
+		return res, err
+	}
+
 	if dp.Status.Phase == "" {
 		dp.Status.Phase = backflowv1alpha1.PhaseDetected
 		dp.Status.Message = "Drift detected between Git and the cluster."
@@ -197,7 +203,7 @@ func (r *DriftProposalReconciler) patchStatus(ctx context.Context, dp, orig *bac
 func lifecycleAnnotationsChanged() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			for _, k := range []string{annotationSupersededBy, annotationReverted, annotationLiveReverted} {
+			for _, k := range []string{annotationSupersededBy, annotationReverted, annotationLiveReverted, annotationAccessRevoked} {
 				if e.ObjectOld.GetAnnotations()[k] != e.ObjectNew.GetAnnotations()[k] {
 					return true
 				}
@@ -217,7 +223,7 @@ func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// are not watched: a held proposal retries with a growing delay, which
 		// picks up a fixed token Secret.
 		// The policy's status names the ScmConnection that matches a repository.
-		Watches(&backflowv1alpha1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals)).
+		Watches(&backflowv1alpha1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.policyProposals)).
 		Watches(&backflowv1alpha1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("driftproposal").

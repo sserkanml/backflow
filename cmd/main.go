@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -117,6 +118,13 @@ func main() {
 	flag.BoolVar(&argoCD.InsecureSkipTLSVerify, "argocd-insecure-skip-tls-verify", false,
 		"Do not verify the certificate of --argocd-server. For development only (a port-forward to a kind cluster); "+
 			"the Helm chart has no value for it.")
+	flag.Var(&argoCD.Access, "argocd-default-access",
+		"Which Applications the policies of which namespaces may match through --argocd-server: "+
+			"<namespace>[,<namespace>...]:<project>[,<project>...] (\"*\" matches any), for example team-a:team-a. "+
+			"Repeatable. Without it only the policies of --operator-namespace may use the default connection, for all projects.")
+	flag.StringVar(&argoCD.OperatorNamespace, "operator-namespace", operatorNamespace(),
+		"The namespace the operator runs in (defaults to the one of its service account). Its policies may use "+
+			"--argocd-server for every project when --argocd-default-access is not set.")
 	flag.BoolVar(&unpackFileDeps, "unpack-file-dependencies", true,
 		"Upload the file:// dependencies of a Helm chart unpacked under charts/, so that Argo CD does not run "+
 			"helm dependency build on every render. Only used for a chart whose render was shown to be identical "+
@@ -324,4 +332,17 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// operatorNamespace is the namespace of the pod: POD_NAMESPACE, else the one of the
+// service account; empty when the operator runs outside a cluster.
+func operatorNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	b, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }

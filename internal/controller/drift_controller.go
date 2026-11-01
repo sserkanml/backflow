@@ -49,6 +49,10 @@ const (
 	// annotationLiveReverted carries the revision of the sync that reset the
 	// cluster to Git while the proposal's merge request is still open.
 	annotationLiveReverted = "backflow.io/live-reverted"
+	// annotationAccessRevoked marks an open proposal of an Application that its
+	// policy may no longer see (set by the policy controller, applied by the
+	// proposal controller without a call to Argo CD).
+	annotationAccessRevoked = "backflow.io/access-revoked"
 
 	// Periodic resync, in case an Application event was missed.
 	driftResyncInterval = 2 * time.Minute
@@ -274,6 +278,13 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 			return nil
 		}
 		return err
+	}
+	// Defense in depth: whatever the policy controller recorded, the operator's default
+	// token is not used for an Application the policy may not see.
+	if usesDefaultAccess(policy.Spec.ArgoCD != nil, r.ArgoCD) && !r.ArgoCD.ProjectAllowed(policy.Namespace, applicationProject(app)) {
+		log.V(1).Info("The policy may not see the Application; nothing is read from Argo CD for it")
+		r.forgetApplication(policy.Namespace+"/"+policy.Name, summary.Name)
+		return nil
 	}
 	resources, ok := r.trackedResources(policy, summary, app)
 	if !ok {

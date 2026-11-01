@@ -400,6 +400,15 @@ type BackflowPolicyStatus struct {
 	// Which Argo CD connection the policy uses. Unset while there is none.
 	// +optional
 	ArgoCD *ArgoCDStatus `json:"argoCD,omitempty"`
+	// How many Applications the spec selects that the policy may not see: their
+	// Argo CD project is not allowed for the policy's namespace (operator default
+	// connection), or the policy's own token cannot get them. Only the count is
+	// shown, never a name, repository, path or project.
+	// +optional
+	ExcludedApplications int32 `json:"excludedApplications,omitempty"`
+	// Why they are excluded: ProjectNotAllowed or NotVisibleToToken.
+	// +optional
+	ExcludedReason string `json:"excludedReason,omitempty"`
 }
 
 // ArgoCDSource says where the Argo CD connection of a policy comes from.

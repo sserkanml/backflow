@@ -94,7 +94,8 @@ func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1a
 // retiring reports whether a superseded or reverted annotation waits to be
 // applied.
 func retiring(dp *backflowv1alpha1.DriftProposal) bool {
-	return dp.Annotations[annotationSupersededBy] != "" || dp.Annotations[annotationReverted] != ""
+	return dp.Annotations[annotationSupersededBy] != "" || dp.Annotations[annotationReverted] != "" ||
+		dp.Annotations[annotationAccessRevoked] != ""
 }
 
 // applyLifecycle sets the phase a superseded or reverted annotation asks for.
@@ -106,6 +107,9 @@ func applyLifecycle(dp *backflowv1alpha1.DriftProposal) bool {
 		dp.Status.SupersededBy = dp.Annotations[annotationSupersededBy]
 		dp.Status.Message = "A newer drift on the same resource replaced this proposal."
 		leaveProposedIfProposed(dp, reasonSuperseded, "Replaced by the newer proposal "+dp.Status.SupersededBy+".")
+		return true
+	case dp.Annotations[annotationAccessRevoked] != "":
+		setAccessRevoked(dp)
 		return true
 	case dp.Annotations[annotationReverted] != "":
 		dp.Status.Phase = backflowv1alpha1.PhaseReverted
@@ -121,6 +125,23 @@ func applyLifecycle(dp *backflowv1alpha1.DriftProposal) bool {
 		return true
 	}
 	return false
+}
+
+// reasonAccessRevoked is the reason of a proposal ended because its policy may
+// no longer see the Application.
+const reasonAccessRevoked = "AccessRevoked"
+
+// setAccessRevoked ends the proposal. The message names nothing about the
+// Application, which the policy may not see.
+func setAccessRevoked(dp *backflowv1alpha1.DriftProposal) {
+	const msg = "The policy may no longer see this Application, so the proposal was retired."
+	dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
+	dp.Status.Message = msg
+	leaveProposedIfProposed(dp, reasonAccessRevoked, msg)
+	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+		Type: conditionMapped, Status: metav1.ConditionFalse, Reason: reasonAccessRevoked,
+		Message: msg, ObservedGeneration: dp.Generation,
+	})
 }
 
 // leaveProposed records in the Proposed condition that the proposal is no longer
