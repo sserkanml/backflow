@@ -29,6 +29,28 @@ The name of the Deployment, the ServiceAccount and the roles.
 {{- end }}
 
 {{/*
+Where the injected CA bundles are mounted in the pod.
+*/}}
+{{- define "backflow.serviceCAFile" -}}/var/run/argocd-ca/service-ca.crt{{- end }}
+{{- define "backflow.trustedCAFile" -}}/var/run/trusted-ca/ca-bundle.crt{{- end }}
+
+{{/*
+Stops the install when the Argo CD values do not add up.
+*/}}
+{{- define "backflow.validate" -}}
+{{- if .Values.argocd.server }}
+{{- if not (and .Values.argocd.tokenSecret.namespace .Values.argocd.tokenSecret.name) }}
+{{- fail "argocd.server needs argocd.tokenSecret.namespace and argocd.tokenSecret.name" }}
+{{- end }}
+{{- else if or .Values.argocd.tokenSecret.namespace .Values.argocd.tokenSecret.name .Values.argocd.caFile .Values.argocd.serviceCA }}
+{{- fail "argocd.tokenSecret, argocd.caFile and argocd.serviceCA need argocd.server" }}
+{{- end }}
+{{- if and .Values.argocd.serviceCA .Values.argocd.caFile }}
+{{- fail "set argocd.serviceCA or argocd.caFile, not both" }}
+{{- end }}
+{{- end }}
+
+{{/*
 Chart name and version, as used by the chart label.
 */}}
 {{- define "backflow.chart" -}}

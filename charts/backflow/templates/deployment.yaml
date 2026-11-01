@@ -1,3 +1,4 @@
+{{- include "backflow.validate" . }}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.leaderElection) }}
 {{- fail "replicaCount > 1 needs leaderElection: true" }}
 {{- end }}
@@ -55,6 +56,20 @@ spec:
             - --render-budget={{ .Values.renderBudget }}
             - --scm-recheck-interval={{ .Values.scmRecheckInterval }}
             - --secret-cache-ttl={{ .Values.secretCacheTTL }}
+            {{- if .Values.argocd.server }}
+            - --argocd-server={{ .Values.argocd.server }}
+            - --argocd-token-secret-namespace={{ .Values.argocd.tokenSecret.namespace }}
+            - --argocd-token-secret-name={{ .Values.argocd.tokenSecret.name }}
+            - --argocd-token-secret-key={{ .Values.argocd.tokenSecret.key | default "apiToken" }}
+            {{- if .Values.argocd.serviceCA }}
+            - --argocd-ca-file={{ include "backflow.serviceCAFile" . }}
+            {{- else if .Values.argocd.caFile }}
+            - --argocd-ca-file={{ .Values.argocd.caFile }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.trustedCABundle }}
+            - --trusted-ca-file={{ include "backflow.trustedCAFile" . }}
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:8443
             {{- if .Values.metrics.certSecret }}
@@ -101,6 +116,20 @@ spec:
               mountPath: /var/run/metrics-cert
               readOnly: true
             {{- end }}
+            {{- if and .Values.argocd.server .Values.argocd.serviceCA }}
+            # A directory mount, not a single file: a changed ConfigMap reaches the pod without a restart.
+            - name: argocd-service-ca
+              mountPath: /var/run/argocd-ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.trustedCABundle }}
+            - name: trusted-ca
+              mountPath: /var/run/trusted-ca
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: repo-cache
           emptyDir:
@@ -114,6 +143,19 @@ spec:
                 path: tls.crt
               - key: tls.key
                 path: tls.key
+        {{- end }}
+        {{- if and .Values.argocd.server .Values.argocd.serviceCA }}
+        - name: argocd-service-ca
+          configMap:
+            name: {{ include "backflow.fullname" . }}-service-ca
+        {{- end }}
+        {{- if .Values.trustedCABundle }}
+        - name: trusted-ca
+          configMap:
+            name: {{ include "backflow.fullname" . }}-trusted-ca
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

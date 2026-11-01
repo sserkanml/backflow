@@ -59,6 +59,24 @@ func renderTemplates(t *testing.T, templates []string, args ...string) []map[str
 	return normalise(t, text.String())
 }
 
+// renderFails checks that helm refuses the values, with a message that contains want.
+func renderFails(t *testing.T, tpl, want string, args ...string) {
+	t.Helper()
+	if _, err := exec.LookPath("helm"); err != nil {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("the helm binary is not installed")
+		}
+		t.Skip("the helm binary is not installed")
+	}
+	cmd := append([]string{"template", "backflow", "../../charts/backflow", "--namespace", "backflow-system", "--show-only", tpl}, args...)
+	out, err := exec.Command("helm", cmd...).CombinedOutput()
+	if err == nil {
+		t.Errorf("helm accepted %v", args)
+	} else if !strings.Contains(string(out), want) {
+		t.Errorf("helm said %q, want a message with %q", out, want)
+	}
+}
+
 // normalise parses the YAML documents of text, drops empty ones (comments and
 // blank lines vanish with parsing), masks the chart version labels, which change
 // with every release, and sorts the objects by kind, namespace and name.
