@@ -1,0 +1,57 @@
+{{- if .Values.actorWebhook.enabled }}
+{{- $mode := include "backflow.actorTLSMode" . }}
+{{- $name := include "backflow.actorName" . }}
+{{- $excluded := concat (list .Release.Namespace) .Values.actorWebhook.excludeNamespaces | uniq }}
+{{- $backflowUser := printf "system:serviceaccount:%s:%s" .Release.Namespace (include "backflow.serviceAccountName" .) }}
+{{- $quoted := list }}
+{{- range (concat .Values.actorWebhook.excludeUsers (list $backflowUser)) | uniq }}{{ $quoted = append $quoted (printf "'%s'" .) }}{{ end }}
+# Observe only: it never denies. failurePolicy Ignore, sideEffects None, a timeout of a second, and an
+# answer that is always "allowed". It sees updates of resources Argo CD tracks, not Secrets, not dry
+# runs, not status writes, and not the changes of system components and GitOps controllers.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+  {{- if eq $mode "serviceCA" }}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+  {{- else if eq $mode "certManager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ $name }}
+  {{- end }}
+webhooks:
+  - name: actor.backflow.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: {{ int .Values.actorWebhook.timeoutSeconds }}
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            {{- range $excluded }}
+            - {{ . | quote }}
+            {{- end }}
+    rules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["*", "*/scale"]
+        scope: Namespaced
+    {{- if not (semverCompare "<1.28.0-0" .Capabilities.KubeVersion.Version) }}
+    matchConditions:
+      {{- include "backflow.actorConditions" (dict "users" (sortAlpha $quoted | join ", ")) | nindent 6 }}
+    {{- end }}
+    clientConfig:
+      service:
+        name: {{ $name }}
+        namespace: {{ .Release.Namespace }}
+        path: {{ include "backflow.actorPath" . | quote }}
+        port: 443
+      {{- with (include "backflow.actorCABundle" .) }}
+      caBundle: {{ . }}
+      {{- end }}
+{{- end }}

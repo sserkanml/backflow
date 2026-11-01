@@ -91,9 +91,55 @@ unpackFileDependencies: true
 extraVolumes: []
 extraVolumeMounts: []
 
-# The actor webhook (see the README, "Who changed it"): off by default.
+# The actor webhook (README, "Who changed it"): an observe-only admission webhook that tells the
+# operator who changed a resource, so that a proposal can name the user. OFF by default. It always
+# answers "allowed" (failurePolicy Ignore, timeoutSeconds 1), keeps only the paths of the changed
+# fields (never a value) and sees only resources Argo CD tracks. Needs Kubernetes 1.28 or later.
 actorWebhook:
   enabled: false
+  # The ChangeRecords (in the release namespace) are deleted after this.
+  retention: 2h
+  # How often a pod writes what it saw to ChangeRecords.
+  flushInterval: 2s
+  # The most ChangeRecords kept (and records buffered in a pod); the oldest are dropped beyond it.
+  maxRecords: 5000
+  # How far the time of a record may be from the managedFields entry it is checked against.
+  tolerance: 10s
+  # false stores only "person" or "controller" (a service account), no user names or groups.
+  recordUsername: true
+  # Put the user name into the text of merge requests and commits. Git keeps it for ever.
+  usernameInMergeRequest: false
+  # 1 or 2. A webhook that is slow or hung costs every matched request this long.
+  timeoutSeconds: 1
+  # The URL path of the webhook. Empty: a random one, kept across upgrades.
+  path: ""
+  # Namespaces whose resources are never sent to the webhook, besides the release namespace.
+  excludeNamespaces: [kube-system, kube-public, kube-node-lease]
+  # Users whose changes are not wanted, besides the system ones and Backflow's own service account.
+  # OpenShift GitOps: system:serviceaccount:openshift-gitops:openshift-gitops-argocd-application-controller.
+  excludeUsers:
+    - system:serviceaccount:argocd:argocd-application-controller
+  # Allow the webhook on Kubernetes before 1.28, which has no matchConditions: every update of every
+  # namespaced resource then reaches it.
+  allowUnfiltered: false
+  tls:
+    # auto: OpenShift service CA, else cert-manager if its API is installed, else a certificate
+    # made by Helm. Or serviceCA, certManager, helm, secret.
+    mode: auto
+    # mode helm: validity of the certificate in days, and true to make a new one on the next upgrade.
+    days: 1825
+    renew: false
+    # mode secret: a Secret with tls.crt and tls.key, and the CA bundle (PEM) that verifies it.
+    secretName: ""
+    caBundle: ""
+    # mode certManager: the issuer; empty makes a self-signed one.
+    issuerRef: {}
+  networkPolicy:
+    # Allow the webhook port only from the API server. On OpenShift the host-network policy group is
+    # used; elsewhere apiserverCIDRs is required.
+    enabled: true
+    # The addresses the API server calls from (the control-plane nodes), e.g. [10.0.0.4/32].
+    apiserverCIDRs: []
 
 # The time all renders through Argo CD of one verification may take together.
 # A proposal that needs more is Unmapped (RenderBudgetExceeded). Raise it when

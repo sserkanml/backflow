@@ -9,6 +9,8 @@
 #                                                    release namespace (only with actorWebhook.enabled)
 #   - charts/backflow/templates/secrets-role.yaml <- that Secrets rule, as a Role and RoleBinding in
 #                                                    each of secretNamespaces
+#   - charts/backflow/templates/_actor_conditions.tpl <- the match conditions of the actor webhook,
+#                                                    from internal/actorwebhook
 #   - charts/backflow/templates/leader-election-role.yaml
 #                                                 <- rules of config/rbac/leader_election_role.yaml
 #
@@ -161,5 +163,8 @@ subjects:
 {{- end }}
 HEADER
 } >"$CHART/templates/actor-webhook-role.yaml"
+
+# The match conditions of the actor webhook come from the code that is tested against them.
+(cd "$ROOT" && go run ./hack/genactorconditions) >"$CHART/templates/_actor_conditions.tpl"
 
 echo "charts/backflow synced with config/"

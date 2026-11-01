@@ -1,0 +1,162 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/version: <version>
+    control-plane: controller-manager
+    helm.sh/chart: backflow-<version>
+  name: backflow-controller-manager-actor-webhook
+  namespace: backflow-system
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          policy-group.network.openshift.io/host-network: ""
+    ports:
+    - port: 9443
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: backflow
+      app.kubernetes.io/name: backflow
+      control-plane: controller-manager
+  policyTypes:
+  - Ingress
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/version: <version>
+    control-plane: controller-manager
+    helm.sh/chart: backflow-<version>
+  name: backflow-controller-manager-changerecords
+  namespace: backflow-system
+rules:
+- apiGroups:
+  - backflow.io
+  resources:
+  - changerecords
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/version: <version>
+    control-plane: controller-manager
+    helm.sh/chart: backflow-<version>
+  name: backflow-controller-manager-changerecords
+  namespace: backflow-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backflow-controller-manager-changerecords
+subjects:
+- kind: ServiceAccount
+  name: backflow-controller-manager
+  namespace: backflow-system
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: backflow-controller-manager-actor-webhook-tls
+  labels:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/version: <version>
+    control-plane: controller-manager
+    helm.sh/chart: backflow-<version>
+  name: backflow-controller-manager-actor-webhook
+  namespace: backflow-system
+spec:
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: actor-webhook
+  selector:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/name: backflow
+    control-plane: controller-manager
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+  labels:
+    app.kubernetes.io/instance: backflow
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: backflow
+    app.kubernetes.io/version: <version>
+    control-plane: controller-manager
+    helm.sh/chart: backflow-<version>
+  name: backflow-controller-manager-actor-webhook
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: backflow-controller-manager-actor-webhook
+      namespace: backflow-system
+      path: /observe/x
+      port: 443
+  failurePolicy: Ignore
+  matchConditions:
+  - expression: request.resource.resource != 'secrets'
+    name: not-secrets
+  - expression: '!has(request.dryRun) || request.dryRun == false'
+    name: not-dry-run
+  - expression: (has(request.subResource) && request.subResource == 'scale') || (!has(request.subResource)
+      && ((has(object.metadata.annotations) && 'argocd.argoproj.io/tracking-id' in
+      object.metadata.annotations) || (has(object.metadata.labels) && 'app.kubernetes.io/instance'
+      in object.metadata.labels)))
+    name: tracked-or-scale
+  - expression: '!request.userInfo.username.startsWith(''system:serviceaccount:kube-system:'')
+      && !request.userInfo.username.startsWith(''system:node:'') && !(request.userInfo.username
+      in [''system:kube-controller-manager'', ''system:kube-scheduler'']) && !(request.userInfo.username
+      in [''system:serviceaccount:argocd:argocd-application-controller'', ''system:serviceaccount:backflow-system:backflow-controller-manager''])'
+    name: not-system-or-gitops-users
+  name: actor.backflow.io
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - backflow-system
+      - kube-system
+      - kube-public
+      - kube-node-lease
+  rules:
+  - apiGroups:
+    - '*'
+    apiVersions:
+    - '*'
+    operations:
+    - UPDATE
+    resources:
+    - '*'
+    - '*/scale'
+    scope: Namespaced
+  sideEffects: None
+  timeoutSeconds: 1

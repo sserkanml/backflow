@@ -1,0 +1,13 @@
+{{- if and .Values.actorWebhook.enabled (not .Values.actorWebhook.path) }}
+# Keeps the random URL path of the webhook across upgrades (the chart looks it up).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "backflow.actorName" . }}-path
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+type: Opaque
+data:
+  path: {{ include "backflow.actorPath" . | b64enc }}
+{{- end }}

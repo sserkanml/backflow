@@ -1,0 +1,52 @@
+{{- if .Values.actorWebhook.enabled }}
+{{- $mode := include "backflow.actorTLSMode" . }}
+{{- $name := include "backflow.actorName" . }}
+{{- if eq $mode "helm" }}
+{{- $cert := include "backflow.actorCert" . | fromJson }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ $cert.ca | b64enc }}
+  tls.crt: {{ $cert.crt | b64enc }}
+  tls.key: {{ $cert.key | b64enc }}
+{{- else if eq $mode "certManager" }}
+{{- $dns := printf "%s.%s.svc" $name .Release.Namespace }}
+{{- if not .Values.actorWebhook.tls.issuerRef }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $name }}-tls
+  dnsNames:
+    - {{ $dns }}
+    - {{ $dns }}.cluster.local
+  issuerRef:
+    {{- if .Values.actorWebhook.tls.issuerRef }}
+    {{- toYaml .Values.actorWebhook.tls.issuerRef | nindent 4 }}
+    {{- else }}
+    name: {{ $name }}
+    kind: Issuer
+    {{- end }}
+{{- end }}
+{{- end }}
