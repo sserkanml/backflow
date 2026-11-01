@@ -264,14 +264,19 @@ func TestDefaultAccessValuesBecomeFlags(t *testing.T) {
 		{name: "default: no rule, only the operator's namespace", want: []string{"--operator-namespace=backflow-system"}},
 		{
 			name: "one rule",
-			set:  []string{"--set", "argocd.defaultAccess[0].policyNamespaces={team-a}", "--set", "argocd.defaultAccess[0].projects={team-a}"},
+			set: []string{
+				"--set", "argocd.defaultAccess[0].policyNamespaces={team-a}",
+				"--set", "argocd.defaultAccess[0].projects={team-a}",
+			},
 			want: []string{"--operator-namespace=backflow-system", "--argocd-default-access=team-a:team-a"},
 		},
 		{
 			name: "several namespaces and projects, and a wildcard rule",
 			set: []string{
-				"--set", "argocd.defaultAccess[0].policyNamespaces={team-a,team-b}", "--set", "argocd.defaultAccess[0].projects={one,two}",
-				"--set", "argocd.defaultAccess[1].policyNamespaces={*}", "--set", "argocd.defaultAccess[1].projects={*}",
+				"--set", "argocd.defaultAccess[0].policyNamespaces={team-a,team-b}",
+				"--set", "argocd.defaultAccess[0].projects={one,two}",
+				"--set", "argocd.defaultAccess[1].policyNamespaces={*}",
+				"--set", "argocd.defaultAccess[1].projects={*}",
 			},
 			want: []string{
 				"--operator-namespace=backflow-system",
