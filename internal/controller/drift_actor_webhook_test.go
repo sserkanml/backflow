@@ -2,8 +2,11 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"time"
 
@@ -212,5 +215,94 @@ var _ = Describe("Actor records", func() {
 			}
 			Expect(uids).To(ConsistOf("uid-sweep-0", "uid-sweep-1", "uid-sweep-2"), "the expired one and the oldest beyond 3 are gone")
 		})
+	})
+})
+
+var _ = Describe("Actor webhook, from the review to the proposal", func() {
+	const ns = "default"
+	var (
+		ctx     = context.Background()
+		now     = time.Now().UTC().Truncate(time.Second)
+		created []client.Object
+	)
+	review := func(user, manager, uid string) string {
+		return fmt.Sprintf(`{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionReview","request":{
+ "uid":"r-1","operation":"UPDATE","resource":{"group":"","version":"v1","resource":"configmaps"},
+ "namespace":"demo","name":"cfg","userInfo":{"username":%q,"groups":["devs","system:authenticated"]},
+ "options":{"kind":"UpdateOptions","fieldManager":%q},
+ "oldObject":{"metadata":{"uid":%q,"resourceVersion":"5"},"data":{"LOG_LEVEL":"info"}},
+ "object":{"metadata":{"uid":%q,"resourceVersion":"6"},"data":{"LOG_LEVEL":"debug"}}}}`, user, manager, uid, uid)
+	}
+	live := func(uid, manager string) map[string]any {
+		return map[string]any{
+			"metadata": map[string]any{"uid": uid, "managedFields": []any{map[string]any{
+				"manager": manager, "operation": "Update", "time": now.Format(time.RFC3339), "fieldsType": "FieldsV1",
+				"fieldsV1": map[string]any{"f:data": map[string]any{"f:LOG_LEVEL": map[string]any{}}},
+			}}},
+			"data": map[string]any{"LOG_LEVEL": "debug"},
+		}
+	}
+	changes := []backflowv1alpha1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
+	flow := func(recordUsername bool, bodies ...string) *ActorRecords {
+		buf := actorwebhook.NewBuffer(100)
+		h := actorwebhook.NewHandler(actorwebhook.Options{Buffer: buf, RecordUsername: recordUsername, Now: func() time.Time { return now }})
+		for _, b := range bodies {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/observe/x", strings.NewReader(b)))
+			ExpectWithOffset(1, rec.Body.String()).To(ContainSubstring(`"allowed":true`))
+		}
+		for _, r := range buf.Drain() {
+			obj := actorwebhook.ToChangeRecord(r, ns)
+			ExpectWithOffset(1, k8sClient.Create(ctx, obj)).To(Succeed())
+			created = append(created, obj)
+		}
+		return &ActorRecords{Reader: k8sClient, Namespace: ns}
+	}
+	AfterEach(func() {
+		for _, o := range created {
+			Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, o))).To(Succeed())
+		}
+		created = nil
+	})
+	actor := func(mgr string) *backflowv1alpha1.Actor {
+		return &backflowv1alpha1.Actor{Manager: mgr, Operation: "Update", Time: &metav1.Time{Time: now}}
+	}
+
+	It("names the user who patched the ConfigMap", func() {
+		a := flow(true, review("alice", "kubectl-patch", "uid-e2e-1"))
+		got := a.Refine(ctx, live("uid-e2e-1", "kubectl-patch"), changes, actor("kubectl-patch"))
+		Expect(got.Username).To(Equal("alice"))
+		Expect(got.Groups).To(ConsistOf("devs", "system:authenticated"))
+		Expect(string(got.Kind)).To(Equal("person"))
+	})
+
+	It("does not name a user who is claimed by a review nobody made", func() {
+		// Mallory posts a review for a change that managedFields attribute to kubectl-patch by someone else,
+		// naming another manager and another time.
+		forged := review("mallory", "kubectl-edit", "uid-e2e-2")
+		a := flow(true, forged)
+		got := a.Refine(ctx, live("uid-e2e-2", "kubectl-patch"), changes, actor("kubectl-patch"))
+		Expect(got.Username).To(BeEmpty())
+	})
+
+	It("stores no name at all when it is told not to", func() {
+		a := flow(false, review("alice", "kubectl-patch", "uid-e2e-3"))
+		var list backflowv1alpha1.ChangeRecordList
+		Expect(k8sClient.List(ctx, &list, client.InNamespace(ns), client.MatchingLabels{actorwebhook.LabelObjectUID: "uid-e2e-3"})).To(Succeed())
+		Expect(list.Items).To(HaveLen(1))
+		stored, _ := json.Marshal(list.Items[0])
+		Expect(string(stored)).NotTo(Or(ContainSubstring("alice"), ContainSubstring("devs")))
+		got := a.Refine(ctx, live("uid-e2e-3", "kubectl-patch"), changes, actor("kubectl-patch"))
+		Expect(got.Username).To(BeEmpty())
+		Expect(string(got.Kind)).To(Equal("person"))
+	})
+
+	It("never records a value", func() {
+		flow(true, review("alice", "kubectl-patch", "uid-e2e-4"))
+		var list backflowv1alpha1.ChangeRecordList
+		Expect(k8sClient.List(ctx, &list, client.InNamespace(ns), client.MatchingLabels{actorwebhook.LabelObjectUID: "uid-e2e-4"})).To(Succeed())
+		stored, _ := json.Marshal(list.Items[0].Spec)
+		Expect(string(stored)).To(ContainSubstring("/data/LOG_LEVEL"))
+		Expect(string(stored)).NotTo(Or(ContainSubstring(`"debug"`), ContainSubstring(`"info"`)))
 	})
 })
