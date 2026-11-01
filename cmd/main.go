@@ -69,6 +69,8 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var argoCD controller.ArgoCDDefaults
+	var trustedCAFile string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -99,6 +101,20 @@ func main() {
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
+	flag.StringVar(&argoCD.Server, "argocd-server", "",
+		"The Argo CD API server that BackflowPolicies without spec.argoCD use, e.g. "+
+			"https://openshift-gitops-server.openshift-gitops.svc. Set by the installer only: a policy cannot change it.")
+	flag.StringVar(&argoCD.TokenSecretNamespace, "argocd-token-secret-namespace", "",
+		"The namespace of the Secret that holds the Argo CD token for --argocd-server.")
+	flag.StringVar(&argoCD.TokenSecretName, "argocd-token-secret-name", "",
+		"The name of that Secret (OpenShift GitOps writes <user>-local-user).")
+	flag.StringVar(&argoCD.TokenSecretKey, "argocd-token-secret-key", controller.DefaultArgoCDTokenKey,
+		"The key of the token in that Secret.")
+	flag.StringVar(&argoCD.CAFile, "argocd-ca-file", "",
+		"A PEM CA bundle file that verifies --argocd-server. It is read again when it changes, no restart is needed.")
+	flag.StringVar(&trustedCAFile, "trusted-ca-file", "",
+		"A PEM CA bundle file of extra roots for the connections to GitLab and GitHub of ScmConnections that have "+
+			"no caSecretRef (for example the trusted CA bundle OpenShift injects). Read again when it changes.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	opts := zap.Options{
@@ -108,6 +124,16 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if err := argoCD.Validate(); err != nil {
+		setupLog.Error(err, "Invalid Argo CD flags")
+		os.Exit(1)
+	}
+	if argoCD.Configured() {
+		setupLog.Info("Policies without spec.argoCD use the default Argo CD connection", "server", argoCD.Server,
+			"tokenSecret", argoCD.TokenSecretNamespace+"/"+argoCD.TokenSecretName, "caFile", argoCD.CAFile)
+	}
+	controller.UseTrustedCAFile(trustedCAFile)
 
 	// Fail at startup, not after minutes of retries, when the repository
 	// cache cannot be written (for example a read-only root file system
@@ -229,6 +255,7 @@ func main() {
 		Client:   k8sClient,
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("backflow-policy"),
+		ArgoCD:   &argoCD,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "backflowpolicy")
 		os.Exit(1)
@@ -242,6 +269,7 @@ func main() {
 		Recorder:      mgr.GetEventRecorder("backflow-driftproposal"),
 		TrackInterval: mrPollInterval,
 		RenderBudget:  renderBudget,
+		ArgoCD:        &argoCD,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)
@@ -251,6 +279,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("backflow-drift"),
 		Git:      repoCache,
+		ArgoCD:   &argoCD,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
 		os.Exit(1)

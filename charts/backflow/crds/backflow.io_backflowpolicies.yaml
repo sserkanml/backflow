@@ -118,7 +118,11 @@ spec:
               argoCD:
                 description: |-
                   Argo CD API connection used to read managed resources for drift detection.
-                  Drift detection is skipped while this is unset.
+                  When unset, the connection the installer gave the operator (its flags
+                  --argocd-server, --argocd-token-secret-* and --argocd-ca-file; the chart
+                  values argocd.*) is used, and status.argoCD says so. Drift detection is
+                  skipped while neither exists. A policy can only name Secrets of its own
+                  namespace; it cannot point the operator at a Secret elsewhere.
                 properties:
                   caSecretRef:
                     description: Secret key holding a PEM CA bundle used to verify
@@ -556,6 +560,23 @@ spec:
                   - name
                   type: object
                 type: array
+              argoCD:
+                description: Which Argo CD connection the policy uses. Unset while
+                  there is none.
+                properties:
+                  source:
+                    description: Policy (spec.argoCD) or OperatorDefault.
+                    enum:
+                    - Policy
+                    - OperatorDefault
+                    type: string
+                  url:
+                    description: The Argo CD API server it talks to. Never a token.
+                    type: string
+                required:
+                - source
+                - url
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

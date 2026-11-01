@@ -55,7 +55,11 @@ type BackflowPolicySpec struct {
 	Mode BackflowMode `json:"mode,omitempty"`
 
 	// Argo CD API connection used to read managed resources for drift detection.
-	// Drift detection is skipped while this is unset.
+	// When unset, the connection the installer gave the operator (its flags
+	// --argocd-server, --argocd-token-secret-* and --argocd-ca-file; the chart
+	// values argocd.*) is used, and status.argoCD says so. Drift detection is
+	// skipped while neither exists. A policy can only name Secrets of its own
+	// namespace; it cannot point the operator at a Secret elsewhere.
 	// +optional
 	ArgoCD *ArgoCDServer `json:"argoCD,omitempty"`
 
@@ -393,6 +397,28 @@ type BackflowPolicyStatus struct {
 	// DriftProposals not yet merged, rejected or reverted.
 	// +optional
 	OpenProposals int32 `json:"openProposals,omitempty"`
+	// Which Argo CD connection the policy uses. Unset while there is none.
+	// +optional
+	ArgoCD *ArgoCDStatus `json:"argoCD,omitempty"`
+}
+
+// ArgoCDSource says where the Argo CD connection of a policy comes from.
+// +kubebuilder:validation:Enum=Policy;OperatorDefault
+type ArgoCDSource string
+
+const (
+	// ArgoCDSourcePolicy is spec.argoCD of the policy.
+	ArgoCDSourcePolicy ArgoCDSource = "Policy"
+	// ArgoCDSourceOperatorDefault is the connection the installer gave the operator.
+	ArgoCDSourceOperatorDefault ArgoCDSource = "OperatorDefault"
+)
+
+// ArgoCDStatus is the Argo CD connection a policy uses.
+type ArgoCDStatus struct {
+	// Policy (spec.argoCD) or OperatorDefault.
+	Source ArgoCDSource `json:"source"`
+	// The Argo CD API server it talks to. Never a token.
+	URL string `json:"url"`
 }
 
 // ApplicationSummary is what Backflow knows about a matched Argo CD Application.

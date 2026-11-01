@@ -71,6 +71,8 @@ type DriftProposalReconciler struct {
 	// NewChartArgo builds the Argo CD client that reads the values of a chart
 	// and renders by revision, for multi-source Applications. Defaults to argocd.New.
 	NewChartArgo func(argocd.Config) (ChartArgo, error)
+	// ArgoCD is the connection policies without spec.argoCD use. Optional.
+	ArgoCD *ArgoCDDefaults
 	// RenderBudget is the time all renders of one verification may take
 	// together. Zero means rendermap.DefaultBudget.
 	RenderBudget time.Duration

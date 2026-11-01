@@ -40,8 +40,17 @@ func secretKey(ctx context.Context, c client.Reader, namespace string, ref corev
 // the Secrets it names. The drift controller (managed resources) and the
 // proposal controller (rendering) both use it, so they talk to Argo CD with
 // the same URL, token and TLS settings.
-func argoCDConfig(ctx context.Context, c client.Reader, policy *backflowv1alpha1.BackflowPolicy) (argocd.Config, error) {
+//
+// A policy without spec.argoCD uses the connection the installer gave the operator
+// (defaults); with spec.argoCD, its own Secrets in its own namespace are read as before.
+func argoCDConfig(ctx context.Context, c client.Reader, policy *backflowv1alpha1.BackflowPolicy, defaults *ArgoCDDefaults) (argocd.Config, error) {
 	spec := policy.Spec.ArgoCD
+	if spec == nil {
+		if !defaults.Configured() {
+			return argocd.Config{}, fmt.Errorf("policy %q has no spec.argoCD and the operator has no default Argo CD connection", policy.Name)
+		}
+		return defaultArgoCDConfig(ctx, c, defaults)
+	}
 	token, err := secretKey(ctx, c, policy.Namespace, spec.TokenSecretRef)
 	if err != nil {
 		return argocd.Config{}, fmt.Errorf("token for Argo CD: %w", err)
@@ -60,6 +69,12 @@ func argoCDConfig(ctx context.Context, c client.Reader, policy *backflowv1alpha1
 		}
 	}
 	return cfg, nil
+}
+
+// forgetArgoCDSecrets drops the Secrets kept in memory that hold the Argo CD token of
+// the policy, after Argo CD refused it: it may have been renewed since it was read.
+func forgetArgoCDSecrets(c client.Reader, policy *backflowv1alpha1.BackflowPolicy, defaults *ArgoCDDefaults) {
+	forgetSecrets(c, argoSecretNamespace(policy, defaults))
 }
 
 // cachedArgoClient is the Argo CD client of a policy and what it was built from.

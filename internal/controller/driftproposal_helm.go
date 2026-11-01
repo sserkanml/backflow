@@ -314,10 +314,10 @@ func helmAppOf(app *unstructured.Unstructured) rendermap.App {
 // renderer returns the proposal's policy's renderer: it talks to Argo CD with
 // the policy's URL, token and TLS settings, the same as the drift controller.
 func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (rendermap.Renderer, error) {
-	if policy.Spec.ArgoCD == nil {
-		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD", policy.Name)}
+	if _, ok := argoCDSource(policy, r.ArgoCD); !ok {
+		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD and the operator has no default Argo CD connection", policy.Name)}
 	}
-	cfg, err := argoCDConfig(ctx, r.Client, policy)
+	cfg, err := argoCDConfig(ctx, r.Client, policy, r.ArgoCD)
 	if err != nil {
 		return nil, &heldError{reason: reasonArgoCDCredentials, cause: err}
 	}

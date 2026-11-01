@@ -53,6 +53,8 @@ type BackflowPolicyReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
+	// ArgoCD is the connection policies without spec.argoCD use. Optional.
+	ArgoCD *ArgoCDDefaults
 
 	mu       sync.Mutex
 	reported map[string]string // policy/application -> redacted repoURL an Event was emitted for
@@ -174,6 +176,9 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		cond.Status = metav1.ConditionTrue
 		cond.Reason = "Resolved"
 		cond.Message = fmt.Sprintf("Watching %d application(s)", len(apps)-len(withCredentials))
+		if d := describeArgoCD(argoCDStatus(&policy, r.ArgoCD)); d != "" {
+			cond.Message += "; " + d
+		}
 		if len(withCredentials) > 0 {
 			cond.Message += fmt.Sprintf("; not tracked because a repository URL contains credentials: %s",
 				strings.Join(withCredentials, ", "))
@@ -184,6 +189,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	policy.Status.MatchedApplications = names
 	policy.Status.Applications = summaries
 	policy.Status.OpenProposals = open
+	policy.Status.ArgoCD = argoCDStatus(&policy, r.ArgoCD)
 	meta.SetStatusCondition(&policy.Status.Conditions, cond)
 
 	if err := r.Status().Update(ctx, &policy); err != nil {
@@ -212,6 +218,16 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) error {
 	spec := policy.Spec.ArgoCD
 	if spec == nil {
+		// The token of the operator's default connection, in the namespace the installer named.
+		if !r.ArgoCD.Configured() {
+			return nil
+		}
+		ref := r.ArgoCD.tokenRef()
+		var secret corev1.Secret
+		err := r.Get(ctx, types.NamespacedName{Namespace: r.ArgoCD.TokenSecretNamespace, Name: ref.Name}, &secret)
+		if err = secretReadError(err, r.ArgoCD.TokenSecretNamespace, ref.Name); isSecretForbidden(err) {
+			return err
+		}
 		return nil
 	}
 	refs := []corev1.SecretKeySelector{spec.TokenSecretRef}

@@ -48,10 +48,10 @@ type ChartArgo interface {
 // chartArgo returns the policy's Argo CD client for charts and renders by
 // revision, cached per policy like the renderer.
 func (r *DriftProposalReconciler) chartArgo(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (ChartArgo, error) {
-	if policy.Spec.ArgoCD == nil {
-		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD", policy.Name)}
+	if _, ok := argoCDSource(policy, r.ArgoCD); !ok {
+		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD and the operator has no default Argo CD connection", policy.Name)}
 	}
-	cfg, err := argoCDConfig(ctx, r.Client, policy)
+	cfg, err := argoCDConfig(ctx, r.Client, policy, r.ArgoCD)
 	if err != nil {
 		return nil, &heldError{reason: reasonArgoCDCredentials, cause: err}
 	}

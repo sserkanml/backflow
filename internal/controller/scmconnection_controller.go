@@ -199,6 +199,17 @@ func (r *ScmConnectionReconciler) httpClient(ctx context.Context, conn *backflow
 			return nil, fmt.Errorf("CA bundle in secret %q contains no valid PEM certificates", conn.Spec.CASecretRef.Name)
 		}
 		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	} else if trusted, err := trustedCABundle(); err != nil {
+		return nil, fmt.Errorf("reading the trusted CA bundle of the operator: %w", err)
+	} else if trusted != nil {
+		// No CA of its own: the roots the cluster trusts for outgoing connections (the
+		// company CA of a proxy, for example) on top of the system's.
+		pool, perr := x509.SystemCertPool()
+		if perr != nil {
+			pool = x509.NewCertPool()
+		}
+		pool.AppendCertsFromPEM(trusted)
+		transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
 
 	return &http.Client{Transport: transport, Timeout: scmHTTPTimeout}, nil
