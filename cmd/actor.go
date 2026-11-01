@@ -30,7 +30,8 @@ type actorOptions struct {
 func (o *actorOptions) bind() {
 	flag.BoolVar(&o.enabled, "actor-webhook", false,
 		"Serve the observe-only admission webhook that tells who changed a resource, and use its records to name "+
-			"the user of a proposal. The webhook always answers allowed. Needs --operator-namespace and the webhook certificate flags.")
+			"the user of a proposal. The webhook always answers allowed. Needs --operator-namespace and the webhook "+
+			"certificate flags.")
 	flag.StringVar(&o.path, "actor-webhook-path", "/observe",
 		"The URL path of the actor webhook. The chart makes it unguessable and puts it in the webhook configuration.")
 	flag.DurationVar(&o.retention, "actor-retention", actorwebhook.DefaultRetention, "How long a ChangeRecord is kept.")
