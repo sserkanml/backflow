@@ -288,3 +288,25 @@ func TestRequestsAreCounted(t *testing.T) {
 		}
 	})
 }
+
+func TestVersion(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/version" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"Version":"v3.5.3+abc1234","BuildDate":"2026-01-01"}`))
+	})
+	got, err := c.Version(t.Context())
+	if err != nil || got != "v3.5.3+abc1234" {
+		t.Errorf("version = %q, %v", got, err)
+	}
+	bad := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	if _, err := bad.Version(t.Context()); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("an answer without a version: %v", err)
+	}
+	down := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+	if _, err := down.Version(t.Context()); !errors.Is(err, ErrUnreachable) {
+		t.Errorf("a 502: %v", err)
+	}
+}
