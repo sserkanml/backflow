@@ -430,3 +430,59 @@ func TestMatchChecksTheRecordAgainstManagedFields(t *testing.T) {
 		t.Errorf("a wider tolerance accepts it: %q", v.Result)
 	}
 }
+
+func TestMatchSubresourceForRecordsWithoutAManager(t *testing.T) {
+	at := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	actor := managedfields.Owner{Manager: "kubectl", Operation: "Update", Time: at, Paths: []string{"/spec/replicas"}}
+	entry := func(mut func(*managedfields.Entry)) managedfields.Entry {
+		e := managedfields.Entry{Manager: "kubectl", Operation: "Update", Subresource: "scale", Time: at, Paths: []string{"/spec/replicas"}}
+		mut(&e)
+		return e
+	}
+	scale := func(mut func(*Record)) Record {
+		r := Record{UID: "U1", SubResource: "scale", Username: "alice", Kind: KindPerson, Paths: []string{"/spec/replicas"},
+			LastSeen: at.Add(2 * time.Second)}
+		mut(&r)
+		return r
+	}
+	tests := []struct {
+		name    string
+		entries []managedfields.Entry
+		records []Record
+		want    string
+		user    string
+	}{
+		{"a scale record against the scale entry", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(*Record) {})}, metrics.ActorMatched, "alice"},
+		{"an entry without that subresource", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Subresource = "" })}, []Record{scale(func(*Record) {})}, metrics.ActorManagerMismatch, ""},
+		{"an entry of another subresource", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Subresource = "status" })}, []Record{scale(func(*Record) {})}, metrics.ActorManagerMismatch, ""},
+		{"a forged record outside the tolerance", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.LastSeen = at.Add(time.Minute) })}, metrics.ActorTimeMismatch, ""},
+		{"a record just inside the tolerance", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.LastSeen = at.Add(10 * time.Second) })}, metrics.ActorMatched, "alice"},
+		{"another object", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.UID = "U2" })}, metrics.ActorNoRecord, ""},
+		{"a path the entry does not own", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.Paths = []string{"/spec/template"} })}, metrics.ActorPathMismatch, ""},
+		{"the entry of a manager that is not the actor", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Manager = "oc" })}, []Record{scale(func(*Record) {})}, metrics.ActorManagerMismatch, ""},
+		{"an entry with no time", []managedfields.Entry{entry(func(e *managedfields.Entry) { e.Time = time.Time{} })}, []Record{scale(func(*Record) {})}, metrics.ActorTimeMismatch, ""},
+		{"a record that has a manager is not accepted here", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.FieldManager = "kubectl" })}, metrics.ActorNoRecord, ""},
+		{"a record without a subresource is not accepted here", []managedfields.Entry{entry(func(*managedfields.Entry) {})}, []Record{scale(func(r *Record) { r.SubResource = "" })}, metrics.ActorNoRecord, ""},
+		{"the closest entry in time wins among two writes", []managedfields.Entry{
+			entry(func(e *managedfields.Entry) { e.Time = at.Add(-8 * time.Second) }),
+			entry(func(e *managedfields.Entry) { e.Time = at.Add(time.Second) }),
+		}, []Record{scale(func(*Record) {})}, metrics.ActorMatched, "alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := MatchSubresource("U1", actor, tt.entries, tt.records, DefaultTolerance)
+			if v.Result != tt.want || v.Record.Username != tt.user {
+				t.Errorf("result %q user %q, want %q %q", v.Result, v.Record.Username, tt.want, tt.user)
+			}
+		})
+	}
+}
+
+func TestStrictMatchStillRefusesARecordWithoutAManager(t *testing.T) {
+	at := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
+	owner := managedfields.Owner{Manager: "kubectl", Operation: "Update", Time: at, Paths: []string{"/spec/replicas"}}
+	rec := Record{UID: "U1", SubResource: "scale", Username: "alice", Paths: []string{"/spec/replicas"}, LastSeen: at}
+	if v := Match("U1", owner, []Record{rec}, DefaultTolerance); v.Result != metrics.ActorManagerMismatch {
+		t.Errorf("Match must keep refusing an empty manager, got %q", v.Result)
+	}
+}

@@ -58,6 +58,14 @@ func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes 
 		records = append(records, actorwebhook.FromChangeRecord(&list.Items[i]))
 	}
 	verdict := actorwebhook.Match(uid, attr.Latest, records, a.Tolerance)
+	if verdict.Result != metrics.ActorMatched {
+		// A write to a subresource (kubectl scale) has no field manager in the request.
+		if entries, err := managedfields.Entries(live, pointers); err == nil {
+			if sub := actorwebhook.MatchSubresource(uid, attr.Latest, entries, records, a.Tolerance); sub.Result == metrics.ActorMatched {
+				verdict = sub
+			}
+		}
+	}
 	metrics.ActorMatch(verdict.Result)
 	if verdict.Result != metrics.ActorMatched {
 		return actor

@@ -278,3 +278,21 @@ func TestClassify(t *testing.T) {
 		}
 	}
 }
+
+func TestEntriesKeepTheSubresourceAndLeaveOutArgoCD(t *testing.T) {
+	scale := mf("kubectl", OperationUpdate, t2, obj{"f:spec": obj{"f:replicas": obj{}}})
+	scale["subresource"] = "scale"
+	argo := mf("argocd-controller", OperationApply, t3, obj{"f:spec": obj{"f:replicas": obj{}}})
+	other := mf("kubectl-edit", OperationUpdate, t1, obj{"f:data": obj{"f:KEEP": obj{}}})
+	got, err := Entries(live(obj{"replicas": 3}, other, scale, argo), []string{"/spec/replicas"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Manager != "kubectl" || got[0].Subresource != "scale" || got[0].Operation != OperationUpdate ||
+		got[0].Time.Format(time.RFC3339) != t2 || len(got[0].Paths) != 1 || got[0].Paths[0] != "/spec/replicas" {
+		t.Errorf("entries: %+v", got)
+	}
+	if none, err := Entries(obj{"metadata": obj{}}, []string{"/spec/replicas"}); err != nil || none != nil {
+		t.Errorf("no managedFields: %v %v", none, err)
+	}
+}

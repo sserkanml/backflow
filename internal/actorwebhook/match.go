@@ -79,3 +79,56 @@ func overlap(a, b []string) bool {
 	}
 	return false
 }
+
+// MatchSubresource is Match for the records that have no field manager. The API server leaves
+// options.fieldManager empty for a write to a subresource (kubectl scale, oc scale) although it
+// writes a managedFields entry for it, with the manager derived from the user agent and the
+// subresource in it. Such a record counts when an entry of the same manager and operation as
+// the actor (the latest owner, so the name goes with the manager that is shown) has the
+// record's subresource, the object's uid is the record's, the entry was written within
+// tolerance of the record's last change, and it owns a path the record names. A record that has
+// a manager is never looked at here: Match keeps the strict check for those.
+func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfields.Entry, records []Record,
+	tolerance time.Duration) Verdict {
+	if tolerance <= 0 {
+		tolerance = DefaultTolerance
+	}
+	best, bestDelta := -1, time.Duration(math.MaxInt64)
+	result := metrics.ActorNoRecord
+	rank := map[string]int{metrics.ActorNoRecord: 0, metrics.ActorManagerMismatch: 1, metrics.ActorTimeMismatch: 2, metrics.ActorPathMismatch: 3}
+	note := func(r string) {
+		if rank[r] > rank[result] {
+			result = r
+		}
+	}
+	for i, rec := range records {
+		if rec.UID != uid || rec.FieldManager != "" || rec.SubResource == "" {
+			continue
+		}
+		var near []managedfields.Entry // the entries of the actor with the record's subresource
+		for _, e := range entries {
+			if e.Manager == actor.Manager && e.Operation == actor.Operation && e.Subresource == rec.SubResource {
+				near = append(near, e)
+			}
+		}
+		if len(near) == 0 {
+			note(metrics.ActorManagerMismatch)
+			continue
+		}
+		for _, e := range near {
+			delta := rec.LastSeen.Sub(e.Time).Abs()
+			switch {
+			case e.Time.IsZero() || delta > tolerance:
+				note(metrics.ActorTimeMismatch)
+			case !overlap(rec.Paths, e.Paths):
+				note(metrics.ActorPathMismatch)
+			case delta < bestDelta:
+				best, bestDelta = i, delta
+			}
+		}
+	}
+	if best < 0 {
+		return Verdict{Result: result}
+	}
+	return Verdict{Record: records[best], Result: metrics.ActorMatched}
+}

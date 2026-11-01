@@ -99,7 +99,7 @@ LOCAL_USER_SECRET="${LOCAL_USER_SECRET:-backflow-local-user}"
 # certificate made here, ChangeRecords in $NS) and a ValidatingWebhookConfiguration with a clientConfig.url to
 # this machine's address on the local network (HOST_IP, as test-application-values.sh does for its git server)
 # is registered for the demo namespace. Section i asserts that spec.actor.username of a proposal made after a
-# kubectl patch is the user of kubectl, and that no match condition of the webhook failed to evaluate.
+# kubectl patch and after a kubectl scale (which sends no field manager) is the user of kubectl, and that no match condition of the webhook failed to evaluate.
 # Not with IN_CLUSTER: the chart installs the webhook there.
 ACTOR_WEBHOOK="${ACTOR_WEBHOOK:-false}"
 ACTOR_CONFIG="backflow-actor-e2e"
@@ -1441,6 +1441,24 @@ if [[ -n "$P_I" ]]; then
 else
   fail "no proposal to look at"
 fi
+
+# kubectl scale sends no field manager; the record is matched to the scale entry of managedFields instead.
+REPL_GIT="$(k -n "$DEMO_NS" get deploy demo -o jsonpath='{.spec.replicas}')"
+REPL_TO=$((REPL_GIT + 1))
+PROPOSALS_OF=demo
+k -n "$DEMO_NS" scale deploy demo --replicas="$REPL_TO" >/dev/null
+wait_for "proposal is held in Mapping (replicas $REPL_GIT -> $REPL_TO)" has_proposal Mapping "/spec/replicas:Replace:$REPL_GIT>$REPL_TO"
+remember_proposals
+P_IS="$(proposal_with Mapping ">$REPL_TO" | head -n 1)"
+if [[ -n "$P_IS" ]]; then
+  expect_eq "spec.actor.username after kubectl scale" "$WHO_I" "$(dp_field "$P_IS" .spec.actor.username)"
+  expect_eq "spec.actor.kind after kubectl scale" "person" "$(dp_field "$P_IS" .spec.actor.kind)"
+else
+  fail "no proposal for the scale"
+fi
+k -n "$DEMO_NS" scale deploy demo --replicas="$REPL_GIT" >/dev/null
+PROPOSALS_OF=""
+
 ERRORS_AFTER="$(k get --raw /metrics | awk -v n="$ACTOR_CONFIG" 'index($0, "apiserver_admission_match_condition_evaluation_errors_total{") == 1 && index($0, n) > 0 { s += $NF } END { printf "%d\n", s }')"
 expect_eq "match conditions that failed to evaluate (a failed condition switches the webhook off, silently)" "$ERRORS_BEFORE" "$ERRORS_AFTER"
 expect_eq "match conditions that failed to evaluate, in all" "0" "$ERRORS_AFTER"
