@@ -26,7 +26,7 @@ func textProposal() *backflowv1alpha1.DriftProposal {
 				{Path: "/data/NEW", Op: backflowv1alpha1.OpAdd, Live: `"x"`},
 				{Path: "/data/OLD", Op: backflowv1alpha1.OpRemove, Desired: `"y"`},
 			},
-			Actor:      &backflowv1alpha1.Actor{Username: "alice", UserAgent: "kubectl/v1.30"},
+			Actor:      &backflowv1alpha1.Actor{Username: "alice"},
 			DetectedAt: metav1.NewTime(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)),
 		},
 	}
@@ -112,7 +112,7 @@ func TestMergeRequestBody(t *testing.T) {
 	for _, want := range []string{
 		"**Resource:** ConfigMap demo/demo-config",
 		"**Application:** argocd/demo-app",
-		"**Changed by:** alice (kubectl/v1.30)",
+		"**Changed by:** alice",
 		"**Detected:** 2026-03-04 05:06:07 UTC",
 		"| Path | Git value | Live value |",
 		"| ` /data/LOG_LEVEL ` | ` \"info\" ` | ` \"debug\" ` |",
@@ -423,7 +423,7 @@ func TestTextNamesTheManager(t *testing.T) {
 		dp := textProposal()
 		dp.Spec.Actor.Manager, dp.Spec.Actor.Operation = "kubectl-edit", "Update"
 		body := mergeRequestBody(dp, nil, nil, "")
-		if !strings.Contains(body, "**Changed by:** alice (kubectl/v1.30)") || !strings.Contains(body, "**Changed with:** kubectl-edit (Update)\n") {
+		if !strings.Contains(body, "**Changed by:** alice") || !strings.Contains(body, "**Changed with:** kubectl-edit (Update)\n") {
 			t.Errorf("body =\n%s", body)
 		}
 	})

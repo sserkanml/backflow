@@ -552,7 +552,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				Changes: []backflowv1alpha1.FieldChange{{
 					Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`,
 				}},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice", UserAgent: "kubectl"},
+				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}
@@ -619,7 +619,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(req.Title).To(Equal("backflow: sync ConfigMap demo/demo-config from cluster"))
 			Expect(req.Body).To(ContainSubstring("| ` /data/LOG_LEVEL ` | ` \"info\" ` | ` \"debug\" ` |"))
 			Expect(req.Body).To(ContainSubstring("-  LOG_LEVEL: info\n+  LOG_LEVEL: debug\n"))
-			Expect(req.Body).To(ContainSubstring("**Changed by:** alice (kubectl)"))
+			Expect(req.Body).To(ContainSubstring("**Changed by:** alice"))
 			Expect(req.Body).To(ContainSubstring("DriftProposal: `default/prop-dp`"))
 			Expect(req.Body).To(ContainSubstring("lets Argo CD revert"))
 			Expect(req.Labels).To(Equal([]string{"backflow"}))

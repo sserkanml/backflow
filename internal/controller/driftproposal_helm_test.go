@@ -286,7 +286,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 					Path: "helm/demo", Type: backflowv1alpha1.SourceHelm,
 				},
 				Changes:    []backflowv1alpha1.FieldChange{regionChange},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice", UserAgent: "kubectl"},
+				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}
