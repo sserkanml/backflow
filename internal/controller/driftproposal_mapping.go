@@ -305,6 +305,13 @@ func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflow
 // soon as the problem is gone.
 func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason string, cause error) (ctrl.Result, error) {
 	cause = errors.New(redactText(cause.Error()))
+	if reason == reasonArgoCDUnauthorized {
+		// The Argo CD token may have been renewed: the next attempt reads its Secret again.
+		forgetSecrets(r.Client, dp.Namespace)
+		if r.ArgoCD.Configured() {
+			forgetSecrets(r.Client, r.ArgoCD.TokenSecretNamespace)
+		}
+	}
 	delay := r.retryDelay(dp)
 	orig := dp.DeepCopy()
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{

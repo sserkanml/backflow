@@ -88,6 +88,8 @@ type DriftReconciler struct {
 	stableMu sync.Mutex
 	pending  map[pendingKey]*pendingDrift // drifts seen but not yet stable enough to propose
 
+	// ArgoCD is the connection policies without spec.argoCD use. Optional.
+	ArgoCD      *ArgoCDDefaults
 	argoClients argoClientCache[ManagedResourcesGetter] // per policy, so connections are reused
 }
 
@@ -123,9 +125,9 @@ func (r *DriftReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if policy.Spec.ArgoCD == nil {
+	if _, ok := argoCDSource(&policy, r.ArgoCD); !ok {
 		r.forgetPolicy(policy.Namespace + "/" + policy.Name)
-		log.V(1).Info("The policy has no spec.argoCD; drift detection is off for it")
+		log.V(1).Info("The policy has no spec.argoCD and the operator has no default Argo CD connection; drift detection is off for it")
 		return ctrl.Result{}, nil
 	}
 	if ready := meta.FindStatusCondition(policy.Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionTrue {
@@ -357,12 +359,19 @@ func (r *DriftReconciler) detectDrift(ctx context.Context, run *appRun) error {
 	}
 	log := logf.FromContext(ctx).WithValues("application", run.summary.Name)
 	managed, err := run.argo.GetManagedResources(ctx, run.summary.Name, run.policy.Spec.ArgoCDNamespace)
+	if errors.Is(err, argocd.ErrUnauthorized) {
+		// The token may have been renewed since its Secret was read (OpenShift GitOps
+		// renews the token of a local user before it expires): read the Secret again, build
+		// the client from what it holds now and ask once more. A token that is really
+		// refused fails the same way again and is reported below.
+		forgetArgoCDSecrets(r.Client, run.policy, r.ArgoCD)
+		if fresh, cerr := r.argoClient(ctx, run.policy); cerr == nil {
+			run.argo = fresh
+			managed, err = fresh.GetManagedResources(ctx, run.summary.Name, run.policy.Spec.ArgoCDNamespace)
+		}
+	}
 	if err != nil {
 		run.apiOK = false
-		if errors.Is(err, argocd.ErrUnauthorized) {
-			// The token may have been rotated since its Secret was read: read it again next time.
-			forgetSecrets(r.Client, run.policy.Namespace)
-		}
 		log.Error(err, "Cannot read managed resources from Argo CD")
 		r.event(run.policy, corev1.EventTypeWarning, argoReason(err),
 			fmt.Sprintf("Application %s: %v", run.summary.Name, err))
@@ -804,7 +813,7 @@ func argoReason(err error) string {
 
 // argoClient builds the Argo CD client from spec.argoCD and its Secrets.
 func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy) (ManagedResourcesGetter, error) {
-	cfg, err := argoCDConfig(ctx, r, policy)
+	cfg, err := argoCDConfig(ctx, r, policy, r.ArgoCD)
 	if err != nil {
 		return nil, err
 	}

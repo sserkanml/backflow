@@ -998,6 +998,18 @@ func scmAccessByName(ctx context.Context, c client.Reader, namespace, connName s
 			acc.auth = &gitrepo.Auth{}
 		}
 		acc.auth.CABundle = bundle
+	} else {
+		trusted, err := trustedCABundle()
+		if err != nil {
+			return nil, fmt.Errorf("%w: the trusted CA bundle of the operator: %v", gitrepo.ErrAuth, err)
+		}
+		if trusted != nil {
+			acc.ca = trusted
+			if acc.auth == nil {
+				acc.auth = &gitrepo.Auth{}
+			}
+			acc.auth.CABundle = trusted
+		}
 	}
 	return acc, nil
 }
