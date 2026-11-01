@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.16.0](https://github.com/sserkanml/backflow/compare/v0.15.0...v0.16.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **policy:** policies without spec.argoCD, outside the operator's own namespace, stop working until the administrator allows them: set the chart value argocd.defaultAccess (flag --argocd-default-access), for example `team-a:team-a` for the policies of namespace team-a and the Argo CD project team-a, or `*:*` to keep the old behaviour in a single-tenant cluster. Policies with their own spec.argoCD are not affected by this rule.
+
+### Features
+
+* **policy:** a policy sees only the Applications its access allows ([684b96b](https://github.com/sserkanml/backflow/commit/684b96bc290585ee139cfa23b7e6ed58ba9240bb))
+* **policy:** a policy with its own token sees only the Applications that token can get ([ea4c595](https://github.com/sserkanml/backflow/commit/ea4c59529461bf3db11d3a7f4eaefcc428964a44))
+* **policy:** chart value argocd.defaultAccess becomes --argocd-default-access ([204cbec](https://github.com/sserkanml/backflow/commit/204cbec11741f8e516a2821a997248aa16445e48))
+* **policy:** fail closed when Argo CD cannot be asked what a policy's token may see ([f2838c7](https://github.com/sserkanml/backflow/commit/f2838c71521fa26babffc11fc0051404d0f41060))
+
+
+### Documentation
+
+* **policy:** Multi-tenancy and access, and the upgrade note for argocd.defaultAccess ([c3e7de7](https://github.com/sserkanml/backflow/commit/c3e7de7a1028e56ea95e3c30cc5f7de71155fc8d))
+
 ## [0.15.0](https://github.com/sserkanml/backflow/compare/v0.14.1...v0.15.0) (2026-11-01)
 
 
