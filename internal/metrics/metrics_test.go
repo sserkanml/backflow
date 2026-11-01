@@ -206,3 +206,11 @@ func TestLabelsListsEveryMetric(t *testing.T) {
 		t.Errorf("%d metrics, want 19: %v", len(got), got)
 	}
 }
+
+func TestChangedByIsBounded(t *testing.T) {
+	for in, want := range map[string]string{"interactive": "interactive", "controller": "controller", "unknown": "unknown", "": "unknown", "kubectl-patch": "unknown"} {
+		if got := changedByLabel(in); got != want {
+			t.Errorf("changedByLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

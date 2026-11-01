@@ -947,6 +947,14 @@ if [[ -n "$P_A" ]]; then
   COMMIT_JSON="$(gl GET "$(project_path "/repository/commits/$(enc "$BRANCH_A")")")"
   expect_eq "committer" "Backflow" "$(echo "$COMMIT_JSON" | jx 'd["committer_name"]')"
   expect_contains "commit message trailer" "Proposal: $P_A" "$(echo "$COMMIT_JSON" | jx 'd["message"]')"
+  # The drift was made with kubectl; managedFields name the manager (kubectl-patch, kubectl-edit, ...).
+  ACTOR_MANAGER="$(dp_field "$P_A" .spec.actor.manager)"
+  if [[ "$ACTOR_MANAGER" == kubectl* ]]; then pass "spec.actor.manager = $ACTOR_MANAGER"; else fail "spec.actor.manager: expected kubectl*, got '$ACTOR_MANAGER'"; fi
+  expect_eq "spec.actor.operation" "Update" "$(dp_field "$P_A" .spec.actor.operation)"
+  expect_nonempty "spec.actor.time" "$(dp_field "$P_A" .spec.actor.time)"
+  expect_contains "description (changed with)" "**Changed with:** $ACTOR_MANAGER (Update)" "$(echo "$MR_JSON" | jx 'd["description"]')"
+  expect_contains "commit message trailer (changed with)" "Changed-with: $ACTOR_MANAGER (Update)" "$(echo "$COMMIT_JSON" | jx 'd["message"]')"
+  expect_metric_at_least "backflow_drifts_detected_total{changed_by=interactive}" backflow_drifts_detected_total 'changed_by="interactive"' 1
 fi
 
 fi
