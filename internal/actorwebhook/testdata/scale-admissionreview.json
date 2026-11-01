@@ -1,0 +1,85 @@
+{
+ "kind": "AdmissionReview",
+ "apiVersion": "admission.k8s.io/v1",
+ "request": {
+  "uid": "e0a57d22-daa0-4f49-8a48-591b040f374e",
+  "kind": {
+   "group": "autoscaling",
+   "version": "v1",
+   "kind": "Scale"
+  },
+  "resource": {
+   "group": "apps",
+   "version": "v1",
+   "resource": "deployments"
+  },
+  "subResource": "scale",
+  "requestKind": {
+   "group": "autoscaling",
+   "version": "v1",
+   "kind": "Scale"
+  },
+  "requestResource": {
+   "group": "apps",
+   "version": "v1",
+   "resource": "deployments"
+  },
+  "requestSubResource": "scale",
+  "name": "web",
+  "namespace": "repro-scale",
+  "operation": "UPDATE",
+  "userInfo": {
+   "username": "kubernetes-admin",
+   "groups": [
+    "kubeadm:cluster-admins",
+    "system:authenticated"
+   ],
+   "extra": {
+    "authentication.kubernetes.io/credential-id": [
+     "X509SHA256=REDACTED"
+    ]
+   }
+  },
+  "object": {
+   "kind": "Scale",
+   "apiVersion": "autoscaling/v1",
+   "metadata": {
+    "name": "web",
+    "namespace": "repro-scale",
+    "uid": "8d8cf295-3e22-4a2a-bcd6-c0526788a889",
+    "resourceVersion": "82182",
+    "creationTimestamp": "2026-11-01T22:09:47Z"
+   },
+   "spec": {
+    "replicas": 3
+   },
+   "status": {
+    "replicas": 2,
+    "selector": "app=web"
+   }
+  },
+  "oldObject": {
+   "kind": "Scale",
+   "apiVersion": "autoscaling/v1",
+   "metadata": {
+    "name": "web",
+    "namespace": "repro-scale",
+    "uid": "8d8cf295-3e22-4a2a-bcd6-c0526788a889",
+    "resourceVersion": "82182",
+    "creationTimestamp": "2026-11-01T22:09:47Z"
+   },
+   "spec": {
+    "replicas": 2
+   },
+   "status": {
+    "replicas": 2,
+    "selector": "app=web"
+   }
+  },
+  "dryRun": false,
+  "options": {
+   "kind": "UpdateOptions",
+   "apiVersion": "meta.k8s.io/v1"
+  }
+ }
+}

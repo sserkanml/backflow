@@ -314,9 +314,10 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
  "oldObject":{"metadata":{"uid":%q,"resourceVersion":"5"},"spec":{"replicas":1}},
  "object":{"metadata":{"uid":%q,"resourceVersion":"6"},"spec":{"replicas":3}}}}`, user, uid, uid)
 		}
-		scaled := func(uid, subresource string, at time.Time) map[string]any {
+		// The scale entry of managedFields as the API server writes it: no time.
+		scaled := func(uid, subresource string) map[string]any {
 			entry := map[string]any{
-				"manager": "kubectl", "operation": "Update", "time": at.Format(time.RFC3339), "fieldsType": "FieldsV1",
+				"manager": "kubectl", "operation": "Update", "fieldsType": "FieldsV1", "apiVersion": "apps/v1",
 				"fieldsV1": map[string]any{"f:spec": map[string]any{"f:replicas": map[string]any{}}},
 			}
 			if subresource != "" {
@@ -326,18 +327,22 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		}
 		replicas := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "3"}}
 
-		It("names the user from the scale entry of managedFields", func() {
+		It("names the user from the scale entry of managedFields, which has no time", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-1"))
-			got := a.Refine(ctx, scaled("uid-scale-1", "scale", now), replicas, actor("kubectl"))
+			got := a.Refine(ctx, scaled("uid-scale-1", "scale"), replicas, actor("kubectl"))
 			Expect(got.Username).To(Equal("alice"))
 			Expect(string(got.Kind)).To(Equal("person"))
 			Expect(got.Manager).To(Equal("kubectl"))
 		})
 
-		It("does not name a user when the entry is not a scale entry, or the time is far off", func() {
+		It("does not name a user when the entry is not a scale entry", func() {
 			a := flow(true, scaleReview("mallory", "uid-scale-2"))
-			Expect(a.Refine(ctx, scaled("uid-scale-2", "", now), replicas, actor("kubectl")).Username).To(BeEmpty())
-			Expect(a.Refine(ctx, scaled("uid-scale-2", "scale", now.Add(-time.Hour)), replicas, actor("kubectl")).Username).To(BeEmpty())
+			Expect(a.Refine(ctx, scaled("uid-scale-2", ""), replicas, actor("kubectl")).Username).To(BeEmpty())
+		})
+
+		It("names nobody when the records of two users fit", func() {
+			a := flow(true, scaleReview("alice", "uid-scale-3"), scaleReview("mallory", "uid-scale-3"))
+			Expect(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, actor("kubectl")).Username).To(BeEmpty())
 		})
 	})
 })

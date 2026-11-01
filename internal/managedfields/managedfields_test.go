@@ -296,3 +296,13 @@ func TestEntriesKeepTheSubresourceAndLeaveOutArgoCD(t *testing.T) {
 		t.Errorf("no managedFields: %v %v", none, err)
 	}
 }
+
+func TestEntriesOfASubresourceMayHaveNoTime(t *testing.T) {
+	// kubectl scale: the API server writes the entry with a subresource and without a time.
+	scale := obj{"manager": "kubectl", "operation": "Update", "subresource": "scale", "fieldsType": "FieldsV1", "apiVersion": "apps/v1",
+		"fieldsV1": obj{"f:spec": obj{"f:replicas": obj{}}}}
+	got, err := Entries(live(obj{"replicas": 3}, scale), []string{"/spec/replicas"})
+	if err != nil || len(got) != 1 || !got[0].Time.IsZero() || got[0].Subresource != "scale" {
+		t.Errorf("entries: %+v, %v", got, err)
+	}
+}
