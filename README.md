@@ -969,8 +969,14 @@ details follow the documentation and were not run on a cluster; the kind spike a
 
 - An admission request carries **no user agent** (the API server's own is all there is), so
   `spec.actor.userAgent` is never filled and is deprecated; the field manager is the hint for the tool.
-- `kubectl scale` goes through the `scale` subresource and sends **no field manager**, so its record can
-  never pass the manager check: a scale is not named. Other changes are.
+- `kubectl scale` and `oc scale` go through the `scale` subresource and the request carries **no field
+  manager**, although the API server writes a managedFields entry for it (manager from the user agent,
+  `subresource: scale`). A record without a manager is therefore accepted only against such an entry: the
+  entry has the record's subresource, belongs to the manager shown as the actor, was written within
+  `actorWebhook.tolerance` of the record, and owns the drifted path. A record that has a manager keeps the
+  strict check. The weaker check is not weaker where it matters (uid, subresource, time and path must all
+  agree), but the manager no longer ties the record to a tool: anyone who can post to the webhook port could
+  attribute a scale they know the time of, which the NetworkPolicy is there to prevent.
 - A change made as a shared account (a CI token) is that account; impersonation shows the impersonated user.
 - Changes made while the webhook, or the operator, is down are not named (fail open is the point).
 - The records are in a pod's memory for up to the flush interval, so a crash can lose the last seconds.

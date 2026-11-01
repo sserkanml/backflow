@@ -132,6 +132,7 @@ type Attribution struct {
 
 type entry struct {
 	manager, operation string
+	subresource        string
 	time               time.Time
 	owned              []string // JSON pointers of every owned field, containers included
 	leaves             []string // JSON pointers of the leaves
@@ -190,6 +191,42 @@ func Attribute(live map[string]any, pointers []string) (*Attribution, error) {
 	return &Attribution{Latest: owners[0], Others: owners[1:]}, nil
 }
 
+// Entry is one managedFields entry that owns some of the drifted fields, as it is: unlike an
+// Owner, entries of one manager are not merged, and it says which subresource wrote it.
+type Entry struct {
+	Manager     string
+	Operation   string
+	Subresource string
+	Time        time.Time
+	// Paths are the drifted JSON pointers this entry owns.
+	Paths []string
+}
+
+// Entries returns the entries of live that own at least one of the pointers, leaving out
+// Argo CD's and Backflow's managers, in the order of the object.
+func Entries(live map[string]any, pointers []string) ([]Entry, error) {
+	entries, err := parse(live)
+	if err != nil {
+		return nil, err
+	}
+	var out []Entry
+	for _, e := range entries {
+		if IsIgnored(e.manager) {
+			continue
+		}
+		var paths []string
+		for _, p := range pointers {
+			if owns(e, p) {
+				paths = append(paths, p)
+			}
+		}
+		if len(paths) > 0 {
+			out = append(out, Entry{Manager: e.manager, Operation: e.operation, Subresource: e.subresource, Time: e.time, Paths: paths})
+		}
+	}
+	return out, nil
+}
+
 func mergePaths(a, b []string) []string {
 	for _, p := range b {
 		if !slices.Contains(a, p) {
@@ -242,7 +279,8 @@ func parse(live map[string]any) ([]entry, error) {
 		}
 		manager, _ := m["manager"].(string)
 		operation, _ := m["operation"].(string)
-		e := entry{manager: manager, operation: operation}
+		subresource, _ := m["subresource"].(string)
+		e := entry{manager: manager, operation: operation, subresource: subresource}
 		if ts, _ := m["time"].(string); ts != "" {
 			t, err := time.Parse(time.RFC3339, ts)
 			if err != nil {

@@ -305,4 +305,39 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		Expect(string(stored)).To(ContainSubstring("/data/LOG_LEVEL"))
 		Expect(string(stored)).NotTo(Or(ContainSubstring(`"debug"`), ContainSubstring(`"info"`)))
 	})
+
+	Context("kubectl scale, which sends no field manager", func() {
+		scaleReview := func(user, uid string) string {
+			return fmt.Sprintf(`{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionReview","request":{
+ "uid":"r-2","operation":"UPDATE","resource":{"group":"apps","version":"v1","resource":"deployments"},"subResource":"scale",
+ "namespace":"demo","name":"web","userInfo":{"username":%q,"groups":["devs"]},"options":{"kind":"UpdateOptions"},
+ "oldObject":{"metadata":{"uid":%q,"resourceVersion":"5"},"spec":{"replicas":1}},
+ "object":{"metadata":{"uid":%q,"resourceVersion":"6"},"spec":{"replicas":3}}}}`, user, uid, uid)
+		}
+		scaled := func(uid, subresource string, at time.Time) map[string]any {
+			entry := map[string]any{
+				"manager": "kubectl", "operation": "Update", "time": at.Format(time.RFC3339), "fieldsType": "FieldsV1",
+				"fieldsV1": map[string]any{"f:spec": map[string]any{"f:replicas": map[string]any{}}},
+			}
+			if subresource != "" {
+				entry["subresource"] = subresource
+			}
+			return map[string]any{"metadata": map[string]any{"uid": uid, "managedFields": []any{entry}}, "spec": map[string]any{"replicas": 3}}
+		}
+		replicas := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "3"}}
+
+		It("names the user from the scale entry of managedFields", func() {
+			a := flow(true, scaleReview("alice", "uid-scale-1"))
+			got := a.Refine(ctx, scaled("uid-scale-1", "scale", now), replicas, actor("kubectl"))
+			Expect(got.Username).To(Equal("alice"))
+			Expect(string(got.Kind)).To(Equal("person"))
+			Expect(got.Manager).To(Equal("kubectl"))
+		})
+
+		It("does not name a user when the entry is not a scale entry, or the time is far off", func() {
+			a := flow(true, scaleReview("mallory", "uid-scale-2"))
+			Expect(a.Refine(ctx, scaled("uid-scale-2", "", now), replicas, actor("kubectl")).Username).To(BeEmpty())
+			Expect(a.Refine(ctx, scaled("uid-scale-2", "scale", now.Add(-time.Hour)), replicas, actor("kubectl")).Username).To(BeEmpty())
+		})
+	})
 })
