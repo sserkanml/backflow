@@ -217,6 +217,9 @@ The most used values of the chart; all of them are in
 | `mergeRequestPollInterval` | `2m` | how often an open merge request is polled |
 | `resources` | 50m/128Mi requests, 500m/512Mi limits | tune to the number of Applications |
 | `argocd.defaultAccess` | `[]` | which Applications (Argo CD projects) the policies of which namespaces may match through the default connection; empty: only the operator's namespace (see Multi-tenancy and access) |
+| `actorWebhook.enabled` | `false` | the observe-only admission webhook that names the user of a change (see [The actor webhook](#the-actor-webhook-who-it-really-was)); needs Kubernetes 1.28 and, outside OpenShift, `actorWebhook.networkPolicy.apiserverCIDRs` |
+| `actorWebhook.recordUsername`, `.usernameInMergeRequest` | `true`, `false` | store user names and groups (false: only person or controller); put the name into merge requests and commits |
+| `actorWebhook.retention`, `.tolerance` | `2h`, `10s` | how long a ChangeRecord is kept; how far its time may be from the managedFields entry it is checked against |
 | `secretNamespaces` | `[]` | namespaces where the operator may read Secrets; empty means every namespace (see Permissions) |
 | `scmRecheckInterval` | `5m` | how often a working ScmConnection is verified again; also how long a rotated token goes unnoticed |
 | `secretCacheTTL` | `30s` | how long a Secret that was read stays in memory |
@@ -847,19 +850,132 @@ The metric `backflow_drifts_detected_total` counts the class in `changed_by` (`i
 
 What it cannot tell:
 
-- **No username.** `managedFields` do not hold one, so `spec.actor.username` stays empty, "Changed by:
-  unknown" stays in the merge request and nobody is assigned (`mergeRequest.assignActor`). A username
-  needs an admission webhook that observes the request; that is separate work.
+- **No username, without the actor webhook.** `managedFields` do not hold one, so `spec.actor.username`
+  stays empty, "Changed by: unknown" stays in the merge request and nobody is assigned
+  (`mergeRequest.assignActor`). A username needs the identity of the request, which the optional
+  [actor webhook](#the-actor-webhook-who-it-really-was) records.
 - **A removed field has no owner.** When the change is a field that is gone from the live object,
   there is no entry to read, and the proposal has no actor.
 - **It is a hint, not proof.** The name is set by the client (`--field-manager`, or the user agent): it can
   be anything, and anyone who can write to the object can pick any name, or the name of a controller. Read
   "Changed with" as where to look first. Who it really was needs the identity of the request, which the
-  planned admission webhook will record.
+  [actor webhook](#the-actor-webhook-who-it-really-was) records.
 - **It is set when the proposal is created** and never changes (spec is immutable): a later change
   of the same field by someone else shows in a new proposal.
 - **Nothing blocks on it.** An object without `managedFields`, or with ones that cannot be read, gives a
   proposal without an actor (logged at V(1)), counted as `changed_by="none"`.
+
+### The actor webhook: who it really was
+
+Off by default. With `actorWebhook.enabled=true` the chart installs an **observe-only admission
+webhook** and the operator names the user of a change in `spec.actor` (`username`, `groups`, `kind`).
+The apiserver sends it the request, including the identity it authenticated; the webhook
+**always answers "allowed"**, keeps the paths of the fields that changed (never a value), and the
+operator pairs that with the drift when it makes the proposal.
+
+```bash
+helm upgrade --install backflow oci://ghcr.io/sserkanml/charts/backflow -n backflow-system \
+  --set actorWebhook.enabled=true \
+  --set 'actorWebhook.networkPolicy.apiserverCIDRs={10.0.0.4/32}'   # not on OpenShift
+```
+
+```yaml
+spec:
+  actor:
+    username: alice            # from the webhook, only when a record is confirmed (below)
+    groups: [devs, system:authenticated]
+    kind: person               # or controller (a service account)
+    manager: kubectl-patch     # from managedFields, as before
+    operation: Update
+    time: "2026-11-01T13:26:26Z"
+```
+
+**It cannot block or slow the cluster.** The webhook is `UPDATE` only, `failurePolicy: Ignore`,
+`sideEffects: None`, `timeoutSeconds: 1`, and its handler does no I/O: it parses the review, keeps the
+changed paths in memory and answers. What reaches it is narrowed by the apiserver first
+(`matchConditions`, Kubernetes 1.28 or later; the chart refuses older ones unless
+`actorWebhook.allowUnfiltered=true`): only updates of resources Argo CD tracks (the
+`argocd.argoproj.io/tracking-id` annotation or the `app.kubernetes.io/instance` label) and `scale`;
+never Secrets, dry runs, status writes, the controllers of `kube-system`, nodes, the controller manager,
+the Argo CD application controller (`actorWebhook.excludeUsers`) or Backflow itself. In a busy namespace
+that was 9 calls out of 215 in the spike. A webhook that is down or unreachable costs nothing; one that is
+*up but hung* costs the timeout (1 s) on each matched request, which is why the timeout is short and the
+match narrow. The numbers and the evidence are in
+[docs/design/actor-webhook.md](docs/design/actor-webhook.md).
+
+**Where the records are kept.** Each replica serves the webhook (the Service reaches any ready pod) and
+flushes what it saw every 2 seconds to `ChangeRecord` objects in the operator's namespace: one per
+(object uid, user, field manager, subresource), the changed paths merged. They hold user names, so they are
+for administrators, not for tenants (no tenant role is created for them; the operator has a Role in its own
+namespace). The leader deletes them after `actorWebhook.retention` (2 hours) and the oldest beyond
+`actorWebhook.maxRecords` (5000), counted in `backflow_actor_records_dropped_total`.
+
+**A record is believed only if the cluster agrees.** When a proposal is made, the operator takes the
+records of the object (by uid) and keeps one only if the live `managedFields` agree: the same field
+manager, an entry written within `actorWebhook.tolerance` (10 s) of the record, and an entry that owns
+the drifted path. A review nobody made, or one that names someone else, fails that and sets no name
+(`backflow_actor_matches_total{result="manager_mismatch"|"time_mismatch"|"path_mismatch"}`). Without a
+matching record the actor is what managedFields say, as without the webhook. The webhook never delays or
+fails a proposal.
+
+**Who can call it.** The webhook cannot tell who calls it (the apiserver does not authenticate to
+admission webhooks unless the control plane is configured for it, which a chart cannot do). Three layers
+instead: a NetworkPolicy that admits the API server only (on OpenShift the `host-network` policy group,
+elsewhere `actorWebhook.networkPolicy.apiserverCIDRs`, which is required; a CNI that does not enforce
+NetworkPolicy gives no protection); a random URL path, kept across upgrades; and the cross-check above,
+which makes a forged record useless unless the forger also knows a real change's manager and time.
+**Without the network policy any pod that can reach the port can post a forged review**, and could put a
+different user name on a real change.
+
+**TLS** (`actorWebhook.tls.mode`): `auto` uses the OpenShift service CA on OpenShift, else cert-manager if
+its API is installed, else a certificate made by Helm (five years, kept across upgrades,
+`actorWebhook.tls.renew=true` to replace it); or name `serviceCA`, `certManager`, `helm`, or `secret` (your
+own `tls.secretName` and `tls.caBundle`). The webhook reads the certificate from files and picks up a
+renewed one without a restart.
+
+**Privacy.** User names are personal data.
+
+- `actorWebhook.recordUsername=false` stores only `kind` (`person`, or `controller` for a service account):
+  no name, no groups, in the records or in the proposal.
+- `actorWebhook.usernameInMergeRequest` (default `false`) keeps the name out of the text of the merge
+  request and the commit trailer, because Git keeps it for ever. The proposal still has it. A policy that
+  sets `mergeRequest.assignActor` assigns the merge request to that user regardless, since that is what
+  the option asks for.
+- Names are never labels of a metric and are not logged at the default level. The records live two hours.
+
+**What to watch.** The webhook fails open, so a broken one is silent. Alert on the apiserver's own metrics:
+
+- `apiserver_admission_webhook_fail_open_count{name="<release>-backflow-controller-manager-actor-webhook"}`
+  rising: the apiserver could not reach the webhook or it was too slow, and changes were not recorded.
+- `apiserver_admission_match_condition_evaluation_errors_total` above zero for it: **a match condition
+  failed to evaluate, which under `failurePolicy: Ignore` means the webhook is not called at all**. The
+  chart's conditions are tested against sample requests (a field that is absent is not empty:
+  `request.subResource == ''` is an error, `!has(request.subResource)` is not), but a custom
+  `actorWebhook.excludeUsers` or namespace selector is yours to check.
+- Backflow's own: `backflow_actor_webhook_calls_total` (`recorded`, `ignored`, `invalid`, `busy`),
+  `backflow_actor_records_written_total`, `backflow_actor_records_dropped_total{reason}`,
+  `backflow_actor_matches_total{result}`. No calls recorded while people patch tracked resources means the
+  webhook is not reached.
+
+**OpenShift.** On OpenShift 4.15 and later (Kubernetes 1.28, `matchConditions` in beta and on) the chart
+uses the service CA (`service.beta.openshift.io/serving-cert-secret-name` on the Service and
+`inject-cabundle` on the webhook configuration) and admits the API server through the
+`policy-group.network.openshift.io/host-network` label; `matchConditions` is GA from 4.17. Add the
+OpenShift GitOps application controller to `actorWebhook.excludeUsers`
+(`system:serviceaccount:openshift-gitops:openshift-gitops-argocd-application-controller`). These OpenShift
+details follow the documentation and were not run on a cluster; the kind spike and the chart tests were.
+
+**What stays a limitation.**
+
+- An admission request carries **no user agent** (the API server's own is all there is), so
+  `spec.actor.userAgent` is never filled and is deprecated; the field manager is the hint for the tool.
+- `kubectl scale` goes through the `scale` subresource and sends **no field manager**, so its record can
+  never pass the manager check: a scale is not named. Other changes are.
+- A change made as a shared account (a CI token) is that account; impersonation shows the impersonated user.
+- Changes made while the webhook, or the operator, is down are not named (fail open is the point).
+- The records are in a pod's memory for up to the flush interval, so a crash can lose the last seconds.
+- Kubernetes before 1.28 has no `matchConditions`; with `allowUnfiltered` every update of every namespaced
+  resource reaches the webhook.
 
 ## Helm sources
 
