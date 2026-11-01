@@ -33,6 +33,7 @@ import (
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
+	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
@@ -73,6 +74,9 @@ type DriftProposalReconciler struct {
 	NewChartArgo func(argocd.Config) (ChartArgo, error)
 	// ArgoCD is the connection policies without spec.argoCD use. Optional.
 	ArgoCD *ArgoCDDefaults
+	// FileDeps lets the renders of charts with file:// dependencies upload them
+	// unpacked, where that was shown to render the same. Nil switches it off.
+	FileDeps *helmmap.UnpackedDeps
 	// RenderBudget is the time all renders of one verification may take
 	// together. Zero means rendermap.DefaultBudget.
 	RenderBudget time.Duration

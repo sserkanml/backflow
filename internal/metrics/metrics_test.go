@@ -28,9 +28,9 @@ func TestCounters(t *testing.T) {
 		{"drifts", driftsDetected.WithLabelValues("ns", "p", "app", "Helm"), func() { DriftDetected(Policy{"ns", "p"}, "app", "Helm") }},
 		{"mapping", mappingResults.WithLabelValues("Helm", "HelmValues", "Mapped"), func() { MappingResult("Helm", "HelmValues", "Mapped") }},
 		{"merge request", mergeRequests.WithLabelValues("gitlab", "opened"), func() { MergeRequest("gitlab", MROpened) }},
-		{"render", renders.WithLabelValues("upload", "ok"), func() { Render(RendererUpload, nil, false, time.Second) }},
-		{"render failed", renders.WithLabelValues("revisions", "failed"), func() { Render(RendererRevisions, errors.New("x"), true, time.Second) }},
-		{"render error", renders.WithLabelValues("revisions", "error"), func() { Render(RendererRevisions, errors.New("x"), false, time.Second) }},
+		{"render", renders.WithLabelValues("upload", "none", "ok"), func() { Render(RendererUpload, DepsNone, nil, false, time.Second) }},
+		{"render failed", renders.WithLabelValues("revisions", "none", "failed"), func() { Render(RendererRevisions, DepsNone, errors.New("x"), true, time.Second) }},
+		{"render error", renders.WithLabelValues("revisions", "none", "error"), func() { Render(RendererRevisions, DepsNone, errors.New("x"), false, time.Second) }},
 		{"scratch", scratchBranches.WithLabelValues("pushed"), func() { ScratchBranches(ScratchPushed, 3) }},
 		{"argocd", argocdRequests.WithLabelValues("manifests_by_revisions", "5xx"), func() { ArgoCDRequest("manifests_by_revisions", 502, nil, time.Second) }},
 		{"scm", scmRequests.WithLabelValues("gitlab", "gitlab.com", "2xx"), func() { SCMRequest("gitlab", "gitlab.com", 200, nil, time.Second) }},
@@ -52,7 +52,7 @@ func TestCounters(t *testing.T) {
 
 func TestHistogramsObserve(t *testing.T) {
 	Verification("Helm", "mapped", 3*time.Second)
-	Render(RendererUpload, nil, false, time.Second)
+	Render(RendererUpload, DepsNone, nil, false, time.Second)
 	ArgoCDRequest("managed_resources", 200, nil, time.Millisecond)
 	SCMRequest("github", "github.com", 200, nil, time.Millisecond)
 	for name, c := range map[string]prometheus.Collector{"render": renderDuration, "argocd": argocdDuration, "scm": scmDuration, "verification": verificationDuration} {
@@ -202,7 +202,7 @@ func TestLabelsListsEveryMetric(t *testing.T) {
 			t.Errorf("%s labels = %v, want %v", name, got[name], want)
 		}
 	}
-	if len(got) != 18 {
-		t.Errorf("%d metrics, want 18: %v", len(got), got)
+	if len(got) != 19 {
+		t.Errorf("%d metrics, want 19: %v", len(got), got)
 	}
 }

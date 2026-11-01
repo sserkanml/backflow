@@ -39,6 +39,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/controller"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/version"
 	// +kubebuilder:scaffold:imports
@@ -71,6 +72,7 @@ func main() {
 	var enableHTTP2 bool
 	var argoCD controller.ArgoCDDefaults
 	var trustedCAFile string
+	var unpackFileDeps bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -115,6 +117,10 @@ func main() {
 	flag.BoolVar(&argoCD.InsecureSkipTLSVerify, "argocd-insecure-skip-tls-verify", false,
 		"Do not verify the certificate of --argocd-server. For development only (a port-forward to a kind cluster); "+
 			"the Helm chart has no value for it.")
+	flag.BoolVar(&unpackFileDeps, "unpack-file-dependencies", true,
+		"Upload the file:// dependencies of a Helm chart unpacked under charts/, so that Argo CD does not run "+
+			"helm dependency build on every render. Only used for a chart whose render was shown to be identical "+
+			"both ways; --unpack-file-dependencies=false switches it off.")
 	flag.StringVar(&trustedCAFile, "trusted-ca-file", "",
 		"A PEM CA bundle file of extra roots for the connections to GitLab and GitHub of ScmConnections that have "+
 			"no caSecretRef (for example the trusted CA bundle OpenShift injects). Read again when it changes.")
@@ -264,6 +270,10 @@ func main() {
 		os.Exit(1)
 	}
 	repoCache := gitrepo.NewCache(repoCacheDir)
+	var fileDeps *helmmap.UnpackedDeps
+	if unpackFileDeps {
+		fileDeps = helmmap.NewUnpackedDeps()
+	}
 	if err := (&controller.DriftProposalReconciler{
 		Client:        k8sClient,
 		Scheme:        mgr.GetScheme(),
@@ -273,6 +283,7 @@ func main() {
 		TrackInterval: mrPollInterval,
 		RenderBudget:  renderBudget,
 		ArgoCD:        &argoCD,
+		FileDeps:      fileDeps,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "driftproposal")
 		os.Exit(1)

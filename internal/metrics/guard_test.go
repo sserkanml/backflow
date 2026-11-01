@@ -23,7 +23,7 @@ func TestCardinality(t *testing.T) {
 	}
 	metrics.MergeRequest("gitlab", metrics.MROpened)
 	metrics.Verification("Helm", "mapped", time.Second)
-	metrics.Render(metrics.RendererUpload, nil, false, time.Second)
+	metrics.Render(metrics.RendererUpload, metrics.DepsUnpacked, nil, false, time.Second)
 	metrics.ScratchBranches(metrics.ScratchPushed, 2)
 	metrics.ArgoCDRequest("manifests_with_files", 200, nil, time.Second)
 	metrics.SCMRequest("gitlab", "gitlab.com", 200, nil, time.Second)

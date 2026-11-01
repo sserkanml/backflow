@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -66,6 +67,22 @@ type ManifestsClient interface {
 	GetManifestsWithFiles(ctx context.Context, q argocd.ManifestsQuery) (*argocd.ManifestsResponse, error)
 }
 
+type depsKey struct{}
+
+// WithDeps says, for the renders made with the returned context, how the file://
+// dependencies of the chart are provided (metrics.DepsBuilt, metrics.DepsUnpacked),
+// so that the metrics tell the two apart. Without it a render counts as metrics.DepsNone.
+func WithDeps(ctx context.Context, deps string) context.Context {
+	return context.WithValue(ctx, depsKey{}, deps)
+}
+
+func depsFrom(ctx context.Context) string {
+	if d, ok := ctx.Value(depsKey{}).(string); ok {
+		return d
+	}
+	return metrics.DepsNone
+}
+
 // ArgoRenderer renders through Argo CD's API server, so the chart is rendered
 // by the Helm or Kustomize version and the settings of the Argo CD that deploys it.
 //
@@ -76,6 +93,10 @@ type ManifestsClient interface {
 // (GetManifests, used by the scratch renderer) is cached, and it has noCache.
 type ArgoRenderer struct {
 	Client ManifestsClient
+
+	versionMu sync.Mutex
+	version   string
+	versionAt time.Time
 }
 
 var _ Renderer = (*ArgoRenderer)(nil)
@@ -96,7 +117,7 @@ func (r *ArgoRenderer) Render(ctx context.Context, app App, files map[string][]b
 	resp, err := r.Client.GetManifestsWithFiles(ctx, argocd.ManifestsQuery{
 		AppName: app.Name, AppNamespace: app.Namespace, Project: app.Project, Files: files,
 	})
-	metrics.Render(metrics.RendererUpload, err, errors.Is(err, argocd.ErrRenderFailed) || errors.Is(err, argocd.ErrArchiveTooLarge), time.Since(start))
+	metrics.Render(metrics.RendererUpload, depsFrom(ctx), err, errors.Is(err, argocd.ErrRenderFailed) || errors.Is(err, argocd.ErrArchiveTooLarge), time.Since(start))
 	switch {
 	case errors.Is(err, argocd.ErrRenderFailed):
 		return nil, fmt.Errorf("%w: %w", ErrRenderFailed, err)
@@ -198,4 +219,30 @@ func namespaceFor(app App, u *unstructured.Unstructured) string {
 		return u.GetNamespace()
 	}
 	return app.DestNamespace
+}
+
+// versionTTL is how long the version of the Argo CD server is remembered.
+const versionTTL = 10 * time.Minute
+
+// ArgoVersion is the version of the Argo CD server, when the client can tell it.
+// An optimisation that must not outlive an upgrade of Argo CD keys on it. It is
+// remembered for versionTTL.
+func (r *ArgoRenderer) ArgoVersion(ctx context.Context) (string, error) {
+	v, ok := r.Client.(interface {
+		Version(ctx context.Context) (string, error)
+	})
+	if !ok {
+		return "", errors.New("the Argo CD client cannot tell its version")
+	}
+	r.versionMu.Lock()
+	defer r.versionMu.Unlock()
+	if r.version != "" && time.Since(r.versionAt) < versionTTL {
+		return r.version, nil
+	}
+	got, err := v.Version(ctx)
+	if err != nil {
+		return "", err
+	}
+	r.version, r.versionAt = got, time.Now()
+	return got, nil
 }

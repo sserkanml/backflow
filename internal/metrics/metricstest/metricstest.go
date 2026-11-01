@@ -22,7 +22,7 @@ const (
 // Allowed are the label names a Backflow metric may have. Anything else fails
 // the guard: a new label has to be a conscious, reviewed decision.
 var Allowed = []string{
-	"policy_namespace", labelPolicy, "scm_namespace", labelSCM, "application", "source_type", "strategy", "reason", "phase", "renderer", "provider",
+	"policy_namespace", labelPolicy, "scm_namespace", labelSCM, "application", "source_type", "strategy", "reason", "phase", "renderer", "deps", "provider",
 	"host", "endpoint", "code_class", "result", "action", "version", "commit", "le",
 }
 

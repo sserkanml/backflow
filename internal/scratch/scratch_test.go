@@ -332,7 +332,7 @@ func TestScratchMetrics(t *testing.T) {
 		return metricstest.Value("backflow_scratch_branches_total", map[string]string{"action": action})
 	}
 	renders := func(result string) float64 {
-		return metricstest.Value("backflow_renders_total", map[string]string{"renderer": "revisions", "result": result})
+		return metricstest.Value("backflow_renders_total", map[string]string{"renderer": "revisions", "deps": "none", "result": result})
 	}
 	pushed, deleted, swept, pushFailed := branches("pushed"), branches("deleted"), branches("swept"), branches("push_failed")
 	ok, failed := renders("ok"), renders("failed")
