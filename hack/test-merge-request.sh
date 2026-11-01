@@ -97,8 +97,10 @@ ARGOCD_DEFAULT="${ARGOCD_DEFAULT:-false}"
 LOCAL_USER_SECRET="${LOCAL_USER_SECRET:-backflow-local-user}"
 # ACTOR_WEBHOOK=true adds section i: the local operator serves the actor webhook (--actor-webhook, a
 # certificate made here, ChangeRecords in $NS) and a ValidatingWebhookConfiguration with a clientConfig.url to
-# this machine's address on the local network (HOST_IP, as test-application-values.sh does for its git server)
-# is registered for the demo namespace. Section i asserts that spec.actor.username of a proposal made after a
+# this machine is registered for the demo namespace: host.docker.internal when the kind node resolves it (Docker
+# Desktop), else this machine's address on the local network (HOST_IP, as test-application-values.sh does for
+# its git server). ACTOR_HOST sets the name or address the API server calls. The certificate has both as names.
+# Section i asserts that spec.actor.username of a proposal made after a
 # kubectl patch and after a kubectl scale (which sends no field manager) is the user of kubectl, and that no match condition of the webhook failed to evaluate.
 # Not with IN_CLUSTER: the chart installs the webhook there.
 ACTOR_WEBHOOK="${ACTOR_WEBHOOK:-false}"
@@ -848,14 +850,25 @@ else
   actor_flags=()
   if [[ "$ACTOR_WEBHOOK" == "true" ]]; then
     command -v openssl >/dev/null || die "ACTOR_WEBHOOK=true needs openssl"
-    HOST_IP="${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)}"
-    [[ -n "$HOST_IP" ]] || die "cannot find the address of this machine on the local network; set HOST_IP"
     ACTOR_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0",0)); print(s.getsockname()[1])')"
     ACTOR_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
     ACTOR_PATH="/observe/$ACTOR_TOKEN"
     certs="$WORKDIR/actor-certs"
     mkdir -p "$certs"
-    printf 'subjectAltName=IP:%s\n' "$HOST_IP" >"$certs/ext"
+    # The name the API server calls: host.docker.internal on Docker Desktop (it does not change with the network),
+    # else the address of this machine. The certificate holds both, so either verifies.
+    ACTOR_HOST="${ACTOR_HOST:-}"
+    if [[ -z "$ACTOR_HOST" ]] && command -v docker >/dev/null 2>&1 &&
+      docker exec "$CLUSTER_NAME-control-plane" getent hosts host.docker.internal >/dev/null 2>&1; then
+      ACTOR_HOST="host.docker.internal"
+    fi
+    HOST_IP="${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+    ACTOR_HOST="${ACTOR_HOST:-$HOST_IP}"
+    [[ -n "$ACTOR_HOST" ]] || die "cannot find the address of this machine on the local network; set HOST_IP or ACTOR_HOST"
+    san="DNS:host.docker.internal"
+    [[ -z "$HOST_IP" ]] || san="IP:$HOST_IP,$san"
+    [[ "$ACTOR_HOST" == "$HOST_IP" || "$ACTOR_HOST" == "host.docker.internal" ]] || san="$san,DNS:$ACTOR_HOST"
+    printf 'subjectAltName=%s\n' "$san" >"$certs/ext"
     openssl req -x509 -newkey rsa:2048 -nodes -keyout "$certs/ca.key" -out "$certs/ca.crt" -days 2 -subj "/CN=backflow-actor-e2e-ca" 2>/dev/null
     openssl req -newkey rsa:2048 -nodes -keyout "$certs/tls.key" -out "$certs/tls.csr" -subj "/CN=backflow-actor-e2e" 2>/dev/null
     openssl x509 -req -in "$certs/tls.csr" -CA "$certs/ca.crt" -CAkey "$certs/ca.key" -CAcreateserial -out "$certs/tls.crt" -days 2 -extfile "$certs/ext" 2>/dev/null
@@ -876,14 +889,26 @@ else
   if [[ "$ACTOR_WEBHOOK" == "true" ]]; then
     # The webhook is registered once the operator serves it. The API server calls this machine, not a Service.
     CA_B64="$(base64 <"$WORKDIR/actor-certs/ca.crt" | tr -d '\n')"
-    (cd "$ROOT" && go run ./hack/genactorconditions -config -name "$ACTOR_CONFIG" -url "https://$HOST_IP:$ACTOR_PORT$ACTOR_PATH" \
+    (cd "$ROOT" && go run ./hack/genactorconditions -config -name "$ACTOR_CONFIG" -url "https://$ACTOR_HOST:$ACTOR_PORT$ACTOR_PATH" \
       -ca-bundle "$CA_B64" -namespace "$DEMO_NS" -exclude-users "system:serviceaccount:$ARGOCD_NS:argocd-application-controller") |
       k apply -f - >/dev/null || die "could not register the actor webhook configuration"
-    reach="$(k run actor-reach --rm -i --restart=Never --image=curlimages/curl:8.10.1 --command -- \
-      curl -sk -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' \
-      "https://$HOST_IP:$ACTOR_PORT$ACTOR_PATH" 2>/dev/null || true)"
-    [[ "$reach" == *200 ]] || die "pods of the cluster cannot reach the actor webhook at $HOST_IP:$ACTOR_PORT (a firewall? set HOST_IP)"
-    pass "actor webhook registered for namespace $DEMO_NS and reachable at $HOST_IP:$ACTOR_PORT"
+    # The certificate verifies for the name the API server uses (a failure would be silent: the webhook fails open).
+    # --resolve points that name at this machine, as the node does.
+    verify=(curl -s -m 5 -o /dev/null -X POST -H 'Content-Type: application/json' -d '{}' --cacert "$WORKDIR/actor-certs/ca.crt")
+    if [[ "$ACTOR_HOST" == "$HOST_IP" || "$ACTOR_HOST" =~ ^[0-9.]+$ ]]; then
+      verify+=("https://$ACTOR_HOST:$ACTOR_PORT$ACTOR_PATH")
+    else
+      verify+=(--resolve "$ACTOR_HOST:$ACTOR_PORT:127.0.0.1" "https://$ACTOR_HOST:$ACTOR_PORT$ACTOR_PATH")
+    fi
+    "${verify[@]}" -f || die "the certificate of the actor webhook does not verify for $ACTOR_HOST (see $WORKDIR/actor-certs)"
+    # Reachable from a pod. The exit status decides: kubectl prints its own line ("pod ... deleted") after the output of the
+    # command, so the output cannot be compared. -f makes curl fail on anything but a 2xx.
+    if ! k run actor-reach --rm -i --restart=Never --image=curlimages/curl:8.10.1 --command -- \
+      curl -skf -m 5 -o /dev/null -X POST -H 'Content-Type: application/json' -d '{}' \
+      "https://$ACTOR_HOST:$ACTOR_PORT$ACTOR_PATH" >/dev/null 2>&1; then
+      die "pods of the cluster cannot reach the actor webhook at $ACTOR_HOST:$ACTOR_PORT (a firewall? set ACTOR_HOST or HOST_IP to an address of this machine they can reach)"
+    fi
+    pass "actor webhook registered for namespace $DEMO_NS and reachable at $ACTOR_HOST:$ACTOR_PORT"
   fi
 fi
 
