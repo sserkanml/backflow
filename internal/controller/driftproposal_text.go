@@ -200,11 +200,7 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, o
 		fmt.Fprintf(&b, "- **Sources:** %s\n", singleLine(sourcesLine(dp.Spec.Sources)))
 	}
 	if a := dp.Spec.Actor; a != nil && singleLine(a.Username) != "" {
-		fmt.Fprintf(&b, "- **Changed by:** %s", singleLine(a.Username))
-		if ua := singleLine(a.UserAgent); ua != "" {
-			fmt.Fprintf(&b, " (%s)", ua)
-		}
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "- **Changed by:** %s\n", singleLine(a.Username))
 	} else {
 		b.WriteString("- **Changed by:** unknown\n")
 	}

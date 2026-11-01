@@ -238,7 +238,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 					{Position: 2, Role: backflowv1alpha1.RoleValues, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main", Ref: "values"},
 				},
 				Changes:    []backflowv1alpha1.FieldChange{replicas},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice", UserAgent: "kubectl"},
+				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}

@@ -274,7 +274,7 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 					Path: "kust/overlays/dev", Type: backflowv1alpha1.SourceKustomize,
 				},
 				Changes:    []backflowv1alpha1.FieldChange{imageChange},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice", UserAgent: "kubectl"},
+				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}

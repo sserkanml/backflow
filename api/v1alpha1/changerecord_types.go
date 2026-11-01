@@ -40,7 +40,7 @@ type ChangeRecordSpec struct {
 	// UID of the changed object.
 	UID string `json:"uid"`
 	// +optional
-	Group string `json:"group,omitempty"`
+	Group    string `json:"group,omitempty"`
 	Resource string `json:"resource"`
 	// The subresource of the request (for example scale). Empty for the resource itself.
 	// +optional
