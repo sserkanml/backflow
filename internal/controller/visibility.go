@@ -48,6 +48,18 @@ type visibilityEntry struct {
 	at      time.Time
 }
 
+// Visibility is the answer to "may this token get this Application".
+type Visibility int
+
+const (
+	// VisibilityHidden: Argo CD refused the token or does not know the Application.
+	VisibilityHidden Visibility = iota
+	// VisibilityVisible: Argo CD gave the Application to the token.
+	VisibilityVisible
+	// VisibilityUnknown: Argo CD could not be asked and no answer was ever confirmed.
+	VisibilityUnknown
+)
+
 func (v *ApplicationVisibility) now() time.Time {
 	if v.Now != nil {
 		return v.Now()
@@ -62,10 +74,19 @@ func (v *ApplicationVisibility) ttl() time.Duration {
 	return DefaultVisibilityTTL
 }
 
-// Visible reports whether the token of cfg may get the Application. Argo CD refusing
-// the token or not knowing the Application is "not visible"; an Argo CD that cannot
-// be reached is an error, which is not remembered, so that an outage hides nothing.
-func (v *ApplicationVisibility) Visible(ctx context.Context, policyKey string, cfg argocd.Config, name, namespace string) (bool, error) {
+func answer(visible bool) Visibility {
+	if visible {
+		return VisibilityVisible
+	}
+	return VisibilityHidden
+}
+
+// Check says whether the token of cfg may get the Application. A definite answer of
+// Argo CD (the Application, or 401, 403, 404) is kept for the TTL. When Argo CD cannot
+// be reached, the last answer that was confirmed stays, however old, so that an outage
+// neither hides what the policy was shown nor shows what it never was: an Application
+// whose visibility was never confirmed is VisibilityUnknown and is not shown.
+func (v *ApplicationVisibility) Check(ctx context.Context, policyKey string, cfg argocd.Config, name, namespace string) (Visibility, error) {
 	h := sha256.Sum256([]byte(cfg.URL + "\x00" + cfg.Token))
 	key := hex.EncodeToString(h[:8]) + "/" + namespace + "/" + name
 
@@ -73,7 +94,7 @@ func (v *ApplicationVisibility) Visible(ctx context.Context, policyKey string, c
 	e, hit := v.entries[key]
 	v.mu.Unlock()
 	if hit && v.now().Sub(e.at) < v.ttl() {
-		return e.visible, nil
+		return answer(e.visible), nil
 	}
 
 	build := v.New
@@ -81,24 +102,36 @@ func (v *ApplicationVisibility) Visible(ctx context.Context, policyKey string, c
 		build = func(c argocd.Config) (ApplicationGetter, error) { return argocd.New(c) }
 	}
 	getter, err := v.clients.get(policyKey, cfg, build)
-	if err != nil {
-		return false, err
+	if err == nil {
+		err = getter.GetApplication(ctx, name, namespace)
 	}
-	visible := true
-	if err := getter.GetApplication(ctx, name, namespace); err != nil {
-		if !errors.Is(err, argocd.ErrUnauthorized) && !errors.Is(err, argocd.ErrNotFound) {
-			return false, err
+	visible := err == nil
+	if err != nil && (errors.Is(err, argocd.ErrUnauthorized) || errors.Is(err, argocd.ErrNotFound)) {
+		err = nil
+	}
+	if err != nil {
+		// Argo CD could not be asked. The last confirmed answer, however old, still stands.
+		if hit {
+			return answer(e.visible), nil
 		}
-		visible = false
+		return VisibilityUnknown, nil
 	}
 
 	v.mu.Lock()
-	if v.entries == nil || len(v.entries) > 4096 {
+	if v.entries == nil {
 		v.entries = map[string]visibilityEntry{}
+	}
+	if len(v.entries) > 4096 {
+		// Keep the answers that make Applications visible; they are the ones an outage must not lose.
+		for k, old := range v.entries {
+			if !old.visible || v.now().Sub(old.at) > 24*time.Hour {
+				delete(v.entries, k)
+			}
+		}
 	}
 	v.entries[key] = visibilityEntry{visible: visible, at: v.now()}
 	v.mu.Unlock()
-	return visible, nil
+	return answer(visible), nil
 }
 
 // forget drops what is kept for a policy that is gone.
@@ -110,13 +143,13 @@ func (v *ApplicationVisibility) forget(policyKey string) {
 // token can get. Without a visibility checker nothing is asked and everything is
 // visible (a test, or an operator that does not check).
 func tokenVisible(ctx context.Context, v *ApplicationVisibility, c client.Reader, policy *backflowv1alpha1.BackflowPolicy,
-	defaults *ArgoCDDefaults, name, namespace string) (bool, error) {
+	defaults *ArgoCDDefaults, name, namespace string) (Visibility, error) {
 	if v == nil {
-		return true, nil
+		return VisibilityVisible, nil
 	}
 	cfg, err := argoCDConfig(ctx, c, policy, defaults)
 	if err != nil {
-		return false, err
+		return VisibilityHidden, err
 	}
-	return v.Visible(ctx, policy.Namespace+"/"+policy.Name, cfg, name, namespace)
+	return v.Check(ctx, policy.Namespace+"/"+policy.Name, cfg, name, namespace)
 }

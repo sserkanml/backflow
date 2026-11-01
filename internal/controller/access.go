@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -150,8 +151,19 @@ func (r *DriftProposalReconciler) mayManage(ctx context.Context, policy *backflo
 	if usesDefaultAccess(policy.Spec.ArgoCD != nil, r.ArgoCD) {
 		return r.ArgoCD.ProjectAllowed(policy.Namespace, applicationProject(app)), nil
 	}
-	return tokenVisible(ctx, r.Visibility, r.Client, policy, r.ArgoCD, app.GetName(), app.GetNamespace())
+	v, err := tokenVisible(ctx, r.Visibility, r.Client, policy, r.ArgoCD, app.GetName(), app.GetNamespace())
+	if err != nil {
+		return false, err
+	}
+	if v == VisibilityUnknown {
+		// Not asked yet and Argo CD cannot be reached: retry later, say nothing, decide nothing.
+		return false, errVisibilityUnknown
+	}
+	return v == VisibilityVisible, nil
 }
+
+// errVisibilityUnknown retries the lookup that asked; it is not a verdict.
+var errVisibilityUnknown = errors.New("could not ask Argo CD whether the policy's token may see the Application")
 
 // accessRevoked reports whether the proposal's Application is one its policy may not
 // see. It reads the policy and the Application from the cache; it calls no Argo CD.

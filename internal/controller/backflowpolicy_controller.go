@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
-	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -83,10 +82,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	var policy backflowv1alpha1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
-			metrics.ForgetPolicy(metrics.Policy{Namespace: req.Namespace, Name: req.Name})
-			if r.Visibility != nil {
-				r.Visibility.forget(req.Namespace + "/" + req.Name)
-			}
+			r.forgetPolicy(req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -166,6 +162,11 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = reasonOf(secretErr)
 		cond.Message = secretErr.Error()
+	case len(apps) == 0 && res.unknown > 0:
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "ApplicationVisibilityUnknown"
+		cond.Message = fmt.Sprintf("Argo CD could not be asked which of the selected applications the policy's token may see; "+
+			"none is shown until it can. Looking again in %s", visibilityRetry)
 	case len(apps) == 0:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "NoApplicationsMatched"
@@ -191,7 +192,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			cond.Message += fmt.Sprintf("; not tracked because a repository URL contains credentials: %s",
 				strings.Join(withCredentials, ", "))
 		}
-		if n := len(res.excluded); n > 0 {
+		if n := len(res.excluded) + res.unknown; n > 0 {
 			cond.Message += fmt.Sprintf("; %d selected application(s) excluded: %s", n, excludedExplanation(res.excludedReason))
 		}
 	}
@@ -221,11 +222,28 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	metrics.SetPolicy(metrics.Policy{Namespace: policy.Namespace, Name: policy.Name}, cond.Status == metav1.ConditionTrue, len(apps)-len(withCredentials))
 	log.Info("Policy resolved", "applications", names, "ready", cond.Status, "reason", cond.Reason)
-	if secretErr != nil {
-		// Secrets are not watched: look again soon, in case access was granted.
-		return ctrl.Result{RequeueAfter: min(scmRetryInterval, policyResyncInterval)}, nil
+	return ctrl.Result{RequeueAfter: nextResync(secretErr != nil, res.unknown > 0)}, nil
+}
+
+// forgetPolicy drops what is kept for a policy that is gone.
+func (r *BackflowPolicyReconciler) forgetPolicy(namespace, name string) {
+	metrics.ForgetPolicy(metrics.Policy{Namespace: namespace, Name: name})
+	if r.Visibility != nil {
+		r.Visibility.forget(namespace + "/" + name)
 	}
-	return ctrl.Result{RequeueAfter: policyResyncInterval}, nil
+}
+
+// nextResync is when a policy is looked at again: soon when a Secret could not be read
+// (Secrets are not watched, access may have been granted) or when Argo CD could not be
+// asked what the policy's token may see, else at the periodic resync.
+func nextResync(secretForbidden, visibilityUnknown bool) time.Duration {
+	switch {
+	case secretForbidden:
+		return min(scmRetryInterval, policyResyncInterval)
+	case visibilityUnknown:
+		return visibilityRetry
+	}
+	return policyResyncInterval
 }
 
 // argoCDSecretForbidden returns a SecretForbidden error when the operator may
@@ -354,8 +372,12 @@ func (r *BackflowPolicyReconciler) forgetCredentialReports(policy *backflowv1alp
 // names of the ones it selects but may not see: they are used to retire proposals
 // and are never written to status, Events or logs; only their number is.
 type resolution struct {
-	apps           []unstructured.Unstructured
-	excluded       []string
+	apps []unstructured.Unstructured
+	// excluded are the ones a definite answer refused: only these retire proposals.
+	excluded []string
+	// unknown counts the ones that could not be checked (Argo CD unreachable and no
+	// answer ever confirmed). They are not shown and not retired.
+	unknown        int
 	excludedReason string
 }
 
@@ -363,21 +385,28 @@ type resolution struct {
 const (
 	excludedProjectNotAllowed = "ProjectNotAllowed"
 	excludedNotVisibleToToken = "NotVisibleToToken"
+	excludedVisibilityUnknown = "VisibilityUnknown"
 )
+
+// visibilityRetry is how soon a policy whose Applications could not be checked looks again.
+const visibilityRetry = 30 * time.Second
 
 // recordIn writes the count of the excluded Applications and the reason, and nothing
 // that names one, to the status.
 func (res resolution) recordIn(st *backflowv1alpha1.BackflowPolicyStatus) {
-	st.ExcludedApplications = int32(len(res.excluded))
+	st.ExcludedApplications = int32(len(res.excluded) + res.unknown)
 	st.ExcludedReason = ""
-	if len(res.excluded) > 0 {
+	if len(res.excluded)+res.unknown > 0 {
 		st.ExcludedReason = res.excludedReason
 	}
 }
 
 func excludedExplanation(reason string) string {
-	if reason == excludedNotVisibleToToken {
+	switch reason {
+	case excludedNotVisibleToToken:
 		return "the Argo CD token of the policy cannot get them"
+	case excludedVisibilityUnknown:
+		return fmt.Sprintf("Argo CD could not be asked whether the policy's token may see them; looking again in %s", visibilityRetry)
 	}
 	return "their Argo CD project is not allowed for this namespace (argocd.defaultAccess)"
 }
@@ -410,15 +439,21 @@ func (r *BackflowPolicyReconciler) resolveApplications(ctx context.Context, poli
 	case r.Visibility != nil:
 		res.excludedReason = excludedNotVisibleToToken
 		for i := range apps {
-			visible, err := tokenVisible(ctx, r.Visibility, r.Client, policy, r.ArgoCD, apps[i].GetName(), apps[i].GetNamespace())
+			v, err := tokenVisible(ctx, r.Visibility, r.Client, policy, r.ArgoCD, apps[i].GetName(), apps[i].GetNamespace())
 			if err != nil {
 				return resolution{}, visibilityError(err)
 			}
-			if visible {
+			switch v {
+			case VisibilityVisible:
 				res.apps = append(res.apps, apps[i])
-			} else {
+			case VisibilityUnknown:
+				res.unknown++
+			default:
 				res.excluded = append(res.excluded, apps[i].GetName())
 			}
+		}
+		if res.unknown > 0 {
+			res.excludedReason = excludedVisibilityUnknown
 		}
 	default:
 		res.apps = apps
@@ -426,15 +461,10 @@ func (r *BackflowPolicyReconciler) resolveApplications(ctx context.Context, poli
 	return res, nil
 }
 
-// visibilityError says why the token of a policy could not be asked: a Secret it
-// cannot read or that is missing is the policy's to fix and goes to status; an Argo
-// CD that cannot be reached is returned as it is, to be retried with a backoff,
-// and hides nothing meanwhile.
+// visibilityError says why the token of a policy could not be used: a Secret it
+// cannot read or that is missing is the policy's to fix and goes to status.
 func visibilityError(err error) error {
-	switch {
-	case isSecretForbidden(err):
-		return err
-	case errors.Is(err, argocd.ErrUnreachable):
+	if isSecretForbidden(err) {
 		return err
 	}
 	return &checkError{reason: "ArgoCDCredentials", msg: err.Error()}

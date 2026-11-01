@@ -51,6 +51,15 @@ func visibilityWith(f *fakeGetter, now *time.Time) *ApplicationVisibility {
 	}
 }
 
+func check(t *testing.T, v *ApplicationVisibility, cfg argocd.Config, name string) Visibility {
+	t.Helper()
+	got, err := v.Check(context.Background(), "ns/p", cfg, name, "argocd")
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return got
+}
+
 func TestVisibilityHidesWhatTheTokenMayNotGet(t *testing.T) {
 	now := time.Now()
 	f := &fakeGetter{answers: map[string]error{
@@ -59,10 +68,9 @@ func TestVisibilityHidesWhatTheTokenMayNotGet(t *testing.T) {
 	}}
 	v := visibilityWith(f, &now)
 	cfg := argocd.Config{URL: "https://argocd", Token: "token-a"}
-	for name, want := range map[string]bool{"mine": true, "forbidden": false, "missing": false} {
-		got, err := v.Visible(context.Background(), "ns/p", cfg, name, "argocd")
-		if err != nil || got != want {
-			t.Errorf("%s: visible %v, error %v; want %v", name, got, err, want)
+	for name, want := range map[string]Visibility{"mine": VisibilityVisible, "forbidden": VisibilityHidden, "missing": VisibilityHidden} {
+		if got := check(t, v, cfg, name); got != want {
+			t.Errorf("%s: %v, want %v", name, got, want)
 		}
 	}
 }
@@ -71,43 +79,74 @@ func TestVisibilityIsCachedPerTokenAndApplicationForTheTTL(t *testing.T) {
 	now := time.Now()
 	f := &fakeGetter{}
 	v := visibilityWith(f, &now)
-	ctx := context.Background()
 	a, b := argocd.Config{URL: "https://argocd", Token: "token-a"}, argocd.Config{URL: "https://argocd", Token: "token-b"}
 
 	for range 3 {
-		if _, err := v.Visible(ctx, "ns/p", a, "app", "argocd"); err != nil {
-			t.Fatal(err)
-		}
+		check(t, v, a, "app")
 	}
 	if got := f.count("app"); got != 1 {
 		t.Errorf("asked %d times within the TTL, want 1", got)
 	}
-	if _, err := v.Visible(ctx, "ns/q", b, "app", "argocd"); err != nil {
-		t.Fatal(err)
-	}
+	check(t, v, b, "app")
 	if got := f.count("app"); got != 2 {
 		t.Errorf("another token is another question: asked %d times, want 2", got)
 	}
 	now = now.Add(DefaultVisibilityTTL + time.Second)
-	if _, err := v.Visible(ctx, "ns/p", a, "app", "argocd"); err != nil {
-		t.Fatal(err)
-	}
+	check(t, v, a, "app")
 	if got := f.count("app"); got != 3 {
 		t.Errorf("asked %d times after the TTL, want 3", got)
 	}
 }
 
-func TestVisibilityDoesNotRememberAnOutage(t *testing.T) {
+func TestAnOutageKeepsWhatWasConfirmedAndShowsNothingElse(t *testing.T) {
 	now := time.Now()
-	f := &fakeGetter{answers: map[string]error{"app": fmt.Errorf("%w: down", argocd.ErrUnreachable)}}
+	down := fmt.Errorf("%w: down", argocd.ErrUnreachable)
+	f := &fakeGetter{answers: map[string]error{"hidden": fmt.Errorf("%w: HTTP 403", argocd.ErrUnauthorized)}}
 	v := visibilityWith(f, &now)
 	cfg := argocd.Config{URL: "https://argocd", Token: "t"}
-	if _, err := v.Visible(context.Background(), "ns/p", cfg, "app", "argocd"); err == nil {
-		t.Fatal("an unreachable Argo CD is an error, not a hidden Application")
+
+	// Confirmed while Argo CD was up: one visible, one refused.
+	if check(t, v, cfg, "seen") != VisibilityVisible || check(t, v, cfg, "hidden") != VisibilityHidden {
+		t.Fatal("setup")
 	}
-	f.answers["app"] = nil
-	if ok, err := v.Visible(context.Background(), "ns/p", cfg, "app", "argocd"); err != nil || !ok {
-		t.Errorf("after the outage: visible %v, error %v", ok, err)
+
+	// Argo CD goes down, and the answers are older than the TTL.
+	f.answers["seen"], f.answers["hidden"], f.answers["new"] = down, down, down
+	now = now.Add(10 * DefaultVisibilityTTL)
+
+	if got := check(t, v, cfg, "seen"); got != VisibilityVisible {
+		t.Errorf("an Application confirmed visible stays visible during an outage, got %v", got)
+	}
+	if got := check(t, v, cfg, "hidden"); got != VisibilityHidden {
+		t.Errorf("an Application confirmed hidden stays hidden during an outage, got %v", got)
+	}
+	if got := check(t, v, cfg, "new"); got != VisibilityUnknown {
+		t.Errorf("an Application never confirmed is unknown, not visible, got %v", got)
+	}
+	if got := check(t, v, cfg, "new"); got != VisibilityUnknown {
+		t.Errorf("an unknown answer is not remembered as visible, got %v", got)
+	}
+
+	// Argo CD is back: the answers are asked for again, and a refusal now revokes.
+	f.answers["seen"], f.answers["hidden"], f.answers["new"] = fmt.Errorf("%w: HTTP 403", argocd.ErrUnauthorized), nil, nil
+	if got := check(t, v, cfg, "seen"); got != VisibilityHidden {
+		t.Errorf("a definite refusal after the outage hides it, got %v", got)
+	}
+	if got := check(t, v, cfg, "new"); got != VisibilityVisible {
+		t.Errorf("a first definite answer after the outage, got %v", got)
+	}
+}
+
+func TestAnotherTokenDoesNotInheritConfirmedAnswers(t *testing.T) {
+	now := time.Now()
+	f := &fakeGetter{}
+	v := visibilityWith(f, &now)
+	a, b := argocd.Config{URL: "https://argocd", Token: "token-a"}, argocd.Config{URL: "https://argocd", Token: "token-b"}
+	check(t, v, a, "app")
+	f.answers = map[string]error{"app": fmt.Errorf("%w: down", argocd.ErrUnreachable)}
+	now = now.Add(time.Hour)
+	if got := check(t, v, b, "app"); got != VisibilityUnknown {
+		t.Errorf("a token that never saw the Application: %v, want unknown", got)
 	}
 }
 
@@ -168,27 +207,99 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 		Expect(f.count("vis-mine")).To(Equal(1))
 	})
 
-	It("does not hide anything while Argo CD cannot be reached", func() {
-		app := &unstructured.Unstructured{}
-		app.SetGroupVersionKind(applicationGVK)
-		app.SetName("vis-outage")
-		app.SetNamespace(argoNS)
-		create(app)
-		create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "vis-token2", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-		policy := &backflowv1alpha1.BackflowPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "vis-outage-policy", Namespace: argoNS},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: argoNS, Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"vis-outage"}},
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "vis-token2"}, Key: "token"},
+	Context("when Argo CD cannot be reached", func() {
+		var policy *backflowv1alpha1.BackflowPolicy
+		down := fmt.Errorf("%w: down", argocd.ErrUnreachable)
+		BeforeEach(func() {
+			for _, n := range []string{"out-confirmed", "out-new-zx42"} {
+				app := &unstructured.Unstructured{}
+				app.SetGroupVersionKind(applicationGVK)
+				app.SetName(n)
+				app.SetNamespace(argoNS)
+				create(app)
+			}
+			create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "out-token", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
+			policy = &backflowv1alpha1.BackflowPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: "out-policy", Namespace: argoNS},
+				Spec: backflowv1alpha1.BackflowPolicySpec{
+					ArgoCDNamespace: argoNS, Mode: backflowv1alpha1.ModeReportOnly,
+					Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"out-confirmed", "out-new-zx42"}},
+					ArgoCD: &backflowv1alpha1.ArgoCDServer{
+						TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "out-token"}, Key: "token"},
+					},
 				},
-			},
+			}
+			create(policy)
+		})
+		reconcileWith := func(v *ApplicationVisibility) (*backflowv1alpha1.BackflowPolicy, reconcile.Result) {
+			r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ArgoCD: &ArgoCDDefaults{}, Visibility: v}
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			got := &backflowv1alpha1.BackflowPolicy{}
+			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), got)).To(Succeed())
+			return got, res
 		}
-		create(policy)
-		f := &fakeGetter{answers: map[string]error{"vis-outage": fmt.Errorf("%w: down", argocd.ErrUnreachable)}}
-		r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ArgoCD: &ArgoCDDefaults{}, Visibility: visibilityWith(f, &now)}
-		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
-		Expect(err).To(HaveOccurred(), "retried with a backoff; the status stays as it was")
+
+		It("keeps what was confirmed, shows nothing else, and says when it looks again", func() {
+			f := &fakeGetter{answers: map[string]error{"out-new-zx42": down}}
+			v := visibilityWith(f, &now)
+			got, _ := reconcileWith(v) // only out-confirmed is asked successfully; out-new is down from the start
+			Expect(got.Status.MatchedApplications).To(ConsistOf("out-confirmed"))
+
+			f.answers["out-confirmed"] = down
+			now = now.Add(time.Hour)
+			got, res := reconcileWith(v)
+			Expect(got.Status.MatchedApplications).To(ConsistOf("out-confirmed"), "confirmed earlier: still visible")
+			Expect(got.Status.ExcludedApplications).To(BeEquivalentTo(1))
+			Expect(got.Status.ExcludedReason).To(Equal("VisibilityUnknown"))
+			Expect(res.RequeueAfter).To(Equal(visibilityRetry))
+			ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+			Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+			Expect(ready.Message).To(And(ContainSubstring("could not be asked"), ContainSubstring("looking again in 30s")))
+			Expect(fmt.Sprint(got.Status)).NotTo(ContainSubstring("zx42"), "no name of an Application that was never confirmed")
+		})
+
+		It("shows none of them, and is not Ready, when nothing was ever confirmed", func() {
+			f := &fakeGetter{answers: map[string]error{"out-confirmed": down, "out-new-zx42": down}}
+			got, res := reconcileWith(visibilityWith(f, &now))
+			Expect(got.Status.Applications).To(BeEmpty())
+			Expect(got.Status.ExcludedApplications).To(BeEquivalentTo(2))
+			ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
+			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+			Expect(ready.Reason).To(Equal("ApplicationVisibilityUnknown"))
+			Expect(res.RequeueAfter).To(Equal(visibilityRetry))
+			Expect(fmt.Sprint(got.Status)).NotTo(ContainSubstring("out-confirmed"))
+		})
+
+		It("never retires a proposal for it, and does for a definite refusal", func() {
+			dp := &backflowv1alpha1.DriftProposal{
+				ObjectMeta: metav1.ObjectMeta{Namespace: argoNS, GenerateName: "out-dp-", Labels: map[string]string{labelPolicy: safeLabel(policy.Name)}},
+				Spec: backflowv1alpha1.DriftProposalSpec{
+					PolicyName:  policy.Name,
+					Application: backflowv1alpha1.ObjectRef{Name: "out-new-zx42", Namespace: argoNS},
+					Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
+					Source: backflowv1alpha1.SourceRef{RepoURL: "https://example.com/r.git", Revision: "abc",
+						Path: "apps/demo", Type: backflowv1alpha1.SourceDirectory},
+					Changes:    []backflowv1alpha1.FieldChange{{Path: "/data/K", Op: backflowv1alpha1.OpReplace, Desired: `"a"`, Live: `"b"`}},
+					DetectedAt: metav1.Now(),
+				},
+			}
+			create(dp)
+			dp.Status.Phase = backflowv1alpha1.PhaseMapping
+			Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
+
+			f := &fakeGetter{answers: map[string]error{"out-confirmed": down, "out-new-zx42": down}}
+			v := visibilityWith(f, &now)
+			reconcileWith(v)
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), dp)).To(Succeed())
+			Expect(dp.Annotations).NotTo(HaveKey(annotationAccessRevoked), "an outage never retires a proposal")
+
+			f.answers["out-new-zx42"] = fmt.Errorf("%w: HTTP 403", argocd.ErrUnauthorized)
+			now = now.Add(time.Hour)
+			reconcileWith(v)
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), dp)).To(Succeed())
+			Expect(dp.Annotations).To(HaveKey(annotationAccessRevoked), "a definite 403 does")
+		})
 	})
 
 	It("is not Ready with the reason SecretForbidden when its token Secret cannot be read", func() {
