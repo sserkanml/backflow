@@ -38,6 +38,7 @@ const (
 	lSourceType  = "source_type"
 	lRenderer    = "renderer"
 	lDeps        = "deps"
+	lChangedBy   = "changed_by"
 	lEndpoint    = "endpoint"
 	lHost        = "host"
 	lReason      = "reason"
@@ -51,8 +52,8 @@ var Registry = ctrlmetrics.Registry
 var (
 	driftsDetected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "drifts_detected_total",
-		Help: "Drifts that became a proposal, by policy, application and source type.",
-	}, []string{lPolicyNS, lPolicy, lApplication, lSourceType})
+		Help: "Drifts that became a proposal, by policy, application, source type and who changed the resource (changed_by: interactive, controller, unknown).",
+	}, []string{lPolicyNS, lPolicy, lApplication, lSourceType, lChangedBy})
 	mappingResults = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "mapping_results_total",
 		Help: "Outcomes of mapping a proposal to Git, by source type, strategy and reason (Mapped, or why the proposal is Unmapped); a mapping that is tried again later is not counted.",
@@ -299,12 +300,21 @@ func ForgetApplicationsExcept(policy Policy, keep map[string]bool) {
 	}
 }
 
+// changedByLabel keeps the label to its three values, whatever the caller passes.
+func changedByLabel(v string) string {
+	switch v {
+	case "interactive", "controller":
+		return v
+	}
+	return "unknown"
+}
+
 // DriftDetected counts a drift that became a proposal.
-func DriftDetected(policy Policy, application, sourceType string) {
+func DriftDetected(policy Policy, application, sourceType, changedBy string) {
 	seeApplication(policy, application)
 	safe(func() {
 		ns, n := policy.labels()
-		driftsDetected.WithLabelValues(ns, n, bound(lApplication, application), bound(lSourceType, sourceType)).Inc()
+		driftsDetected.WithLabelValues(ns, n, bound(lApplication, application), bound(lSourceType, sourceType), changedByLabel(changedBy)).Inc()
 	})
 }
 

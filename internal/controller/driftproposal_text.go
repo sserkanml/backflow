@@ -6,6 +6,7 @@ import (
 	"unicode"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/managedfields"
 	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -19,8 +20,9 @@ const (
 
 	// trailerProposal marks a commit as the one built for a proposal, so a
 	// restarted operator recognises its own direct commit.
-	trailerProposal  = "Proposal"
-	trailerChangedBy = "Changed-by"
+	trailerProposal    = "Proposal"
+	trailerChangedBy   = "Changed-by"
+	trailerChangedWith = "Changed-with"
 	// trailerProposalUID names the object a commit was built for. Proposal
 	// names are content hashes and are reused, the UID never is.
 	trailerProposalUID = "Proposal-UID"
@@ -129,6 +131,9 @@ func commitMessage(dp *backflowv1alpha1.DriftProposal, left []leftOutField, over
 	if a := dp.Spec.Actor; a != nil && singleLine(a.Username) != "" {
 		fmt.Fprintf(&b, "%s: %s\n", trailerChangedBy, singleLine(a.Username))
 	}
+	if with := changedWith(dp.Spec.Actor); with != "" {
+		fmt.Fprintf(&b, "%s: %s\n", trailerChangedWith, with)
+	}
 	return b.String()
 }
 
@@ -203,7 +208,16 @@ func mergeRequestBody(dp *backflowv1alpha1.DriftProposal, left []leftOutField, o
 	} else {
 		b.WriteString("- **Changed by:** unknown\n")
 	}
+	if with := changedWith(dp.Spec.Actor); with != "" {
+		fmt.Fprintf(&b, "- **Changed with:** %s\n", with)
+		if others := otherManagers(dp.Spec.Actor); others != "" {
+			fmt.Fprintf(&b, "- **Also changed with:** %s\n", others)
+		}
+	}
 	fmt.Fprintf(&b, "- **Detected:** %s\n\n", dp.Spec.DetectedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
+	if note := controllerNote(dp.Spec.Actor); note != "" {
+		fmt.Fprintf(&b, "%s\n\n", note)
+	}
 
 	b.WriteString("| Path | Git value | Live value |\n|---|---|---|\n")
 	for _, ch := range mappedChanges(dp, left) {
@@ -389,4 +403,44 @@ func sourcesLine(sources []backflowv1alpha1.ApplicationSource) string {
 		}
 	}
 	return strings.Join(parts, "; ")
+}
+
+// changedWith is "<manager> (<operation>) at <time>", from the managedFields of the live
+// object; empty when no manager is known.
+func changedWith(a *backflowv1alpha1.Actor) string {
+	if a == nil || singleLine(a.Manager) == "" {
+		return ""
+	}
+	out := singleLine(a.Manager)
+	if op := singleLine(a.Operation); op != "" {
+		out += " (" + op + ")"
+	}
+	if a.Time != nil && !a.Time.IsZero() {
+		out += " at " + a.Time.UTC().Format("2006-01-02 15:04:05 UTC")
+	}
+	return out
+}
+
+// otherManagers lists the other managers that wrote drifted fields.
+func otherManagers(a *backflowv1alpha1.Actor) string {
+	if a == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(a.Others))
+	for _, o := range a.Others {
+		if m := singleLine(o.Manager); m != "" {
+			parts = append(parts, m)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// controllerNote warns the reviewer when a controller, not a person, made the change: Git may
+// then not be the place to follow it (an autoscaler changes the replicas on purpose).
+func controllerNote(a *backflowv1alpha1.Actor) string {
+	if a == nil || managedfields.Classify(a.Manager) != managedfields.Controller {
+		return ""
+	}
+	return fmt.Sprintf("> **Note:** this was changed by the controller `%s`, not by a person. "+
+		"Check whether Git should follow it: a controller that keeps doing this will undo the merge.", singleLine(a.Manager))
 }

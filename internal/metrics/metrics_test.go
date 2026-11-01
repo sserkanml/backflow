@@ -25,7 +25,7 @@ func TestCounters(t *testing.T) {
 		c    prometheus.Collector
 		do   func()
 	}{
-		{"drifts", driftsDetected.WithLabelValues("ns", "p", "app", "Helm"), func() { DriftDetected(Policy{"ns", "p"}, "app", "Helm") }},
+		{"drifts", driftsDetected.WithLabelValues("ns", "p", "app", "Helm", "interactive"), func() { DriftDetected(Policy{"ns", "p"}, "app", "Helm", "interactive") }},
 		{"mapping", mappingResults.WithLabelValues("Helm", "HelmValues", "Mapped"), func() { MappingResult("Helm", "HelmValues", "Mapped") }},
 		{"merge request", mergeRequests.WithLabelValues("gitlab", "opened"), func() { MergeRequest("gitlab", MROpened) }},
 		{"render", renders.WithLabelValues("upload", "none", "ok"), func() { Render(RendererUpload, DepsNone, nil, false, time.Second) }},
@@ -117,7 +117,7 @@ func TestStateGaugesAndForgetting(t *testing.T) {
 	if got := testutil.ToFloat64(policyApplications.WithLabelValues("ns", "p1")); got != 3 {
 		t.Errorf("applications = %v", got)
 	}
-	DriftDetected(Policy{"ns", "p1"}, "app", "Helm")
+	DriftDetected(Policy{"ns", "p1"}, "app", "Helm", "unknown")
 	SetDetectionPaused(Policy{"ns", "p1"}, "app", "GitAhead")
 	ForgetPolicy(Policy{"ns", "p1"})
 	if n := testutil.CollectAndCount(policyReady); n != 1 {

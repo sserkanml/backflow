@@ -528,7 +528,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 		return r.adoptMergeRequest(ctx, dp, mr, branch, target)
 	}
 	assignee := ""
-	if opts.AssignActor && dp.Spec.Actor != nil && !strings.HasPrefix(dp.Spec.Actor.Username, "system:") {
+	if opts.AssignActor && dp.Spec.Actor != nil && dp.Spec.Actor.Username != "" && !strings.HasPrefix(dp.Spec.Actor.Username, "system:") {
 		assignee = singleLine(dp.Spec.Actor.Username)
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
