@@ -392,7 +392,7 @@ Metric names and labels are a contract; a change to one is a breaking change.
 | `backflow_policy_applications` | gauge | `policy_namespace`, `policy` | Applications a policy selects |
 | `backflow_detection_paused` | gauge | `policy_namespace`, `policy`, `application`, `reason` | 1 while drift detection for an Application is paused; `reason` is `GitAhead`, `ApplicationChanged` or `Settling` |
 | `backflow_proposals` | gauge | `policy_namespace`, `policy`, `phase` | DriftProposals as they are now, read on every scrape; a proposal without a phase is `Pending` |
-| `backflow_drifts_detected_total` | counter | `policy_namespace`, `policy`, `application`, `source_type` | drifts that became a proposal |
+| `backflow_drifts_detected_total` | counter | `policy_namespace`, `policy`, `application`, `source_type`, `changed_by` | drifts that became a proposal; `changed_by` is `interactive` (a person with a tool), `controller` (the HPA or another controller) or `unknown` (see [Who changed it](#who-changed-it)) |
 | `backflow_mapping_results_total` | counter | `source_type`, `strategy`, `reason` | outcomes of mapping: `Mapped` (or `PartiallyMapped`), or the reason a proposal is `Unmapped`; a mapping that is retried later is not counted |
 | `backflow_merge_requests_total` | counter | `provider`, `action` | `opened`, `merged`, `closed`, and `push_rejected` (a Git push the server declined; `provider` is `git` for it) |
 | `backflow_verification_duration_seconds` | histogram | `source_type`, `result` | time to map and verify a proposal by rendering; `result` is `mapped`, `unmapped` or `retry` |
@@ -522,6 +522,9 @@ sum by (policy_namespace, policy) (backflow_proposals{phase=~"Proposed|Unmapped"
 
 # Drifts per application over a week
 sum by (application) (increase(backflow_drifts_detected_total[7d]))
+
+# Drifts that a controller made, not a person
+sum by (application) (increase(backflow_drifts_detected_total{changed_by="controller"}[7d]))
 
 # Merge requests opened and merged per day
 sum by (action) (increase(backflow_merge_requests_total{action=~"opened|merged"}[1d]))
@@ -695,6 +698,61 @@ and GitHub fine-grained tokens expire; put the expiry date in your calendar.
 Releases are made by [release-please](https://github.com/googleapis/release-please)
 from Conventional Commits on `main`; the tag it creates publishes the image and
 the chart.
+
+## Who changed it
+
+`kubectl get dp` has a column **Changed by**: the field manager that wrote the drifted
+fields last. Backflow reads it from `metadata.managedFields` of the live object that Argo CD
+returns for the drift (Argo CD v3.5 includes `managedFields` there), so it needs no extra
+permission on the cluster and no webhook. `spec.actor` holds it:
+
+```yaml
+spec:
+  actor:
+    manager: kubectl-patch
+    operation: Update
+    time: "2026-11-01T13:26:26Z"
+```
+
+The merge request says it (`Changed with: kubectl-patch (Update) at 2026-11-01 13:26:26 UTC`)
+and so does the commit (a `Changed-with:` trailer).
+
+| What changed the resource | Manager |
+|---|---|
+| `kubectl patch`, `edit`, `set image`, `label`, `annotate` | `kubectl-patch`, `kubectl-edit`, `kubectl-set`, `kubectl-label`, `kubectl-annotate` |
+| `kubectl scale` | `kubectl` (Update, on the `scale` subresource) |
+| `kubectl apply` | `kubectl-client-side-apply` (Update); with `--server-side` `kubectl` (Apply) |
+| a controller such as the HPA | for example `kube-controller-manager` |
+| `oc`, a browser console | `oc` and the like, or the browser (`Mozilla`) |
+| Argo CD's sync | `argocd-controller` — never named as the actor |
+
+The `kubectl` rows were observed on a kind cluster (kubectl 1.32). `oc`, the console and the HPA were
+not: the names in those two rows are what the clients are known to send, and a manager that is not
+recognised as a tool is counted as a controller.
+
+How it is decided. For every drifted field the entry of `managedFields` that owns it is found
+(list elements are matched by their merge key). Argo CD's managers (`argocd-*`) and Backflow
+are left out, and the most recent remaining entry is the actor. When several managers wrote
+different drifted fields, the latest is the actor, its paths are in `spec.actor.fields` and the
+others (at most four) in `spec.actor.others`. A manager is **interactive** when it is a tool a
+person runs (`kubectl*`, `oc*`, `k9s`, a browser, ...), else a **controller**; for a controller the
+merge request carries a note that the change was not made by a person and that a controller that
+keeps doing it will undo the merge (an HPA changing `spec.replicas`, say), and the metric
+`backflow_drifts_detected_total` counts it with `changed_by="controller"`.
+
+What it cannot tell:
+
+- **No username.** `managedFields` do not hold one, so `spec.actor.username` stays empty, "Changed by:
+  unknown" stays in the merge request and nobody is assigned (`mergeRequest.assignActor`). A username
+  needs an admission webhook that observes the request; that is separate work.
+- **A removed field has no owner.** When the change is a field that is gone from the live object,
+  there is no entry to read, and the proposal has no actor.
+- **Controllers and tools that share a name.** The manager is the name the client gave, not proof of
+  who ran it.
+- **It is set when the proposal is created** and never changes (spec is immutable): a later change
+  of the same field by someone else shows in a new proposal.
+- **Nothing blocks on it.** An object without `managedFields`, or with ones that cannot be read, gives a
+  proposal without an actor (logged at V(1)), counted as `changed_by="unknown"`.
 
 ## Helm sources
 
