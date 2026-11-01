@@ -392,7 +392,7 @@ Metric names and labels are a contract; a change to one is a breaking change.
 | `backflow_policy_applications` | gauge | `policy_namespace`, `policy` | Applications a policy selects |
 | `backflow_detection_paused` | gauge | `policy_namespace`, `policy`, `application`, `reason` | 1 while drift detection for an Application is paused; `reason` is `GitAhead`, `ApplicationChanged` or `Settling` |
 | `backflow_proposals` | gauge | `policy_namespace`, `policy`, `phase` | DriftProposals as they are now, read on every scrape; a proposal without a phase is `Pending` |
-| `backflow_drifts_detected_total` | counter | `policy_namespace`, `policy`, `application`, `source_type`, `changed_by` | drifts that became a proposal; `changed_by` is `interactive` (a person with a tool), `controller` (the HPA or another controller) or `unknown` (see [Who changed it](#who-changed-it)) |
+| `backflow_drifts_detected_total` | counter | `policy_namespace`, `policy`, `application`, `source_type`, `changed_by` | drifts that became a proposal; `changed_by` is `interactive` (a known tool a person runs), `controller` (a known controller), `unknown` (a manager that is neither) or `none` (no manager could be named); see [Who changed it](#who-changed-it) |
 | `backflow_mapping_results_total` | counter | `source_type`, `strategy`, `reason` | outcomes of mapping: `Mapped` (or `PartiallyMapped`), or the reason a proposal is `Unmapped`; a mapping that is retried later is not counted |
 | `backflow_merge_requests_total` | counter | `provider`, `action` | `opened`, `merged`, `closed`, and `push_rejected` (a Git push the server declined; `provider` is `git` for it) |
 | `backflow_verification_duration_seconds` | histogram | `source_type`, `result` | time to map and verify a proposal by rendering; `result` is `mapped`, `unmapped` or `retry` |
@@ -723,22 +723,33 @@ and so does the commit (a `Changed-with:` trailer).
 | `kubectl scale` | `kubectl` (Update, on the `scale` subresource) |
 | `kubectl apply` | `kubectl-client-side-apply` (Update); with `--server-side` `kubectl` (Apply) |
 | a controller such as the HPA | for example `kube-controller-manager` |
-| `oc`, a browser console | `oc` and the like, or the browser (`Mozilla`) |
+| `oc`, a browser console | `oc` and the like, or the browser (`Mozilla`) — expected, not verified |
 | Argo CD's sync | `argocd-controller` — never named as the actor |
 
 The `kubectl` rows were observed on a kind cluster (kubectl 1.32). `oc`, the console and the HPA were
-not: the names in those two rows are what the clients are known to send, and a manager that is not
-recognised as a tool is counted as a controller.
+not: the names in those two rows are what the clients are expected to send. A manager that is not
+recognised is not called a person and not called a controller either (see below).
 
 How it is decided. For every drifted field the entry of `managedFields` that owns it is found
 (list elements are matched by their merge key). Argo CD's managers (`argocd-*`) and Backflow
 are left out, and the most recent remaining entry is the actor. When several managers wrote
 different drifted fields, the latest is the actor, its paths are in `spec.actor.fields` and the
-others (at most four) in `spec.actor.others`. A manager is **interactive** when it is a tool a
-person runs (`kubectl*`, `oc*`, `k9s`, a browser, ...), else a **controller**; for a controller the
-merge request carries a note that the change was not made by a person and that a controller that
-keeps doing it will undo the merge (an HPA changing `spec.replicas`, say), and the metric
-`backflow_drifts_detected_total` counts it with `changed_by="controller"`.
+others (at most four) in `spec.actor.others`. A manager is put in one of three classes, by its name only:
+
+- **interactive**: a tool a person runs: `kubectl*`, `oc` and `oc-*`, browsers (`Mozilla`, `Chrome`, ...),
+  `k9s`, `lens`, `helm`, `kustomize`, `curl`, ...
+- **controller**: a known controller: `kube-controller-manager` (which is what the HPA scales
+  through), `kube-scheduler`, `kubelet`, `kube-apiserver`, `cloud-controller-manager`,
+  `cluster-autoscaler`, and names that end in `-controller`, `-operator` or `-controller-manager`
+  (`cert-manager-controller`, Flux's `kustomize-controller`, `openshift-controller-manager`,
+  `cluster-version-operator`). Only for these does the merge request carry a note that the change was
+  not made by a person and that a controller that keeps doing it will undo the merge (an HPA changing
+  `spec.replicas`, say).
+- **unknown**: every other name. The merge request only says `Changed with: <manager>`, with no
+  note either way, because a wrong "not a person" would mislead the reviewer.
+
+The metric `backflow_drifts_detected_total` counts the class in `changed_by` (`interactive`, `controller`,
+`unknown`), and `none` for a drift for which no manager could be named.
 
 What it cannot tell:
 
@@ -747,12 +758,14 @@ What it cannot tell:
   needs an admission webhook that observes the request; that is separate work.
 - **A removed field has no owner.** When the change is a field that is gone from the live object,
   there is no entry to read, and the proposal has no actor.
-- **Controllers and tools that share a name.** The manager is the name the client gave, not proof of
-  who ran it.
+- **It is a hint, not proof.** The name is set by the client (`--field-manager`, or the user agent): it can
+  be anything, and anyone who can write to the object can pick any name, or the name of a controller. Read
+  "Changed with" as where to look first. Who it really was needs the identity of the request, which the
+  planned admission webhook will record.
 - **It is set when the proposal is created** and never changes (spec is immutable): a later change
   of the same field by someone else shows in a new proposal.
 - **Nothing blocks on it.** An object without `managedFields`, or with ones that cannot be read, gives a
-  proposal without an actor (logged at V(1)), counted as `changed_by="unknown"`.
+  proposal without an actor (logged at V(1)), counted as `changed_by="none"`.
 
 ## Helm sources
 
