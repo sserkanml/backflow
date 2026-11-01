@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.1](https://github.com/sserkanml/backflow/compare/v0.14.0...v0.14.1) (2026-11-01)
+
+
+### Performance
+
+* **helmmap:** upload the file:// dependencies of a chart unpacked, where that renders the same as Argo CD's build ([568f3b2](https://github.com/sserkanml/backflow/commit/568f3b29203309b9efc07d6acf608b99f0250f7e))
+
+
+### Documentation
+
+* file:// chart dependencies are rendered unpacked, and the new metrics labels ([af69c5f](https://github.com/sserkanml/backflow/commit/af69c5f85429ef9d017953ee50eaaa77fa8df0f9))
+
 ## [0.14.0](https://github.com/sserkanml/backflow/compare/v0.13.2...v0.14.0) (2026-11-01)
 
 
