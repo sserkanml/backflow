@@ -97,9 +97,18 @@ spec:
                     type: array
                     x-kubernetes-list-type: atomic
                   groups:
+                    description: The groups of that user, under the same conditions.
                     items:
                       type: string
                     type: array
+                  kind:
+                    description: |-
+                      Person or controller (a service account), from a verified record of the actor webhook.
+                      It is set even when names are not recorded.
+                    enum:
+                    - person
+                    - controller
+                    type: string
                   manager:
                     description: |-
                       The field manager that wrote the drifted fields last: a tool (kubectl-patch,
@@ -147,12 +156,15 @@ spec:
                     format: date-time
                     type: string
                   userAgent:
-                    description: How the change was made, e.g. kubectl, console, or
-                      a controller name.
+                    description: |-
+                      Deprecated: never filled. An admission request carries no user agent (the only one
+                      seen is the API server's own), and the field manager already says which tool made the
+                      change. It will be removed in a later API version.
                     type: string
                   username:
-                    description: 'The Kubernetes username. Empty: managedFields do
-                      not hold one.'
+                    description: |-
+                      The Kubernetes username, from a verified record of the actor webhook. Empty: the
+                      webhook is off, saw no matching change, or was told not to record names.
                     type: string
                 type: object
               application:

@@ -166,15 +166,25 @@ type FieldChange struct {
 
 // Actor says who changed the resource in the cluster, as far as Backflow can tell.
 // The manager, operation and time come from the managedFields of the live object (the
-// last writer of the drifted fields, Argo CD left out); the username would come from
-// an admission webhook and is empty until there is one.
+// last writer of the drifted fields, Argo CD left out). The username and groups come from
+// the admission webhook of the operator (actorWebhook.enabled), only from a record whose
+// manager, time and fields agree with the managedFields; without the webhook, or with
+// no such record, they are empty.
 type Actor struct {
-	// The Kubernetes username. Empty: managedFields do not hold one.
+	// The Kubernetes username, from a verified record of the actor webhook. Empty: the
+	// webhook is off, saw no matching change, or was told not to record names.
 	// +optional
 	Username string `json:"username,omitempty"`
+	// The groups of that user, under the same conditions.
 	// +optional
 	Groups []string `json:"groups,omitempty"`
-	// How the change was made, e.g. kubectl, console, or a controller name.
+	// Person or controller (a service account), from a verified record of the actor webhook.
+	// It is set even when names are not recorded.
+	// +optional
+	Kind ActorKind `json:"kind,omitempty"`
+	// Deprecated: never filled. An admission request carries no user agent (the only one
+	// seen is the API server's own), and the field manager already says which tool made the
+	// change. It will be removed in a later API version.
 	// +optional
 	UserAgent string `json:"userAgent,omitempty"`
 	// The field manager that wrote the drifted fields last: a tool (kubectl-patch,
