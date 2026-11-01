@@ -24,6 +24,7 @@ const (
 	ActorManagerMismatch = "manager_mismatch"
 	ActorTimeMismatch    = "time_mismatch"
 	ActorPathMismatch    = "path_mismatch"
+	ActorNoWindow        = "no_window" // an entry without a time, and no successful sync of the Application is known
 	ActorAmbiguous       = "ambiguous" // records of different users fit a change whose entry has no time
 )
 
@@ -42,7 +43,7 @@ var (
 	}, []string{lReason})
 	actorMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace, Name: "actor_matches_total",
-		Help: "Pairings of a new proposal with a ChangeRecord by result: matched, no_record, or why a record was refused by the managedFields cross-check (manager_mismatch, time_mismatch, path_mismatch, ambiguous).",
+		Help: "Pairings of a new proposal with a ChangeRecord by result: matched, no_record, or why a record was refused by the managedFields cross-check (manager_mismatch, time_mismatch, path_mismatch, ambiguous, no_window).",
 	}, []string{lResult})
 )
 
@@ -87,7 +88,7 @@ func ActorRecordsDropped(reason string, n int) {
 // ActorMatch counts the pairing of a proposal with the records.
 func ActorMatch(result string) {
 	switch result {
-	case ActorMatched, ActorNoRecord, ActorManagerMismatch, ActorTimeMismatch, ActorPathMismatch, ActorAmbiguous:
+	case ActorMatched, ActorNoRecord, ActorManagerMismatch, ActorTimeMismatch, ActorPathMismatch, ActorAmbiguous, ActorNoWindow:
 	default:
 		result = ActorNoRecord
 	}

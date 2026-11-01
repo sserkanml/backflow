@@ -31,7 +31,7 @@ type ActorRecords struct {
 // The record is believed only if the managedFields of the live object agree with it, so a
 // review nobody made, or one that names someone else, does not set a name.
 func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes []backflowv1alpha1.FieldChange,
-	actor *backflowv1alpha1.Actor) *backflowv1alpha1.Actor {
+	actor *backflowv1alpha1.Actor, window actorwebhook.Window) *backflowv1alpha1.Actor {
 	if a == nil || actor == nil || a.Reader == nil {
 		return actor
 	}
@@ -59,9 +59,11 @@ func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes 
 	}
 	verdict := actorwebhook.Match(uid, attr.Latest, records, a.Tolerance)
 	if verdict.Result != metrics.ActorMatched {
-		// A write to a subresource (kubectl scale) has no field manager in the request.
+		// A write to a subresource (kubectl scale) has no field manager in the request, and its
+		// managedFields entry no time: the history of the Application bounds the records instead.
 		if entries, err := managedfields.Entries(live, pointers); err == nil {
-			if sub := actorwebhook.MatchSubresource(uid, attr.Latest, entries, records, a.Tolerance); sub.Result == metrics.ActorMatched {
+			sub := actorwebhook.MatchSubresource(uid, attr.Latest, entries, records, a.Tolerance, window)
+			if sub.Result == metrics.ActorMatched || sub.Result == metrics.ActorAmbiguous || sub.Result == metrics.ActorNoWindow {
 				verdict = sub
 			}
 		}

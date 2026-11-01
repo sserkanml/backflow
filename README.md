@@ -971,17 +971,23 @@ details follow the documentation and were not run on a cluster; the kind spike a
   `spec.actor.userAgent` is never filled and is deprecated; the field manager is the hint for the tool.
 - `kubectl scale` and `oc scale` go through the `scale` subresource. The request carries **no field
   manager**, and the managedFields entry the API server writes for it (manager from the user agent,
-  `subresource: scale`) has **no time**. So a scale cannot be checked like other changes. A record without a
+  `subresource: scale`) has **no time**, so a scale cannot be checked like other changes. A record without a
   manager is accepted only against such an entry: it has the record's subresource, belongs to the manager shown
-  as the actor, and owns the drifted path, with the same object uid. When the entry has a time, the record must
-  be within `actorWebhook.tolerance` of it, as usual. When it has none, nothing ties the record to the change
-  but the uid, so the name is used only if every record that fits names the same user; records of different
-  users are ambiguous and name no one (`backflow_actor_matches_total{result="ambiguous"}`). A record that has a
-  manager keeps the strict check. This is the weakest check of the feature: anyone who can post to the webhook
-  port could name a user for a scale, which the NetworkPolicy is there to prevent. The Scale object has no
-  annotations either, so a scale of any Deployment, StatefulSet or ReplicaSet in a watched namespace is
-  recorded, tracked by Argo CD or not; only the records of a drifted, tracked object are ever read, and the
-  others expire with the retention.
+  as the actor, owns the drifted path, and has the same object uid. When the entry has a time, the record must
+  be within `actorWebhook.tolerance` of it, as usual. When it has none, **the history of the Application
+  bounds the record instead**: only a record made after the last successful sync of the Application
+  (`status.operationState.finishedAt` of a `Succeeded` operation, or the newest `status.history[].deployedAt`,
+  whichever is later), which put the resource back to Git's state, and not after the proposal is made (plus the
+  tolerance), is used. So a scale by Alice at 14:00 that Argo CD synced back at 14:05 cannot be attributed to a
+  drift that appears at 15:00 when Bob's scale was not recorded. If no successful sync is known, nobody is named
+  (`backflow_actor_matches_total{result="no_window"}`). If records of different users are in the window the
+  result is `ambiguous` and nobody is named. The sync is the Application's last one, not necessarily one that
+  touched the resource, so the window can start later than necessary; the error is always a name left out,
+  never a wrong one. A record that has a manager keeps the strict check. This remains the weakest check of the
+  feature: anyone who can post to the webhook port could name a user for a scale inside the window, which the
+  NetworkPolicy is there to prevent. The Scale object has no annotations either, so a scale of any Deployment,
+  StatefulSet or ReplicaSet in a watched namespace is recorded, tracked by Argo CD or not; only the records of a
+  drifted, tracked object are ever read, and the others expire with the retention.
 - A change made as a shared account (a CI token) is that account; impersonation shows the impersonated user.
 - Changes made while the webhook, or the operator, is down are not named (fail open is the point).
 - The records are in a pod's memory for up to the flush interval, so a crash can lose the last seconds.

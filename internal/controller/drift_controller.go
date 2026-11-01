@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/actorwebhook"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/drift"
 	"github.com/sserkanml/backflow/internal/metrics"
@@ -590,7 +591,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		// set now and never again: spec is immutable. No managedFields, or ones that cannot be
 		// read, leave it empty; they never hold a proposal back.
 		actor, changedBy := actorOf(ctx, live, changes)
-		actor = r.Actors.Refine(ctx, live, changes, actor)
+		actor = r.Actors.Refine(ctx, live, changes, actor, actorwebhook.Window{After: st.syncedAt, Before: r.now()})
 		dp := &backflowv1alpha1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proposalName(policy.Spec.ArgoCDNamespace, summary.Name, res, changes, attempt),
