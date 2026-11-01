@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,5 +142,36 @@ func TestNewValidation(t *testing.T) {
 	}
 	if _, err := New(Config{URL: "https://x", Token: "t", CACert: []byte("junk")}); err == nil {
 		t.Error("invalid CA accepted")
+	}
+}
+
+func TestGetApplicationAnswersWhetherTheTokenMayGetIt(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   error
+	}{
+		{name: "visible", status: http.StatusOK},
+		{name: "refused", status: http.StatusForbidden, want: ErrUnauthorized},
+		{name: "bad token", status: http.StatusUnauthorized, want: ErrUnauthorized},
+		{name: "unknown", status: http.StatusNotFound, want: ErrNotFound},
+		{name: "server error", status: http.StatusBadGateway, want: ErrUnreachable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var path, query, auth string
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				path, query, auth = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"metadata":{"name":"never-read"}}`))
+			})
+			err := c.GetApplication(context.Background(), "my-app", "argocd")
+			if !errors.Is(err, tt.want) || (tt.want == nil && err != nil) {
+				t.Fatalf("error %v, want %v", err, tt.want)
+			}
+			if path != "/api/v1/applications/my-app" || query != "appNamespace=argocd" || !strings.HasPrefix(auth, "Bearer ") {
+				t.Errorf("request %s?%s with %q", path, query, auth)
+			}
+		})
 	}
 }

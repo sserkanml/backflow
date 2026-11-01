@@ -15,6 +15,7 @@ const (
 	endpointManifestsRevs    = "manifests_by_revisions"
 	endpointAppDetails       = "app_details"
 	endpointVersion          = "version"
+	endpointApplication      = "application"
 )
 
 // observe records a request to the Argo CD API when the returned function runs:

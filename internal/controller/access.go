@@ -145,12 +145,12 @@ func defaultNotAllowedMessage(ns string) string {
 // mayManage reports whether the proposal's policy may see the Application. For a
 // policy that uses the operator's default connection it is the rule of its namespace;
 // for a policy with its own token it is what that token can get from Argo CD.
-func (r *DriftProposalReconciler) mayManage(policy *backflowv1alpha1.BackflowPolicy,
-	app *unstructured.Unstructured) bool {
+func (r *DriftProposalReconciler) mayManage(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
+	app *unstructured.Unstructured) (bool, error) {
 	if usesDefaultAccess(policy.Spec.ArgoCD != nil, r.ArgoCD) {
-		return r.ArgoCD.ProjectAllowed(policy.Namespace, applicationProject(app))
+		return r.ArgoCD.ProjectAllowed(policy.Namespace, applicationProject(app)), nil
 	}
-	return true
+	return tokenVisible(ctx, r.Visibility, r.Client, policy, r.ArgoCD, app.GetName(), app.GetNamespace())
 }
 
 // accessRevoked reports whether the proposal's Application is one its policy may not

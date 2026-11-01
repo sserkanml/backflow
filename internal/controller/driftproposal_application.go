@@ -201,7 +201,7 @@ func (r *DriftProposalReconciler) parentsOf(ctx context.Context, dp *backflowv1a
 	if perr != nil {
 		return nil, false, perr
 	}
-	mayHave := func(p *unstructured.Unstructured) bool { return r.mayManage(policy, p) }
+	mayHave := func(p *unstructured.Unstructured) (bool, error) { return r.mayManage(ctx, policy, p) }
 	ref := appvalues.ResourceRef{Group: applicationGVK.Group, Kind: applicationGVK.Kind, Namespace: child.GetNamespace(), Name: child.GetName()}
 	if id, ok := appvalues.ParseTrackingID(child.GetAnnotations()[appvalues.TrackingAnnotation]); ok && id.Group == ref.Group && id.Kind == ref.Kind {
 		ns := id.AppNamespace
@@ -211,7 +211,9 @@ func (r *DriftProposalReconciler) parentsOf(ctx context.Context, dp *backflowv1a
 		parent := &unstructured.Unstructured{}
 		parent.SetGroupVersionKind(applicationGVK)
 		if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: id.AppName}, parent); err == nil && appvalues.Manages(parent, ref) {
-			if !mayHave(parent) {
+			if ok, err := mayHave(parent); err != nil {
+				return nil, false, err
+			} else if !ok {
 				return nil, true, nil
 			}
 			return []*unstructured.Unstructured{parent}, false, nil
@@ -229,7 +231,9 @@ func (r *DriftProposalReconciler) parentsOf(ctx context.Context, dp *backflowv1a
 			continue
 		}
 		if appvalues.Manages(p, ref) {
-			if !mayHave(p) {
+			if ok, err := mayHave(p); err != nil {
+				return nil, false, err
+			} else if !ok {
 				return nil, true, nil
 			}
 			out = append(out, p)

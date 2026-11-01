@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -55,6 +56,9 @@ type BackflowPolicyReconciler struct {
 	Recorder events.EventRecorder
 	// ArgoCD is the connection policies without spec.argoCD use. Optional.
 	ArgoCD *ArgoCDDefaults
+	// Visibility tells which Applications the token of a policy with its own
+	// spec.argoCD may get. Nil: not asked, every selected Application is visible.
+	Visibility *ApplicationVisibility
 
 	mu       sync.Mutex
 	reported map[string]string // policy/application -> redacted repoURL an Event was emitted for
@@ -80,6 +84,9 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			metrics.ForgetPolicy(metrics.Policy{Namespace: req.Namespace, Name: req.Name})
+			if r.Visibility != nil {
+				r.Visibility.forget(req.Namespace + "/" + req.Name)
+			}
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -194,11 +201,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	policy.Status.Applications = summaries
 	policy.Status.OpenProposals = open
 	policy.Status.ArgoCD = argoCDStatus(&policy, r.ArgoCD)
-	policy.Status.ExcludedApplications = int32(len(res.excluded))
-	policy.Status.ExcludedReason = ""
-	if len(res.excluded) > 0 {
-		policy.Status.ExcludedReason = res.excludedReason
-	}
+	res.recordIn(&policy.Status)
 	meta.SetStatusCondition(&policy.Status.Conditions, cond)
 
 	if err := r.Status().Update(ctx, &policy); err != nil {
@@ -362,6 +365,16 @@ const (
 	excludedNotVisibleToToken = "NotVisibleToToken"
 )
 
+// recordIn writes the count of the excluded Applications and the reason, and nothing
+// that names one, to the status.
+func (res resolution) recordIn(st *backflowv1alpha1.BackflowPolicyStatus) {
+	st.ExcludedApplications = int32(len(res.excluded))
+	st.ExcludedReason = ""
+	if len(res.excluded) > 0 {
+		st.ExcludedReason = res.excludedReason
+	}
+}
+
 func excludedExplanation(reason string) string {
 	if reason == excludedNotVisibleToToken {
 		return "the Argo CD token of the policy cannot get them"
@@ -394,10 +407,37 @@ func (r *BackflowPolicyReconciler) resolveApplications(ctx context.Context, poli
 				res.excluded = append(res.excluded, apps[i].GetName())
 			}
 		}
+	case r.Visibility != nil:
+		res.excludedReason = excludedNotVisibleToToken
+		for i := range apps {
+			visible, err := tokenVisible(ctx, r.Visibility, r.Client, policy, r.ArgoCD, apps[i].GetName(), apps[i].GetNamespace())
+			if err != nil {
+				return resolution{}, visibilityError(err)
+			}
+			if visible {
+				res.apps = append(res.apps, apps[i])
+			} else {
+				res.excluded = append(res.excluded, apps[i].GetName())
+			}
+		}
 	default:
 		res.apps = apps
 	}
 	return res, nil
+}
+
+// visibilityError says why the token of a policy could not be asked: a Secret it
+// cannot read or that is missing is the policy's to fix and goes to status; an Argo
+// CD that cannot be reached is returned as it is, to be retried with a backoff,
+// and hides nothing meanwhile.
+func visibilityError(err error) error {
+	switch {
+	case isSecretForbidden(err):
+		return err
+	case errors.Is(err, argocd.ErrUnreachable):
+		return err
+	}
+	return &checkError{reason: "ArgoCDCredentials", msg: err.Error()}
 }
 
 // matchApplications is the Applications a policy selects and may see.
