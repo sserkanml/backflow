@@ -85,6 +85,10 @@ type DriftReconciler struct {
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
 
+	// Actors pairs a new proposal with the records of the actor webhook, to name the
+	// user. Optional.
+	Actors *ActorRecords
+
 	aheadMu       sync.Mutex
 	aheadReported map[reportKey]string // what each repeating Event was last emitted for
 	aheadChecks   map[aheadKey]aheadCheck
@@ -103,6 +107,7 @@ type DriftReconciler struct {
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backflow.io,resources=changerecords,verbs=get;list;watch;create;update;delete
 
 // Reconcile runs one pass over the policy. Whatever it returns is logged at
 // V(1): when the next pass happens depends on it (see nextStableCheck), and a
@@ -585,6 +590,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		// set now and never again: spec is immutable. No managedFields, or ones that cannot be
 		// read, leave it empty; they never hold a proposal back.
 		actor, changedBy := actorOf(ctx, live, changes)
+		actor = r.Actors.Refine(ctx, live, changes, actor)
 		dp := &backflowv1alpha1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proposalName(policy.Spec.ArgoCDNamespace, summary.Name, res, changes, attempt),

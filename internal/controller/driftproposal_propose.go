@@ -450,7 +450,7 @@ func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal,
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
 	}
-	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(dp, res.leftOut, res.overrides, kustomizeNoteList(dp, res)...), When: dp.Spec.DetectedAt.UTC(), Create: res.created}
+	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(r.forText(dp), res.leftOut, res.overrides, kustomizeNoteList(dp, res)...), When: dp.Spec.DetectedAt.UTC(), Create: res.created}
 }
 
 func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
@@ -533,7 +533,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	}
 	mr, err = provider.CreateMergeRequest(ctx, project, scm.CreateRequest{
 		SourceBranch: branch, TargetBranch: target,
-		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(dp, change.result.leftOut, change.result.overrides, change.result.diff(), kustomizeNoteList(dp, change.result)...),
+		Title: commitSubject(dp, change.result.leftOut), Body: mergeRequestBody(r.forText(dp), change.result.leftOut, change.result.overrides, change.result.diff(), kustomizeNoteList(dp, change.result)...),
 		Labels: opts.Labels, Reviewers: opts.Reviewers, Assignee: assignee,
 	})
 	if err != nil {

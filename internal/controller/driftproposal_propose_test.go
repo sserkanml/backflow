@@ -500,7 +500,8 @@ var _ = Describe("DriftProposal proposing", func() {
 		cache := gitrepo.NewCache(cacheDir)
 		writer = cache
 		r = &DriftProposalReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Repos: CacheReader{Cache: cache}, Writer: writer,
+			UsernameInMergeRequest: true, // these tests read the user name in the text
+			Client:                 k8sClient, Scheme: k8sClient.Scheme(), Repos: CacheReader{Cache: cache}, Writer: writer,
 			NewProvider: func(scm.Config) (scm.Provider, error) { return provider, nil },
 		}
 
