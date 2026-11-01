@@ -23,6 +23,11 @@ on:
         description: "Scripts to run, comma separated (for example helm,merge-request); empty runs all of them"
         type: string
         default: ""
+      argocd_path:
+        description: "How the operator reaches Argo CD: policy (spec.argoCD in each policy), default (the connection the installer gave the operator, like OpenShift GitOps' local user), or matrix (gitlab: policy, github: default)"
+        type: choice
+        options: [matrix, policy, default]
+        default: matrix
       sections:
         description: "SECTIONS for the script, when exactly one script is selected (for example a,b)"
         type: string
@@ -51,11 +56,21 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           SCM_INPUT: ${{ inputs.scm }}
+          PATH_INPUT: ${{ inputs.argocd_path }}
         run: |
           choice="both"
           if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$SCM_INPUT" ]; then choice="$SCM_INPUT"; fi
-          gitlab='{"scm":"gitlab","demo_repo":"sserkanml/backflow-demo"}'
-          github='{"scm":"github","demo_repo":"sserkanml/backflow-demo-gh"}'
+          # The Argo CD path of each host: in the matrix mode (pull requests, the nightly run,
+          # and the default of a run by hand) GitLab keeps spec.argoCD in the policies and GitHub
+          # uses the connection of the operator; a run by hand can make both the same.
+          gitlab_path="policy"
+          github_path="default"
+          case "$PATH_INPUT" in
+            policy) gitlab_path="policy"; github_path="policy" ;;
+            default) gitlab_path="default"; github_path="default" ;;
+          esac
+          gitlab="{\"scm\":\"gitlab\",\"demo_repo\":\"sserkanml/backflow-demo\",\"argocd_path\":\"$gitlab_path\"}"
+          github="{\"scm\":\"github\",\"demo_repo\":\"sserkanml/backflow-demo-gh\",\"argocd_path\":\"$github_path\"}"
           case "$choice" in
             gitlab) include="$gitlab" ;;
             github) include="$github" ;;
@@ -64,7 +79,7 @@ jobs:
           echo "matrix={\"include\":[$include]}" >> "$GITHUB_OUTPUT"
 
   e2e:
-    name: e2e (${{ matrix.scm }})
+    name: e2e (${{ matrix.scm }}, Argo CD path ${{ matrix.argocd_path }})
     needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 240
@@ -80,6 +95,9 @@ jobs:
     env:
       SCM: ${{ matrix.scm }}
       DEMO_REPO: ${{ matrix.demo_repo }}
+      # default: the operator is started with --argocd-server and --argocd-token-secret-*, and the
+      # policies have no spec.argoCD (the scripts that support it; the others keep their policy).
+      ARGOCD_DEFAULT: ${{ matrix.argocd_path == 'default' && 'true' || 'false' }}
       SCRIPTS: ${{ inputs.scripts }}
       SECTIONS: ${{ inputs.sections }}
       E2E_LOG_DIR: ${{ github.workspace }}/tmp/e2e-logs
@@ -139,6 +157,8 @@ jobs:
         env:
           GITLAB_TOKEN: ${{ matrix.scm == 'gitlab' && secrets.GITLAB_TOKEN || '' }}
           GITHUB_TOKEN: ${{ matrix.scm == 'github' && secrets.E2E_GITHUB || '' }}
+          # The Secret OpenShift GitOps writes for a local user: argocd/backflow-local-user, key apiToken.
+          ARGOCD_LOCAL_USER_SECRET: ${{ matrix.argocd_path == 'default' && 'true' || 'false' }}
         run: ./hack/dev-up.sh
 
       - name: Build the operator

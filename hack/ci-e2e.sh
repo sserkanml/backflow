@@ -18,6 +18,9 @@
 #              merge-request, helm, kustomize, multi-source (test- and .sh are
 #              accepted). Empty: all of them for the host. The ones that need no
 #              token (the first four) belong to the gitlab run only.
+#   ARGOCD_DEFAULT  true: the scripts that support it (merge-request, helm, kustomize,
+#              multi-source) start the operator with the default Argo CD connection and
+#              create policies without spec.argoCD; the others keep the policy path
 #   SECTIONS   passed to the script when exactly one script is selected
 #   E2E_LOG_DIR  where the logs go (default tmp/e2e-logs)
 #   E2E_SCRIPT_TIMEOUT  seconds one script may take (default 5400)
@@ -37,6 +40,19 @@ LOG_DIR="${E2E_LOG_DIR:-$ROOT/tmp/e2e-logs}"
 SCRIPT_TIMEOUT="${E2E_SCRIPT_TIMEOUT:-5400}"
 TOKENLESS="backflow-policy drift mapping application-values"
 TOKENED="scm merge-request helm kustomize multi-source"
+# The scripts that can use the operator-default Argo CD connection (ARGOCD_DEFAULT=true).
+DEFAULT_CAPABLE="merge-request helm kustomize multi-source"
+ARGOCD_DEFAULT="${ARGOCD_DEFAULT:-false}"
+export ARGOCD_DEFAULT
+
+# argo_path_of <script>: which Argo CD path the script is run with.
+argo_path_of() {
+  local n
+  if [[ "$ARGOCD_DEFAULT" == "true" ]]; then
+    for n in $DEFAULT_CAPABLE; do [[ "$n" == "$1" ]] && { echo "operator default"; return; }; done
+  fi
+  echo "policy"
+}
 
 # normalise <name>: backflow-policy from "test-backflow-policy.sh", "policy" and the like.
 normalise() {
@@ -100,7 +116,13 @@ run() {
     echo "::group::test-$n.sh ($SCM_LABEL)"
     start=$SECONDS
     # timeout sends TERM, which the scripts' EXIT traps turn into their usual cleanup.
-    SECTIONS="$sections" timeout --foreground -k 120 "$SCRIPT_TIMEOUT" "$ROOT/hack/test-$n.sh" 2>&1 | tee "$log"
+    local path_of
+    path_of="$(argo_path_of "$n")"
+    # A script that cannot use the default is run with the policy path, whatever was asked.
+    local script_default=false
+    [[ "$path_of" == "operator default" ]] && script_default=true
+    echo "Argo CD path: $path_of"
+    ARGOCD_DEFAULT="$script_default" SECTIONS="$sections" timeout --foreground -k 120 "$SCRIPT_TIMEOUT" "$ROOT/hack/test-$n.sh" 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}
     secs=$((SECONDS - start))
     echo "::endgroup::"
@@ -125,7 +147,7 @@ run() {
       failed=$((failed + 1))
       echo "::error::test-$n.sh failed (exit code $rc) on $SCM_LABEL"
     fi
-    rows="$rows| test-$n.sh | $result | ${passed:--} | ${nfail:--} | $(fmt_duration "$secs") |
+    rows="$rows| test-$n.sh | $path_of | $result | ${passed:--} | ${nfail:--} | $(fmt_duration "$secs") |
 "
     local timing
     timing="$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" | awk '/Time per section:/ {p=1; next} p && /^ *[0-9]+s / {print; next} p {p=0}')"
@@ -142,8 +164,10 @@ $timing
   done
 
   {
-    printf '### e2e on %s (%s)\n\n' "$SCM_LABEL" "$SCM_PROJECT"
-    printf '| Script | Result | Passed | Failed | Duration |\n|---|---|---|---|---|\n'
+    local path_name="policy (spec.argoCD in each policy)"
+    [[ "$ARGOCD_DEFAULT" == "true" ]] && path_name="operator default (installer-set connection, policies without spec.argoCD)"
+    printf '### e2e on %s (%s)\n\nArgo CD path of this job: **%s**\n\n' "$SCM_LABEL" "$SCM_PROJECT" "$path_name"
+    printf '| Script | Argo CD path | Result | Passed | Failed | Duration |\n|---|---|---|---|---|---|\n'
     printf '%s\n' "$rows"
     printf '%s\n' "$details"
   } | summary
