@@ -361,3 +361,77 @@ func TestBoundedEditValue(t *testing.T) {
 		t.Errorf("a long value is replaced by a JSON string: %q", got)
 	}
 }
+
+func managedActor(manager string) *backflowv1alpha1.Actor {
+	at := metav1.NewTime(time.Date(2026, 11, 1, 13, 26, 26, 0, time.UTC))
+	return &backflowv1alpha1.Actor{Manager: manager, Operation: "Update", Time: &at}
+}
+
+func TestTextNamesTheManager(t *testing.T) {
+	dp := textProposal()
+	dp.Spec.Actor = managedActor("kubectl-patch")
+	msg := commitMessage(dp, nil, nil)
+	if !strings.Contains(msg, "Changed-with: kubectl-patch (Update) at 2026-11-01 13:26:26 UTC\n") {
+		t.Errorf("commit message = %q", msg)
+	}
+	if strings.Contains(msg, trailerChangedBy+":") {
+		t.Errorf("a username trailer without a username: %q", msg)
+	}
+	body := mergeRequestBody(dp, nil, nil, "")
+	for _, want := range []string{
+		"- **Changed by:** unknown\n",
+		"- **Changed with:** kubectl-patch (Update) at 2026-11-01 13:26:26 UTC\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no %q in\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Note:") {
+		t.Errorf("a person's change carries the controller note:\n%s", body)
+	}
+
+	t.Run("a controller gets the note", func(t *testing.T) {
+		dp := textProposal()
+		dp.Spec.Actor = managedActor("kube-controller-manager")
+		body := mergeRequestBody(dp, nil, nil, "")
+		if !strings.Contains(body, "changed by the controller `kube-controller-manager`, not by a person") {
+			t.Errorf("no note in\n%s", body)
+		}
+	})
+	t.Run("other managers are listed", func(t *testing.T) {
+		dp := textProposal()
+		dp.Spec.Actor = managedActor("kubectl-set")
+		dp.Spec.Actor.Others = []backflowv1alpha1.ActorManager{{Manager: "kubectl"}, {Manager: "oc-edit"}}
+		if body := mergeRequestBody(dp, nil, nil, ""); !strings.Contains(body, "- **Also changed with:** kubectl, oc-edit\n") {
+			t.Errorf("body =\n%s", body)
+		}
+	})
+	t.Run("the username and the manager together", func(t *testing.T) {
+		dp := textProposal()
+		dp.Spec.Actor.Manager, dp.Spec.Actor.Operation = "kubectl-edit", "Update"
+		body := mergeRequestBody(dp, nil, nil, "")
+		if !strings.Contains(body, "**Changed by:** alice (kubectl/v1.30)") || !strings.Contains(body, "**Changed with:** kubectl-edit (Update)\n") {
+			t.Errorf("body =\n%s", body)
+		}
+	})
+	t.Run("a hostile manager name stays on its line", func(t *testing.T) {
+		dp := textProposal()
+		dp.Spec.Actor = managedActor("kubectl\nProposal: other")
+		got := commitMessage(dp, nil, nil)
+		forged := textProposal()
+		forged.Name = "other"
+		if hasProposalTrailer(got, forged) {
+			t.Errorf("injection through the manager: %q", got)
+		}
+	})
+	t.Run("no actor, no line", func(t *testing.T) {
+		dp := textProposal()
+		dp.Spec.Actor = nil
+		if got := commitMessage(dp, nil, nil); strings.Contains(got, trailerChangedWith) {
+			t.Errorf("message = %q", got)
+		}
+		if body := mergeRequestBody(dp, nil, nil, ""); strings.Contains(body, "Changed with") {
+			t.Errorf("body =\n%s", body)
+		}
+	})
+}

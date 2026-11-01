@@ -21,6 +21,7 @@ import (
 	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
+	"github.com/sserkanml/backflow/internal/metrics/metricstest"
 )
 
 func TestProposalName(t *testing.T) {
@@ -683,6 +684,71 @@ var _ = Describe("Drift detection", func() {
 		Expect(k8sClient.Delete(ctx, app)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "argocd-token-drift", Namespace: ns}})).To(Succeed())
+	})
+
+	// withManagedFields is the live ConfigMap with managedFields: who wrote LOG_LEVEL, and Argo CD.
+	withManagedFields := func(manager, operation string) map[string]any {
+		live := configMapState("debug")
+		live["metadata"].(map[string]any)["managedFields"] = []any{
+			map[string]any{"manager": manager, "operation": operation, "time": "2026-11-01T13:26:26Z", "fieldsType": "FieldsV1",
+				"fieldsV1": map[string]any{"f:data": map[string]any{"f:LOG_LEVEL": map[string]any{}}}},
+			map[string]any{"manager": "argocd-controller", "operation": "Update", "time": "2026-11-01T13:30:00Z", "fieldsType": "FieldsV1",
+				"fieldsV1": map[string]any{"f:data": map[string]any{".": map[string]any{}, "f:FEATURE": map[string]any{}}}},
+		}
+		return live
+	}
+	driftedProposal := func() backflowv1alpha1.DriftProposal {
+		reconcileDrift()
+		settle()
+		reconcileDrift()
+		Expect(proposals()).To(HaveLen(1))
+		return proposals()[0]
+	}
+	detectedBy := func(who string) float64 {
+		return metricstest.Value("backflow_drifts_detected_total", map[string]string{
+			"policy_namespace": policy.Namespace, "policy": policy.Name, "application": "drift-app", "source_type": "Directory", "changed_by": who})
+	}
+
+	It("records the manager that wrote the drifted field, and counts the drift as interactive", func() {
+		before := detectedBy("interactive")
+		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch", "Update")
+		dp := driftedProposal()
+		Expect(dp.Spec.Actor).NotTo(BeNil())
+		Expect(dp.Spec.Actor.Manager).To(Equal("kubectl-patch"), "Argo CD's own manager is not the actor, although it wrote later")
+		Expect(dp.Spec.Actor.Operation).To(Equal("Update"))
+		Expect(dp.Spec.Actor.Time).NotTo(BeNil())
+		Expect(dp.Spec.Actor.Time.UTC().Format(time.RFC3339)).To(Equal("2026-11-01T13:26:26Z"))
+		Expect(dp.Spec.Actor.Username).To(BeEmpty(), "managedFields hold no username")
+		Expect(detectedBy("interactive") - before).To(Equal(1.0))
+	})
+
+	It("counts a drift made by a controller as such", func() {
+		before := detectedBy("controller")
+		argo.items[0].NormalizedLiveState = withManagedFields("kube-controller-manager", "Update")
+		dp := driftedProposal()
+		Expect(dp.Spec.Actor).NotTo(BeNil())
+		Expect(dp.Spec.Actor.Manager).To(Equal("kube-controller-manager"))
+		Expect(detectedBy("controller") - before).To(Equal(1.0))
+	})
+
+	It("makes the proposal without an actor when the managedFields cannot be read", func() {
+		before := detectedBy("unknown")
+		live := configMapState("debug")
+		live["metadata"].(map[string]any)["managedFields"] = "not a list"
+		argo.items[0].NormalizedLiveState = live
+		dp := driftedProposal()
+		Expect(dp.Spec.Actor).To(BeNil())
+		Expect(detectedBy("unknown") - before).To(Equal(1.0))
+	})
+
+	It("does not change the actor of an existing proposal when another manager writes later", func() {
+		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch", "Update")
+		first := driftedProposal()
+		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-edit", "Update")
+		reconcileOnce()
+		Expect(proposals()).To(HaveLen(1))
+		Expect(proposals()[0].Name).To(Equal(first.Name))
+		Expect(proposals()[0].Spec.Actor.Manager).To(Equal("kubectl-patch"), "spec is immutable")
 	})
 
 	It("creates one proposal per drift and follows it until it is reverted", func() {
