@@ -398,6 +398,22 @@ else
   ok "token stored in Secret $BF_NS/$BF_TOKEN_SECRET (key: token)"
 fi
 
+# What OpenShift GitOps writes for a local user (spec.localUsers of the ArgoCD
+# resource): the Secret <user>-local-user with the key apiToken in the Argo CD namespace.
+# With ARGOCD_LOCAL_USER_SECRET=true the same token is also stored like that, so that the
+# operator can be started with --argocd-server and --argocd-token-secret-* and a policy
+# without spec.argoCD (test-merge-request.sh and test-backflow-policy.sh do it with
+# ARGOCD_DEFAULT=true). The token Secret of the policies above stays as it is.
+if [[ "${ARGOCD_LOCAL_USER_SECRET:-false}" == "true" ]]; then
+  LU_SECRET="${LOCAL_USER_SECRET:-backflow-local-user}"
+  lu_file="$(mktemp)"
+  chmod 600 "$lu_file"
+  k -n "$BF_NS" get secret "$BF_TOKEN_SECRET" -o jsonpath='{.data.token}' | base64 -d >"$lu_file"
+  k -n "$ARGOCD_NS" create secret generic "$LU_SECRET" --from-file=apiToken="$lu_file" --dry-run=client -o yaml | k apply -f - >/dev/null
+  rm -f "$lu_file"
+  ok "Secret $ARGOCD_NS/$LU_SECRET (key apiToken) holds the same token, like OpenShift GitOps' local user"
+fi
+
 # ---------------------------------------------------------------------------
 echo
 echo "${BOLD}Environment ready.${NC}"

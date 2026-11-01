@@ -87,6 +87,13 @@ IN_CLUSTER="${IN_CLUSTER:-false}"
 MANAGER_NS="${MANAGER_NS:-backflow-system}"
 MANAGER_DEPLOY="${MANAGER_DEPLOY:-backflow-controller-manager}"
 ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
+# ARGOCD_DEFAULT=true: the policy has no spec.argoCD, and the local operator is started with
+# --argocd-server and --argocd-token-secret-* (what the chart values argocd.* set), so the
+# path of OpenShift GitOps' local user is the one under test. It reads the Secret
+# $ARGOCD_NS/$LOCAL_USER_SECRET, key apiToken, which ARGOCD_LOCAL_USER_SECRET=true
+# ./hack/dev-up.sh creates. With IN_CLUSTER the deployed operator must have the values.
+ARGOCD_DEFAULT="${ARGOCD_DEFAULT:-false}"
+LOCAL_USER_SECRET="${LOCAL_USER_SECRET:-backflow-local-user}"
 # How often the local operator polls merge requests.
 POLL="${POLL:-3s}"
 # A drift becomes a proposal after it has been stable for the policy's
@@ -818,8 +825,16 @@ else
   # Kubernetes authentication; the checks below are skipped with IN_CLUSTER).
   METRICS_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')"
   METRICS_URL="http://127.0.0.1:$METRICS_PORT/metrics"
+  default_flags=()
+  if [[ "$ARGOCD_DEFAULT" == "true" ]]; then
+    k -n "$ARGOCD_NS" get secret "$LOCAL_USER_SECRET" >/dev/null 2>&1 ||
+      die "Secret $ARGOCD_NS/$LOCAL_USER_SECRET not found. Run ARGOCD_LOCAL_USER_SECRET=true ./hack/dev-up.sh first."
+    default_flags=(--argocd-server="$ARGOCD_URL" --argocd-token-secret-namespace="$ARGOCD_NS"
+      --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify)
+  fi
   "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
-    --metrics-bind-address="127.0.0.1:$METRICS_PORT" --metrics-secure=false >"$LOG_FILE" 2>&1 &
+    --metrics-bind-address="127.0.0.1:$METRICS_PORT" --metrics-secure=false \
+    ${default_flags[@]+"${default_flags[@]}"} >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
     curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -855,6 +870,13 @@ spec:
     name: $SCM-token
     key: token
 YAML
+ARGOCD_POLICY_BLOCK="  argoCD:
+    url: $ARGOCD_URL
+    insecureSkipTLSVerify: true
+    tokenSecretRef:
+      name: argocd-token
+      key: token"
+if [[ "$ARGOCD_DEFAULT" == "true" ]]; then ARGOCD_POLICY_BLOCK=""; fi
 k apply -f - >/dev/null <<YAML
 apiVersion: backflow.io/v1alpha1
 kind: BackflowPolicy
@@ -867,12 +889,7 @@ spec:
   batchWindow: $WINDOW
   applications:
     names: ["$APP"]
-  argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token
+$ARGOCD_POLICY_BLOCK
   mergeRequest:
     branchPrefix: backflow/
     labels: ["$LABEL"]
@@ -880,6 +897,8 @@ spec:
 YAML
 wait_for "ScmConnection is Ready (token accepted by $SCM_HOST)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
+if [[ "$ARGOCD_DEFAULT" == "true" ]]; then WANT_SOURCE="OperatorDefault"; else WANT_SOURCE="Policy"; fi
+expect_eq "status.argoCD.source (where the Argo CD connection comes from)" "$WANT_SOURCE" "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.argoCD.source}')"
 policy_has_connection() { [[ "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.applications[0].scmConnection}')" == "$SCM_NAME" ]]; }
 wait_for "policy matched the repository to the ScmConnection" policy_has_connection
 
