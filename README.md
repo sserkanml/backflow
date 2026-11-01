@@ -224,6 +224,7 @@ The most used values of the chart; all of them are in
 | `serviceAccount.create`, `.name`, `.annotations` | `true`, generated, `{}` | |
 | `metrics.enabled`, `metrics.certSecret` | `false`, none | HTTPS on 8443 behind Kubernetes authn/authz |
 | `argocd.server`, `argocd.tokenSecret.{namespace,name,key}` | empty, `apiToken` | the Argo CD connection of every policy without `spec.argoCD` (see [Install on OpenShift GitOps](#install-on-openshift-gitops)) |
+| `unpackFileDependencies` | `true` | upload `file://` chart dependencies unpacked where that renders the same (see [Helm sources](#helm-sources)) |
 | `argocd.serviceCA`, `argocd.caFile` | `false`, empty | OpenShift: verify the Argo CD server with the injected service CA, or with a CA file you mount |
 | `trustedCABundle` | `false` | OpenShift: ConfigMap with the cluster's trusted CA bundle, trusted for ScmConnections without `caSecretRef` |
 | `extraVolumes`, `extraVolumeMounts` | `[]` | e.g. a CA bundle for `argocd.caFile` |
@@ -395,8 +396,9 @@ Metric names and labels are a contract; a change to one is a breaking change.
 | `backflow_mapping_results_total` | counter | `source_type`, `strategy`, `reason` | outcomes of mapping: `Mapped` (or `PartiallyMapped`), or the reason a proposal is `Unmapped`; a mapping that is retried later is not counted |
 | `backflow_merge_requests_total` | counter | `provider`, `action` | `opened`, `merged`, `closed`, and `push_rejected` (a Git push the server declined; `provider` is `git` for it) |
 | `backflow_verification_duration_seconds` | histogram | `source_type`, `result` | time to map and verify a proposal by rendering; `result` is `mapped`, `unmapped` or `retry` |
-| `backflow_renders_total` | counter | `renderer`, `result` | renders through Argo CD; `renderer` is `upload` (files sent to Argo CD) or `revisions` (a commit, multi-source), `result` is `ok`, `failed` (the source does not render: a verdict) or `error` (Argo CD did not answer) |
-| `backflow_render_duration_seconds` | histogram | `renderer` | time of one render |
+| `backflow_renders_total` | counter | `renderer`, `deps`, `result` | renders through Argo CD; `renderer` is `upload` (files sent to Argo CD) or `revisions` (a commit, multi-source), `deps` says how the `file://` dependencies of the chart were provided: `none` (it has none), `built` (Argo CD ran `helm dependency build`) or `unpacked` (uploaded unpacked), `result` is `ok`, `failed` (the source does not render: a verdict) or `error` (Argo CD did not answer) |
+| `backflow_render_duration_seconds` | histogram | `renderer`, `deps` | time of one render |
+| `backflow_deps_equivalence_checks_total` | counter | `result` | checks that a chart renders the same with its `file://` dependencies unpacked as with Argo CD's build: `identical` (the quick way is used), `different` or `error` (it is not) |
 | `backflow_scratch_branches_total` | counter | `action` | scratch branches `pushed`, `deleted`, `swept` (found left behind by a crashed verification and deleted), `push_failed` |
 | `backflow_argocd_requests_total` | counter | `endpoint`, `code_class` | requests to the Argo CD API by endpoint and `2xx`, `4xx`, `5xx` or `error` (no answer) |
 | `backflow_argocd_request_duration_seconds` | histogram | `endpoint` | duration of those requests |
@@ -719,6 +721,30 @@ How a proposal is made:
 4. The merge request and the commit message list the value file, each key path
    with its old and new value, and say that the edit was verified by rendering
    through Argo CD.
+
+**Charts with `file://` dependencies are rendered faster.** When a chart depends on
+another chart in the repository (`repository: file://../common`), Argo CD's repo server
+renders what it receives with `helm template` and, only when Helm says a dependency is
+"missing in charts/", runs `helm dependency build` and renders again. An upload is a
+fresh directory every time, so it builds on every render. Backflow therefore uploads the
+dependencies already unpacked under `charts/<chart name>/` (aliases stay in the parent
+`Chart.yaml`; a dependency that is already in `charts/` as a directory or a `.tgz` is
+never added a second time; remote dependencies are left alone, and a chart with a remote
+dependency that is not in `charts/` is rendered as before). A render went from about
+150 ms to about 65 ms on a kind cluster with Argo CD v3.5.3.
+
+It never changes a result. The first render of a chart (identified by the content of
+the chart and its `file://` dependencies, not of its value files, and by the version of
+Argo CD) is made both ways and the resources are compared; the quick way is used from
+then on only if they are identical. Otherwise the render stays the one Argo CD does by
+itself, the reason is logged once, and the decision is kept in memory. For example a
+dependency of a dependency that is not committed in its `charts/` is built by Argo CD
+without its own dependency (Helm does not build those), so the unpacked set would
+render more than Argo CD does, and it is not used. `--unpack-file-dependencies=false`
+(chart value `unpackFileDependencies: false`) switches the whole thing off. The metrics
+`backflow_renders_total` and `backflow_render_duration_seconds` have a `deps` label
+(`none`, `built`, `unpacked`), and `backflow_deps_equivalence_checks_total` counts the
+checks (`identical`, `different`, `error`).
 
 **Hooks and names chosen at random.** Resources with a `helm.sh/hook` or
 `argocd.argoproj.io/hook` annotation (a chart's test Pods, `PreSync` Jobs) are not
