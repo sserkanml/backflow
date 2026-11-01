@@ -104,6 +104,104 @@ per drift. More options (ignored fields, included and excluded kinds, branch
 prefix, labels, reviewers, batch window) are in
 [config/samples](config/samples).
 
+### Install on OpenShift GitOps
+
+OpenShift GitOps (1.18 or later) can manage a local Argo CD user from the `ArgoCD`
+resource: it creates the account, a token, and the Secret `<name>-local-user` (key
+`apiToken`) in the Argo CD namespace, and renews the token before it expires. With it
+there is no token to generate by hand and no CA to copy.
+
+**1. The account.** Add this to the `ArgoCD` resource (the default instance is
+`openshift-gitops` in the namespace `openshift-gitops`). The `rbac.policy` lines are
+added to the ones you have: do not replace a policy that is already there.
+
+```yaml
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: openshift-gitops
+  namespace: openshift-gitops
+spec:
+  localUsers:
+    - name: backflow
+      apiKey: true
+      tokenLifetime: 720h
+      autoRenewToken: true
+  rbac:
+    policy: |
+      p, role:backflow, applications, get, */*, allow
+      p, role:backflow, repositories, get, *, allow
+      g, backflow, role:backflow
+```
+
+`applications, get` is what drift detection needs; `repositories, get` lets Backflow
+read the values of a chart in a registry for Applications with several sources.
+Wait for the Secret: `kubectl -n openshift-gitops get secret backflow-local-user`.
+
+**2. The operator.** One install; the connection is given to the *operator*, not to each
+policy:
+
+```bash
+helm upgrade --install backflow oci://ghcr.io/sserkanml/charts/backflow \
+  -n backflow-system --create-namespace \
+  --set argocd.server=https://openshift-gitops-server.openshift-gitops.svc \
+  --set argocd.tokenSecret.namespace=openshift-gitops \
+  --set argocd.tokenSecret.name=backflow-local-user \
+  --set argocd.serviceCA=true \
+  --set trustedCABundle=true
+```
+
+- `argocd.*` become the flags `--argocd-server`, `--argocd-token-secret-namespace`,
+  `--argocd-token-secret-name`, `--argocd-token-secret-key` (default `apiToken`) and
+  `--argocd-ca-file`. They are set by whoever installs the operator and by nobody else: a
+  policy can only name Secrets of its own namespace, so a user who may create policies
+  cannot make the operator read a Secret in another one.
+- With `secretNamespaces` set, the chart also grants `get` on Secrets in the namespace of
+  `argocd.tokenSecret` (here `openshift-gitops`), next to the release namespace.
+- `argocd.serviceCA=true` creates a ConfigMap annotated
+  `service.beta.openshift.io/inject-cabundle: "true"`, which OpenShift fills with the
+  service CA, mounts it, and verifies the server with it (`openshift-gitops-server` has a
+  certificate signed by the service CA). No Secret holds a CA.
+- `trustedCABundle=true` creates a ConfigMap labelled
+  `config.openshift.io/inject-trusted-cabundle: "true"`, filled with the cluster's trusted
+  CA bundle. Its roots are added for the connection to GitLab and GitHub of every
+  `ScmConnection` that has no `caSecretRef` (one that has keeps its own). It helps when your
+  Git host or proxy uses a company CA **and that CA is in the cluster's trusted CA bundle**
+  (`spec.trustedCA` of the cluster `Proxy`, `oc get proxy/cluster -o yaml`). It does not
+  add a CA by itself.
+- Both files are read again when they change (within ten seconds); a changed CA needs no
+  restart. A bundle that is missing or holds no certificate is an error, not the old CA.
+
+**3. A policy without any Argo CD field.**
+
+```yaml
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
+metadata:
+  name: my-apps
+  namespace: backflow-system
+spec:
+  argoCDNamespace: openshift-gitops
+  applications:
+    names: [my-app]
+  mode: ReportOnly
+```
+
+`kubectl -n backflow-system get bfp my-apps -o jsonpath='{.status.argoCD}'` says where
+the connection comes from (`source: OperatorDefault`, and the URL, never a token), and the
+`Ready` message says it too. A policy with its own `spec.argoCD` keeps using that, as
+described under [Install](#install); a policy that has none and an operator without
+`argocd.server` detects no drift. The `ScmConnection` for GitLab or GitHub is made as
+in step 2 of Install.
+
+**Token renewal.** OpenShift GitOps writes the new token into the same Secret before the old
+one expires. The operator reads the Secret by name when it needs it and keeps it for
+`secretCacheTTL` (30s). When Argo CD answers 401, it drops that copy, reads the Secret
+again and repeats the call once with what is there now; a proposal being mapped retries
+the same way. So the renewal is picked up within the TTL whether or not Argo CD rejects the
+old token at once, and an Argo CD that really refuses the token is reported as before
+(Event `ArgoCDUnauthorized`).
+
 ### Values
 
 The most used values of the chart; all of them are in
@@ -125,6 +223,10 @@ The most used values of the chart; all of them are in
 | `nodeSelector`, `tolerations`, `affinity`, `podAnnotations` | empty | |
 | `serviceAccount.create`, `.name`, `.annotations` | `true`, generated, `{}` | |
 | `metrics.enabled`, `metrics.certSecret` | `false`, none | HTTPS on 8443 behind Kubernetes authn/authz |
+| `argocd.server`, `argocd.tokenSecret.{namespace,name,key}` | empty, `apiToken` | the Argo CD connection of every policy without `spec.argoCD` (see [Install on OpenShift GitOps](#install-on-openshift-gitops)) |
+| `argocd.serviceCA`, `argocd.caFile` | `false`, empty | OpenShift: verify the Argo CD server with the injected service CA, or with a CA file you mount |
+| `trustedCABundle` | `false` | OpenShift: ConfigMap with the cluster's trusted CA bundle, trusted for ScmConnections without `caSecretRef` |
+| `extraVolumes`, `extraVolumeMounts` | `[]` | e.g. a CA bundle for `argocd.caFile` |
 | `serviceMonitor.enabled` | `false` | needs `metrics.enabled` and the Prometheus Operator |
 | `networkPolicy.enabled` | `false` | needs `metrics.enabled`; allows metrics ingress only |
 | `prometheusRule.enabled`, `.labels`, `.alertLabels` | `false`, `{}`, `{}` | the alerts of [Metrics and alerts](#metrics-and-alerts); needs the Prometheus Operator |
@@ -147,6 +249,11 @@ of the `ArgoCD` resource) for the account above. The server certificate is
 signed by the cluster's service CA: mount it in a Secret and set
 `argoCD.caSecretRef`.
 
+With OpenShift GitOps 1.18 or later you can skip the account, the token Secret and the CA
+Secret: see [Install on OpenShift GitOps](#install-on-openshift-gitops). The way above
+(an account made by hand, a policy with `spec.argoCD`) keeps working, and so does any
+upstream Argo CD.
+
 ### Permissions
 
 The operator never writes to the cluster. Everything it is allowed to do, and why:
@@ -158,7 +265,7 @@ The operator never writes to the cluster. Everything it is allowed to do, and wh
 | their `/status` | `get`, `update`, `patch` | cluster | the controller that owns a resource writes its status |
 | their `/finalizers` | `update` | cluster | cleanup of branches and merge requests when a proposal is deleted |
 | `events` | `create`, `patch` | cluster | Events on policies and proposals |
-| `secrets` | **`get` only** | every namespace, or the namespaces of `secretNamespaces` | the token of an ScmConnection, its CA bundle, the Argo CD token and CA bundle of a policy |
+| `secrets` | **`get` only** | every namespace, or the namespaces of `secretNamespaces` and of `argocd.tokenSecret` | the token of an ScmConnection, its CA bundle, the Argo CD token and CA bundle of a policy, the Argo CD token of `argocd.tokenSecret` |
 | `leases`, `configmaps`, `events` | leader election | release namespace | only with `leaderElection` |
 | `tokenreviews`, `subjectaccessreviews` | `create` | cluster | only with `metrics.enabled` (authentication and authorization of the metrics endpoint) |
 
