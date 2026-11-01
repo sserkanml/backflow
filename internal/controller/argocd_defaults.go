@@ -35,6 +35,12 @@ type ArgoCDDefaults struct {
 	// InsecureSkipTLSVerify turns the verification of the server off. For a kind cluster
 	// in development, behind a port-forward; the chart has no value for it.
 	InsecureSkipTLSVerify bool
+	// Access says which Applications the policies of which namespaces may match
+	// through this connection (see AccessRule). Empty: only the policies of
+	// OperatorNamespace, for every project.
+	Access AccessRules
+	// OperatorNamespace is the namespace the operator runs in.
+	OperatorNamespace string
 
 	once sync.Once
 	ca   *fileBundle
