@@ -64,6 +64,7 @@
 #   SECTIONS=c,e,f ./hack/test-merge-request.sh   # only those sections (default: all);
 #       b needs a; d and e need c; f needs c and e (the script refuses otherwise);
 #       g and h need nothing (SECTIONS=h is the JSON manifest alone)
+#       i needs ACTOR_WEBHOOK=true and nothing else (the actor webhook; see ACTOR_WEBHOOK)
 #   KEEP=true ./hack/test-merge-request.sh      # keep the test namespace
 
 set -euo pipefail
@@ -94,6 +95,14 @@ ARGOCD_URL="${ARGOCD_URL:-https://argocd-server.argocd.svc}"
 # ./hack/dev-up.sh creates. With IN_CLUSTER the deployed operator must have the values.
 ARGOCD_DEFAULT="${ARGOCD_DEFAULT:-false}"
 LOCAL_USER_SECRET="${LOCAL_USER_SECRET:-backflow-local-user}"
+# ACTOR_WEBHOOK=true adds section i: the local operator serves the actor webhook (--actor-webhook, a
+# certificate made here, ChangeRecords in $NS) and a ValidatingWebhookConfiguration with a clientConfig.url to
+# this machine's address on the local network (HOST_IP, as test-application-values.sh does for its git server)
+# is registered for the demo namespace. Section i asserts that spec.actor.username of a proposal made after a
+# kubectl patch is the user of kubectl, and that no match condition of the webhook failed to evaluate.
+# Not with IN_CLUSTER: the chart installs the webhook there.
+ACTOR_WEBHOOK="${ACTOR_WEBHOOK:-false}"
+ACTOR_CONFIG="backflow-actor-e2e"
 # How often the local operator polls merge requests.
 POLL="${POLL:-3s}"
 # A drift becomes a proposal after it has been stable for the policy's
@@ -128,9 +137,9 @@ check_sections() {
   local s n
   for s in ${SECTIONS//,/ }; do
     # shellcheck disable=SC2194 # a membership test: the constant list is the subject of the case
-    case " a b c d e f g h " in
+    case " a b c d e f g h i " in
       *" $s "*) ;;
-      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h)" >&2; exit 1 ;;
+      *) echo "SECTIONS: unknown section '$s' (valid: a,b,c,d,e,f,g,h,i)" >&2; exit 1 ;;
     esac
     for n in $(section_needs "$s"); do
       section_wanted "$n" || { echo "SECTIONS: section $s needs section $n, before it (see the notes at SECTIONS); add it to the list, for example SECTIONS=$n,$s, or leave SECTIONS out" >&2; exit 1; }
@@ -659,9 +668,12 @@ cleanup() {
   if [[ "$KEEP" != "true" ]]; then
     k delete namespace "$NS" "$NS-norule" --ignore-not-found --wait=false >/dev/null 2>&1
   fi
+  if [[ "$ACTOR_WEBHOOK" == "true" ]]; then
+    k delete validatingwebhookconfiguration "$ACTOR_CONFIG" --ignore-not-found >/dev/null 2>&1
+  fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-mr-test.* ]]; then
     rm -f "$WORKDIR/scm.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/unrelated.json" "$WORKDIR/paths"
-    rm -rf "$WORKDIR/orig.part"
+    rm -rf "$WORKDIR/orig.part" "$WORKDIR/actor-certs"
     find "$WORKDIR/orig" -type f -exec rm -f {} + 2>/dev/null
     find "$WORKDIR/orig" -depth -type d -exec rmdir {} + 2>/dev/null
     rmdir "$WORKDIR" 2>/dev/null
@@ -833,9 +845,26 @@ else
       --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify
       --argocd-default-access="$NS:*")
   fi
+  actor_flags=()
+  if [[ "$ACTOR_WEBHOOK" == "true" ]]; then
+    command -v openssl >/dev/null || die "ACTOR_WEBHOOK=true needs openssl"
+    HOST_IP="${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || true)}"
+    [[ -n "$HOST_IP" ]] || die "cannot find the address of this machine on the local network; set HOST_IP"
+    ACTOR_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("0.0.0.0",0)); print(s.getsockname()[1])')"
+    ACTOR_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    ACTOR_PATH="/observe/$ACTOR_TOKEN"
+    certs="$WORKDIR/actor-certs"
+    mkdir -p "$certs"
+    printf 'subjectAltName=IP:%s\n' "$HOST_IP" >"$certs/ext"
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$certs/ca.key" -out "$certs/ca.crt" -days 2 -subj "/CN=backflow-actor-e2e-ca" 2>/dev/null
+    openssl req -newkey rsa:2048 -nodes -keyout "$certs/tls.key" -out "$certs/tls.csr" -subj "/CN=backflow-actor-e2e" 2>/dev/null
+    openssl x509 -req -in "$certs/tls.csr" -CA "$certs/ca.crt" -CAkey "$certs/ca.key" -CAcreateserial -out "$certs/tls.crt" -days 2 -extfile "$certs/ext" 2>/dev/null
+    actor_flags=(--actor-webhook --actor-webhook-path="$ACTOR_PATH" --webhook-port="$ACTOR_PORT"
+      --webhook-cert-path="$certs" --operator-namespace="$NS" --actor-flush-interval=1s)
+  fi
   "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
     --metrics-bind-address="127.0.0.1:$METRICS_PORT" --metrics-secure=false \
-    ${default_flags[@]+"${default_flags[@]}"} >"$LOG_FILE" 2>&1 &
+    ${default_flags[@]+"${default_flags[@]}"} ${actor_flags[@]+"${actor_flags[@]}"} >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
     curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -844,6 +873,18 @@ else
   done
   curl -fs -o /dev/null http://localhost:8081/readyz || die "operator did not become ready, log: $LOG_FILE"
   pass "operator running (merge requests polled every $POLL), Argo CD on $ARGOCD_URL"
+  if [[ "$ACTOR_WEBHOOK" == "true" ]]; then
+    # The webhook is registered once the operator serves it. The API server calls this machine, not a Service.
+    CA_B64="$(base64 <"$WORKDIR/actor-certs/ca.crt" | tr -d '\n')"
+    (cd "$ROOT" && go run ./hack/genactorconditions -config -name "$ACTOR_CONFIG" -url "https://$HOST_IP:$ACTOR_PORT$ACTOR_PATH" \
+      -ca-bundle "$CA_B64" -namespace "$DEMO_NS" -exclude-users "system:serviceaccount:$ARGOCD_NS:argocd-application-controller") |
+      k apply -f - >/dev/null || die "could not register the actor webhook configuration"
+    reach="$(k run actor-reach --rm -i --restart=Never --image=curlimages/curl:8.10.1 --command -- \
+      curl -sk -m 5 -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' \
+      "https://$HOST_IP:$ACTOR_PORT$ACTOR_PATH" 2>/dev/null || true)"
+    [[ "$reach" == *200 ]] || die "pods of the cluster cannot reach the actor webhook at $HOST_IP:$ACTOR_PORT (a firewall? set HOST_IP)"
+    pass "actor webhook registered for namespace $DEMO_NS and reachable at $HOST_IP:$ACTOR_PORT"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1367,6 +1408,44 @@ if [[ -n "$SHA_H" ]]; then
   fi
 fi
 
+fi
+
+# ---------------------------------------------------------------------------
+if [[ "$ACTOR_WEBHOOK" == "true" ]] && section_wanted i; then
+[[ "$IN_CLUSTER" != "true" ]] || die "ACTOR_WEBHOOK=true does not work with IN_CLUSTER"
+step "i. The actor webhook names the user"
+set_mode_i() { k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"mode\":\"$1\"}}" >/dev/null; }
+LEVEL_I="$(live_log_level)"
+GIT_I="$(git_level)"
+TARGET_I=""
+for candidate in warn error debug trace; do
+  if [[ "$candidate" != "$LEVEL_I" && "$candidate" != "$GIT_I" ]]; then TARGET_I="$candidate"; break; fi
+done
+require_drift i "$TARGET_I"
+WHO_I="$(k auth whoami -o jsonpath='{.status.userInfo.username}')"
+expect_nonempty "the user of kubectl" "$WHO_I"
+# ReportOnly: the proposal is made (and the actor set) but no merge request is opened.
+if set_mode_i ReportOnly; then pass "policy mode is ReportOnly"; else fail "could not switch the policy to ReportOnly"; fi
+ERRORS_BEFORE="$(k get --raw /metrics | awk -v n="$ACTOR_CONFIG" 'index($0, "apiserver_admission_match_condition_evaluation_errors_total{") == 1 && index($0, n) > 0 { s += $NF } END { printf "%d\n", s }')"
+
+set_log_level "$TARGET_I"
+wait_for "proposal is held in Mapping ($LEVEL_I -> $TARGET_I)" has_proposal Mapping "/data/LOG_LEVEL:Replace:\"$LEVEL_I\">\"$TARGET_I\""
+remember_proposals
+P_I="$(proposal_with Mapping ">\"$TARGET_I\"" | head -n 1)"
+if [[ -n "$P_I" ]]; then
+  expect_eq "spec.actor.username (the user of kubectl patch)" "$WHO_I" "$(dp_field "$P_I" .spec.actor.username)"
+  expect_eq "spec.actor.kind" "person" "$(dp_field "$P_I" .spec.actor.kind)"
+  expect_eq "spec.actor.manager" "kubectl-patch" "$(dp_field "$P_I" .spec.actor.manager)"
+  expect_metric_at_least "the webhook was called" backflow_actor_webhook_calls_total 'result="recorded"' 1
+  expect_metric_at_least "the record was matched" backflow_actor_matches_total 'result="matched"' 1
+else
+  fail "no proposal to look at"
+fi
+ERRORS_AFTER="$(k get --raw /metrics | awk -v n="$ACTOR_CONFIG" 'index($0, "apiserver_admission_match_condition_evaluation_errors_total{") == 1 && index($0, n) > 0 { s += $NF } END { printf "%d\n", s }')"
+expect_eq "match conditions that failed to evaluate (a failed condition switches the webhook off, silently)" "$ERRORS_BEFORE" "$ERRORS_AFTER"
+expect_eq "match conditions that failed to evaluate, in all" "0" "$ERRORS_AFTER"
+set_log_level "$LEVEL_I"
+set_mode_i MergeRequest || true
 fi
 
 # ---------------------------------------------------------------------------
