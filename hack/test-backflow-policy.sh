@@ -186,7 +186,9 @@ else
 make manifests install >/dev/null
 make build >/dev/null
 mkdir -p "$LOG_DIR"
-"$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
+# The policies below have no spec.argoCD: they use the operator's default connection, which only
+# the namespaces of --argocd-default-access may. This script is about matching, not about access.
+"$ROOT/bin/manager" --scm-recheck-interval=10s --argocd-default-access="$NS:*" >"$LOG_FILE" 2>&1 &
 MANAGER_PID=$!
 for _ in $(seq 1 60); do
   curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
