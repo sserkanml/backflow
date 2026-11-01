@@ -164,14 +164,57 @@ type FieldChange struct {
 	Live string `json:"live,omitempty"`
 }
 
-// Actor is the Kubernetes identity that changed the resource.
+// Actor says who changed the resource in the cluster, as far as Backflow can tell.
+// The manager, operation and time come from the managedFields of the live object (the
+// last writer of the drifted fields, Argo CD left out); the username would come from
+// an admission webhook and is empty until there is one.
 type Actor struct {
-	Username string `json:"username"`
+	// The Kubernetes username. Empty: managedFields do not hold one.
+	// +optional
+	Username string `json:"username,omitempty"`
 	// +optional
 	Groups []string `json:"groups,omitempty"`
 	// How the change was made, e.g. kubectl, console, or a controller name.
 	// +optional
 	UserAgent string `json:"userAgent,omitempty"`
+	// The field manager that wrote the drifted fields last: a tool (kubectl-patch,
+	// kubectl-edit, oc, Mozilla for a browser console) or a controller (kube-controller-manager
+	// for an HPA). Argo CD's own managers are never named.
+	// +optional
+	Manager string `json:"manager,omitempty"`
+	// The operation of that managedFields entry.
+	// +kubebuilder:validation:Enum=Update;Apply
+	// +optional
+	Operation string `json:"operation,omitempty"`
+	// When that entry was written.
+	// +optional
+	Time *metav1.Time `json:"time,omitempty"`
+	// The drifted paths (JSON pointers) the manager wrote, listed when other managers wrote
+	// the rest.
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=atomic
+	// +optional
+	Fields []string `json:"fields,omitempty"`
+	// The other managers that wrote drifted fields, most recent first.
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=atomic
+	// +optional
+	Others []ActorManager `json:"others,omitempty"`
+}
+
+// ActorManager is a manager besides the one an Actor names.
+type ActorManager struct {
+	Manager string `json:"manager"`
+	// +kubebuilder:validation:Enum=Update;Apply
+	// +optional
+	Operation string `json:"operation,omitempty"`
+	// +optional
+	Time *metav1.Time `json:"time,omitempty"`
+	// The drifted paths it wrote.
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=atomic
+	// +optional
+	Fields []string `json:"fields,omitempty"`
 }
 
 // ProposalPhase is the lifecycle stage of a proposal.
@@ -409,6 +452,7 @@ type DriftProposalStatus struct {
 // +kubebuilder:printcolumn:name="Kind",type=string,JSONPath=`.spec.resource.kind`
 // +kubebuilder:printcolumn:name="Resource",type=string,JSONPath=`.spec.resource.name`
 // +kubebuilder:printcolumn:name="Actor",type=string,JSONPath=`.spec.actor.username`
+// +kubebuilder:printcolumn:name="Changed by",type=string,JSONPath=`.spec.actor.manager`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Strategy",type=string,JSONPath=`.status.mapping.strategy`,priority=1
 // +kubebuilder:printcolumn:name="Mapped",type=string,JSONPath=`.status.conditions[?(@.type=="Mapped")].reason`,priority=1

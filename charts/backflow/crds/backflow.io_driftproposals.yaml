@@ -29,6 +29,9 @@ spec:
     - jsonPath: .spec.actor.username
       name: Actor
       type: string
+    - jsonPath: .spec.actor.manager
+      name: Changed by
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -84,18 +87,73 @@ spec:
               actor:
                 description: Who made the change in the cluster, when known.
                 properties:
+                  fields:
+                    description: |-
+                      The drifted paths (JSON pointers) the manager wrote, listed when other managers wrote
+                      the rest.
+                    items:
+                      type: string
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: atomic
                   groups:
                     items:
                       type: string
                     type: array
+                  manager:
+                    description: |-
+                      The field manager that wrote the drifted fields last: a tool (kubectl-patch,
+                      kubectl-edit, oc, Mozilla for a browser console) or a controller (kube-controller-manager
+                      for an HPA). Argo CD's own managers are never named.
+                    type: string
+                  operation:
+                    description: The operation of that managedFields entry.
+                    enum:
+                    - Update
+                    - Apply
+                    type: string
+                  others:
+                    description: The other managers that wrote drifted fields, most
+                      recent first.
+                    items:
+                      description: ActorManager is a manager besides the one an Actor
+                        names.
+                      properties:
+                        fields:
+                          description: The drifted paths it wrote.
+                          items:
+                            type: string
+                          maxItems: 16
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        manager:
+                          type: string
+                        operation:
+                          enum:
+                          - Update
+                          - Apply
+                          type: string
+                        time:
+                          format: date-time
+                          type: string
+                      required:
+                      - manager
+                      type: object
+                    maxItems: 4
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  time:
+                    description: When that entry was written.
+                    format: date-time
+                    type: string
                   userAgent:
                     description: How the change was made, e.g. kubectl, console, or
                       a controller name.
                     type: string
                   username:
+                    description: 'The Kubernetes username. Empty: managedFields do
+                      not hold one.'
                     type: string
-                required:
-                - username
                 type: object
               application:
                 description: Argo CD Application that owns the resource.
