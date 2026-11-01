@@ -32,6 +32,9 @@ type ArgoCDDefaults struct {
 	TokenSecretKey       string
 	// CAFile is a PEM bundle that verifies the server, read again when it changes.
 	CAFile string
+	// InsecureSkipTLSVerify turns the verification of the server off. For a kind cluster
+	// in development, behind a port-forward; the chart has no value for it.
+	InsecureSkipTLSVerify bool
 
 	once sync.Once
 	ca   *fileBundle
@@ -133,7 +136,7 @@ func defaultArgoCDConfig(ctx context.Context, c client.Reader, d *ArgoCDDefaults
 	if err != nil {
 		return argocd.Config{}, fmt.Errorf("token for Argo CD (operator default, Secret %s/%s): %w", d.TokenSecretNamespace, ref.Name, err)
 	}
-	cfg := argocd.Config{URL: d.Server, Token: strings.TrimSpace(string(token))}
+	cfg := argocd.Config{URL: d.Server, Token: strings.TrimSpace(string(token)), InsecureSkipTLSVerify: d.InsecureSkipTLSVerify}
 	if cfg.CACert, err = d.caBundle(); err != nil {
 		return argocd.Config{}, fmt.Errorf("CA bundle for Argo CD (operator default): %w", err)
 	}

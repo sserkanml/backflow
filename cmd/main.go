@@ -112,6 +112,9 @@ func main() {
 		"The key of the token in that Secret.")
 	flag.StringVar(&argoCD.CAFile, "argocd-ca-file", "",
 		"A PEM CA bundle file that verifies --argocd-server. It is read again when it changes, no restart is needed.")
+	flag.BoolVar(&argoCD.InsecureSkipTLSVerify, "argocd-insecure-skip-tls-verify", false,
+		"Do not verify the certificate of --argocd-server. For development only (a port-forward to a kind cluster); "+
+			"the Helm chart has no value for it.")
 	flag.StringVar(&trustedCAFile, "trusted-ca-file", "",
 		"A PEM CA bundle file of extra roots for the connections to GitLab and GitHub of ScmConnections that have "+
 			"no caSecretRef (for example the trusted CA bundle OpenShift injects). Read again when it changes.")
