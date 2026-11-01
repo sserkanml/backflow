@@ -172,7 +172,9 @@ helm upgrade --install backflow oci://ghcr.io/sserkanml/charts/backflow \
 - Both files are read again when they change (within ten seconds); a changed CA needs no
   restart. A bundle that is missing or holds no certificate is an error, not the old CA.
 
-**3. A policy without any Argo CD field.**
+**3. A policy without any Argo CD field.** (In the namespace the operator is installed in,
+as here; in any other namespace the administrator allows it with `argocd.defaultAccess`, see
+[Multi-tenancy and access](#multi-tenancy-and-access).)
 
 ```yaml
 apiVersion: backflow.io/v1alpha1
@@ -214,6 +216,7 @@ The most used values of the chart; all of them are in
 | `replicaCount`, `leaderElection` | `1`, `true` | more than one replica needs leader election |
 | `mergeRequestPollInterval` | `2m` | how often an open merge request is polled |
 | `resources` | 50m/128Mi requests, 500m/512Mi limits | tune to the number of Applications |
+| `argocd.defaultAccess` | `[]` | which Applications (Argo CD projects) the policies of which namespaces may match through the default connection; empty: only the operator's namespace (see Multi-tenancy and access) |
 | `secretNamespaces` | `[]` | namespaces where the operator may read Secrets; empty means every namespace (see Permissions) |
 | `scmRecheckInterval` | `5m` | how often a working ScmConnection is verified again; also how long a rotated token goes unnoticed |
 | `secretCacheTTL` | `30s` | how long a Secret that was read stays in memory |
@@ -303,6 +306,78 @@ the next read, not at once:
   `--secret-cache-ttl`), and dropped as soon as Argo CD answers 401, so a rotated
   token is used within about 30 seconds.
 
+### Multi-tenancy and access
+
+Backflow reads Applications, and the live values and diffs of what they manage, from
+Argo CD. Who may *see* an Application through a BackflowPolicy is decided in two ways,
+one for each way a policy reaches Argo CD. Anyone who can create a BackflowPolicy in a
+namespace is limited by them; the policy itself cannot widen them.
+
+**A policy with its own `spec.argoCD`** (a token Secret in its namespace). It sees the
+Applications that token can get from Argo CD, and nothing else: for each selected
+Application the operator asks Argo CD, with that token, whether it may get it (the answer
+is kept for a minute per token and Application). Argo CD answers 403 for an Application
+that exists and one that does not, so a refused one is hidden either way. Which
+Applications the token may get is the Argo CD RBAC of that account.
+
+**A policy without `spec.argoCD`** uses the operator's default connection, whose account
+can usually read every Application. Which Applications such a policy may match is
+defined by the administrator who installs the operator, never by a policy:
+
+```yaml
+# values.yaml of the chart (the flag --argocd-default-access, once per rule)
+argocd:
+  server: https://argocd-server.argocd.svc
+  tokenSecret: {namespace: argocd, name: backflow-local-user}
+  defaultAccess:
+    - policyNamespaces: [team-a]      # the namespaces of the policies; "*" is any
+      projects: [team-a, shared]      # Argo CD projects (spec.project); "*" is any
+    - policyNamespaces: [platform]
+      projects: ["*"]
+```
+
+- A policy may match an Application only if its Argo CD project is allowed for the
+  policy's namespace by some rule. Rules add up; a rule allows the pairs of its
+  namespaces and its projects. An Application without `spec.project` is in `default`.
+- **No rules (the default):** only the policies in the namespace the operator is
+  installed in may use the default connection, for every project. This is the
+  single-installer setup of Install on OpenShift GitOps. With rules, only what they allow
+  is allowed, the operator's own namespace included (add it to a rule if it needs one).
+- A policy in a namespace no rule covers is not `Ready`: reason
+  `ArgoCDDefaultNotAllowed`, and a message that names the chart value. It matches nothing,
+  and the proposals it had are retired.
+- **Single-tenant cluster** that wants every policy to see everything:
+  `defaultAccess: [{policyNamespaces: ["*"], projects: ["*"]}]`.
+
+**What a policy is not told.** An Application a policy may not see never appears by
+name, repository, path or project in its status, in its proposals, in Events, in the
+operator's log at the default level or in a metric label. The status holds a count and a
+reason only:
+
+```yaml
+status:
+  conditions:
+    - type: Ready
+      status: "True"
+      reason: Resolved
+      message: "Watching 1 application(s); Argo CD API: operator default (https://argocd-server.argocd.svc); 2 selected application(s) excluded: their Argo CD project is not allowed for this namespace (argocd.defaultAccess)"
+  matchedApplications: [team-a-web]
+  excludedApplications: 2
+  excludedReason: ProjectNotAllowed     # or NotVisibleToToken
+```
+
+The count does show that a name in `spec.applications.names` or a label selector matched
+something the policy may not see; it is the one thing a policy can learn. A parent
+Application (the app-of-apps behind a value set in an Application) that the policy may not
+see is reported as `NotVisible` with the sentence "the parent Application is not visible
+to this policy", and nothing else about it.
+
+**Existing proposals.** When an Application stops being visible to its policy (a rule
+removed, a project changed, a token that lost the permission), its open proposals end as
+`Superseded` with the reason `AccessRevoked`, without a call to Argo CD. The rule is also
+checked again before drift detection and before every proposal reads from Argo CD with the
+default token, whatever the policy's status says.
+
 ### Upgrade and uninstall
 
 ```bash
@@ -317,6 +392,17 @@ kubectl delete crd scmconnections.backflow.io backflowpolicies.backflow.io drift
 
 Helm installs the files in `crds/` once and never upgrades or removes them, so
 the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
+
+**Upgrading to the version that adds `argocd.defaultAccess` (breaking).** Policies without
+`spec.argoCD` used to see every Application through the operator's default connection. From
+this version the default connection needs `argocd.defaultAccess` unless the policies live in
+the operator's own namespace: a policy in any other namespace is not `Ready`
+(`ArgoCDDefaultNotAllowed`) and its open proposals are retired until you allow it. Set the
+rules before you upgrade, for example `--set 'argocd.defaultAccess[0].policyNamespaces={team-a}'
+--set 'argocd.defaultAccess[0].projects={team-a}'`, or `*`/`*` to keep the old behaviour in a
+single-tenant cluster. Policies with their own `spec.argoCD` keep working if their token can
+get the Applications they select; the ones it cannot get disappear from their status
+(`excludedApplications` counts them).
 
 ### Upgrading: apply the CRDs first
 
