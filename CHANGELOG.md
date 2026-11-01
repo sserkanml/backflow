@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.15.0](https://github.com/sserkanml/backflow/compare/v0.14.1...v0.15.0) (2026-11-01)
+
+
+### Features
+
+* **api:** Actor.manager, operation, time, fields and others; username is optional; a Changed by print column ([8f78682](https://github.com/sserkanml/backflow/commit/8f78682888d08c0e8ab088202c6033c634365f0c))
+* **drift:** name the manager that wrote the drifted fields, from the managedFields Argo CD returns ([cd82b03](https://github.com/sserkanml/backflow/commit/cd82b0397d8f635930a9516ce06d405f33717a72))
+* **drift:** three classes of manager: a name that is neither a known tool nor a known controller is unknown, not a controller ([03e2b4c](https://github.com/sserkanml/backflow/commit/03e2b4c3fac26db00f69ac7e485245f7456299ec))
+
+
+### Documentation
+
+* managedFields names are a hint, and the three classes of manager ([407c8ef](https://github.com/sserkanml/backflow/commit/407c8efa581721c74f8040999a8aba7b7fbfdbc8))
+* who changed it, from managedFields ([8a46b46](https://github.com/sserkanml/backflow/commit/8a46b46f7ff38075955139941f0f994dcbca18a2))
+
 ## [0.14.1](https://github.com/sserkanml/backflow/compare/v0.14.0...v0.14.1) (2026-11-01)
 
 
