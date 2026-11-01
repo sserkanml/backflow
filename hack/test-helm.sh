@@ -947,7 +947,8 @@ else
     k -n "$ARGOCD_NS" get secret "$LOCAL_USER_SECRET" >/dev/null 2>&1 ||
       die "Secret $ARGOCD_NS/$LOCAL_USER_SECRET not found. Run ARGOCD_LOCAL_USER_SECRET=true ./hack/dev-up.sh first."
     default_flags=(--argocd-server="$ARGOCD_URL" --argocd-token-secret-namespace="$ARGOCD_NS"
-      --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify)
+      --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify
+      --argocd-default-access="$NS:*")
   fi
   "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
     ${default_flags[@]+"${default_flags[@]}"} >"$LOG_FILE" 2>&1 &

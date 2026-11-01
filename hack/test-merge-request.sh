@@ -657,7 +657,7 @@ cleanup() {
     fi
   fi
   if [[ "$KEEP" != "true" ]]; then
-    k delete namespace "$NS" --ignore-not-found --wait=false >/dev/null 2>&1
+    k delete namespace "$NS" "$NS-norule" --ignore-not-found --wait=false >/dev/null 2>&1
   fi
   if [[ -n "$WORKDIR" && "$WORKDIR" == *backflow-mr-test.* ]]; then
     rm -f "$WORKDIR/scm.py" "$WORKDIR/seen" "$WORKDIR/token" "$WORKDIR/unrelated.json" "$WORKDIR/paths"
@@ -830,7 +830,8 @@ else
     k -n "$ARGOCD_NS" get secret "$LOCAL_USER_SECRET" >/dev/null 2>&1 ||
       die "Secret $ARGOCD_NS/$LOCAL_USER_SECRET not found. Run ARGOCD_LOCAL_USER_SECRET=true ./hack/dev-up.sh first."
     default_flags=(--argocd-server="$ARGOCD_URL" --argocd-token-secret-namespace="$ARGOCD_NS"
-      --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify)
+      --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify
+      --argocd-default-access="$NS:*")
   fi
   "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
     --metrics-bind-address="127.0.0.1:$METRICS_PORT" --metrics-secure=false \
@@ -905,6 +906,29 @@ wait_for "policy matched the repository to the ScmConnection" policy_has_connect
 # ---------------------------------------------------------------------------
 if section_wanted a; then
 step "a. A drift becomes a merge request"
+if [[ "$ARGOCD_DEFAULT" == "true" ]]; then
+  # The operator was started with --argocd-default-access="$NS:*": a policy in any other namespace may not use
+  # the default connection, and says so without naming an Application.
+  k create namespace "$NS-norule" --dry-run=client -o yaml | k apply -f - >/dev/null
+  k apply -f - >/dev/null <<YAML
+apiVersion: backflow.io/v1alpha1
+kind: BackflowPolicy
+metadata:
+  name: norule
+  namespace: $NS-norule
+spec:
+  argoCDNamespace: $ARGOCD_NS
+  mode: ReportOnly
+  applications:
+    names: ["$APP"]
+YAML
+  norule_reason() { [[ "$(k -n "$NS-norule" get bfp norule -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}')" == "ArgoCDDefaultNotAllowed" ]]; }
+  wait_for "a policy in a namespace without an access rule is not Ready (ArgoCDDefaultNotAllowed)" norule_reason
+  NORULE_STATUS="$(k -n "$NS-norule" get bfp norule -o jsonpath='{.status}')"
+  expect_contains "the message names the chart value" "argocd.defaultAccess" "$NORULE_STATUS"
+  expect_not_contains "the status names no Application" "$APP" "$NORULE_STATUS"
+  k delete bfp norule -n "$NS-norule" --ignore-not-found >/dev/null
+fi
 require_drift a debug
 set_log_level debug
 wait_for "proposal is Proposed ($GIT_LEVEL -> debug)" has_proposal Proposed "/data/LOG_LEVEL:Replace:\"$GIT_LEVEL\">\"debug\""
