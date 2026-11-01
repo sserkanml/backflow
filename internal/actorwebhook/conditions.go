@@ -22,14 +22,25 @@ type Condition struct {
 // excludeUsers are the user names whose changes are not wanted besides the system
 // users (the Argo CD application controller, Backflow's own service account).
 func Conditions(excludeUsers []string) []Condition {
+	return ConditionsWith(UsersClause(excludeUsers))
+}
+
+// UsersClause is the part of the last condition that excludes users by name: true when
+// there is no one to exclude.
+func UsersClause(excludeUsers []string) string {
+	if len(excludeUsers) == 0 {
+		return "true"
+	}
 	quoted := make([]string, len(excludeUsers))
 	for i, u := range excludeUsers {
 		quoted[i] = "'" + strings.ReplaceAll(strings.ReplaceAll(u, `\`, `\\`), "'", `\'`) + "'"
 	}
-	users := "!(request.userInfo.username in [" + strings.Join(slices.Sorted(slices.Values(quoted)), ", ") + "])"
-	if len(excludeUsers) == 0 {
-		users = "true"
-	}
+	return "!(request.userInfo.username in [" + strings.Join(slices.Sorted(slices.Values(quoted)), ", ") + "])"
+}
+
+// ConditionsWith is Conditions with the clause that excludes users given as it is. The
+// chart is generated from it with a placeholder (see hack/genactorconditions).
+func ConditionsWith(usersClause string) []Condition {
 	return []Condition{
 		{Name: "not-secrets", Expression: "request.resource.resource != 'secrets'"},
 		{Name: "not-dry-run", Expression: "!has(request.dryRun) || request.dryRun == false"},
@@ -39,6 +50,6 @@ func Conditions(excludeUsers []string) []Condition {
 			"(has(object.metadata.labels) && 'app.kubernetes.io/instance' in object.metadata.labels)))"},
 		{Name: "not-system-or-gitops-users", Expression: "!request.userInfo.username.startsWith('system:serviceaccount:kube-system:') && " +
 			"!request.userInfo.username.startsWith('system:node:') && " +
-			"!(request.userInfo.username in ['system:kube-controller-manager', 'system:kube-scheduler']) && " + users},
+			"!(request.userInfo.username in ['system:kube-controller-manager', 'system:kube-scheduler']) && " + usersClause},
 	}
 }
