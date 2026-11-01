@@ -30,13 +30,42 @@ const (
 type Kind string
 
 const (
-	// Interactive: a person with a tool (kubectl, oc, a browser console).
+	// Interactive: a tool a person runs (kubectl, oc, a browser console).
 	Interactive Kind = "interactive"
-	// Controller: anything else that writes to the API, such as the HPA.
+	// Controller: a component that writes to the API by itself, recognised by name.
 	Controller Kind = "controller"
-	// Unknown: no manager could be found.
+	// Unknown: a manager that is neither. The name is whatever the client chose
+	// (fieldManager), so a name nobody has verified says nothing about who ran it.
 	Unknown Kind = "unknown"
 )
+
+// controllerNames are the managers of the components of Kubernetes itself that change
+// objects without anyone asking: the controller manager (the HPA scales through it), the
+// scheduler, the kubelet and the API server (defaulting, garbage collection).
+var controllerNames = []string{
+	"kube-controller-manager", "cloud-controller-manager", "kube-scheduler", "kube-apiserver", "kubelet",
+	"cluster-autoscaler",
+}
+
+// controllerSuffixes are the endings of the names operators and controllers give their
+// field manager by convention (cert-manager-controller, kustomize-controller of Flux,
+// openshift-controller-manager, cluster-version-operator).
+var controllerSuffixes = []string{"-controller", "-operator", "-controller-manager"}
+
+// IsController reports whether the manager is a known controller: one of controllerNames or
+// a name that ends the way controllers and operators name themselves.
+func IsController(manager string) bool {
+	m := strings.ToLower(manager)
+	if slices.Contains(controllerNames, m) {
+		return true
+	}
+	for _, suffix := range controllerSuffixes {
+		if strings.HasSuffix(m, suffix) {
+			return true
+		}
+	}
+	return false
+}
 
 // interactivePrefixes are the managers of tools a person runs. A manager name is the
 // user agent of the client (or kubectl's name for the command), cut at the first "/".
@@ -61,15 +90,19 @@ func IsInteractive(manager string) bool {
 	return false
 }
 
-// Classify says what kind of writer a manager is. An empty manager is Unknown.
+// Classify says what kind of writer a manager is. A name is a controller or a tool only
+// when it is recognised as one, in that order (kustomize-controller is a controller although
+// kustomize is a tool); every other name is Unknown, an empty one too.
 func Classify(manager string) Kind {
 	switch {
 	case manager == "":
 		return Unknown
+	case IsController(manager):
+		return Controller
 	case IsInteractive(manager):
 		return Interactive
 	}
-	return Controller
+	return Unknown
 }
 
 // IsIgnored reports whether a manager is Argo CD's own (it writes what Git says, which

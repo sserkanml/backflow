@@ -17,10 +17,14 @@ const (
 	maxActorOthers = 4
 )
 
+// changedByNone is the label of a drift for which no manager could be named: there is no actor.
+// "unknown" is a manager that was named but is neither a known tool nor a known controller.
+const changedByNone = "none"
+
 // actorOf says, from the managedFields of the live object Argo CD returned, which manager
-// wrote the drifted fields last, and how that manager is to be counted
-// (interactive, controller or unknown, the label of the metric). It returns a nil Actor
-// when nothing can be told, and never an error: a proposal does not wait for it.
+// wrote the drifted fields last, and how that manager is to be counted (interactive,
+// controller, unknown or, without an actor, none: the label of the metric). It returns a nil
+// Actor when nothing can be told, and never an error: a proposal does not wait for it.
 func actorOf(ctx context.Context, live map[string]any, changes []backflowv1alpha1.FieldChange) (*backflowv1alpha1.Actor, string) {
 	pointers := make([]string, 0, len(changes))
 	for _, c := range changes {
@@ -29,10 +33,10 @@ func actorOf(ctx context.Context, live map[string]any, changes []backflowv1alpha
 	attr, err := managedfields.Attribute(live, pointers)
 	if err != nil {
 		logf.FromContext(ctx).V(1).Info("The managedFields of the live object cannot be read; the proposal has no actor", "error", err.Error())
-		return nil, string(managedfields.Unknown)
+		return nil, changedByNone
 	}
 	if attr == nil {
-		return nil, string(managedfields.Unknown)
+		return nil, changedByNone
 	}
 	actor := &backflowv1alpha1.Actor{
 		Manager:   attr.Latest.Manager,

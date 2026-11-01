@@ -731,14 +731,23 @@ var _ = Describe("Drift detection", func() {
 		Expect(detectedBy("controller") - before).To(Equal(1.0))
 	})
 
-	It("makes the proposal without an actor when the managedFields cannot be read", func() {
+	It("names a manager that is neither a known tool nor a known controller, and counts it as unknown", func() {
 		before := detectedBy("unknown")
+		argo.items[0].NormalizedLiveState = withManagedFields("some-custom-tool")
+		dp := driftedProposal()
+		Expect(dp.Spec.Actor).NotTo(BeNil())
+		Expect(dp.Spec.Actor.Manager).To(Equal("some-custom-tool"))
+		Expect(detectedBy("unknown") - before).To(Equal(1.0))
+	})
+
+	It("makes the proposal without an actor when the managedFields cannot be read", func() {
+		before := detectedBy("none")
 		live := configMapState("debug")
 		live["metadata"].(map[string]any)["managedFields"] = "not a list"
 		argo.items[0].NormalizedLiveState = live
 		dp := driftedProposal()
 		Expect(dp.Spec.Actor).To(BeNil())
-		Expect(detectedBy("unknown") - before).To(Equal(1.0))
+		Expect(detectedBy("none") - before).To(Equal(1.0))
 	})
 
 	It("does not change the actor of an existing proposal when another manager writes later", func() {
