@@ -34,6 +34,41 @@ secretCacheTTL: 30s
 # not Ready (SecretForbidden). The operator never lists or watches Secrets.
 secretNamespaces: []
 
+# The Argo CD connection of every BackflowPolicy that has no spec.argoCD. It is set
+# here, by whoever installs the operator, and never by a policy: a policy can name
+# Secrets of its own namespace only, so it cannot make the operator read a Secret
+# elsewhere. A policy with its own spec.argoCD keeps using that.
+argocd:
+  # The Argo CD API server, e.g. https://openshift-gitops-server.openshift-gitops.svc
+  server: ""
+  # The Secret that holds the API token of an Argo CD account. OpenShift GitOps
+  # writes it for a local user (spec.localUsers of the ArgoCD resource) as
+  # <user>-local-user, key apiToken, and renews it before it expires.
+  # With secretNamespaces set, the chart grants "get" on Secrets in this namespace too.
+  tokenSecret:
+    namespace: ""
+    name: ""
+    key: apiToken
+  # A PEM CA bundle file that verifies the server, if you mount one yourself
+  # (extraVolumes, extraVolumeMounts). Read again when it changes. serviceCA does it for you.
+  caFile: ""
+  # OpenShift: a ConfigMap whose CA bundle OpenShift fills in with the service CA
+  # (annotation service.beta.openshift.io/inject-cabundle), mounted into the pod and
+  # used to verify the server. For a server with a serving certificate signed by
+  # the service CA, like openshift-gitops-server.
+  serviceCA: false
+
+# OpenShift: a ConfigMap labelled config.openshift.io/inject-trusted-cabundle that
+# OpenShift fills in with the cluster's trusted CA bundle (the proxy's trustedCA),
+# mounted into the pod. Its roots are added for the connection to GitLab and GitHub of
+# every ScmConnection that has no caSecretRef. The company CA must be in the cluster's
+# trusted CA bundle (the Proxy resource's spec.trustedCA) for this to help.
+trustedCABundle: false
+
+# Extra volumes and mounts of the manager pod, e.g. a CA bundle for argocd.caFile.
+extraVolumes: []
+extraVolumeMounts: []
+
 # The time all renders through Argo CD of one verification may take together.
 # A proposal that needs more is Unmapped (RenderBudgetExceeded). Raise it when
 # Argo CD takes seconds per render, which an Application with several sources

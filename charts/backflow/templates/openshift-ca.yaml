@@ -1,0 +1,25 @@
+{{- if and .Values.argocd.server .Values.argocd.serviceCA }}
+# OpenShift fills this ConfigMap with the service CA (key service-ca.crt) and keeps it up to date.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "backflow.fullname" . }}-service-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+---
+{{- end }}
+{{- if .Values.trustedCABundle }}
+# OpenShift fills this ConfigMap with the cluster's trusted CA bundle (key ca-bundle.crt),
+# the system roots and the additional trustedCA of the cluster Proxy, and keeps it up to date.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "backflow.fullname" . }}-trusted-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backflow.labels" . | nindent 4 }}
+    config.openshift.io/inject-trusted-cabundle: "true"
+{{- end }}

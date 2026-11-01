@@ -14,6 +14,20 @@ It may get any Secret by name in every namespace. To narrow that to the
 namespaces you use, set secretNamespaces=\{a,b\} (see the README, "Permissions").
 {{- end }}
 
+{{- if .Values.argocd.server }}
+
+A BackflowPolicy without spec.argoCD uses {{ .Values.argocd.server }}, with the token in the Secret
+{{ .Values.argocd.tokenSecret.namespace }}/{{ .Values.argocd.tokenSecret.name }} (key {{ .Values.argocd.tokenSecret.key | default "apiToken" }}){{ if .Values.argocd.serviceCA }}, verified with the OpenShift service CA{{ end }}.
+`kubectl get bfp` shows which connection each policy uses (status.argoCD).
+{{- else }}
+
+Without argocd.server a policy needs spec.argoCD (the URL and a token Secret of its own).
+{{- end }}
+{{- if .Values.trustedCABundle }}
+
+ScmConnections without caSecretRef also trust the cluster's trusted CA bundle (trustedCABundle).
+{{- end }}
+
 Secrets are not watched. A rotated token is picked up within
 {{ .Values.scmRecheckInterval }} (scmRecheckInterval) for an ScmConnection and
 within {{ .Values.secretCacheTTL }} (secretCacheTTL) for the Argo CD token; changing the
