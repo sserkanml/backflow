@@ -155,6 +155,8 @@ ACTIONLINT_VERSION ?= v1.7.12
 .PHONY: actionlint
 actionlint: $(ACTIONLINT) $(SHELLCHECK) ## Lint the GitHub Actions workflows, and the shell in them.
 	"$(ACTIONLINT)" -color -shellcheck="$(SHELLCHECK)"
+	@# what actionlint cannot know: a job that renders the OLM catalog must check out all the tags
+	go test ./test/chart -run TestWorkflowsThatRenderTheCatalogFetchAllTheTags -count=1
 
 $(ACTIONLINT): $(LOCALBIN)
 	$(call go-install-tool,$(ACTIONLINT),github.com/rhysd/actionlint/cmd/actionlint,$(ACTIONLINT_VERSION))
