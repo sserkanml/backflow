@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.17.0](https://github.com/sserkanml/backflow/compare/v0.16.0...v0.17.0) (2026-11-02)
+
+
+### Features
+
+* **api:** ChangeRecord, Actor.kind, Actor.userAgent deprecated ([c4e941c](https://github.com/sserkanml/backflow/commit/c4e941c8e9f71b51478ae95949cc9bf16af7b287))
+* **chart:** actorWebhook, off by default ([4c75de4](https://github.com/sserkanml/backflow/commit/4c75de47b9ac56869d3e749aa3ebc4afacd8b4af))
+* **drift:** actor webhook handler, buffer, ChangeRecord store, match conditions and cross-check ([db810dd](https://github.com/sserkanml/backflow/commit/db810dd2a7d60eec6ac8aa77e543148869ac64e9))
+* **drift:** bound the records for an untimed scale entry by the Application's history ([b4db162](https://github.com/sserkanml/backflow/commit/b4db1624b750ff2aa900fc219853b9fc814cbeca))
+* **drift:** hold a proposal until the actor webhook's records are written ([b7f2617](https://github.com/sserkanml/backflow/commit/b7f2617c32bc775134f2f85782c1b8f6fe0b2aa8))
+* **drift:** name the user of a kubectl scale, which sends no field manager ([3d74bc2](https://github.com/sserkanml/backflow/commit/3d74bc22e87909b2ba9c4ca7f683ad39df9f0400))
+* **drift:** name the user of a kubectl scale: its managedFields entry has no time ([cd83a59](https://github.com/sserkanml/backflow/commit/cd83a590748dbd83450a1867200613cfcc31f31d))
+* **drift:** name the user of a proposal from a verified ChangeRecord ([889efb2](https://github.com/sserkanml/backflow/commit/889efb2f7e36aa1b6e5e3c8c157bee6def56b8ae))
+
+
+### Bug Fixes
+
+* **drift:** a kubectl scale in the second a sync finished is named ([dd75ae1](https://github.com/sserkanml/backflow/commit/dd75ae125c90956e4bf3ca518d362148ebecf070))
+
+
+### Documentation
+
+* **drift:** actor webhook design ([fefce0e](https://github.com/sserkanml/backflow/commit/fefce0e2e7c0deb81df307d645f403a188c466ef))
+* **drift:** Who changed it with the actor webhook, and the decisions of the implementation ([a94d130](https://github.com/sserkanml/backflow/commit/a94d130ad9d950a2371a9b7a25d2f6aa48831c68))
+
 ## [0.16.0](https://github.com/sserkanml/backflow/compare/v0.15.0...v0.16.0) (2026-11-01)
 
 
