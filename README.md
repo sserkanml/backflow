@@ -10,8 +10,10 @@ manifests. Backflow reads the cluster and writes to Git.
 
 ## Install
 
-Backflow runs in the cluster as one Deployment and is installed with a Helm
-chart (Helm 3.8 or later):
+Backflow runs in the cluster as one Deployment. Install it with a Helm chart (Helm 3.8 or later), or, on OpenShift, from
+OperatorHub through the catalog of the project ([Install from OperatorHub (OpenShift)](#install-from-operatorhub-openshift)).
+
+With Helm:
 
 ```bash
 helm install backflow oci://ghcr.io/sserkanml/charts/backflow \
@@ -22,6 +24,41 @@ The chart installs the CRDs (`ScmConnection`, `BackflowPolicy`,
 `DriftProposal`), a ClusterRole, the Deployment and, with
 `leaderElection: true` (the default), a leader election Role. The image is
 `ghcr.io/sserkanml/backflow`, for linux/amd64 and linux/arm64.
+
+### Install from OperatorHub (OpenShift)
+
+Backflow is also an OLM operator, from a catalog of its own (it is not listed on OperatorHub.io): add a `CatalogSource`, and
+subscribe to the package `backflow`, channel `stable`, install mode AllNamespaces. The settings that are Helm values in the chart are
+`BACKFLOW_*` environment variables in `Subscription.spec.config.env` (the
+[table](#configuration-without-helm-environment-variables) has both). **Add your self-hosted GitLab or GitHub to
+`BACKFLOW_SCM_ALLOWED_HOSTS`**; the default is `gitlab.com,github.com`.
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata: {name: backflow-catalog, namespace: openshift-marketplace}
+spec:
+  sourceType: grpc
+  image: ghcr.io/sserkanml/backflow-catalog:stable
+  displayName: Backflow
+  publisher: sserkanml
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: backflow, namespace: openshift-operators}
+spec:
+  channel: stable
+  name: backflow
+  source: backflow-catalog
+  sourceNamespace: openshift-marketplace
+  config:
+    env:
+      - {name: BACKFLOW_SCM_ALLOWED_HOSTS, value: "gitlab.example.com,gitlab.com"}
+```
+
+The full guide ([docs/olm.md](docs/olm.md)): the Argo CD connection of OpenShift GitOps, upgrades along the channel, why the actor
+webhook is a separate opt-in there, and how to come from the Helm chart (uninstall the release, run `manager migrate` once for a
+`v1alpha1` installation, then subscribe).
 
 ### 1. A read-only Argo CD account
 
