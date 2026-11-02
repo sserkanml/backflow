@@ -116,7 +116,8 @@ type crdWithConversion struct {
 
 // backflow.io/v1beta1 stays served for all of 1.x with the schema of v1 and conversion None (a field the two
 // disagree on would be silently dropped or kept by the API server when an object is read as the other version). The
-// schemas are generated from the Go types, which are made from each other (hack/sync-v1beta1.sh); this compares what comes
+// schemas are generated from the Go types, which are made from each other (hack/sync-v1beta1.sh); this compares what
+// comes
 // out, in the CRDs of config/, of the chart and of the bundle when there is one.
 func TestV1AndV1beta1HaveTheSameSchema(t *testing.T) {
 	dirs := []string{"../../config/crd/bases", "../../charts/backflow/crds"}
@@ -158,7 +159,8 @@ func TestV1AndV1beta1HaveTheSameSchema(t *testing.T) {
 			if !reflect.DeepEqual(v1.Schema, beta.Schema) {
 				t.Errorf("%s: the schema of v1beta1 differs from v1:\n%s", f, schemaDiff(v1.Schema, beta.Schema, ""))
 			}
-			if !reflect.DeepEqual(v1.Subresources, beta.Subresources) || !reflect.DeepEqual(v1.AdditionalPrinterColumns, beta.AdditionalPrinterColumns) {
+			if !reflect.DeepEqual(v1.Subresources, beta.Subresources) ||
+				!reflect.DeepEqual(v1.AdditionalPrinterColumns, beta.AdditionalPrinterColumns) {
 				t.Errorf("%s: the subresources or the printer columns of v1beta1 differ from v1", f)
 			}
 			checked++
@@ -215,7 +217,8 @@ func TestV1beta1GoTypesAreMadeFromV1(t *testing.T) {
 		want, _ := os.ReadFile(f)
 		got, err := os.ReadFile(filepath.Join("../../api/v1beta1", filepath.Base(f)))
 		if err != nil || string(got) != string(want) {
-			t.Errorf("api/v1beta1/%s is not what hack/sync-v1beta1.sh makes from api/v1: run make sync-v1beta1", filepath.Base(f))
+			t.Errorf("api/v1beta1/%s is not what hack/sync-v1beta1.sh makes from api/v1: run make sync-v1beta1",
+				filepath.Base(f))
 		}
 	}
 }

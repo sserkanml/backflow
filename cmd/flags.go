@@ -42,8 +42,8 @@ func crdClient(cfg *rest.Config) (client.Client, error) {
 	return client.New(cfg, client.Options{Scheme: scheme})
 }
 
-// checkCRDs reads the Backflow CRDs and says whether this version of the operator may run against them, and which of them
-// still hold objects stored as v1beta1.
+// checkCRDs reads the Backflow CRDs and says whether this version of the operator may run against them, and which
+// of them still hold objects stored as v1beta1.
 func checkCRDs(cfg *rest.Config) (crdcheck.Result, error) {
 	c, err := crdClient(cfg)
 	if err != nil {
@@ -56,8 +56,8 @@ func checkCRDs(cfg *rest.Config) (crdcheck.Result, error) {
 	return res, err
 }
 
-// migrationWatch looks again, every interval, at whether `backflow migrate` has moved the objects to v1, so that the metric
-// and the log follow it without a restart of the operator.
+// migrationWatch looks again, every interval, at whether `backflow migrate` has moved the objects to v1, so that
+// the metric and the log follow it without a restart of the operator.
 type migrationWatch struct {
 	reader   client.Reader
 	interval time.Duration

@@ -264,11 +264,15 @@ networkPolicy:
     matchLabels:
       metrics: enabled
 
-# The migration from backflow.io/v1alpha1 to v1beta1 (docs/upgrade-v1beta1.md). With migration.enabled, `helm upgrade` runs
-# `manager migrate` as a pre-upgrade hook Job, with the new image: it scales the operator down, backs the objects up, rewrites
-# the CRDs and the objects, and a post-upgrade hook scales the operator back up. It does nothing when no object is stored as
-# v1alpha1, so it is safe to leave on for the one upgrade that needs it. Do not apply the CRDs of this version before it: the
-# tool does that, and the API server refuses a CRD that drops v1alpha1 while objects are stored in it.
+# The migration of the objects to backflow.io/v1 (docs/upgrade-1.0.md). With migration.enabled, `helm upgrade` runs
+# `manager migrate` as a pre-upgrade hook Job, with the new image, and a post-upgrade hook scales the operator back up. It does
+# nothing when no object is stored as v1alpha1 or v1beta1, so it is safe to leave on for the one upgrade that needs it.
+#   * From 0.18 (objects stored as v1beta1): the Job stores each object again as v1 with an update that changes nothing. The
+#     operator keeps running, no backup is needed (an emptyDir will do), and this is all.
+#   * From 0.17 and earlier (v1alpha1): the Job scales the operator down, backs the objects up, converts them and removes v1alpha1
+#     from the CRDs. The backup has to outlive the Job: use a claim.
+# Either way do not apply the CRDs of this version before it: the tool does that (the API server refuses a CRD that drops
+# v1alpha1 while objects are stored in it).
 migration:
   enabled: false
   # The Job fails, and so does the upgrade, after this many seconds.

@@ -1,0 +1,37 @@
+# Backflow for team-a, made for 0.18 (backflow.io/v1beta1), applied by Argo CD from this repository.
+---
+# The GitLab of the company.
+apiVersion: backflow.io/v1beta1   # only this line changes
+kind: ScmConnection
+metadata:
+  name: gitops-gitlab
+  namespace: team-a
+spec:
+  provider: GitLab
+  url: https://gitlab.example.com
+  tokenSecretRef:
+    name: gitlab-token
+    key: token
+---
+apiVersion: backflow.io/v1beta1
+kind: BackflowPolicy
+metadata:
+  name: gitops-web
+  namespace: team-a
+spec:
+  # Argo CD of the platform team
+  argoCD:
+    namespace: openshift-gitops
+    server:
+      url: https://argocd.example.com # not the cluster-local one
+      tokenSecretRef:
+        name: argocd-token
+        key: token
+  applications:
+    names: [web,   api]   # spacing is kept
+  mode: MergeRequest
+  git:
+    branchPrefix: backflow/
+    mergeRequest:
+      labels: [backflow]
+      assignActor: false

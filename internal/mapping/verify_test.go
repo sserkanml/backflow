@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 func change(path string, op v1.ChangeOperation, desired, live string) v1.FieldChange {

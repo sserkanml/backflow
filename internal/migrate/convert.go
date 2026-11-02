@@ -1,4 +1,4 @@
-// Package migrate rewrites the objects of backflow.io/v1alpha1 to backflow.io/v1beta1 (`backflow migrate`).
+// Package migrate rewrites the objects of backflow.io/v1alpha1 to backflow.io/v1 (`backflow migrate`).
 //
 // The conversions work on the maps the API server returns, not on Go types: the v1alpha1 types are only a
 // legacy of the API package, and a conversion that is a function of a map is easy to test with the YAML of a
@@ -16,11 +16,14 @@ import (
 
 // Group and versions of the API that is migrated.
 const (
-	Group         = "backflow.io"
-	OldVersion    = "v1alpha1"
-	NewVersion    = "v1beta1"
-	oldAPIVersion = Group + "/" + OldVersion
-	newAPIVersion = Group + "/" + NewVersion
+	Group      = "backflow.io"
+	OldVersion = "v1alpha1" // another schema: its objects are converted
+	// BetaVersion has the schema of NewVersion: its objects only have to be stored again.
+	BetaVersion    = "v1beta1"
+	NewVersion     = "v1"
+	oldAPIVersion  = Group + "/" + OldVersion
+	betaAPIVersion = Group + "/" + BetaVersion
+	newAPIVersion  = Group + "/" + NewVersion
 )
 
 // AnnotationMigrated marks an object the tool has rewritten. It is how a second run knows what is done: an object
@@ -77,7 +80,7 @@ func bad(format string, args ...any) error {
 
 // Result is a converted object.
 type Result struct {
-	// Object is the object in v1beta1, with its metadata and without its status.
+	// Object is the object in v1, with its metadata and without its status.
 	Object obj
 	// Status is the converted status, nil when the object had none that still applies.
 	Status obj

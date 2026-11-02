@@ -75,7 +75,7 @@ func main() {
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var webhookPort int
 	var enableLeaderElection bool
-	var scmRecheckInterval, secretCacheTTL time.Duration
+	var scmRecheckInterval, secretCacheTTL, storageCheckInterval time.Duration
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -99,6 +99,9 @@ func main() {
 			"token or CA bundle can go unnoticed (a change of the ScmConnection itself is verified at once).")
 	flag.DurationVar(&secretCacheTTL, "secret-cache-ttl", controller.DefaultSecretTTL,
 		"How long a Secret that was read by name stays in memory. 0 reads it from the API server every time.")
+	flag.DurationVar(&storageCheckInterval, "storage-check-interval", 5*time.Minute,
+		"How often the operator looks at whether `manager migrate` has stored every object as v1 "+
+			"(the metric backflow_storage_migration_pending and a line in the log).")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
@@ -179,8 +182,8 @@ func main() {
 	controller.SetScmAllowedHosts(scmAllowedHosts.values)
 	setupLog.Info("Allowlists", "argoCDServers", argoAllowedServers.values, "scmHosts", scmAllowedHosts.values)
 
-	// Objects stored as v1alpha1 would be read with the fields of this version only: do not start until they have been
-	// migrated. Objects stored as v1beta1 are read as v1 (the schema is the same): start, and say that migrate has not run.
+	// Objects stored as v1alpha1 would be read with the fields of this version only: do not start until they have
+	// been migrated. Objects stored as v1beta1 are read as v1 (the schema is the same): start, say migrate has not run.
 	restConfig := ctrl.GetConfigOrDie()
 	crds, err := checkCRDs(restConfig)
 	if err != nil {
@@ -393,7 +396,9 @@ func main() {
 		setupLog.Error(err, "Unable to create the client for the CRDs")
 		os.Exit(1)
 	}
-	if err := mgr.Add(&migrationWatch{reader: crdReader, interval: 5 * time.Minute, log: setupLog.WithName("storage-migration")}); err != nil {
+	watch := &migrationWatch{reader: crdReader, interval: storageCheckInterval,
+		log: setupLog.WithName("storage-migration")}
+	if err := mgr.Add(watch); err != nil {
 		setupLog.Error(err, "Unable to add the check of the stored versions")
 		os.Exit(1)
 	}

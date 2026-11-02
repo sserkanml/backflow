@@ -37,7 +37,7 @@ func (r *runner) migrateProposals(ctx context.Context, needs bool, found []obj) 
 		return true
 	}
 	if r.opt.DryRun && !r.ready[KindProposal] {
-		r.printf("DriftProposal: the CRD has no v1beta1 yet, so the new objects are not checked against its schema here; " +
+		r.printf("DriftProposal: the CRD has no v1 yet, so the new objects are not checked against its schema here; " +
 			"a real run asks the API server about each one before it deletes anything")
 	}
 	items := map[string]*proposalItem{}
@@ -199,7 +199,7 @@ func (r *runner) dropFinished(ctx context.Context, it *proposalItem, phase strin
 	return true
 }
 
-// keepRejectedProposal writes the v1beta1 form of a proposal, status included, that the API server refused.
+// keepRejectedProposal writes the v1 form of a proposal, status included, that the API server refused.
 func (r *runner) keepRejectedProposal(res *Result) {
 	object := copyJSON(res.Object)
 	if res.Status != nil {
@@ -208,7 +208,7 @@ func (r *runner) keepRejectedProposal(res *Result) {
 	if path, ok := r.writeRejected(KindProposal, asString(metaOf(object)[keyNamespace]), asString(metaOf(object)["name"]), object); ok {
 		r.printf("    what was tried is in %s", path)
 	}
-	r.printf("    v1beta1 does not take this proposal as it is. A finished one can be dropped (--skip-finished, or kubectl delete it;")
+	r.printf("    v1 does not take this proposal as it is. A finished one can be dropped (--skip-finished, or kubectl delete it;")
 	r.printf("    its backup stays); an open one is better closed in Git first. The backup is the v1alpha1 object.")
 }
 
@@ -243,7 +243,7 @@ func (r *runner) policyUID(ctx context.Context, namespace, name string) (string,
 	}
 	version := NewVersion
 	if !r.ready[KindPolicy] {
-		version = OldVersion // a dry run before the CRD has v1beta1; the uid is the same
+		version = OldVersion // a dry run before the CRD has v1; the uid is the same
 	}
 	p, err := r.get(ctx, version, string(KindPolicy), namespace, name)
 	if err != nil {
@@ -258,7 +258,7 @@ func (r *runner) policyUID(ctx context.Context, namespace, name string) (string,
 // validate asks the API server, without storing anything, whether it would accept the object.
 func (r *runner) validate(ctx context.Context, object obj) error {
 	if !r.ready[KindProposal] {
-		return nil // the CRD does not have v1beta1 yet (a dry run): there is nothing to ask
+		return nil // the CRD does not have v1 yet (a dry run): there is nothing to ask
 	}
 	probe := copyJSON(object)
 	meta := metaOf(probe)

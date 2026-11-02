@@ -1,6 +1,6 @@
 package kustomize
 
-import "github.com/sserkanml/backflow/api/v1"
+import v1 "github.com/sserkanml/backflow/api/v1"
 
 // The tiers of places an edit can go, in the order they are tried.
 const (

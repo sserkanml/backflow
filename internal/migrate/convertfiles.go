@@ -18,7 +18,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
-// ConvertFiles rewrites the backflow.io/v1alpha1 ScmConnection and BackflowPolicy manifests in YAML files to v1beta1, for the
+// ConvertFiles rewrites the backflow.io/v1alpha1 ScmConnection and BackflowPolicy manifests in YAML files to v1, for the
 // users who keep them in Git and let Argo CD apply them. A file that does not mention backflow.io/v1alpha1 is not read
 // further. Of a multi-document file only the documents that are converted are written again: the others, and the separators,
 // are copied as they are. A document that is converted keeps its comments and the order of its keys (the YAML is written
@@ -42,7 +42,7 @@ func (r *FilesResult) Pending() bool { return len(r.Changed) > 0 || len(r.Manual
 
 var (
 	// v1alpha1 backflow objects of the two kinds that live in Git; the text check is for files that are not YAML (Helm templates).
-	mentionsOld  = regexp.MustCompile(`backflow\.io/v1alpha1`)
+	mentionsOld  = regexp.MustCompile(`backflow\.io/v1(alpha1|beta1)`)
 	mentionsKind = regexp.MustCompile(`(?m)^\s*kind:\s*['"]?(ScmConnection|BackflowPolicy)\b`)
 	separator    = regexp.MustCompile(`^---(\s|$)`)
 )
@@ -102,12 +102,18 @@ func convertDocument(seg string) (text, did, why string) {
 		return seg, "", ""
 	}
 	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode || scalarOf(root, "apiVersion") != oldAPIVersion {
+	if root.Kind != yaml.MappingNode {
 		return seg, "", ""
 	}
+	apiVersion := scalarOf(root, "apiVersion")
 	kind := ObjectKind(scalarOf(root, "kind"))
-	if kind != KindScmConnection && kind != KindPolicy {
+	if (apiVersion != oldAPIVersion && apiVersion != betaAPIVersion) || (kind != KindScmConnection && kind != KindPolicy) {
 		return seg, "", ""
+	}
+	if apiVersion == betaAPIVersion {
+		// v1beta1 has the schema of v1: only the apiVersion changes, and nothing else in the document is touched.
+		return head + replaceAPIVersion(root, body), fmt.Sprintf("%s %s: converted (1 change(s))",
+			kind, scalarOf(mapOf(root, keyMetadata), keyName)), ""
 	}
 	name := scalarOf(mapOf(root, "metadata"), "name")
 	label := string(kind) + " " + name
@@ -155,6 +161,26 @@ func convertDocument(seg string) (text, did, why string) {
 		}
 	}
 	return head + enc.String(), fmt.Sprintf("%s: converted (%d change(s))", label, notes), ""
+}
+
+// replaceAPIVersion changes backflow.io/v1beta1 to backflow.io/v1 at the place of the apiVersion value, and nowhere else.
+func replaceAPIVersion(root *yaml.Node, body string) string {
+	i := keyIndex(root, "apiVersion")
+	if i < 0 {
+		return body
+	}
+	value := root.Content[i+1]
+	lines := strings.SplitAfter(body, "\n")
+	if value.Line < 1 || value.Line > len(lines) {
+		return body
+	}
+	line := lines[value.Line-1]
+	before, after, found := strings.Cut(line, betaAPIVersion)
+	if !found {
+		return body
+	}
+	lines[value.Line-1] = before + newAPIVersion + after
+	return strings.Join(lines, "")
 }
 
 func sameSpec(a, b any) bool {
@@ -364,7 +390,7 @@ func ConvertFilesRun(paths []string, check bool, out io.Writer) (*FilesResult, e
 			verb = "would be converted"
 		}
 		for _, c := range converted {
-			_, _ = fmt.Fprintf(out, "%s: %s (%s)\n", f, strings.Replace(c, ": converted", ": "+verb, 1), "backflow.io/v1alpha1 -> v1beta1")
+			_, _ = fmt.Fprintf(out, "%s: %s (%s)\n", f, strings.Replace(c, ": converted", ": "+verb, 1), "backflow.io/v1alpha1 or v1beta1 -> v1")
 		}
 		if !check {
 			if err := writeKeepingMode(f, newData); err != nil {
@@ -439,13 +465,14 @@ func writeKeepingMode(path string, data []byte) error {
 
 const convertFilesUsage = `usage: backflow migrate convert-files [--check] [paths...]
 
-Rewrites the ScmConnection and BackflowPolicy manifests of backflow.io/v1alpha1 in YAML files to backflow.io/v1beta1, in place.
+Rewrites the ScmConnection and BackflowPolicy manifests of backflow.io/v1alpha1 and backflow.io/v1beta1 in YAML files to backflow.io/v1,
+in place (a v1beta1 manifest only gets the new apiVersion: the schema is the same).
 The paths are files or directories (.yaml and .yml files below them); the default is the current directory. Documents of other
 kinds and files that do not mention backflow.io/v1alpha1 are not touched, byte for byte. A converted document keeps its
 comments and the order of its keys.
 
 Use it on the Git repository that Argo CD applies the Backflow objects from, and merge the change before the upgrade
-(docs/upgrade-v1beta1.md): after it the old manifests either fail to sync or, written through v1alpha1, lose fields.
+(docs/upgrade-1.0.md): after it the old manifests either fail to sync or, written through v1alpha1, lose fields.
 
 --check changes nothing and exits 1 when a file would change or a document needs a person (a template, a YAML anchor), for CI.
 

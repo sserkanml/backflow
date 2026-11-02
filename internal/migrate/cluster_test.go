@@ -243,3 +243,43 @@ func (cl *cluster) crdExists(name string) bool {
 	}
 	return err == nil
 }
+
+// installCRDsOf installs the CRDs of a release from testdata: the three of backflow.io and the ChangeRecord CRD file.
+func (cl *cluster) installCRDsOf(dir, changeRecordFile string) {
+	cl.t.Helper()
+	files := map[string]string{"changerecords.internal.backflow.io": changeRecordFile}
+	maps.Copy(files, crdFiles)
+	for name, f := range files {
+		data, err := os.ReadFile(filepath.Join(dir, f))
+		if err != nil {
+			cl.t.Fatal(err)
+		}
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := yaml.Unmarshal(data, crd); err != nil {
+			cl.t.Fatal(err)
+		}
+		if err := cl.c.Create(context.Background(), crd); err != nil {
+			cl.t.Fatal(err)
+		}
+		cl.establish(name)
+	}
+}
+
+// createAt makes an object through the endpoint of a version, and writes its status.
+func (cl *cluster) createAt(version, kind, text string) {
+	cl.t.Helper()
+	o := parse(cl.t, text)
+	status := o["status"]
+	delete(o, "status")
+	o["apiVersion"] = Group + "/" + version
+	u := &unstructured.Unstructured{Object: o}
+	if err := cl.c.Create(context.Background(), u); err != nil {
+		cl.t.Fatalf("create %s: %v", kind, err)
+	}
+	if status != nil {
+		u.Object["status"] = status
+		if err := cl.c.Status().Update(context.Background(), u); err != nil {
+			cl.t.Fatalf("status of %s: %v", kind, err)
+		}
+	}
+}

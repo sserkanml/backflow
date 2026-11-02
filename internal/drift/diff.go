@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // builtinIgnores are JSON pointers that are always noise. A pointer also
