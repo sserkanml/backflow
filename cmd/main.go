@@ -179,12 +179,18 @@ func main() {
 	controller.SetScmAllowedHosts(scmAllowedHosts.values)
 	setupLog.Info("Allowlists", "argoCDServers", argoAllowedServers.values, "scmHosts", scmAllowedHosts.values)
 
-	// Objects stored in an older version would be read with the fields of this version only: do
-	// not start until they have been migrated.
+	// Objects stored as v1alpha1 would be read with the fields of this version only: do not start until they have been
+	// migrated. Objects stored as v1beta1 are read as v1 (the schema is the same): start, and say that migrate has not run.
 	restConfig := ctrl.GetConfigOrDie()
-	if err := checkCRDs(restConfig); err != nil {
+	crds, err := checkCRDs(restConfig)
+	if err != nil {
 		setupLog.Error(err, "The CustomResourceDefinitions are not ready for this version of the operator")
 		os.Exit(1)
+	}
+	if len(crds.Pending) > 0 {
+		setupLog.Info("WARNING: objects may still be stored as backflow.io/v1beta1 (deprecated, served until 2.0). "+
+			"The operator works with them; run `manager migrate` (it is safe with the operator running) to store them as v1. "+
+			"The metric backflow_storage_migration_pending says how many CRDs are left.", "crds", crds.Pending)
 	}
 	if argoCD.Configured() {
 		setupLog.Info("Policies without spec.argoCD use the default Argo CD connection", "server", argoCD.Server,
@@ -382,6 +388,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	crdReader, err := crdClient(restConfig)
+	if err != nil {
+		setupLog.Error(err, "Unable to create the client for the CRDs")
+		os.Exit(1)
+	}
+	if err := mgr.Add(&migrationWatch{reader: crdReader, interval: 5 * time.Minute, log: setupLog.WithName("storage-migration")}); err != nil {
+		setupLog.Error(err, "Unable to add the check of the stored versions")
+		os.Exit(1)
+	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
 		os.Exit(1)

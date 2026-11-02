@@ -672,6 +672,7 @@ Metric names and labels are a contract; a change to one is a breaking change.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
+| `backflow_storage_migration_pending` | gauge | | the number of Backflow CRDs whose objects may still be stored as `v1beta1` (the operator works meanwhile, since `v1` has the same schema); 0 once `manager migrate` has run, which is checked every 5 minutes; `v1beta1` can go in 2.0 only when it is 0 |
 | `backflow_build_info` | gauge | `version`, `commit` | always 1; the version and the commit of the binary: for a release image the tag without its `v` and the commit of the tag, for an image of `main` `main` and its commit, for `make build` the output of `git describe` and the short commit, else what the Go toolchain recorded (`-dirty` for a modified tree), else `dev` and `unknown` |
 | `backflow_scm_connection_ready` | gauge | `scm_namespace`, `scm` | 1 when an ScmConnection is Ready (its token is accepted), else 0 |
 | `backflow_policy_ready` | gauge | `policy_namespace`, `policy` | 1 when a BackflowPolicy is Ready, else 0 |
