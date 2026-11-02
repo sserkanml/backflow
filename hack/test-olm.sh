@@ -277,7 +277,7 @@ make -C "$ROOT" catalog-build CATALOG_IMG="$CATALOG_NEXT" >"$WORK/catalog-build2
 for img in "$BUNDLE_NEXT" "$CATALOG_NEXT"; do docker push -q "$img" >/dev/null || die "cannot push $img"; done
 expect "the catalog has both versions, the second replacing the first" \
   "$(awk '/^schema: olm.channel/{c=1} c' "$ROOT/catalog/out/backflow/catalog.yaml" | grep -E 'name: backflow.v|replaces' | tr -d ' ' | tr '\n' ' ')" \
-  "name:stable name:backflow.v$VERSION name:backflow.v$NEXT replaces:backflow.v$VERSION "
+  "-name:backflow.v$VERSION -name:backflow.v$NEXT replaces:backflow.v$VERSION "
 kubectl -n "$CATALOG_NS" patch catalogsource backflow-catalog --type merge -p "{\"spec\":{\"image\":\"$CATALOG_NEXT\"}}" >/dev/null \
   || die "cannot update the CatalogSource"
 wait_for "an InstallPlan for $NEXT_CSV" 240 \
