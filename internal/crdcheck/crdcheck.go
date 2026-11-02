@@ -56,6 +56,10 @@ func problem(crd *apiextensionsv1.CustomResourceDefinition) string {
 			served = true
 		}
 	}
+	if !served && slices.Contains(crd.Status.StoredVersions, "v1alpha1") {
+		return fmt.Sprintf("%s is the CRD of an earlier release (objects are stored as v1alpha1): run `backflow migrate` with the "+
+			"operator stopped before starting this version, and do not apply the new CRDs first (docs/upgrade-v1beta1.md)", crd.Name)
+	}
 	if !served {
 		return fmt.Sprintf("%s does not serve and store %s: apply the CRDs of this release first "+
 			"(helm show crds ... | kubectl apply --server-side --force-conflicts -f -)", crd.Name, Version)

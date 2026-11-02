@@ -12,3 +12,6 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# The CRDs of this release, which config/crd embeds for `manager migrate`
+!config/crd/bases/*.yaml

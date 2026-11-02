@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package legacy
 
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // ScmProvider is the type of Git hosting service.
@@ -82,16 +81,6 @@ type ScmConnectionStatus struct {
 	LastCheckTime *metav1.Time `json:"lastCheckTime,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-// +kubebuilder:unservedversion
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=scm,categories=backflow
-// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
-// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
-// +kubebuilder:printcolumn:name="User",type=string,JSONPath=`.status.authenticatedAs`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-
 // ScmConnection is a connection to a Git hosting service.
 type ScmConnection struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -101,18 +90,9 @@ type ScmConnection struct {
 	Status ScmConnectionStatus `json:"status,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-
 // ScmConnectionList contains a list of ScmConnection
 type ScmConnectionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []ScmConnection `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &ScmConnection{}, &ScmConnectionList{})
-		return nil
-	})
 }

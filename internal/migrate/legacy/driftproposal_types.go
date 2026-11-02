@@ -14,11 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+package legacy
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
@@ -458,22 +457,6 @@ type DriftProposalStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-// +kubebuilder:unservedversion
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=dp;drift,categories=backflow
-// +kubebuilder:printcolumn:name="Application",type=string,JSONPath=`.spec.application.name`
-// +kubebuilder:printcolumn:name="Kind",type=string,JSONPath=`.spec.resource.kind`
-// +kubebuilder:printcolumn:name="Resource",type=string,JSONPath=`.spec.resource.name`
-// +kubebuilder:printcolumn:name="Actor",type=string,JSONPath=`.spec.actor.username`
-// +kubebuilder:printcolumn:name="Changed by",type=string,JSONPath=`.spec.actor.manager`
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Strategy",type=string,JSONPath=`.status.mapping.strategy`,priority=1
-// +kubebuilder:printcolumn:name="Mapped",type=string,JSONPath=`.status.conditions[?(@.type=="Mapped")].reason`,priority=1
-// +kubebuilder:printcolumn:name="Proposed",type=string,JSONPath=`.status.conditions[?(@.type=="Proposed")].reason`,priority=1
-// +kubebuilder:printcolumn:name="MR",type=string,JSONPath=`.status.mergeRequest.url`,priority=1
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-
 // DriftProposal is a captured difference between Git and the cluster,
 // and its journey back to Git.
 type DriftProposal struct {
@@ -485,20 +468,11 @@ type DriftProposal struct {
 	Status DriftProposalStatus `json:"status,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-
 // DriftProposalList contains a list of DriftProposal
 type DriftProposalList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []DriftProposal `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &DriftProposal{}, &DriftProposalList{})
-		return nil
-	})
 }
 
 // ActorKind says what kind of identity changed a resource.

@@ -14,14 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1alpha1
+// Package legacy holds the Go types of backflow.io/v1alpha1, the API of the releases before v1beta1. Nothing in the operator uses
+// them and no CRD is generated from them: `backflow migrate` converts maps, and the tests read the manifests they use as
+// fixtures with these types, strictly, to be sure that the fixtures are objects the old API accepted.
+package legacy
 
 import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
@@ -503,15 +505,6 @@ type SourceSummary struct {
 	ScmConnection string `json:"scmConnection,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-// +kubebuilder:unservedversion
-// +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=bfp,categories=backflow
-// +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
-// +kubebuilder:printcolumn:name="Open",type=integer,JSONPath=`.status.openProposals`
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-
 // BackflowPolicy decides which Argo CD Applications are watched for drift
 // and how that drift is proposed back to Git.
 type BackflowPolicy struct {
@@ -522,18 +515,9 @@ type BackflowPolicy struct {
 	Status BackflowPolicyStatus `json:"status,omitempty"`
 }
 
-// +kubebuilder:object:root=true
-
 // BackflowPolicyList contains a list of BackflowPolicy.
 type BackflowPolicyList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []BackflowPolicy `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(func(s *runtime.Scheme) error {
-		s.AddKnownTypes(SchemeGroupVersion, &BackflowPolicy{}, &BackflowPolicyList{})
-		return nil
-	})
 }
