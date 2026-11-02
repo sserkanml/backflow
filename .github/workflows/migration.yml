@@ -31,13 +31,10 @@ jobs:
       # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
       KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
     steps:
-      # The tags tell the script which release is the last one.
       - name: Clone the code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -59,4 +56,6 @@ jobs:
       - name: Upgrade from the last release
         env:
           MODE: ${{ matrix.mode }}
+          # The last release with backflow.io/v1alpha1. 0.18.x is v1beta1 already.
+          FROM_VERSION: "0.17.0"
         run: ./hack/test-migration.sh

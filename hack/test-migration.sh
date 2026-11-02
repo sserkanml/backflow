@@ -27,7 +27,8 @@
 #
 # Environment:
 #   MODE          binary or cluster
-#   FROM_VERSION  the chart version of the last release (default: the newest v*.*.* tag, without the v)
+#   FROM_VERSION  the chart version the upgrade starts from; a release with backflow.io/v1alpha1, so 0.17.0 or earlier (default 0.17.0).
+#                 The script stops if it is not one.
 #   BIN           the manager binary (default: bin/manager, built with make build when missing)
 #   IMAGE         MODE=cluster: the image of this checkout (default backflow-migration:test, built here and loaded into
 #                 kind); SKIP_BUILD=true uses one that exists
@@ -48,7 +49,7 @@ CLUSTER="${CLUSTER:-backflow-migrate}"
 KEEP="${KEEP:-false}"
 BIN="${BIN:-$ROOT/bin/manager}"
 WATCH_SECONDS="${WATCH_SECONDS:-60}"
-FROM_VERSION="${FROM_VERSION:-}"
+FROM_VERSION="${FROM_VERSION:-0.17.0}"
 IMAGE="${IMAGE:-backflow-migration:test}"
 SKIP_BUILD="${SKIP_BUILD:-false}"
 NS=team-a
@@ -92,11 +93,14 @@ for tool in $tools; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is needed"
 done
 
-if [[ -z "$FROM_VERSION" ]]; then
-  FROM_VERSION="$(git -C "$ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
-  FROM_VERSION="${FROM_VERSION#v}"
+# The migration is from a release with backflow.io/v1alpha1 (0.17.0 and earlier). Later releases are v1beta1 already, so
+# there is nothing to migrate in them; the path from 0.18.x to the next API comes with that API.
+CHART_FOR_CHECK="oci://ghcr.io/sserkanml/charts/backflow"
+helm show crds "$CHART_FOR_CHECK" --version "$FROM_VERSION" >"$WORK/from-crds.yaml" 2>"$WORK/from-crds.err" \
+  || die "cannot read the CRDs of chart $FROM_VERSION: $(head -c 200 "$WORK/from-crds.err")"
+if grep -q "^    name: v1beta1" "$WORK/from-crds.yaml" || ! grep -q "^    name: v1alpha1" "$WORK/from-crds.yaml"; then
+  die "FROM_VERSION=$FROM_VERSION is not a v1alpha1 release: its CRDs have v1beta1 (or no v1alpha1). Use 0.17.0 or earlier"
 fi
-[[ -n "$FROM_VERSION" ]] || die "no release tag found: set FROM_VERSION"
 
 if [[ ! -x "$BIN" ]]; then
   step "build"
