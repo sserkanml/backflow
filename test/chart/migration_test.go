@@ -74,8 +74,9 @@ func TestMigrationHookStopsTheOperatorBeforeAndRestoresItAfter(t *testing.T) {
 		t.Errorf("hooks: %v %v", hook(pre), hook(post))
 	}
 	preArgs, postArgs := jobArgs(pre), jobArgs(post)
-	for _, want := range []string{"migrate", "--backup-dir=/backup", "--stop-operator", "--operator-namespace=backflow-system",
-		"--skip-finished"} {
+	wantPre := []string{"migrate", "--backup-dir=/backup", "--stop-operator", "--skip-finished",
+		"--operator-namespace=backflow-system"}
+	for _, want := range wantPre {
 		if !slices.Contains(preArgs, want) {
 			t.Errorf("pre-upgrade args %v lack %s", preArgs, want)
 		}
