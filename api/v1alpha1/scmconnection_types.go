@@ -85,7 +85,7 @@ type ScmConnectionStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:unservedversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=scm
+// +kubebuilder:resource:shortName=scm,categories=backflow
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`
 // +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.spec.url`
 // +kubebuilder:printcolumn:name="User",type=string,JSONPath=`.status.authenticatedAs`

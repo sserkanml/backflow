@@ -506,7 +506,7 @@ type SourceSummary struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:unservedversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=bfp
+// +kubebuilder:resource:shortName=bfp,categories=backflow
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`
 // +kubebuilder:printcolumn:name="Open",type=integer,JSONPath=`.status.openProposals`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`

@@ -8,11 +8,14 @@ metadata:
 spec:
   group: backflow.io
   names:
+    categories:
+    - backflow
     kind: DriftProposal
     listKind: DriftProposalList
     plural: driftproposals
     shortNames:
     - dp
+    - drift
     singular: driftproposal
   scope: Namespaced
   versions:
