@@ -354,6 +354,20 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			Expect(a.Refine(ctx, scaled("uid-scale-5", "scale"), replicas, actor("kubectl"), after).Username).To(BeEmpty())
 		})
 
+		It("names the user who scaled in the second the last sync finished", func() {
+			// Argo CD writes finishedAt and a ChangeRecord its times as whole seconds, rounded down: a scale 0.4s after
+			// the sync finished is stored with the very second of the sync. Observed with kubectl scale right after a sync.
+			a := flow(true, scaleReview("alice", "uid-scale-6"))
+			sameSecond := actorwebhook.Window{After: now, Before: now.Add(time.Minute)}
+			Expect(a.Refine(ctx, scaled("uid-scale-6", "scale"), replicas, actor("kubectl"), sameSecond).Username).To(Equal("alice"))
+		})
+
+		It("names nobody for a scale from the second before the last sync", func() {
+			a := flow(true, scaleReview("alice", "uid-scale-7"))
+			after := actorwebhook.Window{After: now.Add(time.Second), Before: now.Add(time.Minute)}
+			Expect(a.Refine(ctx, scaled("uid-scale-7", "scale"), replicas, actor("kubectl"), after).Username).To(BeEmpty())
+		})
+
 		It("names nobody when the records of two users fit", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-3"), scaleReview("mallory", "uid-scale-3"))
 			Expect(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())

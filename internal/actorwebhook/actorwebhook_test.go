@@ -579,7 +579,11 @@ func TestMatchSubresourceWindowForAnEntryWithoutATime(t *testing.T) {
 		{"one user twice in the window: the latest", []Record{bob, scale("bob", bob.LastSeen.Add(time.Minute))}, win, metrics.ActorMatched, "bob"},
 		{"no sync time known: nobody", []Record{alice, bob}, Window{Before: detected}, metrics.ActorNoWindow, ""},
 		{"no sync time and no window at all: nobody", []Record{bob}, Window{}, metrics.ActorNoWindow, ""},
-		{"a record at the moment of the sync is not after it", []Record{scale("dave", sync)}, win, metrics.ActorTimeMismatch, ""},
+		// Argo CD's finishedAt and a ChangeRecord's lastSeen are whole seconds, rounded down: a change in the second the
+		// sync finished cannot be told from one after it.
+		{"a record in the second of the sync is not before it", []Record{scale("dave", sync)}, win, metrics.ActorMatched, "dave"},
+		{"a record with a fraction in the second of the sync", []Record{scale("dave", sync.Add(400*time.Millisecond))}, Window{After: sync, Before: detected}, metrics.ActorMatched, "dave"},
+		{"a record in the second before the sync is before it", []Record{scale("dave", sync.Add(-time.Second))}, win, metrics.ActorTimeMismatch, ""},
 		{"a record after the proposal (plus the tolerance) is not used", []Record{scale("eve", detected.Add(time.Minute))}, win, metrics.ActorTimeMismatch, ""},
 		{"a record just after the proposal, within the tolerance, is", []Record{scale("frank", detected.Add(5*time.Second))}, win, metrics.ActorMatched, "frank"},
 		{"no Before: only the sync bounds it", []Record{bob}, Window{After: sync}, metrics.ActorMatched, "bob"},
@@ -600,4 +604,36 @@ func TestMatchSubresourceWindowForAnEntryWithoutATime(t *testing.T) {
 			t.Errorf("result %q user %q", v.Result, v.Record.Username)
 		}
 	})
+}
+
+// The metric and the log say why a scale was refused: the record is for the subresource, so the reason is the
+// subresource's (observed live: a scale in the second of a sync was counted as manager_mismatch).
+func TestResolveReportsTheReasonOfTheSubresource(t *testing.T) {
+	sync := time.Date(2026, 11, 2, 14, 5, 0, 0, time.UTC)
+	actor := managedfields.Owner{Manager: "kubectl", Operation: "Update", Paths: []string{"/spec/replicas"}}
+	entries := []managedfields.Entry{{Manager: "kubectl", Operation: "Update", Subresource: "scale", Paths: []string{"/spec/replicas"}}}
+	scale := func(at time.Time, paths ...string) Record {
+		return Record{UID: "U1", SubResource: "scale", Username: "bob", Kind: KindPerson, Paths: paths, LastSeen: at}
+	}
+	win := Window{After: sync, Before: sync.Add(time.Hour)}
+	tests := []struct {
+		name    string
+		records []Record
+		want    string
+	}{
+		{"before the sync", []Record{scale(sync.Add(-time.Minute), "/spec/replicas")}, metrics.ActorTimeMismatch},
+		{"another field", []Record{scale(sync.Add(time.Minute), "/spec/template")}, metrics.ActorPathMismatch},
+		{"in the window", []Record{scale(sync.Add(time.Minute), "/spec/replicas")}, metrics.ActorMatched},
+		{"a record of the resource itself with another manager",
+			[]Record{{UID: "U1", FieldManager: "kubectl-edit", Username: "bob", Paths: []string{"/spec/replicas"}, LastSeen: sync.Add(time.Minute)}},
+			metrics.ActorManagerMismatch},
+		{"no record of the object", []Record{{UID: "U2", SubResource: "scale", LastSeen: sync}}, metrics.ActorNoRecord},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if v := Resolve("U1", actor, entries, tt.records, DefaultTolerance, win); v.Result != tt.want {
+				t.Errorf("result %q, want %q", v.Result, tt.want)
+			}
+		})
+	}
 }

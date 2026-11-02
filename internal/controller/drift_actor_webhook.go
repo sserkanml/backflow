@@ -57,17 +57,15 @@ func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes 
 	for i := range list.Items {
 		records = append(records, actorwebhook.FromChangeRecord(&list.Items[i]))
 	}
-	verdict := actorwebhook.Match(uid, attr.Latest, records, a.Tolerance)
-	if verdict.Result != metrics.ActorMatched {
-		// A write to a subresource (kubectl scale) has no field manager in the request, and its
-		// managedFields entry no time: the history of the Application bounds the records instead.
-		if entries, err := managedfields.Entries(live, pointers); err == nil {
-			sub := actorwebhook.MatchSubresource(uid, attr.Latest, entries, records, a.Tolerance, window)
-			if sub.Result == metrics.ActorMatched || sub.Result == metrics.ActorAmbiguous || sub.Result == metrics.ActorNoWindow {
-				verdict = sub
-			}
-		}
+	// A write to a subresource (kubectl scale) has no field manager in the request, and its
+	// managedFields entry no time: the history of the Application bounds the records instead.
+	entries, err := managedfields.Entries(live, pointers)
+	if err != nil {
+		entries = nil
 	}
+	verdict := actorwebhook.Resolve(uid, attr.Latest, entries, records, a.Tolerance, window)
+	logf.FromContext(ctx).V(1).Info("Paired a proposal with the change records", "result", verdict.Result,
+		"records", len(records), "manager", attr.Latest.Manager, "window", windowText(window))
 	metrics.ActorMatch(verdict.Result)
 	if verdict.Result != metrics.ActorMatched {
 		return actor
@@ -77,6 +75,17 @@ func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes 
 	out.Username = verdict.Record.Username
 	out.Groups = verdict.Record.Groups
 	return out
+}
+
+// windowText is a window for a log line: times only, no names.
+func windowText(w actorwebhook.Window) string {
+	f := func(t time.Time) string {
+		if t.IsZero() {
+			return "unknown"
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	return f(w.After) + ".." + f(w.Before)
 }
 
 func liveUID(live map[string]any) string {
