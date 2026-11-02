@@ -86,5 +86,7 @@ func (o *actorOptions) setup(mgr manager.Manager, c client.Client, namespace str
 	if err := mgr.Add(sweeper); err != nil {
 		return nil, err
 	}
-	return &controller.ActorRecords{Reader: c, Namespace: namespace, Tolerance: o.tolerance, FlushInterval: o.flushInterval}, nil
+	return &controller.ActorRecords{
+		Reader: c, Namespace: namespace, Tolerance: o.tolerance, FlushInterval: o.flushInterval,
+	}, nil
 }
