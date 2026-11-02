@@ -140,6 +140,10 @@ jobs:
         with:
           ref: refs/tags/${{ inputs.tag || github.ref_name }}
           persist-credentials: false
+          # All the tags: they are the list of the releases whose bundles the catalog must have (hack/olm-catalog.sh refuses a
+          # clone that has not got them).
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
@@ -193,7 +197,8 @@ jobs:
             org.opencontainers.image.version=${{ inputs.tag || github.ref_name }}
             org.opencontainers.image.licenses=Apache-2.0
 
-      # opm renders the bundles of catalog/bundles.txt from their images, which the login above allows.
+      # The catalog has every release since 1.0.0, rendered by opm from its bundle image (the login above allows it), and this
+      # bundle. A release whose bundle was never pushed makes this step, and the release, fail.
       - name: Make the catalog
         run: make catalog BUNDLE_IMG="$BUNDLE_REPO:$VERSION"
 

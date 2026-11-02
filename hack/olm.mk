@@ -50,9 +50,6 @@ OPERATOR_IMAGE ?= $(IMAGE_REPO)/backflow:$(BUNDLE_VERSION)
 BUNDLE_IMG ?= $(IMAGE_REPO)/backflow-bundle:$(BUNDLE_VERSION)
 CATALOG_IMG ?= $(IMAGE_REPO)/backflow-catalog:$(BUNDLE_VERSION)
 OLM_CHANNEL ?= stable
-# The versions of the bundles that were published before this one, one per line: the catalog has them, and the channel
-# replaces them in this order.
-CATALOG_BUNDLES ?= catalog/bundles.txt
 
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle/ (the CSV, the CRDs, the RBAC) and bundle.Dockerfile from config/.
@@ -87,8 +84,8 @@ bundle-build: ## Build the bundle image.
 	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
 
 .PHONY: catalog
-catalog: opm ## Generate the file-based catalog in catalog/out from catalog/bundles.txt and bundle/ (run make bundle first).
-	OPM="$(OPM)" BUNDLE_IMG="$(BUNDLE_IMG)" BUNDLE_VERSION="$(BUNDLE_VERSION)" IMAGE_REPO="$(IMAGE_REPO)" CHANNEL="$(OLM_CHANNEL)" ./hack/olm-catalog.sh
+catalog: opm ## Generate the file-based catalog in catalog/out from the released bundles (the git tags) and bundle/ (run make bundle first).
+	OPM="$(OPM)" $(if $(filter undefined,$(origin PREVIOUS_BUNDLES)),,PREVIOUS_BUNDLES="$(PREVIOUS_BUNDLES)") OPM_RENDER_FLAGS="$(OPM_RENDER_FLAGS)" BUNDLE_IMG="$(BUNDLE_IMG)" BUNDLE_VERSION="$(BUNDLE_VERSION)" IMAGE_REPO="$(IMAGE_REPO)" CHANNEL="$(OLM_CHANNEL)" ./hack/olm-catalog.sh
 
 .PHONY: catalog-build
 catalog-build: ## Build the catalog image from catalog/out.

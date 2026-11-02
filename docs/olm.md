@@ -183,12 +183,14 @@ OLM takes over the existing CRDs when the bundle's CRDs are compatible, which th
   `hack/olm.mk`); `make bundle-validate` runs the validation of the bundle, the OperatorHub suite and the good practices; the
   descriptors of the fields come from `+operator-sdk:csv:customresourcedefinitions` markers on the API types, and the rest of
   the CSV (description, icon, links, install modes, `minKubeVersion`) from `config/manifests/bases`.
-* `make catalog` writes the file-based catalog from `catalog/bundles.txt` (the versions published before, rendered from their
-  images) and `bundle/`; `make catalog-build` builds the image.
+* `make catalog` writes the file-based catalog from the releases (the git tags `vX.Y.Z` from 1.0.0 on, each rendered from its image
+  `backflow-bundle:X.Y.Z`) and `bundle/`; `make catalog-build` builds the image. **There is no list to edit after a release.** The
+  tags are the record of what was released, and `hack/olm-catalog.sh` renders every one of them from its published image, so a
+  release whose bundle was never pushed makes the catalog of the next release, and that release, fail (a catalog without it
+  would upgrade nobody to the new version), and a clone without the tags is refused, because it would leave versions out
+  without a word. The release workflow therefore checks out all the tags.
 * The release workflow pushes `backflow-bundle:<version>` and `backflow-catalog:<version>` and `:stable`; the workflow for `main`
-  pushes `:main` of both (a bundle that names `backflow:main`). **After a release, add its version to `catalog/bundles.txt`**
-  in the next change, or the next catalog will not have it and the channel will not replace it. The images are not signed
-  (neither is the operator image).
+  pushes `:main` of both (a bundle that names `backflow:main`). The images are not signed (neither is the operator image).
 * `hack/test-olm.sh` is the test on kind: it installs OLM (`operator-sdk olm install`, pinned), builds the images of the
   checkout, adds the catalog, subscribes, waits for the CSV and the operator, makes an `ScmConnection` and a `BackflowPolicy`,
   runs the scorecard and uninstalls. CI runs it (`.github/workflows/olm.yml`).

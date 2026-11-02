@@ -1,9 +1,9 @@
 name: Migration test
 
-# The upgrade from the last release to this version on a kind cluster of its own
-# (hack/test-migration.sh): the CRDs and objects of the last chart
-# (backflow.io/v1alpha1), `backflow migrate`, and the operator of this version
-# started on the result. In the binary mode the migration is run by hand and the
+# The upgrade from a release to this version on a kind cluster of its own
+# (hack/test-migration.sh): the CRDs and objects of an old chart (0.17.0:
+# backflow.io/v1alpha1; 0.18.1: v1beta1), `backflow migrate`, and the operator of
+# this version started on the result. In the binary mode the migration is run by hand and the
 # operator is the binary of this checkout; in the cluster mode the last release is
 # installed with helm (chart and image), and the upgrade is `helm upgrade` with the
 # chart and the image of this checkout and its migration hook Job. It needs no
@@ -20,12 +20,15 @@ jobs:
   migration:
     permissions:
       contents: read
-    name: Upgrade from the last release (${{ matrix.mode }})
+    name: Upgrade from ${{ matrix.from }} (${{ matrix.mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        # 0.17.0 has backflow.io/v1alpha1 (the objects are converted, the operator stopped); 0.18.1 has v1beta1 (the objects are
+        # stored again as v1, the operator keeps running). 0.18.0 cannot be installed from its chart.
+        from: ["0.17.0", "0.18.1"]
         mode: [binary, cluster]
     env:
       # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
@@ -56,6 +59,5 @@ jobs:
       - name: Upgrade from the last release
         env:
           MODE: ${{ matrix.mode }}
-          # The last release with backflow.io/v1alpha1. 0.18.x is v1beta1 already.
-          FROM_VERSION: "0.17.0"
+          FROM_VERSION: ${{ matrix.from }}
         run: ./hack/test-migration.sh
