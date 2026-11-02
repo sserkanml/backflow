@@ -243,7 +243,7 @@ func TestActorWebhookRefusesWhatWouldBeUnsafeOrUseless(t *testing.T) {
 	}{
 		{"no API server address outside OpenShift", nil, "apiserverCIDRs"},
 		{"a timeout of 5 seconds", []string{"--set", "actorWebhook.networkPolicy.enabled=false", "--set", "actorWebhook.timeoutSeconds=5"}, "timeoutSeconds must be 1 or 2"},
-		{"Kubernetes before 1.28", []string{"--set", "actorWebhook.networkPolicy.enabled=false", "--kube-version", "1.27.0"}, "1.28"},
+		{"Kubernetes before 1.30, the minimum of the chart", []string{"--set", "actorWebhook.networkPolicy.enabled=false", "--kube-version", "1.29.0"}, "1.30"},
 		{"a TLS mode that does not exist", []string{"--set", "actorWebhook.networkPolicy.enabled=false", "--set", "actorWebhook.tls.mode=magic"}, "tls.mode"},
 		{"mode secret without a Secret", []string{"--set", "actorWebhook.networkPolicy.enabled=false", "--set", "actorWebhook.tls.mode=secret"}, "secretName"},
 	}
@@ -254,10 +254,5 @@ func TestActorWebhookRefusesWhatWouldBeUnsafeOrUseless(t *testing.T) {
 				t.Errorf("want a failure mentioning %q, got %v\n%s", tt.want, err, out)
 			}
 		})
-	}
-	out, err := exec.Command("helm", append(append([]string{}, base...), "--set", "actorWebhook.networkPolicy.enabled=false",
-		"--set", "actorWebhook.allowUnfiltered=true", "--kube-version", "1.27.0")...).CombinedOutput()
-	if err != nil || strings.Contains(string(out), "matchConditions") {
-		t.Errorf("allowUnfiltered on Kubernetes 1.27: no matchConditions, no failure; got %v", err)
 	}
 }
