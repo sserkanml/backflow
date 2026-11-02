@@ -98,7 +98,8 @@ if [[ "$SKIP_BUILD" != "true" ]]; then
   docker build -q -t "$OPERATOR_IMG" "$ROOT" >/dev/null || die "docker build of the operator failed"
   make -C "$ROOT" bundle OPERATOR_IMAGE="$OPERATOR_IMG" BUNDLE_IMG="$BUNDLE_IMG" >"$WORK/bundle.log" 2>&1 || { cat "$WORK/bundle.log"; die "make bundle failed"; }
   make -C "$ROOT" bundle-build BUNDLE_IMG="$BUNDLE_IMG" >"$WORK/bundle-build.log" 2>&1 || { cat "$WORK/bundle-build.log"; die "bundle image failed"; }
-  make -C "$ROOT" catalog BUNDLE_IMG="$BUNDLE_IMG" CATALOG_IMG="$CATALOG_IMG" >"$WORK/catalog.log" 2>&1 || { cat "$WORK/catalog.log"; die "make catalog failed"; }
+  # The catalog of the test is made of the bundles of the test, not of the releases (PREVIOUS_BUNDLES is empty: none before).
+  make -C "$ROOT" catalog BUNDLE_IMG="$BUNDLE_IMG" CATALOG_IMG="$CATALOG_IMG" PREVIOUS_BUNDLES="" >"$WORK/catalog.log" 2>&1 || { cat "$WORK/catalog.log"; die "make catalog failed"; }
   make -C "$ROOT" catalog-build CATALOG_IMG="$CATALOG_IMG" >"$WORK/catalog-build.log" 2>&1 || { cat "$WORK/catalog-build.log"; die "catalog image failed"; }
 fi
 expect "the bundle has the operator image of this checkout" \
