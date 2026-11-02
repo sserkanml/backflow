@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Keep the Helm chart in step with what `make manifests` generates:
-#   - charts/backflow/crds/*.yaml                 <- config/crd/bases/*.yaml
+#   - charts/backflow/crds/*.yaml                 <- the config/crd/bases/*.yaml that config/crd/kustomization.yaml lists
 #   - charts/backflow/templates/clusterrole.yaml  <- rules of config/rbac/role.yaml, except the one on
 #                                                    Secrets, which is a cluster-wide rule unless
 #                                                    secretNamespaces is set
@@ -44,12 +44,24 @@ rules_of() {
     END { flush() }'
 }
 
-# CRDs: copied as they are. Helm installs the crds/ directory before the
-# templates and never changes it afterwards.
+# CRDs: copied as they are, but only the ones config/crd/kustomization.yaml lists (those are the CRDs of the operator;
+# a stray file that controller-gen made from some other package is not), and each must have a group and a name that ends
+# in it: Helm applies crds/ on install, and the API server rejects a CRD without one, so the chart could not be installed.
+# Helm installs the crds/ directory before the templates and never changes it afterwards.
 mkdir -p "$CHART/crds"
 find "$CHART/crds" -type f -name '*.yaml' -delete
-for crd in "$ROOT"/config/crd/bases/*.yaml; do
-  cp "$crd" "$CHART/crds/$(basename "$crd")"
+crds="$(sed -n 's#^[[:space:]]*-[[:space:]]*bases/\(.*\.yaml\)[[:space:]]*$#\1#p' "$ROOT/config/crd/kustomization.yaml")"
+[[ -n "$crds" ]] || { echo "config/crd/kustomization.yaml lists no CRD" >&2; exit 1; }
+for name in $crds; do
+  crd="$ROOT/config/crd/bases/$name"
+  [[ -f "$crd" ]] || { echo "config/crd/kustomization.yaml lists bases/$name, which does not exist (make manifests)" >&2; exit 1; }
+  group="$(sed -n 's/^  group: *//p' "$crd" | head -1)"
+  crd_name="$(sed -n 's/^  name: *//p' "$crd" | head -1)"
+  if [[ -z "$group" || "$crd_name" != *".$group" ]]; then
+    echo "$name: the CRD has the group '$group' and the name '$crd_name'; a CRD needs a group and a name that ends in it" >&2
+    exit 1
+  fi
+  cp "$crd" "$CHART/crds/$name"
 done
 
 {
