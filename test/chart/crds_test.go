@@ -1,8 +1,11 @@
 package chart
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -88,6 +91,131 @@ func TestTheChartHasTheCRDsOfTheKustomization(t *testing.T) {
 		slices.Sort(have)
 		if !slices.Equal(have, listed) {
 			t.Errorf("%s has %v, config/crd/kustomization.yaml lists %v", dir, have, listed)
+		}
+	}
+}
+
+type versionSchema struct {
+	Name                     string         `json:"name"`
+	Served                   bool           `json:"served"`
+	Storage                  bool           `json:"storage"`
+	Deprecated               bool           `json:"deprecated"`
+	DeprecationWarning       string         `json:"deprecationWarning"`
+	Schema                   map[string]any `json:"schema"`
+	Subresources             map[string]any `json:"subresources"`
+	AdditionalPrinterColumns []any          `json:"additionalPrinterColumns"`
+}
+
+type crdWithConversion struct {
+	Spec struct {
+		Group      string          `json:"group"`
+		Conversion map[string]any  `json:"conversion"`
+		Versions   []versionSchema `json:"versions"`
+	} `json:"spec"`
+}
+
+// backflow.io/v1beta1 stays served for all of 1.x with the schema of v1 and conversion None (a field the two
+// disagree on would be silently dropped or kept by the API server when an object is read as the other version). The
+// schemas are generated from the Go types, which are made from each other (hack/sync-v1beta1.sh); this compares what comes
+// out, in the CRDs of config/, of the chart and of the bundle when there is one.
+func TestV1AndV1beta1HaveTheSameSchema(t *testing.T) {
+	dirs := []string{"../../config/crd/bases", "../../charts/backflow/crds"}
+	if _, err := os.Stat("../../bundle/manifests"); err == nil {
+		dirs = append(dirs, "../../bundle/manifests")
+	}
+	checked := 0
+	for _, dir := range dirs {
+		files, _ := filepath.Glob(filepath.Join(dir, "backflow.io_*.yaml"))
+		for _, f := range files {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var crd crdWithConversion
+			if err := yaml.Unmarshal(data, &crd); err != nil {
+				t.Fatalf("%s: %v", f, err)
+			}
+			if crd.Spec.Group != "backflow.io" {
+				continue
+			}
+			byName := map[string]versionSchema{}
+			for _, v := range crd.Spec.Versions {
+				byName[v.Name] = v
+			}
+			v1, beta := byName["v1"], byName["v1beta1"]
+			switch {
+			case len(crd.Spec.Versions) != 2 || v1.Name == "" || beta.Name == "":
+				t.Errorf("%s: the versions are %v, want v1 and v1beta1", f, byName)
+				continue
+			case !v1.Served || !v1.Storage || v1.Deprecated:
+				t.Errorf("%s: v1 must be served, the storage version, and not deprecated: %+v", f, v1.Name)
+			case !beta.Served || beta.Storage || !beta.Deprecated || beta.DeprecationWarning == "":
+				t.Errorf("%s: v1beta1 must be served, not the storage version, and deprecated with a warning", f)
+			}
+			if s := crd.Spec.Conversion["strategy"]; s != nil && s != "None" {
+				t.Errorf("%s: conversion strategy %v, want None (the schemas are the same)", f, s)
+			}
+			if !reflect.DeepEqual(v1.Schema, beta.Schema) {
+				t.Errorf("%s: the schema of v1beta1 differs from v1:\n%s", f, schemaDiff(v1.Schema, beta.Schema, ""))
+			}
+			if !reflect.DeepEqual(v1.Subresources, beta.Subresources) || !reflect.DeepEqual(v1.AdditionalPrinterColumns, beta.AdditionalPrinterColumns) {
+				t.Errorf("%s: the subresources or the printer columns of v1beta1 differ from v1", f)
+			}
+			checked++
+		}
+	}
+	if checked < 6 {
+		t.Fatalf("compared %d CRDs, want the three of config/ and the three of the chart", checked)
+	}
+}
+
+// schemaDiff names the first places where two decoded schemas differ.
+func schemaDiff(a, b any, path string) string {
+	switch x := a.(type) {
+	case map[string]any:
+		y, ok := b.(map[string]any)
+		if !ok {
+			return path + ": a map against something else\n"
+		}
+		var out string
+		for k, v := range x {
+			if w, has := y[k]; !has {
+				out += path + "/" + k + ": only in v1\n"
+			} else if !reflect.DeepEqual(v, w) {
+				out += schemaDiff(v, w, path+"/"+k)
+			}
+		}
+		for k := range y {
+			if _, has := x[k]; !has {
+				out += path + "/" + k + ": only in v1beta1\n"
+			}
+		}
+		return out
+	default:
+		if !reflect.DeepEqual(a, b) {
+			return path + ": " + fmt.Sprint(a) + " against " + fmt.Sprint(b) + "\n"
+		}
+		return ""
+	}
+}
+
+// api/v1beta1 is written by hack/sync-v1beta1.sh from api/v1, not kept by hand.
+func TestV1beta1GoTypesAreMadeFromV1(t *testing.T) {
+	out := t.TempDir()
+	cmd := exec.Command("../../hack/sync-v1beta1.sh")
+	cmd.Env = append(os.Environ(), "OUT_DIR="+out)
+	if msg, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("hack/sync-v1beta1.sh: %v\n%s", err, msg)
+	}
+	made, _ := filepath.Glob(filepath.Join(out, "*.go"))
+	if len(made) == 0 {
+		t.Fatal("the script wrote nothing")
+	}
+	for _, f := range made {
+		want, _ := os.ReadFile(f)
+		got, err := os.ReadFile(filepath.Join("../../api/v1beta1", filepath.Base(f)))
+		if err != nil || string(got) != string(want) {
+			t.Errorf("api/v1beta1/%s is not what hack/sync-v1beta1.sh makes from api/v1: run make sync-v1beta1", filepath.Base(f))
 		}
 	}
 }

@@ -34,7 +34,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1beta1
+    name: v1
     schema:
       openAPIV3Schema:
         description: |-
@@ -766,5 +766,758 @@ spec:
         type: object
     served: true
     storage: true
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - jsonPath: .spec.mode
+      name: Mode
+      type: string
+    - jsonPath: .status.applicationCount
+      name: Applications
+      type: integer
+    - jsonPath: .status.openProposals
+      name: Open
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    deprecated: true
+    deprecationWarning: backflow.io/v1beta1 is deprecated, use backflow.io/v1 (the
+      schema is the same). It is served until 2.0.
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          BackflowPolicy decides which Argo CD Applications are watched for drift
+          and how that drift is proposed back to Git. Deleting a policy deletes its DriftProposals (they
+          are owned by it); a merge request that is open on the Git host stays open and is no longer
+          tracked.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              BackflowPolicySpec selects Argo CD Applications whose drift is captured
+              and decides how that drift flows back to Git.
+            properties:
+              applications:
+                description: Applications this policy applies to.
+                properties:
+                  names:
+                    items:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: set
+                  selector:
+                    description: |-
+                      A label selector is a label query over a set of resources. The result of matchLabels and
+                      matchExpressions are ANDed. An empty label selector matches all objects. A null
+                      label selector matches no objects.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+                x-kubernetes-validations:
+                - message: set names, selector, or both
+                  rule: (has(self.names) && size(self.names) > 0) || has(self.selector)
+              argoCD:
+                default: {}
+                description: Where the Argo CD Applications are and how to reach the
+                  Argo CD API.
+                properties:
+                  namespace:
+                    default: argocd
+                    description: |-
+                      Namespace where Argo CD Applications live.
+                      "argocd" for upstream Argo CD, "openshift-gitops" for OpenShift GitOps.
+                    maxLength: 63
+                    type: string
+                  server:
+                    description: |-
+                      Argo CD API connection used to read managed resources for drift detection.
+                      When unset, the connection the installer gave the operator (its flags
+                      --argocd-server, --argocd-token-secret-* and --argocd-ca-file; the chart
+                      values argocd.*) is used, and status.argoCD says so. Drift detection is
+                      skipped while neither exists. A policy can only name Secrets of its own
+                      namespace; it cannot point the operator at a Secret elsewhere. A server of its own must
+                      be in the allowlist the installer set (argocd.allowedServers); otherwise the policy is
+                      not Ready (ServerNotAllowed) and no request is made.
+                    properties:
+                      caSecretRef:
+                        description: Secret key, in this namespace, holding a PEM
+                          CA bundle used to verify the Argo CD server.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipTLSVerify:
+                        default: false
+                        description: Skip verification of the Argo CD server certificate.
+                        type: boolean
+                      tokenSecretRef:
+                        description: Secret key, in this namespace, holding an Argo
+                          CD API token with read access to applications.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      url:
+                        default: https://argocd-server.argocd.svc
+                        description: |-
+                          Base URL of the Argo CD API server. Override it when the operator runs
+                          outside the cluster, e.g. https://localhost:8080 behind a port-forward.
+                        maxLength: 2048
+                        pattern: ^https?://[^\s/]+(/\S*)?$
+                        type: string
+                    required:
+                    - tokenSecretRef
+                    type: object
+                type: object
+              batchWindow:
+                default: 30s
+                description: |-
+                  A drift becomes a proposal only after it has stayed the same, at the
+                  same synced revision, for this long and across at least two
+                  observations. A drift that disappears within the window is never
+                  proposed, and several quick edits to the same resource give one
+                  proposal for the final state. An explicit 0s waits for the second
+                  observation only. With the actor webhook on, a drift is also held for the time the
+                  webhook needs to write its records (at most 5s); the larger counts.
+                format: duration
+                maxLength: 32
+                type: string
+                x-kubernetes-validations:
+                - message: batchWindow must be between 0s and 24h
+                  rule: duration(self) >= duration('0s') && duration(self) <= duration('24h')
+              exclude:
+                description: |-
+                  Resource kinds never captured. Evaluated after Include.
+                  Secrets are excluded unless Include names the Secret kind literally.
+                items:
+                  description: KindSelector matches resources by API group and kind.
+                  properties:
+                    group:
+                      description: API group; empty for the core group, "*" for any
+                        group.
+                      maxLength: 253
+                      type: string
+                    kind:
+                      description: Kind, or "*" for any kind.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
+              git:
+                default: {}
+                description: |-
+                  Where and how Backflow writes to Git: the branches, and for a merge request its labels
+                  and reviewers.
+                properties:
+                  branchPrefix:
+                    default: backflow/
+                    description: Prefix for branches Backflow creates.
+                    maxLength: 64
+                    type: string
+                  mergeRequest:
+                    default: {}
+                    description: Settings of the merge requests. Used when Mode is
+                      MergeRequest.
+                    properties:
+                      assignActor:
+                        default: true
+                        description: |-
+                          Assign the Kubernetes user who made the change, when they map to an SCM account.
+                          It is a pointer so that false can be set: the default is true.
+                        type: boolean
+                      labels:
+                        description: Labels to put on the merge request.
+                        items:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: set
+                      reviewers:
+                        description: Usernames to assign as reviewers.
+                        items:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
+                  targetBranch:
+                    description: Target branch. Defaults to the Application's targetRevision
+                      when it is a branch.
+                    maxLength: 255
+                    type: string
+                type: object
+              helm:
+                description: Helm-specific behaviour.
+                properties:
+                  allowApplicationOverride:
+                    default: false
+                    description: |-
+                      When no mapping is found, propose the change as an override in the
+                      Application's spec.source.helm.valuesObject instead of leaving it unmapped.
+                    type: boolean
+                  allowCollateralChanges:
+                    description: |-
+                      Changes beyond the drifted fields that an edit of a value file may also
+                      make, for a Helm edit that is otherwise proven right by rendering. By
+                      default none: an edit is accepted only when it changes exactly the
+                      drifted fields. A chart often derives more than one field from one value
+                      (the image tag also goes into a version label), and without this the
+                      proposal stays unmapped, with the nearest edit in its message.
+
+                      Labels allows changes to metadata.labels and spec.template.metadata.labels
+                      of any rendered resource, Annotations the same for annotations. Selectors
+                      are never allowed (spec.selector, matchLabels, matchExpressions, a
+                      Service's spec.selector), nor a change to a drifted field that does not
+                      end at its live value. The changes that were accepted are listed in the
+                      merge request.
+                    items:
+                      description: HelmCollateralKind names a kind of change beyond
+                        the drifted fields.
+                      enum:
+                      - Labels
+                      - Annotations
+                      type: string
+                    maxItems: 2
+                    type: array
+                    x-kubernetes-list-type: set
+                  allowValueOverrides:
+                    default: true
+                    description: |-
+                      When the value a drifted field had in Git comes only from the chart's
+                      own defaults (the chart's values.yaml, or that of a dependency under its
+                      name or alias, or global.*), propose adding that key, with the live
+                      value, to the Application's last value file, which wins over the
+                      defaults. Existing lines of the value files are edited first; an
+                      override is only tried when none of those verifies, and it is verified
+                      by rendering like any other edit. Keys under a list in the defaults are
+                      not overridden. Set it to false to leave such proposals Unmapped.
+                      Defaults to true.
+                    type: boolean
+                  mappingMode:
+                    default: Auto
+                    description: HelmMappingMode controls how rendered fields are
+                      traced back to values.
+                    enum:
+                    - Auto
+                    - ExplicitOnly
+                    type: string
+                  mappings:
+                    description: Explicit field-to-value mappings. Take precedence
+                      over automatic mapping.
+                    items:
+                      description: HelmFieldMapping ties a field of a rendered resource
+                        to a values key.
+                      properties:
+                        fieldPointer:
+                          description: JSON pointer in the rendered resource, e.g.
+                            /spec/replicas.
+                          maxLength: 1024
+                          pattern: ^/
+                          type: string
+                        group:
+                          description: API group; empty for the core group, "*" for
+                            any group.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind, or "*" for any kind.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          maxLength: 253
+                          type: string
+                        valuesPath:
+                          description: Dotted path in values, e.g. api.replicaCount.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                      required:
+                      - fieldPointer
+                      - kind
+                      - valuesPath
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  targetValuesFile:
+                    description: |-
+                      Which values file receives an override of a chart default (see
+                      allowValueOverrides) when the Application uses several. It must be one of the
+                      Application's value files, as a repository path, relative to the chart
+                      directory, or as the Application writes it; otherwise such a change stays
+                      Unmapped and says so. Defaults to the last file in
+                      spec.source.helm.valueFiles.
+                    maxLength: 512
+                    type: string
+                type: object
+              ignoreFields:
+                description: |-
+                  Fields to ignore when computing drift, in addition to built-in noise
+                  (status, managedFields, resourceVersion, platform-injected fields).
+                items:
+                  description: IgnoreRule removes fields from drift comparison.
+                  properties:
+                    group:
+                      description: API group; empty for the core group, "*" for any
+                        group.
+                      maxLength: 253
+                      type: string
+                    jsonPointers:
+                      description: JSON pointers to ignore, e.g. /spec/replicas.
+                      items:
+                        maxLength: 1024
+                        pattern: ^/
+                        type: string
+                      maxItems: 32
+                      minItems: 1
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    kind:
+                      description: Kind, or "*" for any kind.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    name:
+                      description: Restrict to a resource name. Empty matches every
+                        name.
+                      maxLength: 253
+                      type: string
+                  required:
+                  - jsonPointers
+                  - kind
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
+              include:
+                description: Resource kinds to capture. Empty means every kind the
+                  Application manages.
+                items:
+                  description: KindSelector matches resources by API group and kind.
+                  properties:
+                    group:
+                      description: API group; empty for the core group, "*" for any
+                        group.
+                      maxLength: 253
+                      type: string
+                    kind:
+                      description: Kind, or "*" for any kind.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-type: atomic
+              kustomize:
+                description: Kustomize-specific behaviour.
+                properties:
+                  allowBaseEdits:
+                    default: false
+                    description: |-
+                      Allow edits to files outside the Application's path: a base or a
+                      component that other Applications may use too. A change there reaches
+                      every Application that includes the file, so the merge request names them.
+                      By default only files inside the Application's path are edited.
+                    type: boolean
+                  allowNewPatches:
+                    default: true
+                    description: |-
+                      As a last resort, when no existing file can take the change, add a
+                      strategic merge patch with only the drifted fields to the Application's
+                      overlay (backflow-patches/<kind>-<name>.yaml) and list it under patches
+                      in the overlay's kustomization.
+                    type: boolean
+                type: object
+              mapping:
+                description: |-
+                  How drifted fields are traced back to Git, for Directory, Helm and
+                  Kustomize sources alike.
+                properties:
+                  allowPartial:
+                    default: false
+                    description: |-
+                      Propose the fields that can be mapped when others of the same resource
+                      cannot. By default any field that cannot be traced back to Git makes the
+                      whole proposal Unmapped, and the fields that could have been mapped are
+                      lost with it. With this on, the proposal maps the verified fields only and
+                      lists the others in status.mapping.unmapped (Mapped=True, reason
+                      PartiallyMapped); the merge request says that it is partial and lists what
+                      it leaves out. Those fields stay different from Git after the merge and are
+                      reported as a new proposal. A proposal that maps no field is still
+                      Unmapped.
+                    type: boolean
+                  scratchBranches:
+                    default: Auto
+                    description: |-
+                      Whether verification may push scratch branches to the repository that
+                      holds the value files of a multi-source Application. Such an Application
+                      is rendered by Argo CD from commits, so each candidate edit is committed to
+                      a temporary branch (backflow/scratch/...), rendered by its commit SHA and
+                      deleted again; no branch of the source of truth is touched. Auto: allowed
+                      for MergeRequest and DirectCommit, not for ReportOnly, whose mapping never
+                      writes to Git. Always: allowed in every mode. Never: not allowed. When it is
+                      not allowed, a proposal that needs scratch branches is Unmapped with reason
+                      ScratchBranchesDisabled.
+                    enum:
+                    - Auto
+                    - Always
+                    - Never
+                    type: string
+                type: object
+              mode:
+                default: MergeRequest
+                description: What to do with detected drift.
+                enum:
+                - MergeRequest
+                - DirectCommit
+                - ReportOnly
+                type: string
+              retention:
+                default: {}
+                description: How long Backflow keeps what is finished.
+                properties:
+                  finishedProposals:
+                    default: 336h
+                    description: |-
+                      A DriftProposal that is Merged, Rejected, Reverted, Superseded or Failed is deleted this long
+                      after it finished. Proposals that are open, or Unmapped, are never deleted. 0s keeps
+                      finished proposals for ever. Deleting a proposal does not touch its merge request.
+                    format: duration
+                    maxLength: 32
+                    type: string
+                    x-kubernetes-validations:
+                    - message: finishedProposals must be between 0s and 8760h
+                      rule: duration(self) >= duration('0s') && duration(self) <=
+                        duration('8760h')
+                type: object
+            required:
+            - applications
+            type: object
+          status:
+            description: BackflowPolicyStatus summarises what the policy currently
+              covers.
+            properties:
+              applicationCount:
+                description: How many Applications the policy covers.
+                format: int32
+                type: integer
+              applications:
+                description: |-
+                  Details of the matched Applications, at most 100. The policy covers all of them even when
+                  the list is cut: see applicationCount.
+                items:
+                  description: ApplicationSummary is what Backflow knows about a matched
+                    Argo CD Application.
+                  properties:
+                    managedResources:
+                      description: Number of resources the Application manages.
+                      format: int32
+                      type: integer
+                    name:
+                      maxLength: 253
+                      type: string
+                    sources:
+                      description: Every source of the Application, in order. One
+                        entry for an Application with one source.
+                      items:
+                        description: SourceSummary describes one source of an Application.
+                        properties:
+                          chart:
+                            description: Chart name, for a source that comes from
+                              a Helm repository or a registry.
+                            maxLength: 253
+                            type: string
+                          path:
+                            description: Path inside a Git repository.
+                            maxLength: 1024
+                            type: string
+                          position:
+                            description: |-
+                              Position of the source in spec.sources, starting at 1 like Argo CD's
+                              sourcePositions.
+                            format: int32
+                            type: integer
+                          ref:
+                            description: Name of a ref source, referenced as $name/...
+                              in value files.
+                            maxLength: 253
+                            type: string
+                          repoURL:
+                            description: |-
+                              Repository the source comes from: a Git repository, a Helm repository or
+                              an OCI registry. Credentials in it are redacted.
+                            maxLength: 2048
+                            type: string
+                          revision:
+                            description: |-
+                              Revision Argo CD resolved and compares against: a commit SHA, or the chart
+                              version (status.sync.revisions at this position).
+                            maxLength: 255
+                            type: string
+                          scmConnectionName:
+                            description: |-
+                              ScmConnection, in the policy's namespace, used for this repository. Empty for a repository
+                              that is not a Git repository, and when none matches.
+                            maxLength: 253
+                            type: string
+                          syncedRevision:
+                            description: Revision of the last sync (status.operationState.syncResult.revisions).
+                            maxLength: 255
+                            type: string
+                          targetRevision:
+                            description: Branch, tag, chart version or range the source
+                              tracks.
+                            maxLength: 255
+                            type: string
+                          type:
+                            description: How Argo CD renders the source. Empty for
+                              a ref source, which is only referenced.
+                            enum:
+                            - Directory
+                            - Kustomize
+                            - Helm
+                            - Plugin
+                            type: string
+                        required:
+                        - position
+                        - repoURL
+                        type: object
+                      maxItems: 16
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    untrackedReason:
+                      description: Why Backflow does not track the Application, or
+                        empty when it does.
+                      enum:
+                      - CredentialsInRepoURL
+                      type: string
+                  required:
+                  - managedResources
+                  - name
+                  type: object
+                maxItems: 100
+                type: array
+                x-kubernetes-list-type: atomic
+              applicationsTruncated:
+                description: True when applications lists fewer Applications than
+                  applicationCount.
+                type: boolean
+              argoCD:
+                description: Which Argo CD connection the policy uses. Unset while
+                  there is none.
+                properties:
+                  hiddenApplications:
+                    description: |-
+                      How many Applications the spec selects that the policy may not see, by reason. Only
+                      counts are shown, never a name, repository, path or project.
+                    items:
+                      description: HiddenApplications is a number of selected Applications
+                        that are hidden for a reason.
+                      properties:
+                        count:
+                          format: int32
+                          type: integer
+                        reason:
+                          description: HiddenReason says why a selected Application
+                            is not visible to the policy.
+                          enum:
+                          - ProjectNotAllowed
+                          - NotVisibleToToken
+                          - VisibilityUnknown
+                          type: string
+                      required:
+                      - count
+                      - reason
+                      type: object
+                    maxItems: 3
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - reason
+                    x-kubernetes-list-type: map
+                  source:
+                    description: Policy (spec.argoCD.server) or OperatorDefault.
+                    enum:
+                    - Policy
+                    - OperatorDefault
+                    type: string
+                  url:
+                    description: The Argo CD API server it talks to. Never a token.
+                    type: string
+                required:
+                - source
+                - url
+                type: object
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: The generation of the spec that the conditions describe.
+                format: int64
+                type: integer
+              openProposals:
+                description: DriftProposals not yet merged, rejected or reverted.
+                format: int32
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: false
     subresources:
       status: {}
