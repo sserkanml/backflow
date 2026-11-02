@@ -106,7 +106,8 @@ var _ = Describe("ScratchSweeper", func() {
 	It("sweeps the repositories of Applications beyond the first 100 of a policy, which status.applications does not list", func() {
 		// 102 Applications, in name order: sweep-app, sweep-bulk-000 ... sweep-bulk-100, and one more after them all.
 		bulk := []any{map[string]any{"repoURL": "https://git.test/a/values.git", "targetRevision": "main", "ref": "values"}}
-		names := []string{"sweep-app"}
+		names := make([]string, 0, 103)
+		names = append(names, "sweep-app")
 		for i := range 101 {
 			name := fmt.Sprintf("sweep-bulk-%03d", i)
 			createApp(name, bulk)
@@ -117,7 +118,9 @@ var _ = Describe("ScratchSweeper", func() {
 		names = append(names, "sweep-zzz-last")
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		// More than 100 Applications cannot be named, so the policy selects them by label.
-		policy.Spec.Applications = backflowv1beta1.ApplicationSelector{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"sweep-test": "yes"}}}
+		policy.Spec.Applications = backflowv1beta1.ApplicationSelector{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"sweep-test": "yes"}},
+		}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 
 		// What the policy controller writes: a status that stops at 100.
