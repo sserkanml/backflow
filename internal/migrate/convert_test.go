@@ -36,7 +36,10 @@ func norm(t *testing.T, v any) any {
 
 func same(t *testing.T, what string, got any, want string) {
 	t.Helper()
-	w := parse(t, want)
+	var w any
+	if err := yaml.Unmarshal([]byte(want), &w); err != nil {
+		t.Fatalf("bad test YAML: %v\n%s", err, want)
+	}
 	if !reflect.DeepEqual(norm(t, got), norm(t, w)) {
 		g, _ := yaml.Marshal(got)
 		t.Errorf("%s\n--- got\n%s--- want\n%s", what, g, want)
@@ -440,7 +443,7 @@ func TestConvertBackflowPolicyInvalid(t *testing.T) {
 }
 
 func TestConvertRefusesWhatItDoesNotConvert(t *testing.T) {
-	for _, k := range []ObjectKind{KindProposal, KindChangeRecord, "Other"} {
+	for _, k := range []ObjectKind{KindChangeRecord, "Other"} {
 		if _, err := Convert(k, obj{}); err == nil {
 			t.Errorf("%s was converted", k)
 		}

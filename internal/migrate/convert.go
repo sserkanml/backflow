@@ -454,13 +454,15 @@ const (
 	KindChangeRecord  ObjectKind = "ChangeRecord"
 )
 
-// Convert converts an object of the kind, or says that the kind is not converted by this version of the tool.
+// Convert converts an object of the kind, or says that the kind is not converted (a ChangeRecord is dropped).
 func Convert(kind ObjectKind, old obj) (*Result, error) {
 	switch kind {
 	case KindScmConnection:
 		return ConvertScmConnection(old)
 	case KindPolicy:
 		return ConvertBackflowPolicy(old)
+	case KindProposal:
+		return ConvertDriftProposal(old, "")
 	}
 	return nil, errors.New("the " + strings.ToLower(string(kind)) + " is not converted by this version of the tool")
 }

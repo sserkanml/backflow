@@ -97,6 +97,15 @@ func upgraded(t *testing.T, servedAlpha bool, before ...func(*cluster)) *cluster
 	return cl
 }
 
+func (cl *cluster) proposal(name string) *backflowv1beta1.DriftProposal {
+	cl.t.Helper()
+	p := &backflowv1beta1.DriftProposal{}
+	if err := cl.typ.Get(context.Background(), types.NamespacedName{Namespace: "team-a", Name: name}, p); err != nil {
+		cl.t.Fatal(err)
+	}
+	return p
+}
+
 func (cl *cluster) policy(name string) *backflowv1beta1.BackflowPolicy {
 	cl.t.Helper()
 	p := &backflowv1beta1.BackflowPolicy{}
@@ -125,32 +134,29 @@ func TestMigrateConvertsInPlace(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	t.Log("\n" + out)
-	if rep.Converted != 3 || rep.Failed != 0 || rep.Skipped != 0 {
-		t.Errorf("converted %d, failed %d, skipped %d, want 3, 0, 0", rep.Converted, rep.Failed, rep.Skipped)
+	if rep.Converted != 4 || rep.Failed != 0 || rep.Skipped != 0 {
+		t.Errorf("converted %d, failed %d, skipped %d, want 4, 0, 0", rep.Converted, rep.Failed, rep.Skipped)
 	}
 
 	checkConvertedPolicy(t, cl, uid)
 	checkConvertedConnection(t, cl)
 
 	// The CRDs.
-	for _, name := range []string{"scmconnections.backflow.io", "backflowpolicies.backflow.io"} {
+	for name := range crdFiles {
 		if got := cl.storedVersions(name); len(got) != 1 || got[0] != NewVersion {
 			t.Errorf("%s: storedVersions = %v, want [v1beta1]", name, got)
 		}
 	}
-	if got := cl.storedVersions("driftproposals.backflow.io"); len(got) != 2 {
-		t.Errorf("driftproposals: storedVersions = %v: a v1alpha1 proposal is left, so it must not change", got)
-	}
-	if len(rep.Finalized) != 2 {
+	if len(rep.Finalized) != 3 {
 		t.Errorf("finalized = %v", rep.Finalized)
 	}
 
-	// The proposal is backed up and untouched; the ChangeRecords are gone and not backed up.
-	dp := cl.raw(OldVersion, "DriftProposal", "dp-1")
-	if _, ok := dp["spec"].(obj)["policyName"]; !ok {
-		t.Errorf("the proposal was changed: %v", dp["spec"])
+	// The proposal is created again as v1beta1; the ChangeRecords are gone and not backed up.
+	dp := cl.proposal("dp-1")
+	if dp.Spec.PolicyRef.Name != "p1" || dp.Status.Phase != backflowv1beta1.PhaseProposed || dp.Annotations[AnnotationMigrated] != OldVersion {
+		t.Errorf("the proposal = %+v / %+v / %v", dp.Spec, dp.Status, dp.Annotations)
 	}
-	if len(rep.Proposals) != 1 || rep.Proposals[0] != "team-a/dp-1" || !strings.Contains(out, "team-a/dp-1 (phase Proposed)") {
+	if len(rep.Proposals) != 0 || !strings.Contains(out, "team-a/dp-1 (phase Proposed): migrated") {
 		t.Errorf("proposals = %v\n%s", rep.Proposals, out)
 	}
 	if rep.ChangeRecordsDropped != 2 || cl.exists(OldVersion, "ChangeRecord", "backflow-system", "cr-1") || !strings.Contains(out, "not backed up") {
@@ -173,8 +179,8 @@ func TestMigrateConvertsInPlace(t *testing.T) {
 	if !strings.Contains(string(data), "argoCDNamespace: openshift-gitops") || !strings.Contains(string(data), "mergeRequest:") {
 		t.Errorf("the backup of a policy is not what was in the cluster before:\n%s", data)
 	}
-	if code := Summarize(os.Stderr, Options{}, rep); code != ExitIncomplete {
-		t.Errorf("exit code %d, want %d while a proposal is left", code, ExitIncomplete)
+	if code := Summarize(os.Stderr, Options{}, rep); code != ExitDone {
+		t.Errorf("exit code %d, want %d", code, ExitDone)
 	}
 }
 
@@ -236,6 +242,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	scmRV := cl.raw(NewVersion, "ScmConnection", "gitlab")["metadata"].(obj)["resourceVersion"]
 	crdBefore := cl.storedVersions("backflowpolicies.backflow.io")
+	dpRV := cl.raw(NewVersion, "DriftProposal", "dp-1")["metadata"].(obj)["resourceVersion"]
 
 	rep, out, err := cl.run(Options{BackupDir: dir})
 	if err != nil {
@@ -255,8 +262,11 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if got := cl.storedVersions("backflowpolicies.backflow.io"); len(got) != len(crdBefore) {
 		t.Errorf("storedVersions = %v", got)
 	}
-	if rep.KeptBackups != 1 || len(rep.Proposals) != 1 {
-		t.Errorf("the proposal is backed up already and still listed: kept %d, proposals %v", rep.KeptBackups, rep.Proposals)
+	if got := cl.raw(NewVersion, "DriftProposal", "dp-1")["metadata"].(obj)["resourceVersion"]; got != dpRV {
+		t.Errorf("the proposal was written again (%v -> %v)", dpRV, got)
+	}
+	if rep.KeptBackups != 0 || len(rep.Proposals) != 0 {
+		t.Errorf("nothing is left, so nothing is backed up or listed: kept %d, proposals %v", rep.KeptBackups, rep.Proposals)
 	}
 }
 
@@ -271,7 +281,7 @@ func TestMigrateAfterAPartialFailureDoesOnlyWhatIsLeft(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if rep.Converted != 3 || rep.Failed != 1 || !strings.Contains(out, "BackflowPolicy team-a/p3: FAILED") || !strings.Contains(out, "should match") {
+	if rep.Converted != 4 || rep.Failed != 1 || !strings.Contains(out, "BackflowPolicy team-a/p3: FAILED") || !strings.Contains(out, "should match") {
 		t.Errorf("converted %d failed %d\n%s", rep.Converted, rep.Failed, out)
 	}
 	if got := cl.storedVersions("backflowpolicies.backflow.io"); len(got) != 2 {
@@ -378,12 +388,13 @@ func TestMigrateDryRunChangesNothing(t *testing.T) {
 	t.Log("\n" + out)
 	for _, want := range []string{"DRY RUN", "BackflowPolicy team-a/p1: would be converted", "spec.argoCDNamespace -> spec.argoCD.namespace",
 		"spec.mergeRequest.assignActor (false)", "ScmConnection team-a/gitlab: would be converted", "2 object(s) would be deleted", "would be set to [v1beta1]",
-		"would be backed up", "DriftProposal team-a/dp-1"} {
+		"would be backed up", "DriftProposal team-a/dp-1 (phase Proposed): would be deleted and created again as v1beta1",
+		"spec.policyName -> spec.policyRef.name"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the dry run does not say %q", want)
 		}
 	}
-	if rep.Planned != 3 || rep.Converted != 0 {
+	if rep.Planned != 4 || rep.Converted != 0 {
 		t.Errorf("planned %d, converted %d", rep.Planned, rep.Converted)
 	}
 	for n, rv := range rvs {
@@ -400,8 +411,11 @@ func TestMigrateDryRunChangesNothing(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Error("a dry run wrote a backup")
 	}
-	if Summarize(os.Stderr, Options{DryRun: true}, rep) != ExitIncomplete {
+	if Summarize(os.Stderr, Options{DryRun: true}, rep) != ExitDone {
 		t.Error("exit code")
+	}
+	if !cl.exists(OldVersion, "DriftProposal", "team-a", "dp-1") || cl.raw(OldVersion, "DriftProposal", "dp-1")["metadata"].(obj)["annotations"] != nil {
+		t.Error("a dry run changed the proposal")
 	}
 	// A dry run needs no backup directory.
 	if _, _, err := cl.run(Options{DryRun: true}); err != nil {
@@ -495,7 +509,7 @@ func TestMigrateServesV1alpha1OnlyWhenAskedAndPutsItBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if rep.Converted != 3 {
+	if rep.Converted != 4 {
 		t.Errorf("converted %d\n%s", rep.Converted, out)
 	}
 	for name := range crdFiles {
@@ -526,7 +540,7 @@ func TestMigrateNeedsTheCRDsOfThisRelease(t *testing.T) {
 func TestMigrateWithNothingToDo(t *testing.T) {
 	cl := upgraded(t, true)
 	dir := filepath.Join(t.TempDir(), "backup")
-	// Finish the proposals' CRD by hand: the proposal is deleted, so nothing is left for it.
+	// The proposal is deleted, so nothing is left for it.
 	if err := cl.c.Delete(context.Background(), asUnstructured(cl.raw(OldVersion, "DriftProposal", "dp-1"))); err != nil {
 		t.Fatal(err)
 	}

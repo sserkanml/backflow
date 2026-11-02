@@ -29,6 +29,11 @@ type Options struct {
 	// ServeV1alpha1 lets the tool serve v1alpha1 of a CRD while it reads and rewrites the objects, and put it back after.
 	// Without it the CRDs must serve v1alpha1 already.
 	ServeV1alpha1 bool
+	// SkipFinished drops the proposals that are finished (Merged, Rejected, Reverted, Superseded, Failed) instead of
+	// migrating them: they are backed up and deleted. They are history; the merge requests are not touched.
+	SkipFinished bool
+	// DeleteTimeout is how long to wait for a deleted proposal to be gone; default two minutes.
+	DeleteTimeout time.Duration
 	// OperatorNamespace limits the search for a running operator to a namespace; empty looks everywhere.
 	OperatorNamespace string
 	// Out receives the report.
@@ -39,14 +44,17 @@ type Options struct {
 
 // Report is what a run did.
 type Report struct {
-	// Converted, Skipped (already v1beta1) and Failed count the objects of ScmConnection and BackflowPolicy. Planned is
-	// what a dry run would convert.
+	// Converted, Skipped (already v1beta1) and Failed count the objects of the three kinds. Planned is what a dry run
+	// would convert.
 	Converted, Planned, Skipped, Failed int
 	// BackedUp and KeptBackups count the files written and the ones of an earlier run that were left.
 	BackedUp, KeptBackups int
 	// ChangeRecordsDropped counts the ChangeRecords deleted.
 	ChangeRecordsDropped int
-	// Proposals are the v1alpha1 DriftProposals that remain, as namespace/name.
+	// ProposalsDropped counts the finished proposals deleted by --skip-finished; ProposalsRestored the ones created again
+	// from their backup because an earlier run was interrupted after the delete.
+	ProposalsDropped, ProposalsRestored int
+	// Proposals are the DriftProposals that are not migrated, as namespace/name. Each is also counted in Failed.
 	Proposals []string
 	// Finalized are the CRDs whose storedVersions was set to [v1beta1].
 	Finalized []string
@@ -147,9 +155,16 @@ func Run(ctx context.Context, c client.Client, opt Options) (*Report, error) {
 			}
 		}
 	}
+	if !r.migrateProposals(ctx, needsMigration(infos, KindProposal), found[KindProposal]) {
+		failed[KindProposal] = true
+	}
 	r.dropChangeRecords(ctx)
-	r.listProposals(found[KindProposal])
 	return r.rep, r.finalize(ctx, infos, failed)
+}
+
+// needsMigration reports whether objects of the kind may still be stored as v1alpha1.
+func needsMigration(infos []*crdInfo, kind ObjectKind) bool {
+	return slices.ContainsFunc(infos, func(i *crdInfo) bool { return i.needs && i.kind == string(kind) })
 }
 
 // migrated reports whether an object is already in v1beta1: the tool marked it, or it was made through v1beta1.
@@ -385,7 +400,20 @@ func (r *runner) convert(ctx context.Context, kind ObjectKind, old obj) bool {
 // kubectl replace. The object itself must not be edited through v1alpha1: once the CRD stores v1beta1, a write through
 // v1alpha1 is pruned to the v1beta1 schema and drops the fields v1beta1 does not have.
 func (r *runner) keepRejected(kind ObjectKind, meta, object obj) {
-	path := Backup{Dir: filepath.Join(r.opt.BackupDir, RejectedDir)}.Path(kind, asString(meta["namespace"]), asString(meta["name"]))
+	path, ok := r.writeRejected(kind, asString(meta["namespace"]), asString(meta["name"]), object)
+	if !ok {
+		return
+	}
+	r.printf("    correct %s and apply it with: kubectl replace -f %s", path, path)
+	r.printf("    do NOT edit the object itself: a write through %s is pruned to the %s schema and loses its %s fields", OldVersion, NewVersion, OldVersion)
+}
+
+// writeRejected writes a v1beta1 object the API server refused, to <backup-dir>/rejected/<Kind>/<ns>.<name>.v1beta1.yaml.
+func (r *runner) writeRejected(kind ObjectKind, namespace, name string, object obj) (string, bool) {
+	if r.opt.DryRun {
+		return "", false
+	}
+	path := Backup{Dir: filepath.Join(r.opt.BackupDir, RejectedDir)}.Path(kind, namespace, name)
 	path = strings.TrimSuffix(path, ".yaml") + "." + NewVersion + ".yaml"
 	data, err := yaml.Marshal(object)
 	if err == nil {
@@ -395,11 +423,10 @@ func (r *runner) keepRejected(kind ObjectKind, meta, object obj) {
 		err = os.WriteFile(path, data, 0o600)
 	}
 	if err != nil {
-		r.printf("    the %s object could not be written for you to correct: %v", NewVersion, err)
-		return
+		r.printf("    the %s object could not be written for you to look at: %v", NewVersion, err)
+		return "", false
 	}
-	r.printf("    correct %s and apply it with: kubectl replace -f %s", path, path)
-	r.printf("    do NOT edit the object itself: a write through %s is pruned to the %s schema and loses its %s fields", OldVersion, NewVersion, OldVersion)
+	return path, true
 }
 
 // dropChangeRecords deletes the ChangeRecords of the old CRD. They are an in-memory buffer written down, kept for two
@@ -435,21 +462,6 @@ func (r *runner) dropChangeRecords(ctx context.Context) {
 		"delete the CRD %s afterwards: kubectl delete crd %s", r.rep.ChangeRecordsDropped, changeRecordCRD, changeRecordCRD)
 }
 
-// listProposals names the DriftProposals that are still v1alpha1. They are not migrated by this version.
-func (r *runner) listProposals(items []obj) {
-	for _, o := range items {
-		r.rep.Proposals = append(r.rep.Proposals, nameOf(o))
-	}
-	if len(items) == 0 {
-		return
-	}
-	r.printf("DriftProposal: %d object(s) are still %s; they are backed up and not changed (the migration of proposals is not part of this version):", len(items), OldVersion)
-	for _, o := range items {
-		st, _ := asMap(o["status"])
-		r.printf("    %s (phase %s)", nameOf(o), asString(st["phase"]))
-	}
-}
-
 // finalize sets storedVersions of a CRD to [v1beta1] when every object of it is rewritten.
 func (r *runner) finalize(ctx context.Context, infos []*crdInfo, failed map[ObjectKind]bool) error {
 	var errs []error
@@ -461,9 +473,6 @@ func (r *runner) finalize(ctx context.Context, infos []*crdInfo, failed map[Obje
 		switch {
 		case failed[kind]:
 			r.printf("%s: storedVersions of %s is not changed: some objects could not be converted", kind, info.name)
-			continue
-		case kind == KindProposal && len(r.rep.Proposals) > 0:
-			r.printf("%s: storedVersions of %s is not changed: %d object(s) are still %s", kind, info.name, len(r.rep.Proposals), OldVersion)
 			continue
 		}
 		if r.opt.DryRun {

@@ -266,3 +266,7 @@ func podTemplate() corev1.PodTemplateSpec {
 		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "m", Image: "example.invalid/m:1"}}},
 	}
 }
+
+func (cl *cluster) gvkOf(version, kind string) schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: Group, Version: version, Kind: kind}
+}
