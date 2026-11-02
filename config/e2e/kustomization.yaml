@@ -1,0 +1,12 @@
+# The deployment the kubebuilder e2e tests use (make deploy DEPLOY_DIR=config/e2e): config/default, and the one Argo CD server
+# that the samples name, which the operator would otherwise refuse (a policy may name only servers that the installer allows,
+# --argocd-allowed-servers). Another server stays refused: the test checks that too.
+resources:
+- ../default
+patches:
+- target:
+    kind: Deployment
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --argocd-allowed-servers=https://argocd-server.argocd.svc

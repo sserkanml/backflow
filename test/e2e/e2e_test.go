@@ -70,7 +70,7 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage), "DEPLOY_DIR=config/e2e")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
@@ -83,7 +83,7 @@ var _ = Describe("Manager", Ordered, func() {
 		_, _ = utils.Run(cmd)
 
 		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
+		cmd = exec.Command("make", "undeploy", "DEPLOY_DIR=config/e2e")
 		_, _ = utils.Run(cmd)
 
 		By("uninstalling CRDs")
@@ -319,6 +319,32 @@ var _ = Describe("Manager", Ordered, func() {
 				status, reason := readyOf("backflowpolicy", "test-apps")
 				g.Expect(status).To(Equal("False"))
 				g.Expect(reason).To(Equal("ArgoCDNotFound"))
+			}).Should(Succeed())
+
+			By("expecting a policy that names another Argo CD server to be refused before any request: ServerNotAllowed")
+			other := `apiVersion: backflow.io/v1beta1
+kind: BackflowPolicy
+metadata: {name: other-server, namespace: ` + namespace + `}
+spec:
+  argoCD:
+    namespace: argocd
+    server:
+      url: https://argocd.other.example.invalid
+      tokenSecretRef: {name: argocd-token, key: token}
+  applications: {names: [web]}
+`
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(other)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the policy that names another server")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "backflowpolicy", "other-server", "-n", namespace,
+					"--ignore-not-found"))
+			})
+			Eventually(func(g Gomega) {
+				status, reason := readyOf("backflowpolicy", "other-server")
+				g.Expect(status).To(Equal("False"))
+				g.Expect(reason).To(Equal("ServerNotAllowed"))
 			}).Should(Succeed())
 
 			By("expecting the operator to be running, and not to have crashed")
