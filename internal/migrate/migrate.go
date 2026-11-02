@@ -26,9 +26,11 @@ type Options struct {
 	BackupDir string
 	// DryRun prints what would change and changes nothing.
 	DryRun bool
-	// ServeV1alpha1 lets the tool serve v1alpha1 of a CRD while it reads and rewrites the objects, and put it back after.
-	// Without it the CRDs must serve v1alpha1 already.
-	ServeV1alpha1 bool
+	// StopOperator scales the operator's Deployment to zero (remembering the replicas in an annotation) when there is
+	// something to migrate, and waits until it is gone. Without it the tool refuses to run while the operator runs.
+	StopOperator bool
+	// RestoreOperator only scales the operator back to the replicas StopOperator remembered, and does nothing else.
+	RestoreOperator bool
 	// SkipFinished drops the proposals that are finished (Merged, Rejected, Reverted, Superseded, Failed) instead of
 	// migrating them: they are backed up and deleted. They are history; the merge requests are not touched.
 	SkipFinished bool
@@ -36,6 +38,8 @@ type Options struct {
 	DeleteTimeout time.Duration
 	// OperatorNamespace limits the search for a running operator to a namespace; empty looks everywhere.
 	OperatorNamespace string
+	// OperatorSelector is the label selector of the operator's Deployment; default app.kubernetes.io/name=backflow.
+	OperatorSelector string
 	// Out receives the report.
 	Out io.Writer
 	// Now defaults to time.Now.
@@ -68,8 +72,11 @@ type crdInfo struct {
 	crd        *apiextensionsv1.CustomResourceDefinition
 	// needs: objects of this CRD may still be stored as v1alpha1.
 	needs bool
-	// served: the tool put v1alpha1 in service and has to take it out.
-	served bool
+	// ready: the CRD serves and stores v1beta1 (the objects can be written as v1beta1).
+	ready bool
+	// touched: the tool changed the versions of the CRD, and has to settle them: drop v1alpha1 when every object is
+	// migrated, take it out of service when not.
+	touched bool
 }
 
 var kinds = []struct {
@@ -90,6 +97,8 @@ type runner struct {
 	c   client.Client
 	opt Options
 	rep *Report
+	// ready says, for a kind, whether the CRD serves v1beta1 (after the tool prepared it, when it did).
+	ready map[ObjectKind]bool
 }
 
 func (r *runner) printf(format string, args ...any) {
@@ -105,23 +114,37 @@ func Run(ctx context.Context, c client.Client, opt Options) (*Report, error) {
 	if opt.Now == nil {
 		opt.Now = time.Now
 	}
-	if !opt.DryRun && opt.BackupDir == "" {
+	if !opt.DryRun && !opt.RestoreOperator && opt.BackupDir == "" {
 		return nil, errors.New("--backup-dir is required: a backup of every object is written before anything is changed")
 	}
-	r := &runner{c: c, opt: opt, rep: &Report{}}
+	r := &runner{c: c, opt: opt, rep: &Report{}, ready: map[ObjectKind]bool{}}
 	if opt.DryRun {
 		r.printf("DRY RUN: nothing is changed and no file is written")
 	}
-	if err := CheckOperatorStopped(ctx, c, opt.OperatorNamespace, opt.Now()); err != nil {
-		return nil, err
+	if opt.RestoreOperator {
+		return r.rep, r.restoreOperator(ctx)
 	}
 
 	infos, err := r.inspectCRDs(ctx)
 	if err != nil {
 		return r.rep, err
 	}
-	defer r.unserve(context.WithoutCancel(ctx), infos)
-	if err := r.serve(ctx, infos); err != nil {
+	if !anyNeeds(infos) {
+		// Nothing is stored as v1alpha1: there is nothing to race, and the operator may be the new one, running.
+		r.printf("nothing to migrate")
+		return r.rep, nil
+	}
+	if opt.StopOperator && !opt.DryRun {
+		if err := r.stopOperator(ctx); err != nil {
+			return r.rep, err
+		}
+	}
+	if err := checkOperatorStopped(ctx, c, opt.OperatorNamespace, opt.OperatorSelector, opt.Now()); err != nil {
+		return nil, err
+	}
+	defer r.settle(context.WithoutCancel(ctx), infos)
+	// The objects are read and backed up before the CRDs get v1beta1: the CRDs of the last release serve v1alpha1 already.
+	if err := r.makeReadable(ctx, infos); err != nil {
 		return r.rep, err
 	}
 
@@ -146,6 +169,9 @@ func Run(ctx context.Context, c client.Client, opt Options) (*Report, error) {
 	if err := r.backup(found); err != nil {
 		return r.rep, err
 	}
+	if err := r.prepare(ctx, infos); err != nil {
+		return r.rep, err
+	}
 
 	failed := map[ObjectKind]bool{}
 	for _, k := range []ObjectKind{KindScmConnection, KindPolicy} {
@@ -159,7 +185,11 @@ func Run(ctx context.Context, c client.Client, opt Options) (*Report, error) {
 		failed[KindProposal] = true
 	}
 	r.dropChangeRecords(ctx)
-	return r.rep, r.finalize(ctx, infos, failed)
+	err = r.finalize(ctx, infos, failed)
+	if err == nil {
+		err = r.ensureInternalCRD(ctx, infos)
+	}
+	return r.rep, err
 }
 
 // needsMigration reports whether objects of the kind may still be stored as v1alpha1.
@@ -201,18 +231,18 @@ func (r *runner) inspectCRDs(ctx context.Context) ([]*crdInfo, error) {
 			return nil, fmt.Errorf("cannot read the CRD %s: %w", k.crd, err)
 		}
 		info := &crdInfo{name: k.crd, kind: string(k.kind), crd: crd, needs: slices.Contains(crd.Status.StoredVersions, OldVersion)}
+		info.ready = servesAndStores(crd, NewVersion)
+		r.ready[k.kind] = info.ready || !info.needs
 		if !info.needs {
 			r.printf("%s: no object is stored as %s (storedVersions %v), nothing to do", k.kind, OldVersion, crd.Status.StoredVersions)
-			infos = append(infos, info)
-			continue
-		}
-		if !servesAndStores(crd, NewVersion) {
-			return nil, fmt.Errorf("the CRD %s does not serve and store %s: apply the CRDs of this release first "+
-				"(helm show crds ... | kubectl apply --server-side --force-conflicts -f -)", k.crd, NewVersion)
 		}
 		infos = append(infos, info)
 	}
 	return infos, nil
+}
+
+func anyNeeds(infos []*crdInfo) bool {
+	return slices.ContainsFunc(infos, func(i *crdInfo) bool { return i.needs })
 }
 
 func servesAndStores(crd *apiextensionsv1.CustomResourceDefinition, version string) bool {
@@ -224,67 +254,172 @@ func servesAndStores(crd *apiextensionsv1.CustomResourceDefinition, version stri
 	return false
 }
 
-func versionServed(crd *apiextensionsv1.CustomResourceDefinition, version string) (index int, served bool) {
+// versionServed finds the v1alpha1 version of a CRD: its index (-1 if there is none) and whether it is served.
+func versionServed(crd *apiextensionsv1.CustomResourceDefinition) (index int, served bool) {
 	for i, v := range crd.Spec.Versions {
-		if v.Name == version {
+		if v.Name == OldVersion {
 			return i, v.Served
 		}
 	}
 	return -1, false
 }
 
-// serve puts v1alpha1 in service for the CRDs that need it, when the tool may.
-func (r *runner) serve(ctx context.Context, infos []*crdInfo) error {
+// makeReadable makes sure the objects stored as v1alpha1 can be listed through v1alpha1. The CRDs of the last release serve
+// it; a CRD that an earlier run left with v1alpha1 out of service gets it back. A dry run changes nothing.
+func (r *runner) makeReadable(ctx context.Context, infos []*crdInfo) error {
 	for _, info := range infos {
 		if !info.needs {
 			continue
 		}
-		i, served := versionServed(info.crd, OldVersion)
-		if served {
-			continue
-		}
+		i, served := versionServed(info.crd)
 		switch {
 		case i < 0:
 			return fmt.Errorf("the CRD %s has no %s: the objects stored in it cannot be read, so they cannot be migrated", info.name, OldVersion)
+		case served:
+			continue
 		case r.opt.DryRun:
-			return fmt.Errorf("the CRD %s does not serve %s, so its objects cannot be listed: serve it "+
-				"(kubectl patch crd %s --type=json -p '[{\"op\":\"replace\",\"path\":\"/spec/versions/%d/served\",\"value\":true}]') "+
-				"or run without --dry-run and with --serve-v1alpha1", info.name, OldVersion, info.name, i)
-		case !r.opt.ServeV1alpha1:
-			return fmt.Errorf("the CRD %s does not serve %s: serve it "+
-				"(kubectl patch crd %s --type=json -p '[{\"op\":\"replace\",\"path\":\"/spec/versions/%d/served\",\"value\":true}]') "+
-				"and put it back afterwards, or run again with --serve-v1alpha1, which does both", info.name, OldVersion, info.name, i)
+			return fmt.Errorf("the CRD %s does not serve %s, so its objects cannot be listed: a real run serves it for its length", info.name, OldVersion)
 		}
 		info.crd.Spec.Versions[i].Served = true
 		if err := r.c.Update(ctx, info.crd); err != nil {
 			return fmt.Errorf("cannot serve %s in %s: %w", OldVersion, info.name, err)
 		}
-		info.served = true
-		r.printf("%s: %s is served while the objects are migrated, and is put back after", info.kind, OldVersion)
+		info.touched = true
+		r.printf("%s: %s is served while the objects are migrated", info.kind, OldVersion)
+		if err := r.waitServed(ctx, info.kind, OldVersion); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// unserve takes v1alpha1 out of service again where the tool put it in.
-func (r *runner) unserve(ctx context.Context, infos []*crdInfo) {
+// prepare makes the CRDs of the kinds that have v1alpha1 objects able to hold both versions: v1beta1 is served and stored
+// (so what the tool writes is stored as v1beta1) and v1alpha1 is served (so what is stored as v1alpha1 can be read). The
+// CRDs of the last release have v1alpha1 only: the tool adds v1beta1, from the CRD of this release, to what is installed,
+// and keeps the v1alpha1 version as it is. It runs after the backup. A dry run only says what it would do.
+func (r *runner) prepare(ctx context.Context, infos []*crdInfo) error {
 	for _, info := range infos {
-		if !info.served {
+		if !info.needs {
+			continue
+		}
+		if r.opt.DryRun {
+			if !info.ready {
+				r.printf("%s: the CRD would get %s (served and stored) next to %s", info.kind, NewVersion, OldVersion)
+			}
+			continue
+		}
+		if !info.ready {
+			if err := r.addNewVersion(ctx, info); err != nil {
+				return err
+			}
+		}
+		info.touched = true
+		r.ready[ObjectKind(info.kind)] = true
+		if err := r.waitServed(ctx, info.kind, NewVersion); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addNewVersion replaces the CRD with the one of this release (v1beta1, served and stored) plus the v1alpha1 version that
+// is installed, served and no longer stored.
+func (r *runner) addNewVersion(ctx context.Context, info *crdInfo) error {
+	target, err := releaseCRD(info.name)
+	if err != nil {
+		return err
+	}
+	var legacy *apiextensionsv1.CustomResourceDefinitionVersion
+	for i := range info.crd.Spec.Versions {
+		if info.crd.Spec.Versions[i].Name == OldVersion {
+			legacy = info.crd.Spec.Versions[i].DeepCopy()
+		}
+	}
+	legacy.Served, legacy.Storage = true, false
+	target.Spec.Versions = slices.DeleteFunc(target.Spec.Versions, func(v apiextensionsv1.CustomResourceDefinitionVersion) bool {
+		return v.Name == OldVersion
+	})
+	target.Spec.Versions = append(target.Spec.Versions, *legacy)
+	target.ObjectMeta = info.crd.ObjectMeta
+	if err := r.c.Update(ctx, target); err != nil {
+		return fmt.Errorf("cannot add %s to the CRD %s: %w", NewVersion, info.name, err)
+	}
+	info.crd = target
+	info.touched = true
+	r.printf("%s: the CRD now serves and stores %s, and serves %s while the objects are migrated", info.kind, NewVersion, OldVersion)
+	return nil
+}
+
+// waitServed waits for the endpoint of a version to answer after a CRD was changed.
+func (r *runner) waitServed(ctx context.Context, kind, version string) error {
+	_, err := r.listVersion(ctx, version, kind)
+	return err
+}
+
+// settle puts the CRDs in their final state: a CRD with no object left as v1alpha1 loses the v1alpha1 version, and a CRD
+// that still has some takes it out of service, so that nothing writes through it (a write through v1alpha1, once v1beta1 is
+// stored, is pruned to the v1beta1 schema and loses fields).
+func (r *runner) settle(ctx context.Context, infos []*crdInfo) {
+	if r.opt.DryRun {
+		return
+	}
+	for _, info := range infos {
+		if !info.touched {
 			continue
 		}
 		crd := &apiextensionsv1.CustomResourceDefinition{}
 		if err := r.c.Get(ctx, types.NamespacedName{Name: info.name}, crd); err != nil {
-			r.printf("WARNING: cannot read %s to stop serving %s: %v", info.name, OldVersion, err)
+			r.printf("WARNING: cannot read %s to settle its versions: %v", info.name, err)
 			continue
 		}
-		if i, _ := versionServed(crd, OldVersion); i >= 0 {
+		done := len(crd.Status.StoredVersions) == 1 && crd.Status.StoredVersions[0] == NewVersion
+		if done {
+			crd.Spec.Versions = slices.DeleteFunc(crd.Spec.Versions, func(v apiextensionsv1.CustomResourceDefinitionVersion) bool {
+				return v.Name == OldVersion
+			})
+		} else if i, _ := versionServed(crd); i >= 0 {
 			crd.Spec.Versions[i].Served = false
 		}
 		if err := r.c.Update(ctx, crd); err != nil {
-			r.printf("WARNING: %s is still served in %s; put it back with kubectl patch crd %s: %v", OldVersion, info.name, info.name, err)
+			r.printf("WARNING: %s still serves %s; put it back with kubectl patch crd %s: %v", info.name, OldVersion, info.name, err)
 			continue
 		}
-		r.printf("%s: %s is not served any more", info.kind, OldVersion)
+		if done {
+			r.printf("%s: %s is removed from the CRD", info.kind, OldVersion)
+		} else {
+			r.printf("%s: %s is not served any more", info.kind, OldVersion)
+		}
 	}
+}
+
+// ensureInternalCRD creates the CRD of the ChangeRecords of this release (internal.backflow.io) when it is not there: the
+// operator needs it, and the CRDs of the last release do not have it.
+func (r *runner) ensureInternalCRD(ctx context.Context, infos []*crdInfo) error {
+	if !anyNeeds(infos) {
+		return nil
+	}
+	const name = "changerecords.internal.backflow.io"
+	err := r.c.Get(ctx, types.NamespacedName{Name: name}, &apiextensionsv1.CustomResourceDefinition{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("cannot read the CRD %s: %w", name, err)
+	}
+	if r.opt.DryRun {
+		r.printf("the CRD %s would be created", name)
+		return nil
+	}
+	crd, err := releaseCRD(name)
+	if err != nil {
+		return err
+	}
+	crd.ResourceVersion = ""
+	if err := r.c.Create(ctx, crd); err != nil {
+		return fmt.Errorf("cannot create the CRD %s: %w", name, err)
+	}
+	r.printf("the CRD %s was created", name)
+	return nil
 }
 
 func (r *runner) gvk(version, kind string) schema.GroupVersionKind {
@@ -294,10 +429,15 @@ func (r *runner) gvk(version, kind string) schema.GroupVersionKind {
 // list lists the objects of a kind through the v1alpha1 endpoint, waiting for the endpoint to be there after a CRD
 // was changed.
 func (r *runner) list(ctx context.Context, kind string) ([]obj, error) {
+	return r.listVersion(ctx, OldVersion, kind)
+}
+
+// listVersion lists the objects of a kind through the endpoint of a version.
+func (r *runner) listVersion(ctx context.Context, version, kind string) ([]obj, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		list := &unstructured.UnstructuredList{}
-		list.SetGroupVersionKind(r.gvk(OldVersion, kind+"List"))
+		list.SetGroupVersionKind(r.gvk(version, kind+"List"))
 		err := r.c.List(ctx, list)
 		if err == nil {
 			out := make([]obj, 0, len(list.Items))

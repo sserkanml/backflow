@@ -23,6 +23,9 @@ const (
 
 const usage = `usage: backflow migrate --backup-dir DIR [flags]
 
+Run it with the CRDs of the last release still installed, before the upgrade: it adds v1beta1 to them, rewrites the objects,
+and removes v1alpha1 from them when every object is done. (The other subcommand, convert-files, rewrites manifests in Git.)
+
 Rewrites the ScmConnections, BackflowPolicies and DriftProposals of backflow.io/v1alpha1 to v1beta1, and sets storedVersions of
 their CRDs to [v1beta1] when every object is done. Run it with the operator stopped. It refuses to run while the operator is running.
 
@@ -37,17 +40,26 @@ flags:
 
 // Main runs the subcommand and returns the exit code.
 func Main(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "convert-files" {
+		return ConvertFilesMain(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "restore" {
+		return restoreMain(args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var opt Options
 	var kubeconfig, kubeContext string
 	fs.StringVar(&opt.BackupDir, "backup-dir", "", "the directory for the backup; required unless --dry-run")
 	fs.BoolVar(&opt.DryRun, "dry-run", false, "print what would change, change nothing")
-	fs.BoolVar(&opt.ServeV1alpha1, "serve-v1alpha1", false,
-		"serve v1alpha1 in the CRDs while the objects are migrated and take it out again; without it the CRDs must serve v1alpha1")
+	fs.BoolVar(&opt.StopOperator, "stop-operator", false,
+		"scale the operator's Deployment to zero when there is something to migrate, and wait until it is gone")
+	fs.BoolVar(&opt.RestoreOperator, "restore-operator", false,
+		"only scale the operator back to the replicas --stop-operator remembered")
 	fs.BoolVar(&opt.SkipFinished, "skip-finished", false,
 		"do not migrate DriftProposals that are finished (Merged, Rejected, Reverted, Superseded, Failed): back them up and delete them")
 	fs.StringVar(&opt.OperatorNamespace, "operator-namespace", "", "where to look for the running operator; default: every namespace")
+	fs.StringVar(&opt.OperatorSelector, "operator-selector", "", "the label selector of the operator's Deployment; default app.kubernetes.io/name=backflow")
 	fs.StringVar(&kubeconfig, "kubeconfig", "", "path to a kubeconfig; default: KUBECONFIG, then ~/.kube/config")
 	fs.StringVar(&kubeContext, "context", "", "the kubeconfig context to use")
 	fs.Usage = func() {
@@ -92,6 +104,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "ERROR: %v\n", err)
 		return ExitError
 	}
+	if opt.RestoreOperator {
+		return ExitDone
+	}
 	return Summarize(stdout, opt, rep)
 }
 
@@ -112,6 +127,61 @@ func Summarize(out io.Writer, opt Options, rep *Report) int {
 	_, _ = fmt.Fprintln(out)
 	if rep.Failed > 0 {
 		_, _ = fmt.Fprintln(out, "NOT FINISHED: fix the objects named above (the backup has their v1alpha1 form) and run again; what is done is not done twice")
+		return ExitError
+	}
+	return ExitDone
+}
+
+// connect builds the client the subcommands use.
+func connect(kubeconfig, kubeContext string) (client.Client, error) {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	rules.ExplicitPath = kubeconfig
+	cfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: kubeContext}).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("cannot load the kubeconfig: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{appsv1.AddToScheme, coordinationv1.AddToScheme, apiextensionsv1.AddToScheme} {
+		if err := add(scheme); err != nil {
+			return nil, err
+		}
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("cannot connect to the cluster: %w", err)
+	}
+	return c, nil
+}
+
+// restoreMain runs `migrate restore`.
+func restoreMain(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("backup-dir", "", "the directory of the backup `migrate` wrote")
+	kubeconfig := fs.String("kubeconfig", "", "path to a kubeconfig; default: KUBECONFIG, then ~/.kube/config")
+	kubeContext := fs.String("context", "", "the kubeconfig context to use")
+	fs.Usage = func() {
+		_, _ = fmt.Fprint(stderr, restoreUsage)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ExitDone
+		}
+		return ExitError
+	}
+	c, err := connect(*kubeconfig, *kubeContext)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "ERROR: %v\n", err)
+		return ExitError
+	}
+	rep, err := Restore(context.Background(), c, *dir, stdout)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "ERROR: %v\n", err)
+		return ExitError
+	}
+	_, _ = fmt.Fprintf(stdout, "\nsummary: %d restored, %d existed, %d failed\n", rep.Created, rep.Existing, rep.Failed)
+	if rep.Failed > 0 {
 		return ExitError
 	}
 	return ExitDone

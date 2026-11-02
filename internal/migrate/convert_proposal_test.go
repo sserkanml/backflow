@@ -75,7 +75,7 @@ status:
 
 func convertProposal(t *testing.T, text, policyUID string) *Result {
 	t.Helper()
-	res, err := ConvertDriftProposal(parse(t, text), policyUID)
+	res, err := ConvertDriftProposal(parse(t, text), policyUID, nil)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -85,7 +85,7 @@ func convertProposal(t *testing.T, text, policyUID string) *Result {
 func TestConvertDriftProposalSpec(t *testing.T) {
 	in := parse(t, dpOpen)
 	before := norm(t, in)
-	res, err := ConvertDriftProposal(in, "new-uid")
+	res, err := ConvertDriftProposal(in, "new-uid", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ status:
 
 func mustFailProposal(t *testing.T, text, contains string) {
 	t.Helper()
-	_, err := ConvertDriftProposal(parse(t, text), "")
+	_, err := ConvertDriftProposal(parse(t, text), "", nil)
 	if err == nil {
 		t.Fatalf("an invalid proposal was converted:\n%s", text)
 	}
@@ -564,5 +564,74 @@ func TestFinishedPhase(t *testing.T) {
 		if FinishedPhase(phase) != want {
 			t.Errorf("FinishedPhase(%q) = %v", phase, !want)
 		}
+	}
+}
+
+const dpHelmSingle = `
+metadata: {name: dp, namespace: team-a, creationTimestamp: "2026-11-01T08:00:00Z"}
+spec:
+  policyName: p1
+  application: {name: web, namespace: argocd}
+  resource: {version: v1, kind: ConfigMap, name: cfg}
+  source: {repoURL: "https://charts.example.com", revision: "1.2.3", targetRevision: "1.*", path: web, type: Helm}
+  changes: [{path: /data/a, op: Add, live: '"2"'}]
+  detectedAt: "2026-11-01T08:00:00Z"
+`
+
+func TestConvertDriftProposalChartNameFromTheApplication(t *testing.T) {
+	app := func(spec string) obj { return parse(t, "metadata: {name: web, namespace: argocd}\nspec: "+spec) }
+	first := func(res *Result) obj { return res.Object[keySpec].(obj)["sources"].([]any)[0].(obj) }
+	tests := []struct {
+		name      string
+		app       obj
+		wantChart string // "" means the chart stays in path
+		wantNote  string
+	}{
+		{"the Application has that chart there (multi-source)",
+			app(`{sources: [{repoURL: "https://charts.example.com", chart: web, targetRevision: "1.*"}, {repoURL: "https://g/v.git", ref: values}]}`),
+			"web", "path -> chart \"web\""},
+		{"the Application has that chart there (single source)",
+			app(`{source: {repoURL: "https://charts.example.com/", chart: web}}`), "web", "path -> chart"},
+		{"the Application has no chart there: a path in Git",
+			app(`{sources: [{repoURL: "https://charts.example.com", path: web}]}`), "", "a path in a Git repository"},
+		{"the Application has another chart now",
+			app(`{sources: [{repoURL: "https://charts.example.com", chart: other}]}`), "", "has the chart \"other\" now"},
+		{"the repository at that position is another",
+			app(`{sources: [{repoURL: "https://elsewhere.example.com", chart: web}]}`), "", "another repository"},
+		{"the Application has no source at that position",
+			app(`{sources: []}`), "", "another repository"},
+		{"the Application is not there", nil, "", "the Application was not found"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := ConvertDriftProposal(parse(t, dpHelmSingle), "", tt.app)
+			if err != nil {
+				t.Fatal(err)
+			}
+			src := first(res)
+			if tt.wantChart != "" {
+				if src["chart"] != tt.wantChart || src[keyPath] != nil {
+					t.Errorf("source = %v: want the chart %q and no path", src, tt.wantChart)
+				}
+			} else if src["chart"] != nil || src[keyPath] != "web" {
+				t.Errorf("source = %v: want the chart name to stay in path", src)
+			}
+			if !hasNote(res, tt.wantNote) {
+				t.Errorf("no note %q in %v", tt.wantNote, res.Notes)
+			}
+		})
+	}
+}
+
+func TestConvertDriftProposalChartLookupIsOnlyForASingleHelmSource(t *testing.T) {
+	// A Directory source keeps its path and says nothing about charts.
+	text := strings.Replace(dpHelmSingle, "type: Helm", "type: Directory", 1)
+	res, err := ConvertDriftProposal(parse(t, text), "", parse(t, "spec: {source: {repoURL: \"https://charts.example.com\", chart: web}}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := res.Object[keySpec].(obj)["sources"].([]any)[0].(obj)
+	if src[keyPath] != "web" || src["chart"] != nil || hasNote(res, "chart") {
+		t.Errorf("source = %v, notes %v", src, res.Notes)
 	}
 }

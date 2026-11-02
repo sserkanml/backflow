@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
@@ -110,7 +113,7 @@ func openProposal() string {
 // withProposals is a cluster of the last release with one proposal of each end, owned by p1 as the operator makes them.
 func withProposals(t *testing.T) *cluster {
 	t.Helper()
-	return upgraded(t, true, func(cl *cluster) {
+	return upgraded(t, func(cl *cluster) {
 		for _, text := range []string{openProposal(), dpMergedYAML, dpUnmappedYAML, dpSupersededYAML, dpRejectedYAML} {
 			cl.createOld("DriftProposal", text)
 		}
@@ -203,7 +206,7 @@ func (cl *cluster) runWith(f *fault, opt Options) (*Report, string, error) {
 
 func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 	cl := withProposals(t)
-	policyUID := cl.raw(NewVersion, "BackflowPolicy", "p1")["metadata"].(obj)["uid"]
+	policyUID := cl.raw(OldVersion, "BackflowPolicy", "p1")["metadata"].(obj)["uid"]
 	dir := filepath.Join(t.TempDir(), "backup")
 	rep, out, err := cl.run(Options{BackupDir: dir})
 	if err != nil {
@@ -385,7 +388,7 @@ func TestMigrateDriftProposalsACrashBetweenDeleteAndCreate(t *testing.T) {
 	if rep.Failed != 1 || len(rep.Proposals) != 1 || rep.Proposals[0] != "team-a/dp-open" || !strings.Contains(out, "deleted and not created") {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
-	if cl.exists(OldVersion, "DriftProposal", "team-a", "dp-open") {
+	if cl.exists(NewVersion, "DriftProposal", "team-a", "dp-open") {
 		t.Fatal("the proposal is still there: the crash is not between the delete and the create")
 	}
 	if got := cl.storedVersions("driftproposals.backflow.io"); len(got) != 2 {
@@ -464,7 +467,7 @@ func TestMigrateDriftProposalsACrashBeforeTheDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if rep.Failed != 1 || !cl.exists(OldVersion, "DriftProposal", "team-a", "dp-rejected") {
+	if rep.Failed != 1 || !cl.exists(NewVersion, "DriftProposal", "team-a", "dp-rejected") {
 		t.Fatalf("the proposal must be untouched: %+v\n%s", rep, out)
 	}
 	rep, out, err = cl.run(Options{BackupDir: dir})
@@ -478,7 +481,7 @@ func TestMigrateDriftProposalsWhatTheAPIServerWouldRefuseIsNotDeleted(t *testing
 	long := "/" + strings.Repeat("a", 1100)
 	text := strings.Replace(dpMergedYAML, "name: dp-merged", "name: dp-long", 1)
 	text = strings.Replace(text, "path: /data/a", "path: "+long, 1)
-	cl := upgraded(t, true, func(cl *cluster) {
+	cl := upgraded(t, func(cl *cluster) {
 		cl.createOld("DriftProposal", text)
 	})
 	dir := filepath.Join(t.TempDir(), "backup")
@@ -489,7 +492,7 @@ func TestMigrateDriftProposalsWhatTheAPIServerWouldRefuseIsNotDeleted(t *testing
 	if rep.Failed != 1 || !strings.Contains(out, "would refuse") || !strings.Contains(out, "so the proposal is not deleted") {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
-	if !cl.exists(OldVersion, "DriftProposal", "team-a", "dp-long") {
+	if !cl.exists(NewVersion, "DriftProposal", "team-a", "dp-long") {
 		t.Fatal("the proposal was deleted although the new one would be refused")
 	}
 	if _, err := os.Stat(filepath.Join(dir, RejectedDir, "DriftProposal", "team-a.dp-long.v1beta1.yaml")); err != nil {
@@ -515,7 +518,7 @@ func TestMigrateDriftProposalsSkipFinished(t *testing.T) {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
 	for _, n := range []string{"dp-merged", "dp-superseded", "dp-rejected"} {
-		if cl.exists(OldVersion, "DriftProposal", "team-a", n) {
+		if cl.exists(NewVersion, "DriftProposal", "team-a", n) {
 			t.Errorf("%s was not dropped", n)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "DriftProposal", "team-a."+n+".yaml")); err != nil {
@@ -563,7 +566,7 @@ func TestMigrateDriftProposalsADroppedOneDeletedByACrashIsNotBroughtBack(t *test
 
 func TestMigrateDriftProposalsWaitsForTheOldOneToGo(t *testing.T) {
 	// A finalizer keeps the deleted proposal. The tool does not create over it, and says why.
-	cl := upgraded(t, true, func(cl *cluster) {
+	cl := upgraded(t, func(cl *cluster) {
 		cl.createOld("DriftProposal", strings.Replace(dpRejectedYAML, "annotations:", "finalizers: [example.com/hold]\n  annotations:", 1))
 		cl.ownProposals("p1")
 	})
@@ -575,6 +578,7 @@ func TestMigrateDriftProposalsWaitsForTheOldOneToGo(t *testing.T) {
 	if rep.Failed != 1 || !strings.Contains(out, "finalizers [example.com/hold]") || !strings.Contains(out, "still there after") {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
+	cl.setServed(true) // the proposal that is held is read and patched through v1alpha1
 	if meta := cl.raw(OldVersion, "DriftProposal", "dp-rejected")["metadata"].(obj); meta["deletionTimestamp"] == nil || migrated(cl.raw(OldVersion, "DriftProposal", "dp-rejected")) {
 		t.Fatalf("created over an object that is still there: %v", meta)
 	}
@@ -598,12 +602,12 @@ func TestMigrateDriftProposalsWaitsForTheOldOneToGo(t *testing.T) {
 func TestMigrateDriftProposalsWithoutItsPolicyIsNotTouched(t *testing.T) {
 	text := strings.Replace(dpMergedYAML, "policyName: p1", "policyName: gone", 1)
 	text = strings.Replace(text, "name: dp-merged", "name: dp-orphan", 1)
-	cl := upgraded(t, true, func(cl *cluster) { cl.createOld("DriftProposal", text) })
+	cl := upgraded(t, func(cl *cluster) { cl.createOld("DriftProposal", text) })
 	rep, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if rep.Failed != 1 || !strings.Contains(out, "its policy team-a/gone does not exist") || !cl.exists(OldVersion, "DriftProposal", "team-a", "dp-orphan") {
+	if rep.Failed != 1 || !strings.Contains(out, "its policy team-a/gone does not exist") || !cl.exists(NewVersion, "DriftProposal", "team-a", "dp-orphan") {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
 }
@@ -626,7 +630,7 @@ func TestMigrateDriftProposalsDryRunChangesNothingAndSaysWhatItWould(t *testing.
 	if rep.Failed != 0 {
 		t.Errorf("report %+v", rep)
 	}
-	if cl.raw(OldVersion, "DriftProposal", "dp-open")["metadata"].(obj)["resourceVersion"] != before || cl.proposalExists("dp-merged") != cl.exists(OldVersion, "DriftProposal", "team-a", "dp-merged") {
+	if cl.raw(OldVersion, "DriftProposal", "dp-open")["metadata"].(obj)["resourceVersion"] != before || !cl.exists(OldVersion, "DriftProposal", "team-a", "dp-merged") {
 		t.Error("a dry run changed a proposal")
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -634,13 +638,14 @@ func TestMigrateDriftProposalsDryRunChangesNothingAndSaysWhatItWould(t *testing.
 	}
 }
 
-func TestMigrateDriftProposalsDryRunNamesWhatTheServerWouldRefuse(t *testing.T) {
+func TestMigrateDriftProposalsDryRunBeforeV1beta1IsThereSaysItDoesNotCheck(t *testing.T) {
 	text := strings.Replace(dpMergedYAML, "name: dp-merged", "name: dp-long", 1)
 	text = strings.Replace(text, "path: /data/a", "path: /"+strings.Repeat("a", 1100), 1)
-	cl := upgraded(t, true, func(cl *cluster) { cl.createOld("DriftProposal", text) })
+	cl := upgraded(t, func(cl *cluster) { cl.createOld("DriftProposal", text) })
 	dir := filepath.Join(t.TempDir(), "backup")
 	_, out, err := cl.run(Options{BackupDir: dir, DryRun: true})
-	if err != nil || !strings.Contains(out, "DriftProposal team-a/dp-long: FAILED, the API server would refuse") {
+	// The CRD has no v1beta1 yet, so there is nothing to ask: the real run asks before it deletes anything.
+	if err != nil || strings.Contains(out, "FAILED") || !strings.Contains(out, "not checked against its schema here") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -648,19 +653,121 @@ func TestMigrateDriftProposalsDryRunNamesWhatTheServerWouldRefuse(t *testing.T) 
 	}
 }
 
-// The tool reads and creates objects through unstructured clients; this is what makes sure the typed client of the operator
-// reads the same object (dp-open has every kind of field).
-func TestMigratedProposalReadsThroughV1alpha1AsMigrated(t *testing.T) {
+func TestMigrateDriftProposalsReadsTheChartNameFromTheApplication(t *testing.T) {
+	helm := func(name, application string) string {
+		text := strings.Replace(dpMergedYAML, "name: dp-merged", "name: "+name, 1)
+		text = strings.Replace(text, "application: {name: a, namespace: argocd}", "application: {name: "+application+", namespace: argocd}", 1)
+		return strings.Replace(text, `source: {repoURL: "https://gitlab.example.com/x/y.git", revision: abc, type: Directory}`,
+			`source: {repoURL: "https://charts.example.com", revision: "1.2.3", path: web, type: Helm}`, 1)
+	}
+	cl := upgraded(t, func(cl *cluster) {
+		cl.createOld("DriftProposal", helm("dp-chart", "web"))
+		cl.createOld("DriftProposal", helm("dp-nochart", "gone"))
+		cl.ownProposals("p1")
+	})
+	data, err := os.ReadFile(filepath.Join("..", "controller", "testdata", "application-crd.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := yaml.Unmarshal(data, crd); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.c.Create(context.Background(), crd); err != nil {
+		t.Fatal(err)
+	}
+	cl.establish(crd.Name)
+	app := &unstructured.Unstructured{Object: parse(t, `
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: web, namespace: argocd}
+spec:
+  project: default
+  destination: {server: "https://kubernetes.default.svc", namespace: demo}
+  sources:
+    - {repoURL: "https://charts.example.com", chart: web, targetRevision: "1.*"}
+`)}
+	if err := cl.c.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "argocd"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.c.Create(context.Background(), app); err != nil {
+		t.Fatal(err)
+	}
+
+	rep, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")})
+	if err != nil || rep.Failed != 0 {
+		t.Fatalf("%v %+v\n%s", err, rep, out)
+	}
+	if src := cl.proposal("dp-chart").Spec.Sources[0]; src.Chart != "web" || src.Path != "" {
+		t.Errorf("the chart of the Application was not used: %+v", src)
+	}
+	if src := cl.proposal("dp-nochart").Spec.Sources[0]; src.Chart != "" || src.Path != "web" {
+		t.Errorf("without the Application the name stays in path: %+v", src)
+	}
+}
+
+func TestRestoreRollsBackToTheLastRelease(t *testing.T) {
 	cl := withProposals(t)
-	if _, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")}); err != nil {
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, out, err := cl.run(Options{BackupDir: dir}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(cl.gvkOf(OldVersion, "DriftProposal"))
-	if err := cl.c.Get(context.Background(), types.NamespacedName{Namespace: "team-a", Name: "dp-open"}, u); err != nil {
-		t.Skipf("v1alpha1 is not served after the run: %v", err)
+	// The rollback: the CRDs (and with them the objects) go, the CRDs of the last release come back, the backup is restored.
+	for name := range crdFiles {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		crd.Name = name
+		if err := cl.c.Delete(context.Background(), crd); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if !migrated(u.Object) {
-		t.Error("a migrated proposal does not read as migrated")
+	for name := range crdFiles {
+		deadline := time.Now().Add(30 * time.Second)
+		for cl.crdExists(name) && time.Now().Before(deadline) {
+			time.Sleep(200 * time.Millisecond)
+		}
+		if cl.crdExists(name) {
+			t.Fatalf("%s is not deleted", name)
+		}
+	}
+	for name := range crdFiles {
+		data, err := os.ReadFile(filepath.Join(lastRelease, crdFiles[name]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := yaml.Unmarshal(data, crd); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.c.Create(context.Background(), crd); err != nil {
+			t.Fatal(err)
+		}
+		cl.establish(name)
+	}
+	// The policies are recreated first, then the proposals that name them: p1 is not there for them to point at.
+	if _, err := Restore(context.Background(), cl.c, "", nil); err == nil {
+		t.Error("a restore without a directory")
+	}
+	var out strings.Builder
+	rep, err := Restore(context.Background(), cl.c, dir, &out)
+	if err != nil || rep.Failed != 0 || rep.Created != 9 {
+		t.Fatalf("%v %+v\n%s", err, rep, out.String())
+	}
+	policy := cl.raw(OldVersion, "BackflowPolicy", "p1")
+	if policy["spec"].(obj)["argoCDNamespace"] != "openshift-gitops" {
+		t.Errorf("the policy is not the old one: %v", policy["spec"])
+	}
+	open := cl.raw(OldVersion, "DriftProposal", "dp-open")
+	st := open["status"].(obj)
+	if st["phase"] != "Proposed" || st["mergeRequest"].(obj)["number"] != float64(7) && st["mergeRequest"].(obj)["number"] != int64(7) {
+		t.Errorf("the status of the proposal: %v", st)
+	}
+	refs := open["metadata"].(obj)["ownerReferences"].([]any)
+	if refs[0].(obj)["uid"] != policy["metadata"].(obj)["uid"] || refs[0].(obj)["apiVersion"] != oldAPIVersion {
+		t.Errorf("the owner reference is not the policy as it is now: %v (policy %v)", refs, policy["metadata"].(obj)["uid"])
+	}
+	// Doing it again leaves everything.
+	rep, err = Restore(context.Background(), cl.c, dir, &out)
+	if err != nil || rep.Created != 0 || rep.Existing != 9 {
+		t.Errorf("%v %+v", err, rep)
 	}
 }

@@ -63,7 +63,11 @@ func clip(m obj, path string, n *notes) obj {
 
 // ConvertDriftProposal converts a v1alpha1 DriftProposal. The result is the object to create (metadata and spec) and
 // the status to write to it after. policyUID, when not empty, is the uid of the policy that owns the proposal now.
-func ConvertDriftProposal(old obj, policyUID string) (*Result, error) {
+//
+// app is the Argo CD Application of the proposal (spec.application), or nil when it is not known. v1alpha1 stored the chart
+// name of a chart from a Helm repository in source.path; v1beta1 has a field for it, and the Application is what says which
+// of the two the value is.
+func ConvertDriftProposal(old obj, policyUID string, app obj) (*Result, error) {
 	n := &notes{}
 	spec, ok := asMap(old[keySpec])
 	if !ok {
@@ -75,7 +79,7 @@ func ConvertDriftProposal(old obj, policyUID string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, kept, err := proposalSpec(spec, phase, n)
+	out, kept, err := proposalSpec(spec, phase, app, n)
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +100,12 @@ var signalOf = []struct{ annotation, field string }{
 // not go over.
 func proposalMetadata(old obj, policyUID string, n *notes) (obj, error) {
 	meta, ok := asMap(old[keyMetadata])
-	if !ok || asString(meta[keyName]) == "" || asString(meta["namespace"]) == "" {
+	if !ok || asString(meta[keyName]) == "" || asString(meta[keyNamespace]) == "" {
 		return nil, bad("the object has no metadata.name or metadata.namespace")
 	}
-	out := obj{keyName: meta[keyName], "namespace": meta["namespace"]}
-	if labels, ok := asMap(meta["labels"]); ok && len(labels) > 0 {
-		out["labels"] = maps.Clone(labels)
+	out := obj{keyName: meta[keyName], keyNamespace: meta[keyNamespace]}
+	if labels, ok := asMap(meta[keyLabels]); ok && len(labels) > 0 {
+		out[keyLabels] = maps.Clone(labels)
 	}
 	ann := obj{}
 	if existing, ok := asMap(meta["annotations"]); ok {
@@ -147,7 +151,7 @@ func asListOr(v any) []any { l, _ := asList(v); return l }
 var actorKinds = map[string]string{"person": kindPerson, "controller": kindController, kindPerson: kindPerson, kindController: kindController}
 
 // proposalSpec converts the spec. It returns how many changes were kept.
-func proposalSpec(spec obj, phase string, n *notes) (obj, int, error) {
+func proposalSpec(spec obj, phase string, app obj, n *notes) (obj, int, error) {
 	out := obj{}
 	policy := asString(spec["policyName"])
 	if policy == "" {
@@ -163,7 +167,7 @@ func proposalSpec(spec obj, phase string, n *notes) (obj, int, error) {
 		out[f.to] = maps.Clone(m)
 		n.add("spec.%s -> spec.%s", f.from, f.to)
 	}
-	sources, err := proposalSources(spec, n)
+	sources, err := proposalSources(spec, app, n)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -198,7 +202,7 @@ func proposalSpec(spec obj, phase string, n *notes) (obj, int, error) {
 }
 
 // proposalSources makes the list of sources from source and sources: the first source was stored twice.
-func proposalSources(spec obj, n *notes) ([]any, error) {
+func proposalSources(spec, app obj, n *notes) ([]any, error) {
 	if list, ok := asList(spec["sources"]); ok && len(list) > 0 {
 		out := make([]any, 0, len(list))
 		for i, s := range list {
@@ -221,8 +225,58 @@ func proposalSources(spec obj, n *notes) ([]any, error) {
 			first[k] = v
 		}
 	}
-	n.add("spec.source -> spec.sources[0] (position 1, role Render); a chart of a Helm repository was stored in path and stays there")
+	n.add("spec.source -> spec.sources[0] (position 1, role Render)")
+	if asString(src["type"]) == sourceHelm && asString(src[keyPath]) != "" {
+		chartFromApplication(first, app, n)
+	}
 	return []any{first}, nil
+}
+
+// chartFromApplication decides whether the path of a Helm source is a chart name. v1alpha1 stored the chart of a chart from
+// a Helm repository in path, and a path in a Git repository there too; the Application says which: its source at that
+// position, with the same repository, has a chart or it has not. Without the Application, or when it has moved on, the
+// value stays where it was, and the note says so.
+func chartFromApplication(source obj, app obj, n *notes) {
+	path := asString(source[keyPath])
+	if app == nil {
+		n.add("spec.sources[0].path %q may be a chart name (v1alpha1 stored it there); the Application was not found, so it stays in path", path)
+		return
+	}
+	meta, _ := asMap(app[keyMetadata])
+	where := asString(meta[keyNamespace]) + "/" + asString(meta[keyName])
+	entry := applicationSource(app, int(source[keyPosition].(int64)))
+	if entry == nil || strings.TrimSuffix(asString(entry[keyRepoURL]), "/") != strings.TrimSuffix(asString(source[keyRepoURL]), "/") {
+		n.add("spec.sources[0].path %q stays in path: source %d of the Application %s is another repository", path, 1, where)
+		return
+	}
+	chart := asString(entry["chart"])
+	switch {
+	case chart == "":
+		n.add("spec.sources[0].path %q is a path in a Git repository (the Application %s has no chart there)", path, where)
+	case chart != path:
+		n.add("spec.sources[0].path %q stays in path: the Application %s has the chart %q now", path, where, chart)
+	default:
+		source["chart"] = chart
+		delete(source, keyPath)
+		n.add("spec.sources[0].path -> chart %q (the Application %s has that chart at spec.sources[0])", chart, where)
+	}
+}
+
+// applicationSource is the source of an Argo CD Application at a position, from 1: spec.sources, or spec.source.
+func applicationSource(app obj, position int) obj {
+	spec, _ := asMap(app[keySpec])
+	if list, ok := asList(spec["sources"]); ok && len(list) > 0 {
+		if position < 1 || position > len(list) {
+			return nil
+		}
+		m, _ := asMap(list[position-1])
+		return m
+	}
+	if position == 1 {
+		m, _ := asMap(spec["source"])
+		return m
+	}
+	return nil
 }
 
 // proposalActor splits actor into actor (who) and managers (which tool wrote the fields).
@@ -521,10 +575,10 @@ func applicationOption(app, spec obj, n *notes) obj {
 	if !found {
 		// No namespace was stored; the Application of the proposal is the best that is known, and it says so.
 		appRef, _ := asMap(spec["application"])
-		namespace, name = asString(appRef["namespace"]), ref
+		namespace, name = asString(appRef[keyNamespace]), ref
 		n.add("status.mapping.application %q has no namespace: the namespace of spec.application (%s) is used", ref, namespace)
 	}
-	out["applicationRef"] = obj{keyName: name, "namespace": namespace}
+	out["applicationRef"] = obj{keyName: name, keyNamespace: namespace}
 	clip(out, "status.mapping.applicationOption", n)
 	if parent, ok := asMap(out["parent"]); ok {
 		out["parent"] = clip(maps.Clone(parent), "status.mapping.applicationOption.parent", n)

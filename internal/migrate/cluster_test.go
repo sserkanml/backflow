@@ -3,6 +3,7 @@ package migrate
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -45,6 +46,9 @@ var crdFiles = map[string]string{
 	"driftproposals.backflow.io":   "backflow.io_driftproposals.yaml",
 }
 
+// lastRelease is the directory with the CRDs of the last release (chart 0.17.0), as `helm show crds` printed them.
+const lastRelease = "testdata/crds-0.17.0"
+
 func startCluster(t *testing.T) *cluster {
 	t.Helper()
 	logf.SetLogger(logr.Discard())
@@ -85,19 +89,6 @@ func startCluster(t *testing.T) *cluster {
 	return cl
 }
 
-func (cl *cluster) loadCRD(name string) *apiextensionsv1.CustomResourceDefinition {
-	cl.t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", crdFiles[name]))
-	if err != nil {
-		cl.t.Fatal(err)
-	}
-	crd := &apiextensionsv1.CustomResourceDefinition{}
-	if err := yaml.Unmarshal(data, crd); err != nil {
-		cl.t.Fatal(err)
-	}
-	return crd
-}
-
 func (cl *cluster) establish(name string) {
 	cl.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -115,76 +106,26 @@ func (cl *cluster) establish(name string) {
 	cl.t.Fatalf("the CRD %s was not established", name)
 }
 
-// installLastRelease installs the CRDs as the last release had them: v1alpha1 is the only version that is served and stored.
+// installLastRelease installs the CRDs of the last release: v1alpha1 is the only version, served and stored. The ChangeRecord
+// CRD of that release was in backflow.io.
 func (cl *cluster) installLastRelease() {
 	cl.t.Helper()
-	for name := range crdFiles {
-		crd := cl.loadCRD(name)
-		for i := range crd.Spec.Versions {
-			v := &crd.Spec.Versions[i]
-			v.Served, v.Storage = v.Name == OldVersion, v.Name == OldVersion
+	files := map[string]string{changeRecordCRD: "backflow.io_changerecords.yaml"}
+	maps.Copy(files, crdFiles)
+	for name := range files {
+		data, err := os.ReadFile(filepath.Join(lastRelease, files[name]))
+		if err != nil {
+			cl.t.Fatal(err)
+		}
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := yaml.Unmarshal(data, crd); err != nil {
+			cl.t.Fatal(err)
 		}
 		if err := cl.c.Create(context.Background(), crd); err != nil {
 			cl.t.Fatal(err)
 		}
 		cl.establish(name)
 	}
-	// The ChangeRecord CRD of the last release: backflow.io/v1alpha1, nothing else.
-	preserve := true
-	crd := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: changeRecordCRD},
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: Group, Scope: apiextensionsv1.NamespaceScoped,
-			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "ChangeRecord", ListKind: "ChangeRecordList", Plural: "changerecords", Singular: "changerecord"},
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
-				Name: OldVersion, Served: true, Storage: true,
-				Schema: &apiextensionsv1.CustomResourceValidation{OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-					Type: "object", XPreserveUnknownFields: &preserve,
-				}},
-			}},
-		},
-	}
-	if err := cl.c.Create(context.Background(), crd); err != nil {
-		cl.t.Fatal(err)
-	}
-	cl.establish(changeRecordCRD)
-}
-
-// upgradeCRDs applies the CRDs of this release over the others. servedAlpha says whether v1alpha1 stays in service.
-func (cl *cluster) upgradeCRDs(servedAlpha bool) {
-	cl.t.Helper()
-	for name := range crdFiles {
-		fresh := cl.loadCRD(name)
-		for i := range fresh.Spec.Versions {
-			if fresh.Spec.Versions[i].Name == OldVersion {
-				fresh.Spec.Versions[i].Served = servedAlpha
-			}
-		}
-		current := &apiextensionsv1.CustomResourceDefinition{}
-		if err := cl.c.Get(context.Background(), types.NamespacedName{Name: name}, current); err != nil {
-			cl.t.Fatal(err)
-		}
-		current.Spec = fresh.Spec
-		if err := cl.c.Update(context.Background(), current); err != nil {
-			cl.t.Fatal(err)
-		}
-		cl.establish(name)
-	}
-	cl.waitForVersion(NewVersion, "BackflowPolicyList")
-}
-
-func (cl *cluster) waitForVersion(version, listKind string) {
-	cl.t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		list := &unstructured.UnstructuredList{}
-		list.SetGroupVersionKind(schema.GroupVersionKind{Group: Group, Version: version, Kind: listKind})
-		if err := cl.c.List(context.Background(), list); err == nil {
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	cl.t.Fatalf("%s is not served", version)
 }
 
 // create makes an object through the v1alpha1 endpoint, and writes its status.
@@ -213,16 +154,6 @@ func (cl *cluster) storedVersions(name string) []string {
 		cl.t.Fatal(err)
 	}
 	return crd.Status.StoredVersions
-}
-
-func (cl *cluster) served(name, version string) bool {
-	cl.t.Helper()
-	crd := &apiextensionsv1.CustomResourceDefinition{}
-	if err := cl.c.Get(context.Background(), types.NamespacedName{Name: name}, crd); err != nil {
-		cl.t.Fatal(err)
-	}
-	_, served := versionServed(crd, version)
-	return served
 }
 
 // raw reads an object through an endpoint, as the maps the tool sees.
@@ -269,4 +200,46 @@ func podTemplate() corev1.PodTemplateSpec {
 
 func (cl *cluster) gvkOf(version, kind string) schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: Group, Version: version, Kind: kind}
+}
+
+// setServed serves or stops serving v1alpha1 in the CRDs that still have it, for a test that reads the old shape of an object.
+func (cl *cluster) setServed(served bool) {
+	cl.t.Helper()
+	for name := range crdFiles {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := cl.c.Get(context.Background(), types.NamespacedName{Name: name}, crd); err != nil {
+			cl.t.Fatal(err)
+		}
+		i, was := versionServed(crd)
+		if i < 0 || was == served {
+			continue
+		}
+		crd.Spec.Versions[i].Served = served
+		if err := cl.c.Update(context.Background(), crd); err != nil {
+			cl.t.Fatal(err)
+		}
+	}
+	time.Sleep(3 * time.Second)
+}
+
+// versions are the names of the versions a CRD has.
+func (cl *cluster) versions(name string) []string {
+	cl.t.Helper()
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := cl.c.Get(context.Background(), types.NamespacedName{Name: name}, crd); err != nil {
+		cl.t.Fatal(err)
+	}
+	out := make([]string, 0, len(crd.Spec.Versions))
+	for _, v := range crd.Spec.Versions {
+		out = append(out, v.Name)
+	}
+	return out
+}
+
+func (cl *cluster) crdExists(name string) bool {
+	err := cl.c.Get(context.Background(), types.NamespacedName{Name: name}, &apiextensionsv1.CustomResourceDefinition{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		cl.t.Fatal(err)
+	}
+	return err == nil
 }

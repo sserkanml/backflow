@@ -42,6 +42,10 @@ const (
 	keyKind           = "kind"
 	keyMetadata       = "metadata"
 	keySpec           = "spec"
+	keyLabels         = "labels"
+	keyReviewers      = "reviewers"
+	keyNamespace      = "namespace"
+	sourceHelm        = "Helm"
 	keyStatus         = "status"
 	keyRepoURL        = "repoURL"
 )
@@ -236,7 +240,7 @@ func ConvertBackflowPolicy(old obj) (*Result, error) {
 
 	argo := obj{}
 	if ns := asString(spec["argoCDNamespace"]); ns != "" {
-		argo["namespace"] = ns
+		argo[keyNamespace] = ns
 		n.add("spec.argoCDNamespace -> spec.argoCD.namespace")
 	}
 	if own, ok := asMap(spec["argoCD"]); ok && len(own) > 0 {
@@ -331,7 +335,7 @@ func gitOf(mr obj, n *notes) obj {
 		case "branchPrefix", "targetBranch":
 			git[k] = v
 			n.add("spec.mergeRequest.%s -> spec.git.%s", k, k)
-		case "labels", "reviewers":
+		case keyLabels, keyReviewers:
 			if list, ok := asList(v); ok {
 				v = dedupe(list)
 			}
@@ -408,7 +412,7 @@ func number(v any) (int64, bool) {
 	return 0, false
 }
 
-var sourceTypes = []string{"Directory", "Kustomize", "Helm", "Plugin"}
+var sourceTypes = []string{"Directory", "Kustomize", sourceHelm, "Plugin"}
 
 // applicationSummary converts an entry of status.applications: the fields of the first source move into
 // sources[0] (an Application with one source has one entry), scmConnection is a name, reason became untrackedReason.
@@ -481,7 +485,7 @@ func Convert(kind ObjectKind, old obj) (*Result, error) {
 	case KindPolicy:
 		return ConvertBackflowPolicy(old)
 	case KindProposal:
-		return ConvertDriftProposal(old, "")
+		return ConvertDriftProposal(old, "", nil)
 	}
 	return nil, errors.New("the " + strings.ToLower(string(kind)) + " is not converted by this version of the tool")
 }

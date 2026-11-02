@@ -9,6 +9,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -35,10 +36,14 @@ func (r *runner) migrateProposals(ctx context.Context, needs bool, found []obj) 
 		// not an interrupted migration.
 		return true
 	}
+	if r.opt.DryRun && !r.ready[KindProposal] {
+		r.printf("DriftProposal: the CRD has no v1beta1 yet, so the new objects are not checked against its schema here; " +
+			"a real run asks the API server about each one before it deletes anything")
+	}
 	items := map[string]*proposalItem{}
 	for _, o := range found {
 		meta, _ := asMap(o["metadata"])
-		it := &proposalItem{namespace: asString(meta["namespace"]), name: asString(meta["name"]), live: o}
+		it := &proposalItem{namespace: asString(meta[keyNamespace]), name: asString(meta["name"]), live: o}
 		items[nameOf(o)] = it
 	}
 	if r.opt.BackupDir != "" {
@@ -115,7 +120,7 @@ func (r *runner) proposal(ctx context.Context, it *proposalItem) bool {
 		r.printf("%s: FAILED, not changed: %v", it, err)
 		return false
 	}
-	res, err := ConvertDriftProposal(snapshot, policy)
+	res, err := ConvertDriftProposal(snapshot, policy, r.application(ctx, spec))
 	if err != nil {
 		r.printf("%s: FAILED, not converted (and not deleted): %v", it, err)
 		return false
@@ -200,7 +205,7 @@ func (r *runner) keepRejectedProposal(res *Result) {
 	if res.Status != nil {
 		object["status"] = copyJSON(res.Status)
 	}
-	if path, ok := r.writeRejected(KindProposal, asString(metaOf(object)["namespace"]), asString(metaOf(object)["name"]), object); ok {
+	if path, ok := r.writeRejected(KindProposal, asString(metaOf(object)[keyNamespace]), asString(metaOf(object)["name"]), object); ok {
 		r.printf("    what was tried is in %s", path)
 	}
 	r.printf("    v1beta1 does not take this proposal as it is. A finished one can be dropped (--skip-finished, or kubectl delete it;")
@@ -236,7 +241,11 @@ func (r *runner) policyUID(ctx context.Context, namespace, name string) (string,
 	if name == "" {
 		return "", fmt.Errorf("spec.policyName is empty")
 	}
-	p, err := r.get(ctx, NewVersion, string(KindPolicy), namespace, name)
+	version := NewVersion
+	if !r.ready[KindPolicy] {
+		version = OldVersion // a dry run before the CRD has v1beta1; the uid is the same
+	}
+	p, err := r.get(ctx, version, string(KindPolicy), namespace, name)
 	if err != nil {
 		return "", fmt.Errorf("cannot read its policy %s/%s: %w", namespace, name, err)
 	}
@@ -248,6 +257,9 @@ func (r *runner) policyUID(ctx context.Context, namespace, name string) (string,
 
 // validate asks the API server, without storing anything, whether it would accept the object.
 func (r *runner) validate(ctx context.Context, object obj) error {
+	if !r.ready[KindProposal] {
+		return nil // the CRD does not have v1beta1 yet (a dry run): there is nothing to ask
+	}
 	probe := copyJSON(object)
 	meta := metaOf(probe)
 	delete(meta, "name")
@@ -305,4 +317,21 @@ func (r *runner) restoreStatus(ctx context.Context, it *proposalItem, res *Resul
 	}
 	cur.Object["status"] = copyJSON(res.Status)
 	return r.c.Status().Update(ctx, cur)
+}
+
+// application reads the Argo CD Application a proposal names, or returns nil: it may be gone, Argo CD may not be installed
+// where this runs, or the tool may not be allowed to read it. Then the proposal is converted without it.
+func (r *runner) application(ctx context.Context, spec obj) obj {
+	src, _ := asMap(spec["source"])
+	list, _ := asList(spec["sources"])
+	if len(list) > 0 || asString(src["type"]) != sourceHelm {
+		return nil // only a single Helm source has a chart name in path
+	}
+	ref, _ := asMap(spec["application"])
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(schema.GroupVersionKind{Group: "argoproj.io", Version: "v1alpha1", Kind: "Application"})
+	if err := r.c.Get(ctx, types.NamespacedName{Namespace: asString(ref[keyNamespace]), Name: asString(ref[keyName])}, u); err != nil {
+		return nil
+	}
+	return u.Object
 }

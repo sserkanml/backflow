@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -71,7 +72,7 @@ status: {phase: Proposed}
 apiVersion: backflow.io/v1alpha1
 kind: ChangeRecord
 metadata: {name: %s, namespace: backflow-system}
-spec: {uid: u, username: alice}
+spec: {uid: u, username: alice, count: 1, firstSeen: "2026-11-02T09:00:00Z", lastSeen: "2026-11-02T09:00:00Z", kind: person, name: cfg, operation: UPDATE, paths: [/data/a], resource: configmaps}
 `
 )
 
@@ -79,8 +80,8 @@ func policyYAML(name, window string) string {
 	return strings.Replace(strings.Replace(oldPolicy, "%s", name, 1), "%s", window, 1)
 }
 
-// upgraded is a cluster where the last release's objects are stored as v1alpha1 and the CRDs of this release are applied.
-func upgraded(t *testing.T, servedAlpha bool, before ...func(*cluster)) *cluster {
+// upgraded is a cluster of the last release: its CRDs, and its objects stored as v1alpha1. The tool does the rest.
+func upgraded(t *testing.T, before ...func(*cluster)) *cluster {
 	t.Helper()
 	cl := startCluster(t)
 	cl.installLastRelease()
@@ -93,7 +94,6 @@ func upgraded(t *testing.T, servedAlpha bool, before ...func(*cluster)) *cluster
 	for _, f := range before {
 		f(cl)
 	}
-	cl.upgradeCRDs(servedAlpha)
 	return cl
 }
 
@@ -115,17 +115,20 @@ func (cl *cluster) policy(name string) *backflowv1beta1.BackflowPolicy {
 	return p
 }
 
-func TestTheCRDsAfterTheUpgradeStoreBothVersions(t *testing.T) {
-	cl := upgraded(t, true)
+func TestTheFixtureIsTheLastRelease(t *testing.T) {
+	cl := upgraded(t)
 	for name := range crdFiles {
-		if got := cl.storedVersions(name); len(got) != 2 {
-			t.Errorf("%s: storedVersions = %v, want v1alpha1 and v1beta1", name, got)
+		if got, want := cl.versions(name), []string{OldVersion}; len(got) != 1 || got[0] != want[0] {
+			t.Errorf("%s: versions = %v, want %v", name, got, want)
+		}
+		if got := cl.storedVersions(name); len(got) != 1 || got[0] != OldVersion {
+			t.Errorf("%s: storedVersions = %v", name, got)
 		}
 	}
 }
 
 func TestMigrateConvertsInPlace(t *testing.T) {
-	cl := upgraded(t, true)
+	cl := upgraded(t)
 	uid := cl.raw(OldVersion, "BackflowPolicy", "p1")["metadata"].(obj)["uid"]
 	dir := filepath.Join(t.TempDir(), "backup")
 
@@ -149,6 +152,14 @@ func TestMigrateConvertsInPlace(t *testing.T) {
 	}
 	if len(rep.Finalized) != 3 {
 		t.Errorf("finalized = %v", rep.Finalized)
+	}
+	for name := range crdFiles {
+		if got := cl.versions(name); len(got) != 1 || got[0] != NewVersion {
+			t.Errorf("%s: versions = %v, want only %s: the tool adds %s while it works and removes it after", name, got, NewVersion, OldVersion)
+		}
+	}
+	if !cl.crdExists("changerecords.internal.backflow.io") {
+		t.Error("the CRD of the ChangeRecords of this release was not created")
 	}
 
 	// The proposal is created again as v1beta1; the ChangeRecords are gone and not backed up.
@@ -231,7 +242,7 @@ func checkConvertedConnection(t *testing.T, cl *cluster) {
 }
 
 func TestMigrateIsIdempotent(t *testing.T) {
-	cl := upgraded(t, true)
+	cl := upgraded(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	if _, out, err := cl.run(Options{BackupDir: dir}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
@@ -272,7 +283,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 
 func TestMigrateAfterAPartialFailureDoesOnlyWhatIsLeft(t *testing.T) {
 	// A server URL without a scheme is valid in v1alpha1 and is refused by the pattern of v1beta1: one object cannot be converted.
-	cl := upgraded(t, true, func(cl *cluster) {
+	cl := upgraded(t, func(cl *cluster) {
 		cl.createOld("BackflowPolicy", strings.Replace(policyYAML("p3", "30s"), "url: https://argocd.example.com", "url: argocd.example.com", 1))
 	})
 	dir := filepath.Join(t.TempDir(), "backup")
@@ -293,7 +304,9 @@ func TestMigrateAfterAPartialFailureDoesOnlyWhatIsLeft(t *testing.T) {
 	if Summarize(os.Stderr, Options{}, rep) != ExitError {
 		t.Error("a failure is an error exit")
 	}
+	cl.setServed(true) // the policy that failed is read the old way
 	p3 := cl.raw(OldVersion, "BackflowPolicy", "p3")
+	cl.setServed(false)
 	if p3["spec"].(obj)["argoCD"].(obj)["url"] != "argocd.example.com" {
 		t.Errorf("the failed object was changed: %v", p3["spec"])
 	}
@@ -335,7 +348,7 @@ func TestMigrateAfterAPartialFailureDoesOnlyWhatIsLeft(t *testing.T) {
 }
 
 func TestMigrateKeepsABackupThatIsThereAndWritesNothingAfterAFailedBackup(t *testing.T) {
-	cl := upgraded(t, true)
+	cl := upgraded(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	if err := os.MkdirAll(filepath.Join(dir, "BackflowPolicy"), 0o700); err != nil {
 		t.Fatal(err)
@@ -355,7 +368,7 @@ func TestMigrateKeepsABackupThatIsThereAndWritesNothingAfterAFailedBackup(t *tes
 	}
 
 	// A backup that cannot be written stops the run before anything is changed.
-	cl2 := upgraded(t, true)
+	cl2 := upgraded(t)
 	blocked := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -373,7 +386,7 @@ func TestMigrateKeepsABackupThatIsThereAndWritesNothingAfterAFailedBackup(t *tes
 }
 
 func TestMigrateDryRunChangesNothing(t *testing.T) {
-	cl := upgraded(t, true)
+	cl := upgraded(t)
 	rvs := map[string]any{}
 	for _, n := range []string{"p1", "p2"} {
 		rvs[n] = cl.raw(OldVersion, "BackflowPolicy", n)["metadata"].(obj)["resourceVersion"]
@@ -424,7 +437,7 @@ func TestMigrateDryRunChangesNothing(t *testing.T) {
 }
 
 func TestMigrateRefusesToRunWhileTheOperatorRuns(t *testing.T) {
-	cl := upgraded(t, true)
+	cl := upgraded(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	one := int32(1)
 	d := &appsv1.Deployment{
@@ -462,7 +475,17 @@ func TestMigrateRefusesToRunWhileTheOperatorRuns(t *testing.T) {
 }
 
 func TestMigrateSkipsObjectsMadeThroughV1beta1(t *testing.T) {
-	cl := upgraded(t, true)
+	// A policy the tool cannot convert leaves the CRD with both versions; an object made through v1beta1 then is not touched.
+	cl := upgraded(t, func(cl *cluster) {
+		cl.createOld("BackflowPolicy", strings.Replace(policyYAML("p3", "30s"), "url: https://argocd.example.com", "url: argocd.example.com", 1))
+	})
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, out, err := cl.run(Options{BackupDir: dir}); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := cl.versions("backflowpolicies.backflow.io"); len(got) != 2 {
+		t.Fatalf("versions = %v: with a policy left, v1alpha1 stays (unserved)", got)
+	}
 	made := &backflowv1beta1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "fresh"},
 		Spec: backflowv1beta1.BackflowPolicySpec{
@@ -474,12 +497,12 @@ func TestMigrateSkipsObjectsMadeThroughV1beta1(t *testing.T) {
 		t.Fatal(err)
 	}
 	rv := made.ResourceVersion
-	rep, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")})
+	rep, out, err := cl.run(Options{BackupDir: dir})
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if rep.Failed != 0 || rep.Skipped != 1 {
-		t.Errorf("failed %d, skipped %d\n%s", rep.Failed, rep.Skipped, out)
+	if rep.Failed != 1 || rep.Skipped != 3 {
+		t.Errorf("failed %d, skipped %d (p1, p2 and fresh)\n%s", rep.Failed, rep.Skipped, out)
 	}
 	got := cl.policy("fresh")
 	if got.ResourceVersion != rv || got.Spec.ArgoCD.Namespace != "argocd" || got.Spec.Applications.Names[0] != "x" {
@@ -487,58 +510,68 @@ func TestMigrateSkipsObjectsMadeThroughV1beta1(t *testing.T) {
 	}
 }
 
-func TestMigrateServesV1alpha1OnlyWhenAskedAndPutsItBack(t *testing.T) {
-	cl := upgraded(t, false)
+func TestMigrateAddsV1beta1AndRemovesV1alpha1(t *testing.T) {
+	cl := upgraded(t, func(cl *cluster) {
+		cl.createOld("BackflowPolicy", strings.Replace(policyYAML("p3", "30s"), "url: https://argocd.example.com", "url: argocd.example.com", 1))
+	})
 	dir := filepath.Join(t.TempDir(), "backup")
-	const crd = "backflowpolicies.backflow.io"
+	const policies = "backflowpolicies.backflow.io"
 
-	_, _, err := cl.run(Options{BackupDir: dir})
-	if err == nil || !strings.Contains(err.Error(), "does not serve v1alpha1") || !strings.Contains(err.Error(), "--serve-v1alpha1") ||
-		!strings.Contains(err.Error(), "kubectl patch crd") {
-		t.Fatalf("without the flag: %v", err)
-	}
-	_, _, err = cl.run(Options{DryRun: true})
-	if err == nil || !strings.Contains(err.Error(), "does not serve v1alpha1") {
-		t.Fatalf("a dry run does not change CRDs either: %v", err)
-	}
-	if cl.served(crd, OldVersion) {
-		t.Fatal("v1alpha1 was served without being asked")
-	}
-
-	rep, out, err := cl.run(Options{BackupDir: dir, ServeV1alpha1: true})
-	if err != nil {
+	// A dry run leaves the CRDs alone and reads through the v1alpha1 endpoint that is there.
+	if _, out, err := cl.run(Options{DryRun: true}); err != nil || !strings.Contains(out, "the CRD would get v1beta1") {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if rep.Converted != 4 {
-		t.Errorf("converted %d\n%s", rep.Converted, out)
+	if got := cl.versions(policies); len(got) != 1 || got[0] != OldVersion {
+		t.Fatalf("a dry run changed the CRD: %v", got)
 	}
-	for name := range crdFiles {
-		if cl.served(name, OldVersion) {
-			t.Errorf("%s: v1alpha1 is still served after the run", name)
-		}
+
+	rep, out, err := cl.run(Options{BackupDir: dir})
+	if err != nil || rep.Failed != 1 {
+		t.Fatalf("%v %+v\n%s", err, rep, out)
 	}
-	if got := cl.storedVersions(crd); len(got) != 1 {
+	// One policy is left: both versions are in the CRD, v1beta1 is stored, v1alpha1 is not served.
+	crd := &apiextensionsv1.CustomResourceDefinition{}
+	if err := cl.c.Get(context.Background(), types.NamespacedName{Name: policies}, crd); err != nil {
+		t.Fatal(err)
+	}
+	if !servesAndStores(crd, NewVersion) {
+		t.Error("v1beta1 is not served and stored")
+	}
+	if i, served := versionServed(crd); i < 0 || served || crd.Spec.Versions[i].Storage {
+		t.Errorf("v1alpha1 must stay for the object that is left, not served and not stored: %+v", crd.Spec.Versions)
+	}
+	if got := cl.storedVersions(policies); len(got) != 2 {
+		t.Errorf("storedVersions = %v", got)
+	}
+	// The shape of the CRD is the one of this release: printer columns and names come from it.
+	if len(crd.Spec.Names.ShortNames) == 0 || crd.Spec.Names.Plural != "backflowpolicies" {
+		t.Errorf("names = %+v", crd.Spec.Names)
+	}
+	// The one that cannot be converted is read the old way until it is dealt with: serve v1alpha1 for the check.
+	cl.setServed(true)
+	if cl.raw(OldVersion, "BackflowPolicy", "p3")["spec"].(obj)["argoCD"].(obj)["url"] != "argocd.example.com" {
+		t.Error("the object that failed was changed")
+	}
+	cl.setServed(false)
+
+	// Delete it: nothing is left, and the next run removes v1alpha1.
+	if err := cl.typ.Delete(context.Background(), &backflowv1beta1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p3"}}); err != nil {
+		t.Fatal(err)
+	}
+	rep, out, err = cl.run(Options{BackupDir: dir})
+	if err != nil || rep.Failed != 0 {
+		t.Fatalf("%v %+v\n%s", err, rep, out)
+	}
+	if got := cl.versions(policies); len(got) != 1 || got[0] != NewVersion {
+		t.Errorf("versions = %v", got)
+	}
+	if got := cl.storedVersions(policies); len(got) != 1 || got[0] != NewVersion {
 		t.Errorf("storedVersions = %v", got)
 	}
 }
 
-func TestMigrateNeedsTheCRDsOfThisRelease(t *testing.T) {
-	cl := startCluster(t)
-	cl.installLastRelease()
-	cl.createOld("BackflowPolicy", policyYAML("p1", "30s"))
-	_, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")})
-	if err != nil {
-		// The last release's CRDs still carry v1beta1 as a version, but not as the storage one.
-		if !strings.Contains(err.Error(), "does not serve and store v1beta1") || !strings.Contains(err.Error(), "apply the CRDs of this release") {
-			t.Fatalf("err = %v", err)
-		}
-		return
-	}
-	t.Fatalf("the CRDs of the last release were accepted\n%s", out)
-}
-
 func TestMigrateWithNothingToDo(t *testing.T) {
-	cl := upgraded(t, true)
+	cl := upgraded(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	// The proposal is deleted, so nothing is left for it.
 	if err := cl.c.Delete(context.Background(), asUnstructured(cl.raw(OldVersion, "DriftProposal", "dp-1"))); err != nil {
@@ -557,5 +590,81 @@ func TestMigrateWithNothingToDo(t *testing.T) {
 	rep, out, err = cl.run(Options{BackupDir: dir})
 	if err != nil || !rep.Complete() || !strings.Contains(out, "nothing to do") {
 		t.Errorf("a run when everything is done: %v\n%s", err, out)
+	}
+}
+
+func (cl *cluster) deployment(name string, replicas int32, labels map[string]string) {
+	cl.t.Helper()
+	d := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "backflow-system", Name: name, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas, Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"a": name}},
+			Template: podTemplate(),
+		},
+	}
+	d.Spec.Template.Labels = map[string]string{"a": name}
+	if err := cl.c.Create(context.Background(), d); err != nil {
+		cl.t.Fatal(err)
+	}
+}
+
+func (cl *cluster) replicas(name string) (int32, string) {
+	cl.t.Helper()
+	d := &appsv1.Deployment{}
+	if err := cl.c.Get(context.Background(), types.NamespacedName{Namespace: "backflow-system", Name: name}, d); err != nil {
+		cl.t.Fatal(err)
+	}
+	return *d.Spec.Replicas, d.Annotations[annotationReplicas]
+}
+
+func TestMigrateStopsTheOperatorAndRestoresIt(t *testing.T) {
+	cl := upgraded(t)
+	cl.deployment("backflow", 2, map[string]string{"app.kubernetes.io/name": "bf", "app.kubernetes.io/instance": "r"})
+	cl.deployment("other", 3, map[string]string{"app.kubernetes.io/name": "not-ours"})
+	dir := filepath.Join(t.TempDir(), "backup")
+	sel := "app.kubernetes.io/instance=r,app.kubernetes.io/name=bf"
+
+	// Without the flag the tool refuses; with the wrong selector it does not see the operator at all.
+	if _, _, err := cl.run(Options{BackupDir: dir, OperatorSelector: sel}); err == nil {
+		t.Fatal("the operator runs and the tool went on")
+	}
+	rep, out, err := cl.run(Options{BackupDir: dir, OperatorSelector: sel, StopOperator: true, OperatorNamespace: "backflow-system"})
+	if err != nil || rep.Failed != 0 {
+		t.Fatalf("%v %+v\n%s", err, rep, out)
+	}
+	if r, ann := cl.replicas("backflow"); r != 0 || ann != "2" {
+		t.Errorf("the operator has %d replicas, annotation %q; want 0 and \"2\"", r, ann)
+	}
+	if r, _ := cl.replicas("other"); r != 3 {
+		t.Errorf("a Deployment that is not the operator was scaled: %d", r)
+	}
+
+	// Restoring scales it back and takes the note away; a second time there is nothing to do.
+	rep, out, err = cl.run(Options{RestoreOperator: true, OperatorSelector: sel, OperatorNamespace: "backflow-system"})
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if r, ann := cl.replicas("backflow"); r != 2 || ann != "" {
+		t.Errorf("after the restore: %d replicas, annotation %q", r, ann)
+	}
+	if _, out, err = cl.run(Options{RestoreOperator: true, OperatorSelector: sel}); err != nil || !strings.Contains(out, "nothing to restore") {
+		t.Errorf("%v\n%s", err, out)
+	}
+	_ = rep
+}
+
+func TestMigrateLeavesTheOperatorAloneWhenThereIsNothingToMigrate(t *testing.T) {
+	cl := upgraded(t)
+	dir := filepath.Join(t.TempDir(), "backup")
+	if _, out, err := cl.run(Options{BackupDir: dir}); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	// Now the operator of the new version runs. A pre-upgrade hook that runs again must not stop it.
+	cl.deployment("backflow", 1, map[string]string{"app.kubernetes.io/name": "backflow"})
+	if _, out, err := cl.run(Options{BackupDir: dir, StopOperator: true}); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if r, ann := cl.replicas("backflow"); r != 1 || ann != "" {
+		t.Errorf("the operator was scaled: %d replicas, annotation %q", r, ann)
 	}
 }
