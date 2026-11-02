@@ -1,4 +1,4 @@
-package v1beta1_test
+package v1_test
 
 import (
 	"context"
@@ -82,7 +82,7 @@ func run(t *testing.T, group, kind string, base func() obj, cases []tc) {
 			if c.mutate != nil {
 				c.mutate(spec)
 			}
-			version := "v1beta1"
+			version := "v1"
 			if group == "internal.backflow.io" {
 				version = "v1alpha1"
 			}
@@ -250,7 +250,7 @@ func TestBackflowPolicyDefaults(t *testing.T) {
 		return v
 	}
 	t.Run("a minimal policy gets every default, nested ones included", func(t *testing.T) {
-		u, err := check(t, newObject("backflow.io", "v1beta1", "BackflowPolicy", obj{"applications": obj{"names": []any{"a"}}, "kustomize": obj{}, "helm": obj{}}))
+		u, err := check(t, newObject("backflow.io", "v1", "BackflowPolicy", obj{"applications": obj{"names": []any{"a"}}, "kustomize": obj{}, "helm": obj{}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +267,7 @@ func TestBackflowPolicyDefaults(t *testing.T) {
 		}
 	})
 	t.Run("a false that was set is kept", func(t *testing.T) {
-		u, err := check(t, newObject("backflow.io", "v1beta1", "BackflowPolicy", obj{
+		u, err := check(t, newObject("backflow.io", "v1", "BackflowPolicy", obj{
 			"applications": obj{"names": []any{"a"}}, "git": obj{"mergeRequest": obj{"assignActor": false}}, "kustomize": obj{"allowNewPatches": false}, "helm": obj{"allowValueOverrides": false}}))
 		if err != nil {
 			t.Fatal(err)
@@ -279,7 +279,7 @@ func TestBackflowPolicyDefaults(t *testing.T) {
 		}
 	})
 	t.Run("an explicit 0s is kept", func(t *testing.T) {
-		u, err := check(t, newObject("backflow.io", "v1beta1", "BackflowPolicy", obj{
+		u, err := check(t, newObject("backflow.io", "v1", "BackflowPolicy", obj{
 			"applications": obj{"names": []any{"a"}}, "batchWindow": "0s", "retention": obj{"finishedProposals": "0s"}}))
 		if err != nil {
 			t.Fatal(err)
@@ -373,7 +373,7 @@ func TestDriftProposalSpec(t *testing.T) {
 }
 
 func TestDriftProposalIsImmutableAndStatusIsSeparate(t *testing.T) {
-	u := newObject("backflow.io", "v1beta1", "DriftProposal", proposalBase())
+	u := newObject("backflow.io", "v1", "DriftProposal", proposalBase())
 	if err := k8s.Create(ctx, u); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestInternalChangeRecord(t *testing.T) {
 		{"times need a date", func(s obj) { s["lastSeen"] = "yesterday" }, "lastSeen"},
 	})
 	t.Run("the old group no longer has the kind", func(t *testing.T) {
-		u := newObject("backflow.io", "v1beta1", "ChangeRecord", base())
+		u := newObject("backflow.io", "v1", "ChangeRecord", base())
 		if err := k8s.Create(ctx, u, client.DryRunAll); err == nil {
 			t.Fatal("backflow.io has a ChangeRecord")
 		}
