@@ -504,6 +504,7 @@ type SourceSummary struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:unservedversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=bfp
 // +kubebuilder:printcolumn:name="Mode",type=string,JSONPath=`.spec.mode`

@@ -14,7 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1alpha1 contains API Schema definitions for the backflow v1alpha1 API group.
+// Package v1alpha1 contains the legacy backflow.io/v1alpha1 types. They are not served: they stay for
+// the migration tool (backflow migrate) and for the CRDs to keep naming the stored version until
+// the migration is done.
 // +kubebuilder:object:generate=true
 // +groupName=backflow.io
 package v1alpha1

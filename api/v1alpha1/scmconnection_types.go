@@ -83,6 +83,7 @@ type ScmConnectionStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:unservedversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=scm
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.spec.provider`

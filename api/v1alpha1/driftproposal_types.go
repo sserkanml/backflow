@@ -459,6 +459,7 @@ type DriftProposalStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:unservedversion
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=dp
 // +kubebuilder:printcolumn:name="Application",type=string,JSONPath=`.spec.application.name`
