@@ -17,6 +17,8 @@ limitations under the License.
 // Package legacy holds the Go types of backflow.io/v1alpha1, the API of the releases before v1beta1. Nothing in the operator uses
 // them and no CRD is generated from them: `backflow migrate` converts maps, and the tests read the manifests they use as
 // fixtures with these types, strictly, to be sure that the fixtures are objects the old API accepted.
+//
+// +kubebuilder:skip
 package legacy
 
 import (
