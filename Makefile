@@ -103,6 +103,7 @@ helm-lint: ## Lint the Helm chart.
 	helm lint charts/backflow
 	helm lint charts/backflow --set metrics.enabled=true --set serviceMonitor.enabled=true --set networkPolicy.enabled=true
 	helm lint charts/backflow --set prometheusRule.enabled=true --set grafanaDashboard.enabled=true
+	helm lint charts/backflow --set migration.enabled=true --set migration.backup.existingClaim=backup
 	helm lint charts/backflow --set argocd.server=https://openshift-gitops-server.openshift-gitops.svc --set argocd.tokenSecret.namespace=openshift-gitops --set argocd.tokenSecret.name=backflow-local-user --set argocd.serviceCA=true --set trustedCABundle=true --set secretNamespaces={team-a}
 	helm template backflow charts/backflow --set prometheusRule.enabled=true --set grafanaDashboard.enabled=true > /dev/null
 

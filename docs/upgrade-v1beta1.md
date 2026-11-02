@@ -21,7 +21,7 @@ while an object is still stored as `v1alpha1`; it says so and names the command.
 
 - **Run `migrate` before you apply the CRDs of this version.** It adds `v1beta1` to the CRDs that are installed, rewrites the
   objects, and removes `v1alpha1` from the CRDs when none is left. The API server refuses a CRD that drops `v1alpha1` while
-  objects are stored in it, so applying the new CRDs first fails (nothing is lost). This is the one upgrade where the
+  objects are stored in it (`Error from server (Invalid)`), so applying the new CRDs first fails (nothing is lost). This is the one upgrade where the
   "apply the CRDs first" advice of the README is the other way round.
 - **A write through `v1alpha1` after the CRD stores `v1beta1` loses fields**: the API server prunes it to the `v1beta1`
   schema. That is why the old manifests in Git must be converted (step 1), and why the tool never writes through
@@ -211,6 +211,6 @@ retention are in the backup too, and come back.
   use a claim.
 - **The CRD still has `v1alpha1` after the run**: an object could not be converted; the output names it. Fix it (see above) and run
   again.
-- **`kubectl apply` of the new CRDs fails with "must appear in spec.versions"**: you applied them before the migration. Run the
+- **`kubectl apply` of the new CRDs fails with `Error from server (Invalid): CustomResourceDefinition ... is invalid`**: you applied them before the migration (nothing was changed). Run the
   migration (step 3); it adds what is missing.
 - **The operator starts and exits with "still has objects stored as v1alpha1"**: the migration did not finish; run it again.

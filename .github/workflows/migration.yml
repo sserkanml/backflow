@@ -1,10 +1,14 @@
 name: Migration test
 
-# The upgrade from the last release to this version on a kind cluster of its own:
-# the CRDs and objects of the last chart (backflow.io/v1alpha1), the CRDs of this
-# version, `backflow migrate`, and the operator of this version started on the
-# result (hack/test-migration.sh). It needs no secret and no Git host: the objects
-# are written straight into the API, and the chart is read anonymously from ghcr.io.
+# The upgrade from the last release to this version on a kind cluster of its own
+# (hack/test-migration.sh): the CRDs and objects of the last chart
+# (backflow.io/v1alpha1), `backflow migrate`, and the operator of this version
+# started on the result. In the binary mode the migration is run by hand and the
+# operator is the binary of this checkout; in the cluster mode the last release is
+# installed with helm (chart and image), and the upgrade is `helm upgrade` with the
+# chart and the image of this checkout and its migration hook Job. It needs no
+# secret and no Git host: the objects are written straight into the API, and the
+# chart and the image of the last release are read anonymously from ghcr.io.
 
 on:
   push:
@@ -16,9 +20,13 @@ jobs:
   migration:
     permissions:
       contents: read
-    name: Upgrade from the last release
+    name: Upgrade from the last release (${{ matrix.mode }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [binary, cluster]
     env:
       # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
       KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
@@ -49,4 +57,6 @@ jobs:
         run: go build -o bin/manager ./cmd
 
       - name: Upgrade from the last release
+        env:
+          MODE: ${{ matrix.mode }}
         run: ./hack/test-migration.sh

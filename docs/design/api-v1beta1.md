@@ -901,3 +901,31 @@ What `internal/migrate` does, and where it differs from the sketch in section 5.
   chart from a Helm repository v1alpha1 stored the chart name in `path`; the tool cannot tell it from a path in a Git
   repository without guessing, so it stays in `path`.
 - **A proposal whose policy is gone** is not touched (the garbage collector would have removed it already).
+
+## Implementation notes (stage 3: removing v1alpha1)
+
+- **The flow, and why.** The shipped CRDs have v1beta1 only. `backflow migrate` runs against the CRDs of the *last release*, which
+  are still installed, and does the CRD work itself: after the backup is written it replaces each CRD with the one of this release
+  (embedded in the binary, `config/crd`) plus the installed `v1alpha1` version, served and no longer stored; it rewrites the objects
+  through `v1beta1`, sets `storedVersions` to `[v1beta1]`, and removes `v1alpha1` from the CRD. Alternatives that were rejected:
+  (a) apply a "both versions" CRD first (a manifest the user applies: an extra manual step and a second schema to keep for
+  `v1alpha1`); (b) keep `v1alpha1` in the shipped CRDs, unserved (it is what 2a/2b did: the user had to patch `served: true`, and a
+  CRD that carries a dead version for ever). The installed CRD already holds the exact `v1alpha1` schema its objects were validated
+  with, so the tool needs no copy of it. The user no longer patches CRDs or passes `--serve-v1alpha1`.
+- **The API server refuses the new CRDs first** (`Error from server (Invalid)`, checked by `hack/test-migration.sh`), so the order
+  "migrate, then apply" is not a convention but the only one that works; the start-up check says so for a cluster that still has the
+  old CRDs.
+- **Order inside the run:** inspect → stop the operator (`--stop-operator`) → serve `v1alpha1` if an earlier run left it unserved →
+  list and back up (a failed backup leaves every CRD untouched) → add `v1beta1` → convert → finalize → remove `v1alpha1`. A dry run
+  reads through the `v1alpha1` endpoint that is there and cannot ask the API server whether `v1beta1` would take a proposal, and says so.
+- **Nothing stored as `v1alpha1`: the tool does nothing**, not even look for the operator. A pre-upgrade hook that is left on is
+  therefore harmless for the next `helm upgrade`.
+- **`internal/migrate/legacy`** keeps the `v1alpha1` Go types for the tests, which read their fixtures with them strictly; nothing
+  else uses them and no CRD is generated from them. The tests install the CRDs of chart 0.17.0 (`testdata/crds-0.17.0`).
+- **`convert-files`** edits the YAML node tree (comments and key order stay) and checks the result against `Convert`, the conversion
+  of the object: when the two disagree, the document is left alone and named. Documents of other kinds and files that do not mention
+  `backflow.io/v1alpha1` are copied byte for byte.
+- **A chart name in `path`** (v1alpha1 stored the chart of a Helm repository there) is moved to `chart` only when the Application of the
+  proposal has a source at that position with the same repository and the same chart name; otherwise it stays in `path`, with a note.
+- **`restore`** exists because a rollback that is only a recipe is not tested: it creates the backed-up objects again as `v1alpha1`
+  (server fields dropped, the owner references of proposals given the uid their policy has now).
