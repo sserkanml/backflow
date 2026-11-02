@@ -202,8 +202,8 @@ func TestLabelsListsEveryMetric(t *testing.T) {
 			t.Errorf("%s labels = %v, want %v", name, got[name], want)
 		}
 	}
-	if len(got) != 23 {
-		t.Errorf("%d metrics, want 23: %v", len(got), got)
+	if len(got) != 24 {
+		t.Errorf("%d metrics, want 24: %v", len(got), got)
 	}
 }
 

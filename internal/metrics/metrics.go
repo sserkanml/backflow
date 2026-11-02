@@ -125,6 +125,11 @@ var (
 		Namespace: namespace, Name: "detection_paused",
 		Help: "1 while drift detection for an Application is paused, by the reason (GitAhead, ApplicationChanged, Settling).",
 	}, []string{lPolicyNS, lPolicy, lApplication, lReason})
+	storageMigrationPending = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace, Name: "storage_migration_pending",
+		Help: "The number of Backflow CRDs whose objects may still be stored as v1beta1 (storedVersions names it): " +
+			"0 once `manager migrate` has run. The operator works meanwhile; v1beta1 can be removed only when it is 0.",
+	})
 	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: namespace, Name: "build_info",
 		Help: "Always 1; the version and the commit of the operator.",
@@ -135,7 +140,7 @@ var (
 var collectors = []prometheus.Collector{
 	driftsDetected, mappingResults, mergeRequests, verificationDuration, renders, renderDuration,
 	scratchBranches, depsChecks, argocdRequests, argocdDuration, scmRequests, scmDuration, secretReads,
-	scmConnectionReady, policyReady, policyApplications, detectionPaused, buildInfo,
+	scmConnectionReady, policyReady, policyApplications, detectionPaused, storageMigrationPending, buildInfo,
 }
 
 func init() {
@@ -423,6 +428,11 @@ func SCMRequest(provider, host string, status int, err error, d time.Duration) {
 		scmRequests.WithLabelValues(p, h, CodeClass(status, err)).Inc()
 		scmDuration.WithLabelValues(p, h).Observe(d.Seconds())
 	})
+}
+
+// StorageMigrationPending sets the number of CRDs whose objects may still be stored as v1beta1.
+func StorageMigrationPending(crds int) {
+	safe(func() { storageMigrationPending.Set(float64(crds)) })
 }
 
 // SecretRead counts a read of a Secret from the API server by its result (see
