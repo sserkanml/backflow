@@ -929,3 +929,19 @@ What `internal/migrate` does, and where it differs from the sketch in section 5.
   proposal has a source at that position with the same repository and the same chart name; otherwise it stays in `path`, with a note.
 - **`restore`** exists because a rollback that is only a recipe is not tested: it creates the backed-up objects again as `v1alpha1`
   (server fields dropped, the owner references of proposals given the uid their policy has now).
+
+## Implementation notes (1.0: `backflow.io/v1`)
+
+- **`v1` is the Go package of the API (`api/v1`); `api/v1beta1` is written from it** by `hack/sync-v1beta1.sh` (the same types, the package and the version
+  name changed, `+kubebuilder:storageversion` turned into `+kubebuilder:deprecatedversion`). There is one source, so the two schemas cannot drift
+  apart; `test/chart` compares the generated schemas, printer columns and subresources of `v1` and `v1beta1` in `config/`, the chart and the bundle, and
+  that `api/v1beta1` is what the script makes. The CRDs serve both with conversion `None`.
+- **Why a no-op update migrates `v1beta1` to `v1`.** An object is stored in etcd in the encoding of the storage version at the time of the write. With
+  the same schema and no conversion, an update that changes nothing is a write whenever the stored bytes differ from the new ones, and they do: the
+  `apiVersion` differs. The merge patch `{}` does it without a `resourceVersion` to conflict on, so it is safe with the operator running (whatever the
+  operator writes meanwhile is stored as `v1` too); the envtest checks that the `resourceVersion` of every object changes. A `DriftProposal` needs no delete and
+  create: the update does not touch its spec (immutable) or its status.
+- **The operator starts with `v1beta1` stored** (a warning, the metric `backflow_storage_migration_pending`, rechecked every five minutes) and refuses to
+  start with `v1alpha1` stored: `v1beta1` objects read as `v1` without loss, `v1alpha1` ones would not.
+- **The catalog is derived from the git tags** (`hack/olm-catalog.sh`), not from a list somebody edits, and every earlier release is rendered from its
+  published bundle image: a release without one fails the next release. A shallow clone, which would leave versions out silently, is refused.
