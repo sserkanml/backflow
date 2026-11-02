@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -80,7 +81,7 @@ func main() {
 	var enableHTTP2 bool
 	var argoCD controller.ArgoCDDefaults
 	var trustedCAFile string
-	var argoAllowedServers, scmAllowedHosts stringList
+	var argoAllowedServers, scmAllowedHosts, secretNamespaces stringList
 	var actor actorOptions
 	var unpackFileDeps bool
 	var tlsOpts []func(*tls.Config)
@@ -134,6 +135,11 @@ func main() {
 	flag.Var(&scmAllowedHosts, "scm-allowed-hosts",
 		"Git hosts a ScmConnection may name in spec.url: comma separated host names such as gitlab.com or *.example.com. "+
 			"Empty: none. A connection to another host is not Ready (HostNotAllowed) and no request is made. Repeatable.")
+	flag.Var(&secretNamespaces, "secret-namespaces",
+		"The namespaces whose Secrets the operator reads (ScmConnection tokens and CA bundles, the Argo CD token): comma "+
+			"separated. The operator's own namespace and the namespace of --argocd-token-secret-namespace are always included. "+
+			"Empty: any namespace the RBAC allows. A Secret elsewhere is not read and its object is not Ready (SecretForbidden). "+
+			"For an installation whose RBAC grants get on Secrets everywhere (OLM); the Helm chart does it with RBAC (secretNamespaces).")
 	flag.Var(&argoCD.Access, "argocd-default-access",
 		"Which Applications the policies of which namespaces may match through --argocd-server: "+
 			"<namespace>[,<namespace>...]:<project>[,<project>...] (\"*\" matches any), for example team-a:team-a. "+
@@ -156,6 +162,11 @@ func main() {
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+	// Every flag can also come from the environment (BACKFLOW_<FLAG>), for an installation without Helm; a flag wins.
+	if err := applyEnv(flag.CommandLine, os.Getenv); err != nil {
+		fmt.Fprintln(os.Stderr, "ERROR:", err)
+		os.Exit(2)
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -293,7 +304,8 @@ func main() {
 	// Secrets are read by name straight from the API server (no informer, and
 	// the operator holds only "get" on them); every controller uses this client.
 	visibility := &controller.ApplicationVisibility{}
-	k8sClient := controller.NewSecretClient(mgr.GetClient(), mgr.GetAPIReader(), secretCacheTTL)
+	k8sClient := controller.NewSecretClient(mgr.GetClient(), mgr.GetAPIReader(), secretCacheTTL,
+		secretReadNamespaces(secretNamespaces.values, argoCD.OperatorNamespace, argoCD.TokenSecretNamespace)...)
 	if err := (&controller.ScmConnectionReconciler{
 		Client:          k8sClient,
 		Scheme:          mgr.GetScheme(),

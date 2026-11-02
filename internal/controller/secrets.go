@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -26,6 +28,9 @@ const (
 	reasonSecretForbidden = "SecretForbidden"
 )
 
+// errNotAllowed is why a Secret is not read when its namespace is not in --secret-namespaces.
+var errNotAllowed = errors.New("the namespace is not in --secret-namespaces")
+
 // errListSecrets is returned for every attempt to list Secrets: the operator
 // reads the few Secrets it needs by name and has no permission to list them.
 var errListSecrets = errors.New("listing Secrets is not supported; Secrets are read by name")
@@ -40,6 +45,8 @@ type secretClient struct {
 	reader client.Reader
 	ttl    time.Duration
 	now    func() time.Time
+	// namespaces are the only namespaces whose Secrets are read; empty: any the RBAC allows.
+	namespaces []string
 
 	mu      sync.Mutex
 	entries map[types.NamespacedName]secretEntry
@@ -53,14 +60,23 @@ type secretEntry struct {
 // NewSecretClient wraps c so that Secrets are read by name with reader (the
 // manager's uncached API reader), kept for ttl. A ttl of zero or less reads the
 // API server every time.
-func NewSecretClient(c client.Client, reader client.Reader, ttl time.Duration) client.Client {
-	return &secretClient{Client: c, reader: reader, ttl: ttl, now: time.Now, entries: map[types.NamespacedName]secretEntry{}}
+//
+// namespaces, when not empty, limits the Secrets that are read to those namespaces: a Secret anywhere else is answered with
+// Forbidden without a request. It does for an installation without Helm (where the RBAC comes from an OLM bundle and
+// grants "get" on Secrets everywhere) what the chart's secretNamespaces does with RBAC.
+func NewSecretClient(c client.Client, reader client.Reader, ttl time.Duration, namespaces ...string) client.Client {
+	return &secretClient{Client: c, reader: reader, ttl: ttl, now: time.Now, entries: map[types.NamespacedName]secretEntry{},
+		namespaces: namespaces}
 }
 
 func (s *secretClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	secret, ok := obj.(*corev1.Secret)
 	if !ok {
 		return s.Client.Get(ctx, key, obj, opts...)
+	}
+	if len(s.namespaces) > 0 && !slices.Contains(s.namespaces, key.Namespace) {
+		metrics.SecretRead(metrics.SecretResult(errNotAllowed, true, false))
+		return apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, key.Name, errNotAllowed)
 	}
 	if s.ttl > 0 {
 		s.mu.Lock()
@@ -124,7 +140,7 @@ func secretReadError(err error, namespace, name string) error {
 	}
 	return &checkError{reason: reasonSecretForbidden, msg: fmt.Sprintf(
 		"the operator is not allowed to read Secret %q in namespace %q; add %q to secretNamespaces in the Helm chart values "+
-			"(or grant the operator get on secrets in that namespace)", name, namespace, namespace)}
+			"or to --secret-namespaces (BACKFLOW_SECRET_NAMESPACES), or grant the operator get on secrets in that namespace", name, namespace, namespace)}
 }
 
 // isSecretForbidden reports whether err came from secretReadError.

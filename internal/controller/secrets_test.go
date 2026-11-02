@@ -90,6 +90,23 @@ var _ = Describe("Secret client", func() {
 		Expect(reader.count()).To(Equal(1))
 	})
 
+	It("reads only the namespaces it was given, and answers Forbidden for the others without a request", func() {
+		c := NewSecretClient(fake.NewClientBuilder().Build(), reader, time.Minute, "team-a", "backflow-system")
+		var got corev1.Secret
+		Expect(c.Get(ctx, key, &got)).To(Succeed())
+		other := types.NamespacedName{Namespace: "team-b", Name: "token"}
+		err := c.Get(ctx, other, &got)
+		Expect(apierrors.IsForbidden(err)).To(BeTrue(), "%v", err)
+		Expect(reader.count()).To(Equal(1), "no request was made for the namespace that is not allowed")
+		Expect(secretReadError(err, "team-b", "token").Error()).To(ContainSubstring("BACKFLOW_SECRET_NAMESPACES"))
+	})
+
+	It("reads every namespace when none were given", func() {
+		c := NewSecretClient(fake.NewClientBuilder().Build(), reader, time.Minute)
+		var got corev1.Secret
+		Expect(c.Get(ctx, key, &got)).To(Succeed())
+	})
+
 	It("keeps a Secret for the TTL and reads it again afterwards", func() {
 		c := newClient(30 * time.Second)
 		var got corev1.Secret
