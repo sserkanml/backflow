@@ -27,6 +27,10 @@ const (
 type ScratchSweeper struct {
 	Client client.Reader
 	Git    scratch.Git
+	// ArgoCD and Visibility are what the policy controller resolves the Applications of a policy with: the sweeper resolves
+	// them itself, so that it does not depend on status.applications, which lists at most 100.
+	ArgoCD     *ArgoCDDefaults
+	Visibility *ApplicationVisibility
 	// Interval and MaxAge default to DefaultSweepInterval and DefaultScratchMaxAge.
 	Interval, MaxAge time.Duration
 	// Now returns the current time. Defaults to time.Now.
@@ -79,13 +83,24 @@ func (s *ScratchSweeper) Sweep(ctx context.Context) {
 		if !policy.Spec.ScratchBranchesAllowed() {
 			continue
 		}
-		for _, app := range policy.Status.Applications {
+		res, err := appResolver{Client: s.Client, ArgoCD: s.ArgoCD, Visibility: s.Visibility}.resolve(ctx, policy)
+		if err != nil {
+			log.V(1).Info("Cannot resolve the Applications of a policy; its repositories are not swept now",
+				"policy", policy.Namespace+"/"+policy.Name, "error", redactText(err.Error()))
+			continue
+		}
+		for i := range res.apps {
+			if _, found := credentialedRepoURL(&res.apps[i]); found {
+				continue
+			}
+			app := summarizeApplication(&res.apps[i])
 			for _, src := range app.Sources {
 				key := policy.Namespace + "\x00" + src.RepoURL
-				if src.Ref == "" || src.ScmConnectionName == "" || done[key] {
+				if src.Ref == "" || done[key] {
 					continue
 				}
 				done[key] = true
+				// A repository without a ScmConnection of the policy's namespace has no access and is left alone.
 				access, err := scmAccessForRepo(ctx, s.Client, policy.Namespace, policy, app.Name, src.RepoURL)
 				if err != nil || access == nil {
 					continue

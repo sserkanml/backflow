@@ -351,7 +351,7 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
 		os.Exit(1)
 	}
-	if err := mgr.Add(&controller.ScratchSweeper{Client: k8sClient, Git: repoCache}); err != nil {
+	if err := mgr.Add(&controller.ScratchSweeper{Client: k8sClient, Git: repoCache, ArgoCD: &argoCD, Visibility: visibility}); err != nil {
 		setupLog.Error(err, "Failed to add the scratch branch sweeper")
 		os.Exit(1)
 	}

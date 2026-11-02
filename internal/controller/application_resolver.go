@@ -19,7 +19,7 @@ import (
 // from that status: a policy that matches more Applications than the status lists still watches
 // every one of them.
 type appResolver struct {
-	client.Client
+	Client     client.Reader
 	ArgoCD     *ArgoCDDefaults
 	Visibility *ApplicationVisibility
 }
@@ -109,7 +109,7 @@ func (r appResolver) selectApplications(ctx context.Context, policy *backflowv1b
 
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(applicationGVK.GroupVersion().WithKind("ApplicationList"))
-	if err := r.List(ctx, list, opts...); err != nil {
+	if err := r.Client.List(ctx, list, opts...); err != nil {
 		if meta.IsNoMatchError(err) {
 			return nil, &checkError{reason: "ArgoCDNotFound", msg: "the Argo CD Application CRD is not installed in this cluster"}
 		}
