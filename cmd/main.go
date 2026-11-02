@@ -43,6 +43,7 @@ import (
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/metrics"
+	"github.com/sserkanml/backflow/internal/migrate"
 	"github.com/sserkanml/backflow/internal/version"
 	// +kubebuilder:scaffold:imports
 )
@@ -62,6 +63,10 @@ func init() {
 
 // nolint:gocyclo
 func main() {
+	// `manager migrate` is a tool, not the operator: it has flags of its own.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		os.Exit(migrate.Main(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	var metricsAddr string
 	var repoCacheDir string
 	var mrPollInterval, renderBudget time.Duration
