@@ -10,7 +10,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/mapping"
 )
 
@@ -44,12 +44,12 @@ func SetNode(file string, content []byte, key rendermap.KeyPath, value any) (*re
 	if err := yaml.Unmarshal(content, &doc); err != nil {
 		return nil, fmt.Errorf("%w: %s: %v", ErrCannotSet, file, err)
 	}
-	op := v1alpha1.OpAdd
+	op := v1beta1.OpAdd
 	if _, found := lookupNode(&doc, key); found {
-		op = v1alpha1.OpReplace
+		op = v1beta1.OpReplace
 	}
 	pointer := key.Pointer()
-	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{{Path: pointer, Op: op, Live: text}})
+	edited, err := mapping.Apply(file, content, 0, []v1beta1.FieldChange{{Path: pointer, Op: op, Live: text}})
 	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) && !isJSONFile(file) {
 		edited, err = appendKey(content, key, value)
 	}
@@ -81,7 +81,7 @@ func RemoveKey(file string, content []byte, key rendermap.KeyPath) (*rendermap.W
 		return nil, fmt.Errorf("%w: %s: the key %s does not exist", ErrCannotSet, file, key)
 	}
 	pointer := key.Pointer()
-	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{{Path: pointer, Op: v1alpha1.OpRemove}})
+	edited, err := mapping.Apply(file, content, 0, []v1beta1.FieldChange{{Path: pointer, Op: v1beta1.OpRemove}})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCannotSet, err)
 	}

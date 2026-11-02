@@ -74,6 +74,25 @@ argocd:
   # see everything sets [{policyNamespaces: ["*"], projects: ["*"]}].
   # A policy with its own spec.argoCD is not affected: Argo CD decides what its token sees.
   defaultAccess: []
+  # The Argo CD servers a BackflowPolicy may name in spec.argoCD.server.url, besides the
+  # server above, which is always allowed. Without an entry here a policy that names another
+  # server is not Ready (ServerNotAllowed) and the operator makes no request to it: a tenant
+  # who may create a policy cannot make the operator call any URL. An entry is a scheme, a
+  # host and optionally a port, and the host may be a wildcard:
+  #
+  #   allowedServers:
+  #     - https://argocd.team-a.example.com
+  #     - https://*.argo.corp:8443
+  allowedServers: []
+
+# The Git hosts a ScmConnection may name in spec.url. A connection to another host is not
+# Ready (HostNotAllowed) and the operator makes no request to it, and never sends it its
+# token. An entry is a host name, or a wildcard that matches any subdomain (*.example.com).
+# An empty list allows no host: set the hosts of your self-hosted GitLab or GitHub here.
+scm:
+  allowedHosts:
+    - gitlab.com
+    - github.com
 
 # OpenShift: a ConfigMap labelled config.openshift.io/inject-trusted-cabundle that
 # OpenShift fills in with the cluster's trusted CA bundle (the proxy's trustedCA),
@@ -244,3 +263,22 @@ networkPolicy:
   metricsNamespaceSelector:
     matchLabels:
       metrics: enabled
+
+# The migration from backflow.io/v1alpha1 to v1beta1 (docs/upgrade-v1beta1.md). With migration.enabled, `helm upgrade` runs
+# `manager migrate` as a pre-upgrade hook Job, with the new image: it scales the operator down, backs the objects up, rewrites
+# the CRDs and the objects, and a post-upgrade hook scales the operator back up. It does nothing when no object is stored as
+# v1alpha1, so it is safe to leave on for the one upgrade that needs it. Do not apply the CRDs of this version before it: the
+# tool does that, and the API server refuses a CRD that drops v1alpha1 while objects are stored in it.
+migration:
+  enabled: false
+  # The Job fails, and so does the upgrade, after this many seconds.
+  timeoutSeconds: 1800
+  backup:
+    # A PersistentVolumeClaim in the release namespace that keeps the backup of every v1alpha1 object. The backup is what a
+    # rollback uses, so it has to outlive the Job.
+    existingClaim: ""
+    # A backup in an emptyDir is gone when the Job is: only for a cluster you can rebuild. Needs this to be set on purpose.
+    emptyDir: false
+  # Other flags of `manager migrate`, for example ["--skip-finished"].
+  extraArgs: []
+  resources: {}

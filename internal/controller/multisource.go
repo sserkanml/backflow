@@ -6,7 +6,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
 
 // Names of Application fields and source types used in several places.
@@ -51,7 +51,7 @@ func strField(m map[string]any, key string) string {
 // what Argo CD resolved for each: status.sync.revisions, the revisions of the
 // last sync and status.sourceTypes are positional. It returns nil for an
 // Application with one source.
-func summarizeSources(app *unstructured.Unstructured) []backflowv1alpha1.SourceSummary {
+func summarizeSources(app *unstructured.Unstructured) []backflowv1beta1.SourceSummary {
 	sources := specSources(app)
 	if len(sources) == 0 {
 		return nil
@@ -59,22 +59,22 @@ func summarizeSources(app *unstructured.Unstructured) []backflowv1alpha1.SourceS
 	compared := statusStrings(app, fieldStatus, "sync", "revisions")
 	synced := statusStrings(app, fieldStatus, fieldOperationState, fieldSyncResult, "revisions")
 	types := statusStrings(app, fieldStatus, "sourceTypes")
-	out := make([]backflowv1alpha1.SourceSummary, len(sources))
+	out := make([]backflowv1beta1.SourceSummary, len(sources))
 	for i, src := range sources {
-		s := backflowv1alpha1.SourceSummary{
+		s := backflowv1beta1.SourceSummary{
 			Position: int32(i + 1), RepoURL: strField(src, "repoURL"), Path: strField(src, "path"),
 			Chart: strField(src, "chart"), TargetRevision: strField(src, "targetRevision"), Ref: strField(src, "ref"),
-			Revision: at(compared, i), SyncedRevision: at(synced, i), SourceType: at(types, i),
+			Revision: at(compared, i), SyncedRevision: at(synced, i), Type: backflowv1beta1.SourceType(at(types, i)),
 		}
-		if s.SourceType == "" && s.Ref == "" && len(types) == 0 {
+		if s.Type == "" && s.Ref == "" && len(types) == 0 {
 			// Not reconciled yet: say what the spec says.
 			switch {
 			case s.Chart != "" || src["helm"] != nil:
-				s.SourceType = sourceTypeHelm
+				s.Type = sourceTypeHelm
 			case src["kustomize"] != nil:
-				s.SourceType = "Kustomize"
+				s.Type = backflowv1beta1.SourceKustomize
 			default:
-				s.SourceType = "Directory"
+				s.Type = backflowv1beta1.SourceDirectory
 			}
 		}
 		out[i] = s
@@ -84,7 +84,7 @@ func summarizeSources(app *unstructured.Unstructured) []backflowv1alpha1.SourceS
 
 // isGitSource reports whether a source of the summary is a Git repository: it
 // has no chart, which Argo CD pulls from a Helm repository or a registry.
-func isGitSource(s backflowv1alpha1.SourceSummary) bool { return s.Chart == "" }
+func isGitSource(s backflowv1beta1.SourceSummary) bool { return s.Chart == "" }
 
 // multiSource describes the one shape of multi-source Application that is
 // mapped: a single Helm source, which renders, plus Git ref sources whose files
@@ -192,7 +192,7 @@ func splitRefPath(raw string) refFile {
 // source, the version of a chart. The Helm source renders; a ref source named by
 // a value file receives the edits (Values), the others are only referenced. It
 // returns nil for an Application outside the supported shape.
-func proposalSources(app *unstructured.Unstructured) []backflowv1alpha1.ApplicationSource {
+func proposalSources(app *unstructured.Unstructured) []backflowv1beta1.ProposalSource {
 	ms, _ := helmMultiSource(app)
 	if ms == nil {
 		return nil
@@ -209,35 +209,35 @@ func proposalSources(app *unstructured.Unstructured) []backflowv1alpha1.Applicat
 			used[f.Ref] = true
 		}
 	}
-	out := make([]backflowv1alpha1.ApplicationSource, len(sources))
+	out := make([]backflowv1beta1.ProposalSource, len(sources))
 	for i, src := range sources {
-		s := backflowv1alpha1.ApplicationSource{
+		s := backflowv1beta1.ProposalSource{
 			Position: int32(i + 1), RepoURL: strField(src, "repoURL"), Revision: at(revs, i),
 			TargetRevision: strField(src, "targetRevision"), Path: strField(src, "path"),
-			Chart: strField(src, "chart"), Ref: strField(src, "ref"), Role: backflowv1alpha1.RoleReference,
+			Chart: strField(src, "chart"), Ref: strField(src, "ref"), Role: backflowv1beta1.RoleReference,
 		}
 		switch {
 		case i == ms.Render:
-			s.Role, s.Type = backflowv1alpha1.RoleRender, backflowv1alpha1.SourceHelm
+			s.Role, s.Type = backflowv1beta1.RoleRender, backflowv1beta1.SourceHelm
 		case used[s.Ref]:
-			s.Role = backflowv1alpha1.RoleValues
+			s.Role = backflowv1beta1.RoleValues
 		}
 		out[i] = s
 	}
 	return out
 }
 
-// writeTarget is the source the edits of a proposal are written to: spec.source,
+// writeTarget is the source the edits of a proposal are written to: the first source,
 // or, for a proposal of a multi-source Application, the source with role Values,
 // whose repository, revision and branch the commits, branches and merge
 // requests use. Its Path is empty: the files are named by the value files.
-func writeTarget(dp *backflowv1alpha1.DriftProposal) backflowv1alpha1.SourceRef {
+func writeTarget(dp *backflowv1beta1.DriftProposal) backflowv1beta1.ProposalSource {
 	for _, s := range dp.Spec.Sources {
-		if s.Role == backflowv1alpha1.RoleValues {
-			return backflowv1alpha1.SourceRef{
-				RepoURL: s.RepoURL, Revision: s.Revision, TargetRevision: s.TargetRevision, Type: dp.Spec.Source.Type,
+		if s.Role == backflowv1beta1.RoleValues {
+			return backflowv1beta1.ProposalSource{
+				RepoURL: s.RepoURL, Revision: s.Revision, TargetRevision: s.TargetRevision, Type: dp.Spec.First().Type,
 			}
 		}
 	}
-	return dp.Spec.Source
+	return dp.Spec.First()
 }

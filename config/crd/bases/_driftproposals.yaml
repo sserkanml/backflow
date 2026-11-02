@@ -1,0 +1,625 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: driftproposals.
+spec:
+  group: ""
+  names:
+    kind: DriftProposal
+    listKind: DriftProposalList
+    plural: driftproposals
+    singular: driftproposal
+  scope: Namespaced
+  versions:
+  - name: ""
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DriftProposal is a captured difference between Git and the cluster,
+          and its journey back to Git.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              DriftProposalSpec is written by the operator when drift is detected.
+              It is immutable after creation; a newer drift on the same resource
+              creates a new proposal and supersedes this one.
+            properties:
+              actor:
+                description: Who made the change in the cluster, when known.
+                properties:
+                  fields:
+                    description: |-
+                      The drifted paths (JSON pointers) the manager wrote, listed when other managers wrote
+                      the rest.
+                    items:
+                      type: string
+                    maxItems: 16
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  groups:
+                    description: The groups of that user, under the same conditions.
+                    items:
+                      type: string
+                    type: array
+                  kind:
+                    description: |-
+                      Person or controller (a service account), from a verified record of the actor webhook.
+                      It is set even when names are not recorded.
+                    enum:
+                    - person
+                    - controller
+                    type: string
+                  manager:
+                    description: |-
+                      The field manager that wrote the drifted fields last: a tool (kubectl-patch,
+                      kubectl-edit, oc, Mozilla for a browser console) or a controller (kube-controller-manager
+                      for an HPA). Argo CD's own managers are never named.
+                    type: string
+                  operation:
+                    description: The operation of that managedFields entry.
+                    enum:
+                    - Update
+                    - Apply
+                    type: string
+                  others:
+                    description: The other managers that wrote drifted fields, most
+                      recent first.
+                    items:
+                      description: ActorManager is a manager besides the one an Actor
+                        names.
+                      properties:
+                        fields:
+                          description: The drifted paths it wrote.
+                          items:
+                            type: string
+                          maxItems: 16
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        manager:
+                          type: string
+                        operation:
+                          enum:
+                          - Update
+                          - Apply
+                          type: string
+                        time:
+                          format: date-time
+                          type: string
+                      required:
+                      - manager
+                      type: object
+                    maxItems: 4
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  time:
+                    description: When that entry was written.
+                    format: date-time
+                    type: string
+                  userAgent:
+                    description: |-
+                      Deprecated: never filled. An admission request carries no user agent (the only one
+                      seen is the API server's own), and the field manager already says which tool made the
+                      change. It will be removed in a later API version.
+                    type: string
+                  username:
+                    description: |-
+                      The Kubernetes username, from a verified record of the actor webhook. Empty: the
+                      webhook is off, saw no matching change, or was told not to record names.
+                    type: string
+                type: object
+              application:
+                description: Argo CD Application that owns the resource.
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              changes:
+                description: Field-level changes between Git (desired) and the cluster
+                  (live).
+                items:
+                  description: FieldChange is a single field difference.
+                  properties:
+                    desired:
+                      description: JSON-encoded value in Git. Empty for Add.
+                      type: string
+                    live:
+                      description: JSON-encoded value in the cluster. Empty for Remove.
+                      type: string
+                    op:
+                      description: ChangeOperation is the kind of change on a field.
+                      enum:
+                      - Add
+                      - Replace
+                      - Remove
+                      type: string
+                    path:
+                      description: JSON pointer in the resource, e.g. /spec/replicas.
+                      type: string
+                  required:
+                  - op
+                  - path
+                  type: object
+                minItems: 1
+                type: array
+              detectedAt:
+                description: When the drift was first observed.
+                format: date-time
+                type: string
+              policyName:
+                description: Policy that captured this drift.
+                type: string
+              resource:
+                description: The drifted resource.
+                properties:
+                  group:
+                    type: string
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                  version:
+                    type: string
+                required:
+                - kind
+                - name
+                - version
+                type: object
+              source:
+                description: |-
+                  Where the resource comes from in Git. For an Application with several
+                  sources this is its first source; see Sources for the others.
+                properties:
+                  path:
+                    description: Path inside the repository; for Helm repos, the chart
+                      name.
+                    type: string
+                  repoURL:
+                    type: string
+                  revision:
+                    description: Revision Argo CD last synced (commit SHA).
+                    type: string
+                  targetRevision:
+                    description: Branch or tag the Application tracks.
+                    type: string
+                  type:
+                    description: SourceType is how the drifted resource is produced
+                      from Git.
+                    enum:
+                    - Directory
+                    - Kustomize
+                    - Helm
+                    type: string
+                required:
+                - repoURL
+                - revision
+                - type
+                type: object
+              sources:
+                description: |-
+                  Every source of an Application that has several, in order, each at the
+                  revision Argo CD compared against when the drift was observed. The edits of
+                  the proposal are written to the one with role Values.
+                items:
+                  description: ApplicationSource is one source of a multi-source Application.
+                  properties:
+                    chart:
+                      description: Chart name, for a chart from a Helm repository
+                        or a registry.
+                      type: string
+                    path:
+                      description: Path inside a Git repository.
+                      type: string
+                    position:
+                      description: Position in spec.sources of the Application, from
+                        1.
+                      format: int32
+                      type: integer
+                    ref:
+                      description: Name of a ref source, referenced as $name/... in
+                        value files.
+                      type: string
+                    repoURL:
+                      type: string
+                    revision:
+                      description: |-
+                        Revision Argo CD resolved and compared against: a commit SHA, or the chart
+                        version of a chart from a Helm repository or a registry.
+                      type: string
+                    role:
+                      description: SourceRole is what a source of a multi-source Application
+                        is for.
+                      enum:
+                      - Render
+                      - Values
+                      - Reference
+                      type: string
+                    targetRevision:
+                      description: Branch, tag, chart version or range the source
+                        tracks.
+                      type: string
+                    type:
+                      description: How Argo CD renders the source. Empty for a ref
+                        source.
+                      enum:
+                      - Directory
+                      - Kustomize
+                      - Helm
+                      type: string
+                  required:
+                  - position
+                  - repoURL
+                  - revision
+                  - role
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - application
+            - changes
+            - detectedAt
+            - policyName
+            - resource
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+          status:
+            description: DriftProposalStatus tracks the proposal through mapping and
+              review.
+            properties:
+              branch:
+                description: |-
+                  Branch Backflow pushes (or is about to push) for the merge request. It is
+                  recorded before the push, so a branch or merge request left behind by a
+                  crash can still be found and cleaned up.
+                type: string
+              commitSHA:
+                description: Commit that contains the change, once merged or committed
+                  directly.
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastPushRejectedAt:
+                description: When the push was last declined; the next attempt waits
+                  from here.
+                format: date-time
+                type: string
+              mapping:
+                description: Mapping records where each change lands in the source.
+                properties:
+                  application:
+                    description: |-
+                      Where the value is set in the Application, when an option of the
+                      Application (helm.parameters, kustomize.images, ...) decides a drifted
+                      field. Set only when strategy is Unmapped with reason SetByApplication.
+                      Nothing is proposed: no Argo CD API renders an Application with a changed
+                      spec, so the edit cannot be verified by a render of the child.
+                    properties:
+                      application:
+                        description: The Application whose option sets the value,
+                          as namespace/name.
+                        type: string
+                      current:
+                        description: JSON-encoded value the option has now.
+                        type: string
+                      option:
+                        description: The option, such as spec.source.helm.parameters[name=image.tag].
+                        type: string
+                      optionPath:
+                        description: |-
+                          JSON pointer of the option's value in the Application resource, such as
+                          /spec/source/helm/parameters/0/value.
+                        type: string
+                      parent:
+                        description: The parent Application and its Git file.
+                        properties:
+                          diff:
+                            description: |-
+                              Unified diff of the edit that sets the suggested value, verified by a
+                              render of the parent. Empty when there is no suggested value.
+                            maxLength: 32768
+                            type: string
+                          file:
+                            description: |-
+                              File that defines the option and where in it (a key path for Helm, a JSON
+                              pointer otherwise).
+                            type: string
+                          location:
+                            type: string
+                          message:
+                            description: Why the state is what it is, for people.
+                            maxLength: 1024
+                            type: string
+                          name:
+                            description: |-
+                              The parent Application as namespace/name, or the ApplicationSet that
+                              generated the child.
+                            type: string
+                          repoURL:
+                            description: Git repository and commit the parent was
+                              rendered at.
+                            type: string
+                          revision:
+                            type: string
+                          state:
+                            description: |-
+                              ApplicationParentState says what is known about the Git file that defines the
+                              Application whose option sets the value.
+                            enum:
+                            - Located
+                            - NotManagedFromGit
+                            - GeneratedByApplicationSet
+                            - NotVerifiable
+                            - OutOfSync
+                            - Ambiguous
+                            - NotVisible
+                            type: string
+                        required:
+                        - state
+                        type: object
+                      suggested:
+                        description: |-
+                          JSON-encoded value that would reproduce the live state, when it can be
+                          derived exactly (a parameter, a valuesObject key, an image tag, a replica
+                          count, a label). Empty when it cannot, or when the option is a string that
+                          holds YAML (helm.values, kustomize patches).
+                        type: string
+                    required:
+                    - application
+                    - option
+                    type: object
+                  collateral:
+                    description: |-
+                      Changes the edits also make beyond the drifted fields, which the policy
+                      allowed (spec.helm.allowCollateralChanges). Set only for HelmValues.
+                    items:
+                      description: CollateralChange is a field the edit changes although
+                        it did not drift.
+                      properties:
+                        current:
+                          description: JSON-encoded value before the edit (the value
+                            of the unmodified render).
+                          type: string
+                        group:
+                          type: string
+                        kind:
+                          type: string
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                        new:
+                          description: JSON-encoded value after the edit.
+                          type: string
+                        path:
+                          description: JSON pointer in the rendered resource.
+                          type: string
+                      required:
+                      - current
+                      - kind
+                      - name
+                      - new
+                      - path
+                      type: object
+                    maxItems: 64
+                    type: array
+                  diff:
+                    description: Unified diff of the edited files, truncated to 32
+                      KiB.
+                    maxLength: 32768
+                    type: string
+                  edits:
+                    items:
+                      description: SourceEdit is one edit in a Git file.
+                      properties:
+                        changeIndex:
+                          description: Index into spec.changes this edit satisfies.
+                          format: int32
+                          type: integer
+                        file:
+                          description: File path relative to the repository root.
+                          type: string
+                        location:
+                          description: For Helm values, the dotted values path; otherwise
+                            a JSON pointer in the file.
+                          type: string
+                        value:
+                          description: JSON-encoded new value.
+                          type: string
+                      required:
+                      - changeIndex
+                      - file
+                      - location
+                      - value
+                      type: object
+                    type: array
+                  reason:
+                    description: Why the change could not be mapped. Set only when
+                      strategy is Unmapped.
+                    type: string
+                  repoURL:
+                    description: |-
+                      Repository the edits are written to, when the Application has several
+                      sources: the repository of the source with role Values.
+                    type: string
+                  strategy:
+                    description: MappingStrategy is how the change was traced back
+                      to source.
+                    enum:
+                    - Direct
+                    - KustomizePatch
+                    - HelmValues
+                    - ApplicationOverride
+                    - Unmapped
+                    type: string
+                  unmapped:
+                    description: |-
+                      Fields of spec.changes the edits leave out, with the reason for each. Set
+                      only for a partial mapping (spec.mapping.allowPartial of the policy): the
+                      edits then cover the other changes, and these fields stay different from
+                      Git after the merge request is merged.
+                    items:
+                      description: UnmappedField is a drifted field that a partial
+                        mapping leaves out.
+                      properties:
+                        message:
+                          description: Why the field could not be traced back to Git,
+                            for people.
+                          maxLength: 1024
+                          type: string
+                        path:
+                          description: JSON pointer of the field in the resource.
+                          type: string
+                        reason:
+                          description: Machine-readable reason, such as UnsupportedChange
+                            or NoVerifiedCandidate.
+                          type: string
+                      required:
+                      - message
+                      - path
+                      - reason
+                      type: object
+                    maxItems: 64
+                    type: array
+                  verified:
+                    description: True when a re-render with the edits reproduced the
+                      live state exactly.
+                    type: boolean
+                required:
+                - strategy
+                type: object
+              mergeRequest:
+                description: MergeRequestRef points to the merge request opened for
+                  this proposal.
+                properties:
+                  branch:
+                    type: string
+                  number:
+                    description: Provider-side number (GitLab iid, GitHub PR number).
+                    format: int64
+                    type: integer
+                  state:
+                    description: Provider-reported state, e.g. opened, merged, closed.
+                    type: string
+                  url:
+                    type: string
+                required:
+                - branch
+                - number
+                - state
+                - url
+                type: object
+              message:
+                description: Human-readable explanation of the current phase.
+                type: string
+              phase:
+                description: ProposalPhase is the lifecycle stage of a proposal.
+                enum:
+                - Detected
+                - Mapping
+                - Unmapped
+                - Proposed
+                - Merged
+                - Rejected
+                - Reverted
+                - Superseded
+                - Failed
+                type: string
+              pushRejections:
+                description: |-
+                  How many times the Git server declined the push of this proposal. A
+                  decline during an outage of the Git host looks like one of a protected
+                  branch, so a few declines are retried with a growing delay before the
+                  proposal fails. Kept here so the count survives an operator restart.
+                format: int32
+                type: integer
+              supersededBy:
+                description: Proposal that replaced this one.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true

@@ -1,7 +1,8 @@
 # Create the token Secret first (do not commit tokens):
 #   kubectl -n backflow-system create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
 # GitLab needs the api + write_repository scopes, GitHub contents + pull_requests.
-apiVersion: backflow.io/v1alpha1
+# The host of url must be in the chart value scm.allowedHosts (gitlab.com and github.com are by default).
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   labels:
@@ -10,7 +11,7 @@ metadata:
   name: gitlab
   namespace: backflow-system
 spec:
-  provider: gitlab
+  provider: GitLab
   url: https://gitlab.com
   tokenSecretRef:
     name: gitlab-token

@@ -63,12 +63,12 @@ ScmConnection itself verifies it at once.
    kubectl -n {{ .Release.Namespace }} create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
 
    kubectl -n {{ .Release.Namespace }} apply -f - <<YAML
-   apiVersion: backflow.io/v1alpha1
+   apiVersion: backflow.io/v1beta1
    kind: ScmConnection
    metadata:
      name: gitlab
    spec:
-     provider: gitlab
+     provider: GitLab
      url: https://gitlab.com
      tokenSecretRef: {name: gitlab-token, key: token}
    YAML
@@ -76,19 +76,24 @@ ScmConnection itself verifies it at once.
 3. A policy that says which Applications to watch. Start with mode ReportOnly.
 
    kubectl -n {{ .Release.Namespace }} apply -f - <<YAML
-   apiVersion: backflow.io/v1alpha1
+   apiVersion: backflow.io/v1beta1
    kind: BackflowPolicy
    metadata:
      name: my-apps
    spec:
-     argoCDNamespace: argocd
      applications:
        names: [my-app]
      mode: ReportOnly
      argoCD:
-       url: https://argocd-server.argocd.svc
-       tokenSecretRef: {name: argocd-token, key: token}
+       namespace: argocd
+       server:
+         url: https://argocd-server.argocd.svc
+         tokenSecretRef: {name: argocd-token, key: token}
    YAML
+
+   The host of the ScmConnection and the Argo CD server of a policy must be in the lists the installer
+   set: scm.allowedHosts and argocd.allowedServers (the server of argocd.server is always allowed).
+   Otherwise they are not Ready (HostNotAllowed, ServerNotAllowed) and nothing is requested from them.
 
 {{- if .Values.metrics.enabled }}
 

@@ -13,7 +13,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/drift"
 	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/kustomize"
@@ -93,7 +93,7 @@ type caseResult struct {
 	// Source is the source type: Helm or Kustomize.
 	Source                    string
 	Chart, Resource, Scenario string
-	Changes                   []v1alpha1.FieldChange
+	Changes                   []v1beta1.FieldChange
 	ByPolicy                  map[string]outcome
 }
 
@@ -211,7 +211,7 @@ func (l *loaded) runAll(ctx context.Context) ([]caseResult, error) {
 
 // mapChanges is the production path of mapping a Helm proposal: the fields of
 // the changes, then Verify (which renders).
-func (l *loaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured, changes []v1alpha1.FieldChange,
+func (l *loaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured, changes []v1beta1.FieldChange,
 	opts rendermap.Options) (outcome, error) {
 	fields, err := helmmap.FieldsFor(l.src, l.files, changes)
 	if err != nil {

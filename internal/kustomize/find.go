@@ -12,7 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -60,7 +60,7 @@ type finder struct {
 // the change cannot be mapped. origin is where the locate render found the
 // resource; it may be nil, which leaves out the resource file.
 func FieldsFor(src *Source, files map[string][]byte, origin *Origin, obj *unstructured.Unstructured, pol Policy,
-	changes []v1alpha1.FieldChange) ([]rendermap.Field, error) {
+	changes []v1beta1.FieldChange) ([]rendermap.Field, error) {
 	f := &finder{src: src, files: files, origin: origin, obj: obj, group: obj.GroupVersionKind().Group, pol: pol}
 	if f.origin == nil {
 		f.origin = &Origin{}
@@ -97,7 +97,7 @@ func isKustomizationFile(name string) bool {
 	return slices.Contains(kustomizationNames, path.Base(name))
 }
 
-func (f *finder) find(ch v1alpha1.FieldChange) *rendermap.Found {
+func (f *finder) find(ch v1beta1.FieldChange) *rendermap.Found {
 	found := &rendermap.Found{}
 	if b := f.blocked(ch); b != nil {
 		found.Blocked = b
@@ -106,7 +106,7 @@ func (f *finder) find(ch v1alpha1.FieldChange) *rendermap.Found {
 	tiers := map[int][]rendermap.Candidate{}
 	segs := parseSegments(ch.Path)
 	desired, scalar := scalarJSON(ch.Desired)
-	replace := ch.Op == v1alpha1.OpReplace && scalar
+	replace := ch.Op == v1beta1.OpReplace && scalar
 	if replace {
 		for _, c := range f.settings(ch, segs, desired) {
 			tiers[c.Meta.(*Edit).Tier] = append(tiers[c.Meta.(*Edit).Tier], c)
@@ -114,7 +114,7 @@ func (f *finder) find(ch v1alpha1.FieldChange) *rendermap.Found {
 		for _, c := range f.patches(ch, segs, desired) {
 			tiers[c.Meta.(*Edit).Tier] = append(tiers[c.Meta.(*Edit).Tier], c)
 		}
-	} else if ch.Op == v1alpha1.OpRemove {
+	} else if ch.Op == v1beta1.OpRemove {
 		for _, c := range f.patches(ch, segs, "") {
 			tiers[c.Meta.(*Edit).Tier] = append(tiers[c.Meta.(*Edit).Tier], c)
 		}
@@ -221,7 +221,7 @@ func (d diagnostics) ExplainEmpty(*rendermap.Found) []string {
 
 var hashSuffix = regexp.MustCompile(`-[a-z0-9]{8,10}$`)
 
-func (f *finder) settings(ch v1alpha1.FieldChange, segs []string, desired string) []rendermap.Candidate {
+func (f *finder) settings(ch v1beta1.FieldChange, segs []string, desired string) []rendermap.Candidate {
 	var out []rendermap.Candidate
 	last := ""
 	if len(segs) > 0 {
@@ -239,7 +239,7 @@ func (f *finder) settings(ch v1alpha1.FieldChange, segs []string, desired string
 				continue
 			}
 		}
-		add := func(pointer, live string, op v1alpha1.ChangeOperation, fragment bool, note string) {
+		add := func(pointer, live string, op v1beta1.ChangeOperation, fragment bool, note string) {
 			e := &Edit{Tier: tier, Kind: KindSetting, Pointer: pointer, Op: op, Desired: ch.Desired, Live: live, Shared: !k.inPath,
 				Note: note + " of " + k.file}
 			c := rendermap.Candidate{File: k.file, Path: rendermap.KeyPathFromPointer(pointer), Variant: KindSetting, Meta: e}
@@ -257,14 +257,14 @@ func (f *finder) settings(ch v1alpha1.FieldChange, segs []string, desired string
 		case slices.Equal(segs, specReplicas):
 			for i, r := range seqItems(mapValue(k.root, keyReplicas)) {
 				if v, _ := scalarText(mapValue(r, "count")); v == desired && f.nameMatches(mapValue(r, keyName)) {
-					add(pointerOf(keyReplicas, strconv.Itoa(i), "count"), ch.Live, v1alpha1.OpReplace, false,
+					add(pointerOf(keyReplicas, strconv.Itoa(i), "count"), ch.Live, v1beta1.OpReplace, false,
 						fmt.Sprintf("replicas[%s].count", scalarOrEmpty(mapValue(r, keyName))))
 				}
 			}
 		}
 		if key, kind := labelKey(segs); kind != "" {
 			for _, hit := range f.labelSettings(k, kind, key, desired) {
-				add(hit, ch.Live, v1alpha1.OpReplace, false, strings.TrimPrefix(strings.ReplaceAll(hit, "/", "."), "."))
+				add(hit, ch.Live, v1beta1.OpReplace, false, strings.TrimPrefix(strings.ReplaceAll(hit, "/", "."), "."))
 			}
 		}
 		if f.origin.Generated && k.file == f.origin.ConfiguredIn && len(segs) == 2 && segs[0] == "data" {
@@ -378,7 +378,7 @@ func (f *finder) imageEntryMatches(it *yaml.Node, desiredImage string) bool {
 	return eff == name
 }
 
-func (f *finder) imageSettings(k kust, desired, liveJSON string, add func(pointer, live string, op v1alpha1.ChangeOperation, fragment bool, note string)) {
+func (f *finder) imageSettings(k kust, desired, liveJSON string, add func(pointer, live string, op v1beta1.ChangeOperation, fragment bool, note string)) {
 	var live string
 	if json.Unmarshal([]byte(liveJSON), &live) != nil {
 		return
@@ -391,9 +391,9 @@ func (f *finder) imageSettings(k kust, desired, liveJSON string, add func(pointe
 		}
 		entry := "images[" + scalarOrEmpty(mapValue(it, keyName)) + "]"
 		set := func(key, value string) {
-			op := v1alpha1.OpReplace
+			op := v1beta1.OpReplace
 			if mapValue(it, key) == nil {
-				op = v1alpha1.OpAdd
+				op = v1beta1.OpAdd
 			}
 			b, _ := json.Marshal(value)
 			add(pointerOf("images", strconv.Itoa(i), key), string(b), op, true, entry+"."+key)
@@ -447,7 +447,7 @@ func (f *finder) labelSettings(k kust, kind, key, desired string) []string {
 
 // generatorSettings offers the literals and the env file lines of an unhashed
 // generator that give a data key.
-func (f *finder) generatorSettings(k kust, key, desired string, ch v1alpha1.FieldChange, tier int) []rendermap.Candidate {
+func (f *finder) generatorSettings(k kust, key, desired string, ch v1beta1.FieldChange, tier int) []rendermap.Candidate {
 	var out []rendermap.Candidate
 	for _, gk := range []string{"configMapGenerator", "secretGenerator"} {
 		for gi, g := range seqItems(mapValue(k.root, gk)) {
@@ -460,7 +460,7 @@ func (f *finder) generatorSettings(k kust, key, desired string, ch v1alpha1.Fiel
 				if lit.Value == key+"="+desired {
 					b, _ := json.Marshal(key + "=" + live)
 					pointer := pointerOf(gk, strconv.Itoa(gi), "literals", strconv.Itoa(li))
-					e := &Edit{Tier: tier, Kind: KindSetting, Pointer: pointer, Op: v1alpha1.OpReplace, Desired: ch.Desired, Live: string(b),
+					e := &Edit{Tier: tier, Kind: KindSetting, Pointer: pointer, Op: v1beta1.OpReplace, Desired: ch.Desired, Live: string(b),
 						Shared: !k.inPath, Note: fmt.Sprintf("literal %s of %s %q of %s", key, gk, scalarOrEmpty(mapValue(g, keyName)), k.file)}
 					out = append(out, rendermap.Candidate{File: k.file, Path: rendermap.KeyPathFromPointer(pointer), Variant: KindSetting, Meta: e})
 				}
@@ -473,7 +473,7 @@ func (f *finder) generatorSettings(k kust, key, desired string, ch v1alpha1.Fiel
 				target := path.Join(k.dir, file)
 				for line := range strings.SplitSeq(string(f.files[target]), "\n") {
 					if strings.TrimRight(line, "\r") == key+"="+desired {
-						e := &Edit{Tier: tier, Kind: KindEnvFile, Pointer: key, Op: v1alpha1.OpReplace, Desired: ch.Desired, Live: ch.Live,
+						e := &Edit{Tier: tier, Kind: KindEnvFile, Pointer: key, Op: v1beta1.OpReplace, Desired: ch.Desired, Live: ch.Live,
 							Shared: !k.inPath, Note: fmt.Sprintf("line %s of %s", key, target)}
 						out = append(out, rendermap.Candidate{File: target, Path: rendermap.KeyPath{key}, Variant: KindEnvFile, Meta: e})
 					}

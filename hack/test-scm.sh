@@ -123,9 +123,9 @@ set_token() {
 }
 
 apply_scm() {
-  local name="$1" url="$2" secret="$3" provider="${4:-gitlab}"
+  local name="$1" url="$2" secret="$3" provider="${4:-GitLab}"
   k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: $name
@@ -186,7 +186,7 @@ else
 step "Building and starting the operator"
 make build >/dev/null
 mkdir -p "$LOG_DIR"
-"$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
+"$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
 MANAGER_PID=$!
 
 for _ in $(seq 1 60); do
@@ -207,7 +207,7 @@ pass "fresh namespace created"
 # ---------------------------------------------------------------------------
 step "CRD validation"
 expect_rejected "Unsupported provider (bitbucket)" "provider" <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata: {name: bad-provider, namespace: $NS}
 spec:
@@ -217,17 +217,17 @@ spec:
 EOF
 
 expect_rejected "Non-http(s) URL" "url" <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata: {name: bad-url, namespace: $NS}
 spec:
-  provider: gitlab
+  provider: GitLab
   url: gitlab.example.com
   tokenSecretRef: {name: x, key: token}
 EOF
 
 expect_rejected "Invalid mode (AutoMerge)" "mode" <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata: {name: bad-mode, namespace: $NS}
 spec:
@@ -236,14 +236,14 @@ spec:
 EOF
 
 expect_rejected "Empty changes list" "changes" <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: DriftProposal
 metadata: {name: bad-drift, namespace: $NS}
 spec:
-  policyName: p
-  application: {name: a, namespace: argocd}
-  resource: {version: v1, kind: ConfigMap, name: c}
-  source: {repoURL: https://example.com/r.git, revision: abc, type: Directory}
+  policyRef: {name: p}
+  applicationRef: {name: a, namespace: argocd}
+  resourceRef: {version: v1, kind: ConfigMap, name: c}
+  sources: [{position: 1, role: Render, repoURL: "https://example.com/r.git", revision: abc, type: Directory}]
   changes: []
   detectedAt: "2026-01-01T00:00:00Z"
 EOF
@@ -251,7 +251,7 @@ EOF
 # ---------------------------------------------------------------------------
 step "Defaults (BackflowPolicy)"
 k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata: {name: defaults, namespace: $NS}
 spec:
@@ -267,7 +267,7 @@ check_default() {
   fi
 }
 check_default .spec.mode MergeRequest
-check_default .spec.argoCDNamespace argocd
+check_default .spec.argoCD.namespace argocd
 check_default .spec.batchWindow 30s
 
 # ---------------------------------------------------------------------------

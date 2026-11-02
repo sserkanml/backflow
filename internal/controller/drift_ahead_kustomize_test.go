@@ -8,10 +8,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
 
-func kustomizeApp(path string, kustomize map[string]any) (*unstructured.Unstructured, backflowv1alpha1.ApplicationSummary) {
+func kustomizeApp(path string, kustomize map[string]any) (*unstructured.Unstructured, backflowv1beta1.ApplicationSummary) {
 	src := map[string]any{"repoURL": "https://example.com/r.git", "path": path, "targetRevision": "main"}
 	if kustomize != nil {
 		src["kustomize"] = kustomize
@@ -21,9 +21,7 @@ func kustomizeApp(path string, kustomize map[string]any) (*unstructured.Unstruct
 		"metadata": map[string]any{"name": "web", "namespace": "argocd"},
 		"spec":     map[string]any{"project": "default", "destination": map[string]any{"namespace": "web"}, "source": src},
 	}}
-	return app, backflowv1alpha1.ApplicationSummary{
-		Name: "web", RepoURL: "https://example.com/r.git", Path: path, SourceType: string(backflowv1alpha1.SourceKustomize),
-	}
+	return app, backflowv1beta1.ApplicationSummary{Name: "web", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: "https://example.com/r.git", Path: path, Type: backflowv1beta1.SourceType(string(backflowv1beta1.SourceKustomize))}}}
 }
 
 func TestChangedUnderPathKustomize(t *testing.T) {
@@ -92,7 +90,7 @@ func TestChangedUnderPathKustomize(t *testing.T) {
 			app, summary := kustomizeApp(dev, tt.kustomize)
 			st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
 
-			changed, checked := r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, summary, app, st)
+			changed, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary, app, st)
 			if checked == tt.unchecked {
 				t.Fatalf("checked = %v, want %v", checked, !tt.unchecked)
 			}
@@ -109,7 +107,7 @@ func TestChangedUnderPathKustomize(t *testing.T) {
 func TestChangedUnderPathKustomizeCannotReadTrees(t *testing.T) {
 	app, summary := kustomizeApp("apps/web", nil)
 	st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
-	policy := &backflowv1alpha1.BackflowPolicy{}
+	policy := &backflowv1beta1.BackflowPolicy{}
 
 	r := &DriftReconciler{Git: &fakeDiffer{paths: []string{"README.md"}}} // cannot open trees
 	if _, checked := r.changedUnderPath(context.Background(), policy, summary, app, st); checked {
@@ -137,7 +135,7 @@ func TestChangedUnderPathKustomizeIsRemembered(t *testing.T) {
 	app, summary := kustomizeApp("apps/web", nil)
 	st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
 	for range 3 {
-		if n, checked := r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, summary, app, st); !checked || n != 1 {
+		if n, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary, app, st); !checked || n != 1 {
 			t.Fatalf("n = %d, checked = %v", n, checked)
 		}
 	}
@@ -148,7 +146,7 @@ func TestChangedUnderPathKustomizeIsRemembered(t *testing.T) {
 	app2, summary2 := kustomizeApp("apps/web", map[string]any{"components": []any{"c"}})
 	git.trees[shaSynced]["apps/web/c/kustomization.yaml"] = &fstest.MapFile{Data: []byte("kind: Component\n")}
 	git.trees[shaCompared]["apps/web/c/kustomization.yaml"] = &fstest.MapFile{Data: []byte("kind: Component\n")}
-	r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, summary2, app2, st)
+	r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary2, app2, st)
 	if git.calls != 2 {
 		t.Errorf("a new component list did not cause a new look (%d)", git.calls)
 	}

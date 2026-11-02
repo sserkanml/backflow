@@ -11,7 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	records "github.com/sserkanml/backflow/api/records/v1alpha1"
 	"github.com/sserkanml/backflow/internal/metrics"
 )
 
@@ -28,25 +28,25 @@ const (
 )
 
 // ToChangeRecord is the object that holds a record.
-func ToChangeRecord(r Record, namespace string) *backflowv1alpha1.ChangeRecord {
-	return &backflowv1alpha1.ChangeRecord{
+func ToChangeRecord(r Record, namespace string) *records.ChangeRecord {
+	return &records.ChangeRecord{
 		ObjectMeta: metav1.ObjectMeta{Name: r.ObjectName(), Namespace: namespace, Labels: map[string]string{LabelObjectUID: r.UID}},
-		Spec: backflowv1alpha1.ChangeRecordSpec{
-			UID: r.UID, Group: r.Group, Resource: r.Resource, SubResource: r.SubResource, Namespace: r.Namespace, Name: r.Name,
-			ResourceVersion: r.ResourceVersion, Operation: "UPDATE", FieldManager: r.FieldManager,
-			Username: r.Username, Groups: slices.Clone(r.Groups), Kind: backflowv1alpha1.ActorKind(r.Kind),
-			Paths: slices.Clone(r.Paths), FirstSeen: metav1.NewTime(r.FirstSeen), LastSeen: metav1.NewTime(r.LastSeen), Count: r.Count,
+		Spec: records.ChangeRecordSpec{
+			UID: r.UID, Group: r.Group, Resource: r.Resource, Subresource: r.SubResource, Namespace: r.Namespace, Name: r.Name,
+			ResourceVersion: r.ResourceVersion, FieldManager: r.FieldManager,
+			Username: r.Username, Groups: slices.Clone(r.Groups), ActorKind: records.ActorKind(r.Kind),
+			Paths: slices.Clone(r.Paths), FirstSeen: metav1.NewMicroTime(r.FirstSeen), LastSeen: metav1.NewMicroTime(r.LastSeen), Count: r.Count,
 		},
 	}
 }
 
 // FromChangeRecord is the record an object holds.
-func FromChangeRecord(c *backflowv1alpha1.ChangeRecord) Record {
+func FromChangeRecord(c *records.ChangeRecord) Record {
 	s := c.Spec
 	return Record{
-		UID: s.UID, Group: s.Group, Resource: s.Resource, SubResource: s.SubResource, Namespace: s.Namespace, Name: s.Name,
+		UID: s.UID, Group: s.Group, Resource: s.Resource, SubResource: s.Subresource, Namespace: s.Namespace, Name: s.Name,
 		ResourceVersion: s.ResourceVersion, FieldManager: s.FieldManager, Username: s.Username, Groups: slices.Clone(s.Groups),
-		Kind: Kind(s.Kind), Paths: slices.Clone(s.Paths), FirstSeen: s.FirstSeen.Time, LastSeen: s.LastSeen.Time, Count: s.Count,
+		Kind: Kind(s.ActorKind), Paths: slices.Clone(s.Paths), FirstSeen: s.FirstSeen.Time, LastSeen: s.LastSeen.Time, Count: s.Count,
 	}
 }
 
@@ -85,9 +85,9 @@ func (f *Flusher) Start(ctx context.Context) error {
 
 // Flush writes what the buffer holds.
 func (f *Flusher) Flush(ctx context.Context) {
-	records := f.Buffer.Drain()
+	drained := f.Buffer.Drain()
 	written := 0
-	for _, r := range records {
+	for _, r := range drained {
 		if err := f.write(ctx, r); err != nil {
 			logf.FromContext(ctx).V(1).Info("Cannot write a change record; it is kept for the next flush", "error", err.Error())
 			f.Buffer.Add(r)
@@ -102,7 +102,7 @@ func (f *Flusher) Flush(ctx context.Context) {
 func (f *Flusher) write(ctx context.Context, r Record) error {
 	var err error
 	for range flushAttempts {
-		var have backflowv1alpha1.ChangeRecord
+		var have records.ChangeRecord
 		getErr := f.Reader.Get(ctx, types.NamespacedName{Namespace: f.Namespace, Name: r.ObjectName()}, &have)
 		switch {
 		case apierrors.IsNotFound(getErr):
@@ -157,7 +157,7 @@ func (s *Sweeper) Start(ctx context.Context) error {
 // Sweep makes one pass.
 func (s *Sweeper) Sweep(ctx context.Context) {
 	log := logf.FromContext(ctx)
-	var list backflowv1alpha1.ChangeRecordList
+	var list records.ChangeRecordList
 	if err := s.Client.List(ctx, &list, client.InNamespace(s.Namespace)); err != nil {
 		log.V(1).Info("Cannot list the change records", "error", err.Error())
 		return
@@ -174,7 +174,7 @@ func (s *Sweeper) Sweep(ctx context.Context) {
 		now = s.Now()
 	}
 	items := list.Items
-	slices.SortFunc(items, func(a, b backflowv1alpha1.ChangeRecord) int {
+	slices.SortFunc(items, func(a, b records.ChangeRecord) int {
 		return a.Spec.LastSeen.Compare(b.Spec.LastSeen.Time)
 	})
 	expired, capped := 0, 0

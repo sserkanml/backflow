@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	records "github.com/sserkanml/backflow/api/records/v1alpha1"
 	"github.com/sserkanml/backflow/internal/actorwebhook"
 	"github.com/sserkanml/backflow/internal/controller"
 )
@@ -67,7 +67,7 @@ func (o *actorOptions) cacheOptions(operatorNamespace string) cache.Options {
 		return cache.Options{}
 	}
 	return cache.Options{ByObject: map[client.Object]cache.ByObject{
-		&backflowv1alpha1.ChangeRecord{}: {Namespaces: map[string]cache.Config{operatorNamespace: {}}},
+		&records.ChangeRecord{}: {Namespaces: map[string]cache.Config{operatorNamespace: {}}},
 	}}
 }
 

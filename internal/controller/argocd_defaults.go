@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/internal/allowlist"
 	"github.com/sserkanml/backflow/internal/argocd"
+	"github.com/sserkanml/backflow/internal/scm"
 )
 
 // DefaultArgoCDTokenKey is the key of the token in the Secret OpenShift GitOps
@@ -61,17 +63,60 @@ func (d *ArgoCDDefaults) Validate() error {
 	return nil
 }
 
+// argoServers is the list of Argo CD servers a policy may name in spec.argoCD.server.url, besides the
+// operator's default server, which is always allowed. Set once at start-up by the installer
+// (--argocd-allowed-servers, chart argocd.allowedServers); empty allows no other server. It is not
+// in the CRD: a tenant who can create a policy must not be able to point the operator at any URL.
+var argoServers atomic.Pointer[allowlist.Servers]
+
+// SetArgoCDAllowedServers sets the Argo CD servers a policy may name.
+func SetArgoCDAllowedServers(servers []string) {
+	s := allowlist.Servers(servers)
+	argoServers.Store(&s)
+}
+
+// ServerAllowed reports whether a policy may name this Argo CD server: the operator's own default
+// server always, any other only if it is in the installer's allowlist. An empty URL means the
+// built-in default address of the CRD.
+func (d *ArgoCDDefaults) ServerAllowed(url string) bool {
+	if url == "" {
+		url = defaultArgoCDURL
+	}
+	if d != nil && d.Server != "" && sameServer(d.Server, url) {
+		return true
+	}
+	list := argoServers.Load()
+	return list != nil && list.Allows(url)
+}
+
+// sameServer reports whether two URLs name the same scheme, host and port.
+func sameServer(a, b string) bool {
+	return allowlist.Servers{a}.Allows(b)
+}
+
+// checkServer returns a ServerNotAllowed error for a server the policy may not use.
+func (d *ArgoCDDefaults) checkServer(url string) error {
+	if d.ServerAllowed(url) {
+		return nil
+	}
+	if url == "" {
+		url = defaultArgoCDURL
+	}
+	return &checkError{reason: backflowv1beta1.ReasonServerNotAllowed, msg: fmt.Sprintf(
+		"the Argo CD server %s is not in the operator's list of allowed servers (--argocd-allowed-servers, chart value argocd.allowedServers); no request is made", scm.RedactURL(url))}
+}
+
 // Configured reports whether there is a default.
 func (d *ArgoCDDefaults) Configured() bool {
 	return d != nil && d.Server != "" && d.TokenSecretNamespace != "" && d.TokenSecretName != ""
 }
 
-func (d *ArgoCDDefaults) tokenRef() corev1.SecretKeySelector {
+func (d *ArgoCDDefaults) tokenRef() backflowv1beta1.SecretKeyReference {
 	key := d.TokenSecretKey
 	if key == "" {
 		key = DefaultArgoCDTokenKey
 	}
-	return corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: d.TokenSecretName}, Key: key}
+	return backflowv1beta1.SecretKeyReference{Name: d.TokenSecretName, Key: key}
 }
 
 func (d *ArgoCDDefaults) caBundle() ([]byte, error) {
@@ -88,8 +133,8 @@ func (d *ArgoCDDefaults) caBundle() ([]byte, error) {
 
 // secretNamespace is where the token of a policy is read: its own namespace when it
 // has spec.argoCD, else the namespace the installer named.
-func argoSecretNamespace(policy *backflowv1alpha1.BackflowPolicy, d *ArgoCDDefaults) string {
-	if policy.Spec.ArgoCD == nil && d.Configured() {
+func argoSecretNamespace(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaults) string {
+	if policy.Spec.ArgoCD.Server == nil && d.Configured() {
 		return d.TokenSecretNamespace
 	}
 	return policy.Namespace
@@ -97,39 +142,39 @@ func argoSecretNamespace(policy *backflowv1alpha1.BackflowPolicy, d *ArgoCDDefau
 
 // argoCDSource says which connection a policy uses: its own, the operator's default,
 // or none (ok false), in which case drift detection is off for it.
-func argoCDSource(policy *backflowv1alpha1.BackflowPolicy, d *ArgoCDDefaults) (backflowv1alpha1.ArgoCDSource, bool) {
+func argoCDSource(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaults) (backflowv1beta1.ArgoCDSource, bool) {
 	switch {
-	case policy.Spec.ArgoCD != nil:
-		return backflowv1alpha1.ArgoCDSourcePolicy, true
+	case policy.Spec.ArgoCD.Server != nil:
+		return backflowv1beta1.ArgoCDSourcePolicy, true
 	case d.Configured():
-		return backflowv1alpha1.ArgoCDSourceOperatorDefault, true
+		return backflowv1beta1.ArgoCDSourceOperatorDefault, true
 	}
 	return "", false
 }
 
 // argoCDStatus is status.argoCD of a policy.
-func argoCDStatus(policy *backflowv1alpha1.BackflowPolicy, d *ArgoCDDefaults) *backflowv1alpha1.ArgoCDStatus {
+func argoCDStatus(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaults) *backflowv1beta1.ArgoCDStatus {
 	source, ok := argoCDSource(policy, d)
 	if !ok {
 		return nil
 	}
-	if source == backflowv1alpha1.ArgoCDSourcePolicy {
-		url := policy.Spec.ArgoCD.URL
+	if source == backflowv1beta1.ArgoCDSourcePolicy {
+		url := policy.Spec.ArgoCD.Server.URL
 		if url == "" {
 			url = defaultArgoCDURL
 		}
-		return &backflowv1alpha1.ArgoCDStatus{Source: source, URL: url}
+		return &backflowv1beta1.ArgoCDStatus{Source: source, URL: url}
 	}
-	return &backflowv1alpha1.ArgoCDStatus{Source: source, URL: d.Server}
+	return &backflowv1beta1.ArgoCDStatus{Source: source, URL: d.Server}
 }
 
 // describeArgoCD is the sentence that goes into a condition message: which
 // connection, never a token.
-func describeArgoCD(st *backflowv1alpha1.ArgoCDStatus) string {
+func describeArgoCD(st *backflowv1beta1.ArgoCDStatus) string {
 	if st == nil {
 		return ""
 	}
-	if st.Source == backflowv1alpha1.ArgoCDSourceOperatorDefault {
+	if st.Source == backflowv1beta1.ArgoCDSourceOperatorDefault {
 		return fmt.Sprintf("Argo CD API: operator default (%s)", st.URL)
 	}
 	return fmt.Sprintf("Argo CD API: from the policy (%s)", st.URL)

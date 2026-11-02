@@ -95,6 +95,15 @@ The image of the operator.
 {{- end }}
 
 {{/*
+The label selector of the operator's Deployment, as `manager migrate --operator-selector` takes it.
+*/}}
+{{- define "backflow.operatorSelector" -}}
+{{- $parts := list }}
+{{- range $k, $v := (fromYaml (include "backflow.selectorLabels" .)) }}{{ $parts = append $parts (printf "%s=%s" $k $v) }}{{ end }}
+{{- sortAlpha $parts | join "," }}
+{{- end }}
+
+{{/*
 The actor webhook: its name, TLS mode, path and certificate.
 */}}
 {{- define "backflow.actorName" -}}

@@ -1,0 +1,9 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name:   backflow-objects   # spacing is kept
+  namespace: argocd
+spec:
+  project: default
+  source: {repoURL: "https://gitlab.example.com/team-a/gitops.git", path: backflow}
+  destination: {server: "https://kubernetes.default.svc", namespace: team-a}

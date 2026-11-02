@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
@@ -108,7 +109,7 @@ type RepositoryWriter interface {
 
 // scmAccess is everything needed to talk to the Git host of a repository.
 type scmAccess struct {
-	conn  *backflowv1alpha1.ScmConnection
+	conn  *backflowv1beta1.ScmConnection
 	token string
 	ca    []byte
 	// auth is the HTTPS credential for Git operations.
@@ -120,7 +121,7 @@ func providerOf(a *scmAccess) string {
 	if a == nil || a.conn == nil {
 		return ""
 	}
-	return string(a.conn.Spec.Provider)
+	return strings.ToLower(string(a.conn.Spec.Provider))
 }
 
 func (r *DriftProposalReconciler) newProvider(cfg scm.Config) (scm.Provider, error) {
@@ -138,26 +139,26 @@ type proposalOutcome struct {
 
 // propose writes a mapped proposal to Git according to the policy's mode.
 // Reconcile calls it for proposals that are in Mapping with Mapped=True.
-func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (ctrl.Result, error) {
-	var policy backflowv1alpha1.BackflowPolicy
-	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, &policy); err != nil {
+func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
+	var policy backflowv1beta1.BackflowPolicy
+	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyRef.Name}, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.holdProposal(ctx, dp, reasonPolicyNotFound, fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyName), 0)
+			return r.holdProposal(ctx, dp, reasonPolicyNotFound, fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyRef.Name), 0)
 		}
 		return ctrl.Result{}, err
 	}
 	mode := policy.Spec.Mode
 	if mode == "" {
-		mode = backflowv1alpha1.ModeMergeRequest
+		mode = backflowv1beta1.ModeMergeRequest
 	}
-	if mode == backflowv1alpha1.ModeReportOnly {
+	if mode == backflowv1beta1.ModeReportOnly {
 		return ctrl.Result{}, r.setProposedCondition(ctx, dp, metav1.ConditionFalse, reasonReportOnly,
 			"The policy mode is ReportOnly; nothing is written to Git.")
 	}
 
 	if wait := r.pushBackoff(dp); wait > 0 {
 		logf.FromContext(ctx).V(1).Info("The Git server declined the last push; waiting before the next one",
-			"proposal", dp.Name, "declines", dp.Status.PushRejections, "retryIn", wait.String())
+			"proposal", dp.Name, "declines", dp.Status.PushRejectionCount(), "retryIn", wait.String())
 		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
@@ -196,7 +197,7 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 	}
 
 	switch mode {
-	case backflowv1alpha1.ModeDirectCommit:
+	case backflowv1beta1.ModeDirectCommit:
 		return r.directCommit(ctx, dp, access, target)
 	default:
 		return r.openMergeRequest(ctx, dp, &policy, access, project, target)
@@ -206,19 +207,19 @@ func (r *DriftProposalReconciler) propose(ctx context.Context, dp *backflowv1alp
 // targetBranch resolves the branch the change is proposed against: the
 // policy's targetBranch, else the Application's targetRevision when it is a
 // branch. A tag or commit SHA cannot be pushed to, so it fails the proposal.
-func (r *DriftProposalReconciler) targetBranch(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	policy *backflowv1alpha1.BackflowPolicy, access *scmAccess) (string, *proposalOutcome) {
-	explicit := policy.Spec.MergeRequest != nil && policy.Spec.MergeRequest.TargetBranch != ""
+func (r *DriftProposalReconciler) targetBranch(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+	policy *backflowv1beta1.BackflowPolicy, access *scmAccess) (string, *proposalOutcome) {
+	explicit := policy.Spec.Git.TargetBranch != ""
 	branch := writeTarget(dp).TargetRevision
 	if explicit {
-		branch = policy.Spec.MergeRequest.TargetBranch
+		branch = policy.Spec.Git.TargetBranch
 	}
 	if !explicit && (branch == "" || branch == "HEAD") {
 		def, err := r.Writer.DefaultBranch(ctx, writeTarget(dp).RepoURL, access.auth)
 		if err != nil {
 			if errors.Is(err, gitrepo.ErrBranchNotFound) {
 				res, ferr := r.fail(ctx, dp, reasonTargetNotABranch,
-					"The Application tracks HEAD and the repository does not report its default branch; set spec.mergeRequest.targetBranch on the policy.")
+					"The Application tracks HEAD and the repository does not report its default branch; set spec.git.targetBranch on the policy.")
 				return "", &proposalOutcome{result: res, err: ferr}
 			}
 			res, rerr := r.gitFailure(ctx, dp, err)
@@ -258,7 +259,7 @@ type preparedChange struct {
 // the proposal and Git wins: the proposal is Superseded.
 //
 // A non-nil outcome means the proposal was settled or held; the caller stops.
-func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) prepare(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	access *scmAccess, target string) (*preparedChange, *proposalOutcome) {
 	stop := func(res ctrl.Result, err error) (*preparedChange, *proposalOutcome) {
 		return nil, &proposalOutcome{result: res, err: err}
@@ -358,13 +359,13 @@ func isGitError(err error) bool {
 // verifying them by rendering. A verdict about the source is returned as a
 // *verdictError; a problem outside the repository as a *heldError; other
 // errors are failures to read.
-func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	access *scmAccess, sha string) (*mappedChange, error) {
 	app, err := r.application(ctx, dp)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &heldError{reason: reasonApplicationNotFound, cause: fmt.Errorf(
-				"the Argo CD Application %s/%s was not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name)}
+				"the Argo CD Application %s/%s was not found", dp.Spec.ApplicationRef.Namespace, dp.Spec.ApplicationRef.Name)}
 		}
 		return nil, err
 	}
@@ -388,7 +389,7 @@ func (r *DriftProposalReconciler) mapAt(ctx context.Context, dp *backflowv1alpha
 //
 // Anything else is someone else's work, which is never overwritten. The
 // string says why a branch is not ours.
-func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	access *scmAccess, tip, head string) (bool, string, error) {
 	url := writeTarget(dp).RepoURL
 	info, err := r.Writer.CommitInfo(ctx, url, tip, access.auth)
@@ -445,7 +446,7 @@ func (r *DriftProposalReconciler) ownBranch(ctx context.Context, dp *backflowv1a
 // drift was detected, never the clock: retries then rebuild the same commit.
 // The Kubernetes actor has no Git identity, so the commit is authored by the
 // committer and the actor is named in a trailer.
-func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal, access *scmAccess, res *mappedChange) gitrepo.CommitMeta {
+func (r *DriftProposalReconciler) commitMeta(dp *backflowv1beta1.DriftProposal, access *scmAccess, res *mappedChange) gitrepo.CommitMeta {
 	committer := gitrepo.Signature{Name: defaultCommitterName, Email: defaultCommitterEmail}
 	if c := access.conn.Spec.Committer; c != nil && c.Name != "" && c.Email != "" {
 		committer = gitrepo.Signature{Name: c.Name, Email: c.Email}
@@ -453,8 +454,8 @@ func (r *DriftProposalReconciler) commitMeta(dp *backflowv1alpha1.DriftProposal,
 	return gitrepo.CommitMeta{Committer: committer, Message: commitMessage(r.forText(dp), res.leftOut, res.overrides, kustomizeNoteList(dp, res)...), When: dp.Spec.DetectedAt.UTC(), Create: res.created}
 }
 
-func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	policy *backflowv1alpha1.BackflowPolicy, access *scmAccess, project, target string) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+	policy *backflowv1beta1.BackflowPolicy, access *scmAccess, project, target string) (ctrl.Result, error) {
 	opts := mergeRequestOptions(policy)
 	branch := recordedOrNewBranch(opts.BranchPrefix, dp)
 	if branch == target {
@@ -472,7 +473,7 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 	// An earlier run got as far as pushing, and may have opened a merge request
 	// that was not recorded before the operator stopped. Whatever happened to it
 	// since (merged, closed) is the truth: look before building anything new.
-	if dp.Status.Branch != "" {
+	if dp.Status.GitBranch() != "" {
 		mr, err := provider.FindMergeRequest(ctx, project, branch)
 		if err != nil {
 			return r.scmFailure(ctx, dp, err)
@@ -489,9 +490,9 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 
 	// Record the branch before pushing it: a crash between the push and the
 	// merge request would otherwise leave a branch nobody knows about.
-	if dp.Status.Branch != branch {
+	if dp.Status.GitBranch() != branch {
 		orig := dp.DeepCopy()
-		dp.Status.Branch = branch
+		dp.Status.EnsureGit().Branch = branch
 		if err := r.patchStatus(ctx, dp, orig); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -555,12 +556,9 @@ func (r *DriftProposalReconciler) openMergeRequest(ctx context.Context, dp *back
 // older version has backflow/<name>, and the prefix of the policy may have
 // changed since the branch was pushed. The name is computed only for a
 // proposal that has not pushed anything yet.
-func recordedOrNewBranch(prefix string, dp *backflowv1alpha1.DriftProposal) string {
-	if dp.Status.Branch != "" {
-		return dp.Status.Branch
-	}
-	if ref := dp.Status.MergeRequest; ref != nil && ref.Branch != "" {
-		return ref.Branch
+func recordedOrNewBranch(prefix string, dp *backflowv1beta1.DriftProposal) string {
+	if dp.Status.GitBranch() != "" {
+		return dp.Status.GitBranch()
 	}
 	return proposalBranch(prefix, dp)
 }
@@ -573,7 +571,7 @@ const maxBranchLen = 200
 // own branch again, but an object created later (the user deleted a Rejected
 // proposal to retry, or a policy was recreated) has the same content hash as
 // its name and never shares a branch, or a merge request, with an old one.
-func proposalBranch(prefix string, dp *backflowv1alpha1.DriftProposal) string {
+func proposalBranch(prefix string, dp *backflowv1beta1.DriftProposal) string {
 	uid := string(dp.UID)
 	if len(uid) > 8 {
 		uid = uid[:8]
@@ -590,7 +588,7 @@ func proposalBranch(prefix string, dp *backflowv1alpha1.DriftProposal) string {
 // only when its head is a commit of ours: the tip of the recorded branch, or a
 // commit just built (known). A request of an earlier proposal that happened to
 // use the same branch name is not ours.
-func (r *DriftProposalReconciler) carriesOurWork(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) carriesOurWork(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	access *scmAccess, mr *scm.MergeRequest, branch string, known ...string) bool {
 	if mr.State == scm.StateOpen {
 		return true
@@ -612,23 +610,23 @@ func (r *DriftProposalReconciler) carriesOurWork(ctx context.Context, dp *backfl
 // adoptMergeRequest records the merge request of the proposal's branch in the
 // state it is in: open (Proposed), or already merged or closed by a person
 // while the operator was away.
-func (r *DriftProposalReconciler) adoptMergeRequest(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) adoptMergeRequest(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	mr *scm.MergeRequest, branch, target string) (ctrl.Result, error) {
 	orig := dp.DeepCopy()
-	dp.Status.Branch = branch
-	dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: mr.URL, Number: mr.Number, Branch: branch, State: string(mr.State)}
+	dp.Status.EnsureGit().Branch = branch
+	dp.Status.EnsureGit().MergeRequest = &backflowv1beta1.MergeRequestRef{URL: mr.URL, Number: mr.Number, State: string(mr.State)}
 	switch mr.State {
 	case scm.StateMerged:
-		dp.Status.Phase = backflowv1alpha1.PhaseMerged
-		dp.Status.CommitSHA = mr.MergeCommitSHA
+		dp.Status.Phase = backflowv1beta1.PhaseMerged
+		dp.Status.EnsureGit().CommitSHA = mr.MergeCommitSHA
 		dp.Status.Message = mergedMessage(mr.URL)
 		leaveProposed(dp, reasonMergeRequestMerged, mergedConditionMessage(mr.URL, mr.MergeCommitSHA))
 	case scm.StateClosed:
-		dp.Status.Phase = backflowv1alpha1.PhaseRejected
+		dp.Status.Phase = backflowv1beta1.PhaseRejected
 		dp.Status.Message = closedMessage(mr.URL)
 		leaveProposed(dp, reasonMergeRequestClosed, closedConditionMessage(mr.URL))
 	default:
-		dp.Status.Phase = backflowv1alpha1.PhaseProposed
+		dp.Status.Phase = backflowv1beta1.PhaseProposed
 		dp.Status.Message = fmt.Sprintf("Merge request %s proposes the change against %s.", mr.URL, target)
 		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 			Type: conditionProposed, Status: metav1.ConditionTrue, Reason: reasonMergeRequestOpened,
@@ -654,7 +652,7 @@ func closedMessage(url string) string {
 	return fmt.Sprintf("Merge request %s was closed without merging; Argo CD can revert the cluster to what Git says.", url)
 }
 
-func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	access *scmAccess, target string) (ctrl.Result, error) {
 	for attempt := 1; attempt <= directCommitAttempts; attempt++ {
 		// After a restart the commit may already be on the branch.
@@ -695,7 +693,7 @@ func (r *DriftProposalReconciler) directCommit(ctx context.Context, dp *backflow
 // Not being able to look is not "there is none": a failed walk is held and
 // retried, and so is a history longer than the scan limit that does not reach
 // the revision, because a second commit would then be pushed on a guess.
-func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) alreadyCommitted(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	access *scmAccess, target string) (bool, ctrl.Result, error) {
 	tip, err := r.Writer.BranchTip(ctx, writeTarget(dp).RepoURL, target, access.auth)
 	if err != nil {
@@ -728,10 +726,10 @@ func (r *DriftProposalReconciler) scanLimit() int {
 	return defaultCommitScanLimit
 }
 
-func (r *DriftProposalReconciler) recordCommitted(ctx context.Context, dp *backflowv1alpha1.DriftProposal, target, sha string) error {
+func (r *DriftProposalReconciler) recordCommitted(ctx context.Context, dp *backflowv1beta1.DriftProposal, target, sha string) error {
 	orig := dp.DeepCopy()
-	dp.Status.Phase = backflowv1alpha1.PhaseMerged
-	dp.Status.CommitSHA = sha
+	dp.Status.Phase = backflowv1beta1.PhaseMerged
+	dp.Status.EnsureGit().CommitSHA = sha
 	dp.Status.Message = fmt.Sprintf("Committed to %s as %s.", target, sha)
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionProposed, Status: metav1.ConditionTrue, Reason: reasonCommitted,
@@ -744,13 +742,23 @@ func (r *DriftProposalReconciler) recordCommitted(ctx context.Context, dp *backf
 	return nil
 }
 
-// mergeRequestOptions returns the policy's merge request settings with the
-// API defaults applied for a policy that sets none.
-func mergeRequestOptions(policy *backflowv1alpha1.BackflowPolicy) backflowv1alpha1.MergeRequestOptions {
-	if policy.Spec.MergeRequest == nil {
-		return backflowv1alpha1.MergeRequestOptions{BranchPrefix: defaultBranchPrefix, AssignActor: true}
+// gitOptions are the policy's git settings with the defaults applied.
+type gitOptions struct {
+	BranchPrefix string
+	TargetBranch string
+	Labels       []string
+	Reviewers    []string
+	AssignActor  bool
+}
+
+// mergeRequestOptions returns the policy's git and merge request settings with the API defaults
+// applied for a policy that sets none.
+func mergeRequestOptions(policy *backflowv1beta1.BackflowPolicy) gitOptions {
+	g := policy.Spec.Git
+	opts := gitOptions{
+		BranchPrefix: g.BranchPrefix, TargetBranch: g.TargetBranch, Labels: g.MergeRequest.Labels,
+		Reviewers: g.MergeRequest.Reviewers, AssignActor: policy.Spec.AssignsActor(),
 	}
-	opts := *policy.Spec.MergeRequest
 	if opts.BranchPrefix == "" {
 		opts.BranchPrefix = defaultBranchPrefix
 	}
@@ -758,7 +766,7 @@ func mergeRequestOptions(policy *backflowv1alpha1.BackflowPolicy) backflowv1alph
 }
 
 // setProposedCondition records the Proposed condition without changing the phase.
-func (r *DriftProposalReconciler) setProposedCondition(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) setProposedCondition(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	status metav1.ConditionStatus, reason, message string) error {
 	orig := dp.DeepCopy()
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
@@ -770,7 +778,7 @@ func (r *DriftProposalReconciler) setProposedCondition(ctx context.Context, dp *
 // holdProposal records why nothing could be written yet and asks for another
 // attempt. The proposal stays in Mapping and recovers when the cause is gone.
 // A zero delay uses the backoff.
-func (r *DriftProposalReconciler) holdProposal(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) holdProposal(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	reason string, cause error, delay time.Duration) (ctrl.Result, error) {
 	cause = errors.New(redactText(cause.Error()))
 	if delay <= 0 {
@@ -786,10 +794,10 @@ func (r *DriftProposalReconciler) holdProposal(ctx context.Context, dp *backflow
 
 // fail ends the proposal in Failed. The cause is permanent: a retry would
 // give the same answer.
-func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1beta1.DriftProposal, reason, message string) (ctrl.Result, error) {
 	message = redactText(message)
 	orig := dp.DeepCopy()
-	dp.Status.Phase = backflowv1alpha1.PhaseFailed
+	dp.Status.Phase = backflowv1beta1.PhaseFailed
 	dp.Status.Message = message
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reason, Message: message, ObservedGeneration: dp.Generation,
@@ -800,12 +808,12 @@ func (r *DriftProposalReconciler) fail(ctx context.Context, dp *backflowv1alpha1
 
 // pushBackoff is how much longer to wait before pushing again after a decline,
 // or 0.
-func (r *DriftProposalReconciler) pushBackoff(dp *backflowv1alpha1.DriftProposal) time.Duration {
-	n := int(dp.Status.PushRejections)
-	if n < 1 || n > len(pushRetryDelays) || dp.Status.LastPushRejectedAt == nil {
+func (r *DriftProposalReconciler) pushBackoff(dp *backflowv1beta1.DriftProposal) time.Duration {
+	n := int(dp.Status.PushRejectionCount())
+	if n < 1 || n > len(pushRetryDelays) || dp.Status.PushLastRejectedAt() == nil {
 		return 0
 	}
-	return max(dp.Status.LastPushRejectedAt.Add(pushRetryDelays[n-1]).Sub(r.now()), 0)
+	return max(dp.Status.PushLastRejectedAt().Add(pushRetryDelays[n-1]).Sub(r.now()), 0)
 }
 
 // crdsOutdatedMessage is said when the API server drops a field of the status.
@@ -815,9 +823,9 @@ const crdsOutdatedMessage = "CRDs are outdated: the driftproposals CRD does not 
 // pushDeclined handles a push the Git server declined. The first declines are
 // held and tried again later (the count is in the status, so a restart does not
 // reset it); the last one fails the proposal with PushRejected.
-func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	what string, err error) (ctrl.Result, error) {
-	declines := int(dp.Status.PushRejections) + 1
+	declines := int(dp.Status.PushRejectionCount()) + 1
 	metrics.MergeRequest("git", metrics.MRPushRejected) // a push is the same on every host
 	if declines >= maxPushRejections {
 		return r.fail(ctx, dp, reasonPushRejected, fmt.Sprintf(
@@ -828,15 +836,15 @@ func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflow
 		what, declines, maxPushRejections, delay, err))
 	orig := dp.DeepCopy()
 	now := metav1.NewTime(r.now())
-	dp.Status.PushRejections = int32(declines) //nolint:gosec // at most maxPushRejections
-	dp.Status.LastPushRejectedAt = &now
+	dp.Status.EnsureGit().EnsurePush().Rejections = int32(declines) //nolint:gosec // at most maxPushRejections
+	dp.Status.EnsureGit().EnsurePush().LastRejectedAt = &now
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reasonPushRejected, Message: message, ObservedGeneration: dp.Generation,
 	})
 	if perr := r.patchStatus(ctx, dp, orig); perr != nil {
 		return ctrl.Result{}, perr
 	}
-	if int(dp.Status.PushRejections) != declines {
+	if int(dp.Status.PushRejectionCount()) != declines {
 		// The API server answered without the count: the CRD is from before the
 		// field existed (helm upgrade does not update CRDs) and pruned it. The count
 		// would stay at zero and the push would be retried for ever, so stop.
@@ -852,10 +860,10 @@ func (r *DriftProposalReconciler) pushDeclined(ctx context.Context, dp *backflow
 }
 
 // supersededByGit ends the proposal because Git changed under it. Git always wins.
-func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1alpha1.DriftProposal, message string) error {
+func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backflowv1beta1.DriftProposal, message string) error {
 	message = redactText(message)
 	orig := dp.DeepCopy()
-	dp.Status.Phase = backflowv1alpha1.PhaseSuperseded
+	dp.Status.Phase = backflowv1beta1.PhaseSuperseded
 	dp.Status.Message = message
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reasonSourceChanged, Message: message, ObservedGeneration: dp.Generation,
@@ -865,7 +873,7 @@ func (r *DriftProposalReconciler) supersededByGit(ctx context.Context, dp *backf
 }
 
 // gitFailure turns an error from the Git side into a held or failed proposal.
-func (r *DriftProposalReconciler) gitFailure(ctx context.Context, dp *backflowv1alpha1.DriftProposal, err error) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) gitFailure(ctx context.Context, dp *backflowv1beta1.DriftProposal, err error) (ctrl.Result, error) {
 	switch {
 	case errors.Is(err, gitrepo.ErrAuth):
 		return r.holdProposal(ctx, dp, reasonRepositoryAuthFailed, err, 0)
@@ -878,7 +886,7 @@ func (r *DriftProposalReconciler) gitFailure(ctx context.Context, dp *backflowv1
 }
 
 // scmFailure turns an error from the provider API into a held or failed proposal.
-func (r *DriftProposalReconciler) scmFailure(ctx context.Context, dp *backflowv1alpha1.DriftProposal, err error) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) scmFailure(ctx context.Context, dp *backflowv1beta1.DriftProposal, err error) (ctrl.Result, error) {
 	switch {
 	case errors.Is(err, scm.ErrUnauthorized):
 		return r.holdProposal(ctx, dp, reasonScmAuthFailed, err, 0)
@@ -899,49 +907,28 @@ func (r *DriftProposalReconciler) scmFailure(ctx context.Context, dp *backflowv1
 
 // accessFor finds the ScmConnection the policy matched to the proposal's
 // Application and reads its token and CA bundle. See scmAccessFor.
-func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
-	policy *backflowv1alpha1.BackflowPolicy) (*scmAccess, error) {
-	if len(dp.Spec.Sources) > 0 {
-		// Each repository of a multi-source Application has its own connection:
-		// the one of the repository written to.
-		return scmAccessForRepo(ctx, r.Client, dp.Namespace, policy, dp.Spec.Application.Name, writeTarget(dp).RepoURL)
-	}
-	return scmAccessFor(ctx, r.Client, dp.Namespace, policy, dp.Spec.Application.Name)
+func (r *DriftProposalReconciler) accessFor(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+	policy *backflowv1beta1.BackflowPolicy) (*scmAccess, error) {
+	// Each repository of a multi-source Application has its own connection: the one of the
+	// repository written to.
+	return scmAccessForRepo(ctx, r.Client, dp.Namespace, policy, dp.Spec.ApplicationRef.Name, writeTarget(dp).RepoURL)
 }
 
-// scmAccessFor finds the ScmConnection the policy matched to an Application's
-// repository and reads its token and CA bundle. It returns nil when there is
-// no connection. Unreadable credentials are reported as gitrepo.ErrAuth.
-func scmAccessFor(ctx context.Context, c client.Reader, namespace string,
-	policy *backflowv1alpha1.BackflowPolicy, appName string) (*scmAccess, error) {
-	var connName string
-	for _, a := range policy.Status.Applications {
-		if a.Name == appName {
-			connName = a.ScmConnection
-			break
-		}
-	}
-	return scmAccessByName(ctx, c, namespace, connName)
-}
-
-// scmAccessForRepo is scmAccessFor for one repository of a multi-source
-// Application: the connection the policy matched to that repository's host. It
-// returns nil when the repository has none (a public one, for example).
+// scmAccessForRepo finds the ScmConnection of the namespace whose hosts include the host of a
+// repository and reads its token and CA bundle. It returns nil when the repository has none (a
+// public one, for example). Unreadable credentials are reported as gitrepo.ErrAuth. It looks at the
+// ScmConnections themselves, not at the policy's status, which lists at most 100 Applications.
 func scmAccessForRepo(ctx context.Context, c client.Reader, namespace string,
-	policy *backflowv1alpha1.BackflowPolicy, appName, repoURL string) (*scmAccess, error) {
-	var connName string
-	for _, a := range policy.Status.Applications {
-		if a.Name != appName {
-			continue
-		}
-		for _, src := range a.Sources {
-			if src.RepoURL == repoURL && src.ScmConnection != "" {
-				connName = src.ScmConnection
-				break
-			}
-		}
+	_ *backflowv1beta1.BackflowPolicy, _ string, repoURL string) (*scmAccess, error) {
+	if c == nil {
+		return nil, nil
 	}
-	return scmAccessByName(ctx, c, namespace, connName)
+	var conns backflowv1beta1.ScmConnectionList
+	if err := c.List(ctx, &conns, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(conns.Items, func(a, b backflowv1beta1.ScmConnection) int { return cmp.Compare(a.Name, b.Name) })
+	return scmAccessByName(ctx, c, namespace, connectionFor(repoURL, conns.Items))
 }
 
 // forbiddenAsAuth makes an unreadable Secret (403) a held proposal, like a
@@ -960,12 +947,15 @@ func scmAccessByName(ctx context.Context, c client.Reader, namespace, connName s
 		return nil, nil
 	}
 
-	var conn backflowv1alpha1.ScmConnection
+	var conn backflowv1beta1.ScmConnection
 	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: connName}, &conn); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: ScmConnection %q not found", gitrepo.ErrAuth, connName)
 		}
 		return nil, err
+	}
+	if err := checkScmHost(&conn); err != nil {
+		return nil, fmt.Errorf("%w: %w", gitrepo.ErrAuth, err)
 	}
 	ref := conn.Spec.TokenSecretRef
 	var secret corev1.Secret

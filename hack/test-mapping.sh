@@ -160,7 +160,7 @@ trap cleanup EXIT
 # proposals <resource name>: one line per DriftProposal of the policy:
 #   <name>|<phase>|<resource name>|<supersededBy>|<path>:<op>:<desired>><live>;...
 proposals() {
-  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resource.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resourceRef.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v r="$1" '$3 == r'
 }
 
@@ -252,7 +252,7 @@ else
   make manifests install >/dev/null
   make build >/dev/null
   mkdir -p "$LOG_DIR"
-  "$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
+  "$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
     curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -279,23 +279,24 @@ TOKEN=""
 apply_policy() {
   local ignore="${1:-}"
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
   mode: ReportOnly
   batchWindow: ${WINDOW:-5s}
   applications:
     names: ["$APP"]
   argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token
+    namespace: $ARGOCD_NS
+    server:
+      url: $ARGOCD_URL
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token
 $ignore
 YAML
 }
@@ -306,7 +307,7 @@ wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready -
 # proposals_of <resource name>: names of the proposals of the policy for it.
 proposals_of() {
   k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" \
-    -o jsonpath='{range .items[*]}{.metadata.name}|{.spec.resource.name}{"\n"}{end}' 2>/dev/null |
+    -o jsonpath='{range .items[*]}{.metadata.name}|{.spec.resourceRef.name}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v r="$1" '$2 == r { print $1 }'
 }
 
@@ -342,27 +343,30 @@ expect_diff_line() {
 # creates a Directory proposal of the policy by hand, like the drift controller would.
 create_proposal() {
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: DriftProposal
 metadata:
   name: $1
   namespace: $NS
 spec:
-  policyName: $POLICY
-  application:
+  policyRef:
+    name: $POLICY
+  applicationRef:
     name: $APP
     namespace: $ARGOCD_NS
-  resource:
+  resourceRef:
     version: v1
     kind: $2
     namespace: $3
     name: $4
-  source:
-    repoURL: $6
-    revision: $7
-    targetRevision: $APP_TARGET
-    path: $APP_PATH
-    type: $5
+  sources:
+    - position: 1
+      role: Render
+      repoURL: $6
+      revision: $7
+      targetRevision: $APP_TARGET
+      path: $APP_PATH
+      type: $5
   changes:
     - path: /data/LOG_LEVEL
       op: Replace
@@ -409,7 +413,7 @@ if [[ -n "$P1" ]]; then
   expect_eq "edit location" "/data/LOG_LEVEL" "$(dp_field "$P1" .status.mapping.edits[0].location)"
   expect_eq "edit value" '"debug"' "$(dp_field "$P1" .status.mapping.edits[0].value)"
   expect_eq "edit changeIndex" "0" "$(dp_field "$P1" .status.mapping.edits[0].changeIndex)"
-  expect_eq "mapped at the synced revision" "$SYNCED_REV" "$(dp_field "$P1" .spec.source.revision)"
+  expect_eq "mapped at the synced revision" "$SYNCED_REV" "$(dp_field "$P1" .spec.sources[0].revision)"
 
   DIFF1="$(dp_field "$P1" .status.mapping.diff)"
   expect_diff_line "diff" "$P1" "--- a/$APP_PATH/configmap.yaml"
@@ -459,13 +463,14 @@ expect_unmapped() {
   wait_for "$3 is Unmapped" dp_phase_is "$1" Unmapped
   expect_eq "$3: Mapped reason" "$2" "$(mapped_reason "$1")"
   expect_eq "$3: Mapped status" "False" "$(mapped_status "$1")"
-  expect_eq "$3: strategy" "Unmapped" "$(dp_field "$1" .status.mapping.strategy)"
-  expect_nonempty "$3: mapping.reason" "$(dp_field "$1" .status.mapping.reason)"
+  expect_eq "$3: strategy (none when not mapped)" "" "$(dp_field "$1" .status.mapping.strategy)"
+  expect_nonempty "$3: the reason" "$(dp_field "$1" '.status.conditions[?(@.type=="Mapped")].message')"
   expect_eq "$3: number of edits" "0" "$(dp_field "$1" '.status.mapping.edits[*].file' | wc -w | tr -d ' ')"
 }
 expect_nonempty() { if [[ -n "$2" ]]; then pass "$1 = $2"; else fail "$1 is empty"; fi; }
 expect_unmapped ghost NotFound "a resource that is not in the repository"
-expect_unmapped not-directory UnsupportedSourceType "a Helm source"
+# Helm is a mapped source type: a Helm proposal of a Directory Application is traced into the value files, and none holds the value.
+expect_unmapped not-directory NoVerifiedCandidate "a Helm source"
 expect_unmapped unknown-commit RevisionNotFound "a commit that does not exist"
 
 # ---------------------------------------------------------------------------

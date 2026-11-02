@@ -8,6 +8,8 @@ metadata:
 spec:
   group: backflow.io
   names:
+    categories:
+    - backflow
     kind: BackflowPolicy
     listKind: BackflowPolicyList
     plural: backflowpolicies
@@ -20,6 +22,9 @@ spec:
     - jsonPath: .spec.mode
       name: Mode
       type: string
+    - jsonPath: .status.applicationCount
+      name: Applications
+      type: integer
     - jsonPath: .status.openProposals
       name: Open
       type: integer
@@ -29,12 +34,14 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: |-
           BackflowPolicy decides which Argo CD Applications are watched for drift
-          and how that drift is proposed back to Git.
+          and how that drift is proposed back to Git. Deleting a policy deletes its DriftProposals (they
+          are owned by it); a merge request that is open on the Git host stays open and is no longer
+          tracked.
         properties:
           apiVersion:
             description: |-
@@ -63,8 +70,12 @@ spec:
                 properties:
                   names:
                     items:
+                      maxLength: 253
+                      minLength: 1
                       type: string
+                    maxItems: 100
                     type: array
+                    x-kubernetes-list-type: set
                   selector:
                     description: |-
                       A label selector is a label query over a set of resources. The result of matchLabels and
@@ -115,84 +126,84 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
+                x-kubernetes-validations:
+                - message: set names, selector, or both
+                  rule: (has(self.names) && size(self.names) > 0) || has(self.selector)
               argoCD:
-                description: |-
-                  Argo CD API connection used to read managed resources for drift detection.
-                  When unset, the connection the installer gave the operator (its flags
-                  --argocd-server, --argocd-token-secret-* and --argocd-ca-file; the chart
-                  values argocd.*) is used, and status.argoCD says so. Drift detection is
-                  skipped while neither exists. A policy can only name Secrets of its own
-                  namespace; it cannot point the operator at a Secret elsewhere.
+                default: {}
+                description: Where the Argo CD Applications are and how to reach the
+                  Argo CD API.
                 properties:
-                  caSecretRef:
-                    description: Secret key holding a PEM CA bundle used to verify
-                      the Argo CD server.
-                    properties:
-                      key:
-                        description: The key of the secret to select from.  Must be
-                          a valid secret key.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the Secret or its key must be
-                          defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  insecureSkipTLSVerify:
-                    default: false
-                    description: Skip verification of the Argo CD server certificate.
-                    type: boolean
-                  tokenSecretRef:
-                    description: Secret key holding an Argo CD API token with read
-                      access to applications.
-                    properties:
-                      key:
-                        description: The key of the secret to select from.  Must be
-                          a valid secret key.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the Secret or its key must be
-                          defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  url:
-                    default: https://argocd-server.argocd.svc
+                  namespace:
+                    default: argocd
                     description: |-
-                      Base URL of the Argo CD API server. Override it when the operator runs
-                      outside the cluster, e.g. https://localhost:8080 behind a port-forward.
+                      Namespace where Argo CD Applications live.
+                      "argocd" for upstream Argo CD, "openshift-gitops" for OpenShift GitOps.
+                    maxLength: 63
                     type: string
-                required:
-                - tokenSecretRef
+                  server:
+                    description: |-
+                      Argo CD API connection used to read managed resources for drift detection.
+                      When unset, the connection the installer gave the operator (its flags
+                      --argocd-server, --argocd-token-secret-* and --argocd-ca-file; the chart
+                      values argocd.*) is used, and status.argoCD says so. Drift detection is
+                      skipped while neither exists. A policy can only name Secrets of its own
+                      namespace; it cannot point the operator at a Secret elsewhere. A server of its own must
+                      be in the allowlist the installer set (argocd.allowedServers); otherwise the policy is
+                      not Ready (ServerNotAllowed) and no request is made.
+                    properties:
+                      caSecretRef:
+                        description: Secret key, in this namespace, holding a PEM
+                          CA bundle used to verify the Argo CD server.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipTLSVerify:
+                        default: false
+                        description: Skip verification of the Argo CD server certificate.
+                        type: boolean
+                      tokenSecretRef:
+                        description: Secret key, in this namespace, holding an Argo
+                          CD API token with read access to applications.
+                        properties:
+                          key:
+                            description: Key of the Secret that holds the value.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      url:
+                        default: https://argocd-server.argocd.svc
+                        description: |-
+                          Base URL of the Argo CD API server. Override it when the operator runs
+                          outside the cluster, e.g. https://localhost:8080 behind a port-forward.
+                        maxLength: 2048
+                        pattern: ^https?://[^\s/]+(/\S*)?$
+                        type: string
+                    required:
+                    - tokenSecretRef
+                    type: object
                 type: object
-              argoCDNamespace:
-                default: argocd
-                description: |-
-                  Namespace where Argo CD Applications live.
-                  "argocd" for upstream Argo CD, "openshift-gitops" for OpenShift GitOps.
-                type: string
               batchWindow:
                 default: 30s
                 description: |-
@@ -201,41 +212,92 @@ spec:
                   observations. A drift that disappears within the window is never
                   proposed, and several quick edits to the same resource give one
                   proposal for the final state. An explicit 0s waits for the second
-                  observation only. Defaults to 30s.
+                  observation only. With the actor webhook on, a drift is also held for the time the
+                  webhook needs to write its records (at most 5s); the larger counts.
+                format: duration
+                maxLength: 32
                 type: string
+                x-kubernetes-validations:
+                - message: batchWindow must be between 0s and 24h
+                  rule: duration(self) >= duration('0s') && duration(self) <= duration('24h')
               exclude:
                 description: |-
                   Resource kinds never captured. Evaluated after Include.
-                  Secrets are excluded unless explicitly included.
+                  Secrets are excluded unless Include names the Secret kind literally.
                 items:
                   description: KindSelector matches resources by API group and kind.
                   properties:
                     group:
                       description: API group; empty for the core group, "*" for any
                         group.
+                      maxLength: 253
                       type: string
                     kind:
                       description: Kind, or "*" for any kind.
+                      maxLength: 253
+                      minLength: 1
                       type: string
                   required:
                   - kind
                   type: object
+                maxItems: 64
                 type: array
+                x-kubernetes-list-type: atomic
+              git:
+                default: {}
+                description: |-
+                  Where and how Backflow writes to Git: the branches, and for a merge request its labels
+                  and reviewers.
+                properties:
+                  branchPrefix:
+                    default: backflow/
+                    description: Prefix for branches Backflow creates.
+                    maxLength: 64
+                    type: string
+                  mergeRequest:
+                    default: {}
+                    description: Settings of the merge requests. Used when Mode is
+                      MergeRequest.
+                    properties:
+                      assignActor:
+                        default: true
+                        description: |-
+                          Assign the Kubernetes user who made the change, when they map to an SCM account.
+                          It is a pointer so that false can be set: the default is true.
+                        type: boolean
+                      labels:
+                        description: Labels to put on the merge request.
+                        items:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: set
+                      reviewers:
+                        description: Usernames to assign as reviewers.
+                        items:
+                          maxLength: 128
+                          minLength: 1
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
+                  targetBranch:
+                    description: Target branch. Defaults to the Application's targetRevision
+                      when it is a branch.
+                    maxLength: 255
+                    type: string
+                type: object
               helm:
                 description: Helm-specific behaviour.
                 properties:
-                  addOverrides:
-                    default: true
+                  allowApplicationOverride:
+                    default: false
                     description: |-
-                      When the value a drifted field had in Git comes only from the chart's
-                      own defaults (the chart's values.yaml, or that of a dependency under its
-                      name or alias, or global.*), propose adding that key, with the live
-                      value, to the Application's last value file, which wins over the
-                      defaults. Existing lines of the value files are edited first; an
-                      override is only tried when none of those verifies, and it is verified
-                      by rendering like any other edit. Keys under a list in the defaults are
-                      not overridden. Set it to false to leave such proposals Unmapped.
-                      Defaults to true.
+                      When no mapping is found, propose the change as an override in the
+                      Application's spec.source.helm.valuesObject instead of leaving it unmapped.
                     type: boolean
                   allowCollateralChanges:
                     description: |-
@@ -259,13 +321,21 @@ spec:
                       - Labels
                       - Annotations
                       type: string
+                    maxItems: 2
                     type: array
                     x-kubernetes-list-type: set
-                  fallbackToApplicationOverride:
-                    default: false
+                  allowValueOverrides:
+                    default: true
                     description: |-
-                      When no mapping is found, propose the change as an override in the
-                      Application's spec.source.helm.valuesObject instead of leaving it unmapped.
+                      When the value a drifted field had in Git comes only from the chart's
+                      own defaults (the chart's values.yaml, or that of a dependency under its
+                      name or alias, or global.*), propose adding that key, with the live
+                      value, to the Application's last value file, which wins over the
+                      defaults. Existing lines of the value files are edited first; an
+                      override is only tried when none of those verifies, and it is verified
+                      by rendering like any other edit. Keys under a list in the defaults are
+                      not overridden. Set it to false to leave such proposals Unmapped.
+                      Defaults to true.
                     type: boolean
                   mappingMode:
                     default: Auto
@@ -285,33 +355,44 @@ spec:
                         fieldPointer:
                           description: JSON pointer in the rendered resource, e.g.
                             /spec/replicas.
+                          maxLength: 1024
+                          pattern: ^/
                           type: string
                         group:
                           description: API group; empty for the core group, "*" for
                             any group.
+                          maxLength: 253
                           type: string
                         kind:
                           description: Kind, or "*" for any kind.
+                          maxLength: 253
+                          minLength: 1
                           type: string
                         name:
+                          maxLength: 253
                           type: string
                         valuesPath:
                           description: Dotted path in values, e.g. api.replicaCount.
+                          maxLength: 256
+                          minLength: 1
                           type: string
                       required:
                       - fieldPointer
                       - kind
                       - valuesPath
                       type: object
+                    maxItems: 64
                     type: array
+                    x-kubernetes-list-type: atomic
                   targetValuesFile:
                     description: |-
                       Which values file receives an override of a chart default (see
-                      addOverrides) when the Application uses several. It must be one of the
+                      allowValueOverrides) when the Application uses several. It must be one of the
                       Application's value files, as a repository path, relative to the chart
                       directory, or as the Application writes it; otherwise such a change stays
                       Unmapped and says so. Defaults to the last file in
                       spec.source.helm.valueFiles.
+                    maxLength: 512
                     type: string
                 type: object
               ignoreFields:
@@ -324,25 +405,35 @@ spec:
                     group:
                       description: API group; empty for the core group, "*" for any
                         group.
+                      maxLength: 253
                       type: string
                     jsonPointers:
                       description: JSON pointers to ignore, e.g. /spec/replicas.
                       items:
+                        maxLength: 1024
+                        pattern: ^/
                         type: string
+                      maxItems: 32
                       minItems: 1
                       type: array
+                      x-kubernetes-list-type: atomic
                     kind:
                       description: Kind, or "*" for any kind.
+                      maxLength: 253
+                      minLength: 1
                       type: string
                     name:
                       description: Restrict to a resource name. Empty matches every
                         name.
+                      maxLength: 253
                       type: string
                   required:
                   - jsonPointers
                   - kind
                   type: object
+                maxItems: 64
                 type: array
+                x-kubernetes-list-type: atomic
               include:
                 description: Resource kinds to capture. Empty means every kind the
                   Application manages.
@@ -352,32 +443,37 @@ spec:
                     group:
                       description: API group; empty for the core group, "*" for any
                         group.
+                      maxLength: 253
                       type: string
                     kind:
                       description: Kind, or "*" for any kind.
+                      maxLength: 253
+                      minLength: 1
                       type: string
                   required:
                   - kind
                   type: object
+                maxItems: 64
                 type: array
+                x-kubernetes-list-type: atomic
               kustomize:
                 description: Kustomize-specific behaviour.
                 properties:
-                  addPatches:
-                    default: true
-                    description: |-
-                      As a last resort, when no existing file can take the change, add a
-                      strategic merge patch with only the drifted fields to the Application's
-                      overlay (backflow-patches/<kind>-<name>.yaml) and list it under patches
-                      in the overlay's kustomization.
-                    type: boolean
-                  editBases:
+                  allowBaseEdits:
                     default: false
                     description: |-
                       Allow edits to files outside the Application's path: a base or a
                       component that other Applications may use too. A change there reaches
                       every Application that includes the file, so the merge request names them.
                       By default only files inside the Application's path are edited.
+                    type: boolean
+                  allowNewPatches:
+                    default: true
+                    description: |-
+                      As a last resort, when no existing file can take the change, add a
+                      strategic merge patch with only the drifted fields to the Application's
+                      overlay (backflow-patches/<kind>-<name>.yaml) and list it under patches
+                      in the overlay's kustomization.
                     type: boolean
                 type: object
               mapping:
@@ -416,32 +512,6 @@ spec:
                     - Never
                     type: string
                 type: object
-              mergeRequest:
-                description: Merge request settings. Used when Mode is MergeRequest.
-                properties:
-                  assignActor:
-                    default: true
-                    description: Assign the Kubernetes user who made the change, when
-                      they map to an SCM account.
-                    type: boolean
-                  branchPrefix:
-                    default: backflow/
-                    description: Prefix for branches Backflow creates.
-                    type: string
-                  labels:
-                    items:
-                      type: string
-                    type: array
-                  reviewers:
-                    description: Usernames to assign as reviewers.
-                    items:
-                      type: string
-                    type: array
-                  targetBranch:
-                    description: Target branch. Defaults to the Application's targetRevision
-                      when it is a branch.
-                    type: string
-                type: object
               mode:
                 default: MergeRequest
                 description: What to do with detected drift.
@@ -450,6 +520,24 @@ spec:
                 - DirectCommit
                 - ReportOnly
                 type: string
+              retention:
+                default: {}
+                description: How long Backflow keeps what is finished.
+                properties:
+                  finishedProposals:
+                    default: 336h
+                    description: |-
+                      A DriftProposal that is Merged, Rejected, Reverted, Superseded or Failed is deleted this long
+                      after it finished. Proposals that are open, or Unmapped, are never deleted. 0s keeps
+                      finished proposals for ever. Deleting a proposal does not touch its merge request.
+                    format: duration
+                    maxLength: 32
+                    type: string
+                    x-kubernetes-validations:
+                    - message: finishedProposals must be between 0s and 8760h
+                      rule: duration(self) >= duration('0s') && duration(self) <=
+                        duration('8760h')
+                type: object
             required:
             - applications
             type: object
@@ -457,8 +545,14 @@ spec:
             description: BackflowPolicyStatus summarises what the policy currently
               covers.
             properties:
+              applicationCount:
+                description: How many Applications the policy covers.
+                format: int32
+                type: integer
               applications:
-                description: Details of each matched Application.
+                description: |-
+                  Details of the matched Applications, at most 100. The policy covers all of them even when
+                  the list is cut: see applicationCount.
                 items:
                   description: ApplicationSummary is what Backflow knows about a matched
                     Argo CD Application.
@@ -468,43 +562,22 @@ spec:
                       format: int32
                       type: integer
                     name:
-                      type: string
-                    path:
-                      description: Path inside the repository; for Helm repositories,
-                        the chart name.
-                      type: string
-                    reason:
-                      description: |-
-                        Why Backflow does not track the Application, or empty when it does.
-                        CredentialsInRepoURL: a repository URL of the Application contains
-                        credentials; only the redacted URL is kept here.
-                      type: string
-                    repoURL:
-                      description: Git repository the Application deploys from.
-                      type: string
-                    scmConnection:
-                      description: ScmConnection used for this repository. Empty when
-                        none matches.
-                      type: string
-                    sourceType:
-                      description: 'How Argo CD renders the source: Directory, Kustomize,
-                        Helm or Plugin.'
+                      maxLength: 253
                       type: string
                     sources:
-                      description: |-
-                        Sources lists every source of an Application that has several, in order.
-                        The fields above keep describing the first source. Empty for an
-                        Application with one source.
+                      description: Every source of the Application, in order. One
+                        entry for an Application with one source.
                       items:
-                        description: SourceSummary describes one source of a multi-source
-                          Application.
+                        description: SourceSummary describes one source of an Application.
                         properties:
                           chart:
                             description: Chart name, for a source that comes from
                               a Helm repository or a registry.
+                            maxLength: 253
                             type: string
                           path:
                             description: Path inside a Git repository.
+                            maxLength: 1024
                             type: string
                           position:
                             description: |-
@@ -515,57 +588,102 @@ spec:
                           ref:
                             description: Name of a ref source, referenced as $name/...
                               in value files.
+                            maxLength: 253
                             type: string
                           repoURL:
                             description: |-
                               Repository the source comes from: a Git repository, a Helm repository or
-                              an OCI registry.
+                              an OCI registry. Credentials in it are redacted.
+                            maxLength: 2048
                             type: string
                           revision:
                             description: |-
                               Revision Argo CD resolved and compares against: a commit SHA, or the chart
                               version (status.sync.revisions at this position).
+                            maxLength: 255
                             type: string
-                          scmConnection:
+                          scmConnectionName:
                             description: |-
-                              ScmConnection used for this repository. Empty for a repository that is
-                              not a Git repository, and when none matches.
-                            type: string
-                          sourceType:
-                            description: |-
-                              How Argo CD renders the source: Directory, Kustomize, Helm or Plugin.
-                              Empty for a ref source, which is only referenced.
+                              ScmConnection, in the policy's namespace, used for this repository. Empty for a repository
+                              that is not a Git repository, and when none matches.
+                            maxLength: 253
                             type: string
                           syncedRevision:
                             description: Revision of the last sync (status.operationState.syncResult.revisions).
+                            maxLength: 255
                             type: string
                           targetRevision:
                             description: Branch, tag, chart version or range the source
                               tracks.
+                            maxLength: 255
+                            type: string
+                          type:
+                            description: How Argo CD renders the source. Empty for
+                              a ref source, which is only referenced.
+                            enum:
+                            - Directory
+                            - Kustomize
+                            - Helm
+                            - Plugin
                             type: string
                         required:
                         - position
                         - repoURL
                         type: object
+                      maxItems: 16
                       type: array
                       x-kubernetes-list-type: atomic
-                    syncedRevision:
-                      description: Commit Argo CD last synced.
-                      type: string
-                    targetRevision:
-                      description: Branch or tag the Application tracks.
+                    untrackedReason:
+                      description: Why Backflow does not track the Application, or
+                        empty when it does.
+                      enum:
+                      - CredentialsInRepoURL
                       type: string
                   required:
                   - managedResources
                   - name
                   type: object
+                maxItems: 100
                 type: array
+                x-kubernetes-list-type: atomic
+              applicationsTruncated:
+                description: True when applications lists fewer Applications than
+                  applicationCount.
+                type: boolean
               argoCD:
                 description: Which Argo CD connection the policy uses. Unset while
                   there is none.
                 properties:
+                  hiddenApplications:
+                    description: |-
+                      How many Applications the spec selects that the policy may not see, by reason. Only
+                      counts are shown, never a name, repository, path or project.
+                    items:
+                      description: HiddenApplications is a number of selected Applications
+                        that are hidden for a reason.
+                      properties:
+                        count:
+                          format: int32
+                          type: integer
+                        reason:
+                          description: HiddenReason says why a selected Application
+                            is not visible to the policy.
+                          enum:
+                          - ProjectNotAllowed
+                          - NotVisibleToToken
+                          - VisibilityUnknown
+                          type: string
+                      required:
+                      - count
+                      - reason
+                      type: object
+                    maxItems: 3
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - reason
+                    x-kubernetes-list-type: map
                   source:
-                    description: Policy (spec.argoCD) or OperatorDefault.
+                    description: Policy (spec.argoCD.server) or OperatorDefault.
                     enum:
                     - Policy
                     - OperatorDefault
@@ -633,23 +751,11 @@ spec:
                   - type
                   type: object
                 type: array
-              excludedApplications:
-                description: |-
-                  How many Applications the spec selects that the policy may not see: their
-                  Argo CD project is not allowed for the policy's namespace (operator default
-                  connection), or the policy's own token cannot get them. Only the count is
-                  shown, never a name, repository, path or project.
-                format: int32
-                type: integer
-              excludedReason:
-                description: 'Why they are excluded: ProjectNotAllowed or NotVisibleToToken.'
-                type: string
-              matchedApplications:
-                description: Applications currently matched.
-                items:
-                  type: string
-                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
               observedGeneration:
+                description: The generation of the spec that the conditions describe.
                 format: int64
                 type: integer
               openProposals:

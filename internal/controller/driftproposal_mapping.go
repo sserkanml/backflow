@@ -19,7 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/metrics"
@@ -85,8 +85,8 @@ func (c CacheReader) Open(ctx context.Context, repoURL, sha string, auth *gitrep
 
 // mappingSettled reports whether mapping has reached a result that is not
 // retried: it succeeded, or the proposal is Unmapped.
-func mappingSettled(dp *backflowv1alpha1.DriftProposal) bool {
-	if dp.Status.Phase == backflowv1alpha1.PhaseUnmapped {
+func mappingSettled(dp *backflowv1beta1.DriftProposal) bool {
+	if dp.Status.Phase == backflowv1beta1.PhaseUnmapped {
 		return true
 	}
 	return meta.IsStatusConditionTrue(dp.Status.Conditions, conditionMapped)
@@ -101,12 +101,12 @@ func (r *DriftProposalReconciler) now() time.Time {
 
 // retryDelay is how long to wait before trying again. It grows with the time
 // the source has been unreadable (half of it), between retryMin and retryMax.
-func (r *DriftProposalReconciler) retryDelay(dp *backflowv1alpha1.DriftProposal) time.Duration {
+func (r *DriftProposalReconciler) retryDelay(dp *backflowv1beta1.DriftProposal) time.Duration {
 	return r.retryDelayFor(dp, conditionMapped)
 }
 
 // retryDelayFor is retryDelay for the given condition type.
-func (r *DriftProposalReconciler) retryDelayFor(dp *backflowv1alpha1.DriftProposal, conditionType string) time.Duration {
+func (r *DriftProposalReconciler) retryDelayFor(dp *backflowv1beta1.DriftProposal, conditionType string) time.Duration {
 	c := meta.FindStatusCondition(dp.Status.Conditions, conditionType)
 	if c == nil || c.Status != metav1.ConditionFalse {
 		return retryMin
@@ -117,10 +117,10 @@ func (r *DriftProposalReconciler) retryDelayFor(dp *backflowv1alpha1.DriftPropos
 
 // mapProposal maps a proposal onto the file in Git that defines the resource
 // and records the verified result. It never writes to Git.
-func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	if t := dp.Spec.Source.Type; t != backflowv1alpha1.SourceDirectory && t != backflowv1alpha1.SourceHelm && t != backflowv1alpha1.SourceKustomize {
+	if t := dp.Spec.First().Type; t != backflowv1beta1.SourceDirectory && t != backflowv1beta1.SourceHelm && t != backflowv1beta1.SourceKustomize {
 		return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType,
 			fmt.Sprintf("Mapping %s sources is not supported; only Directory, Helm and Kustomize sources are mapped.", t))
 	}
@@ -137,19 +137,19 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return r.retry(ctx, dp, reasonApplicationNotFound,
-				fmt.Errorf("the Argo CD Application %s/%s was not found", dp.Spec.Application.Namespace, dp.Spec.Application.Name))
+				fmt.Errorf("the Argo CD Application %s/%s was not found", dp.Spec.ApplicationRef.Namespace, dp.Spec.ApplicationRef.Name))
 		}
 		return r.retry(ctx, dp, reasonApplicationUnavailable, fmt.Errorf("cannot read the Argo CD Application: %w", err))
 	}
 
-	if dp.Spec.Source.Type == backflowv1alpha1.SourceHelm {
+	if dp.Spec.First().Type == backflowv1beta1.SourceHelm {
 		// A chart that is not in the Git repository has nothing to read there.
 		if err := helmSourceProblem(app); err != nil {
 			return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType, err.Error())
 		}
 	}
 
-	if dp.Spec.Source.Type == backflowv1alpha1.SourceKustomize {
+	if dp.Spec.First().Type == backflowv1beta1.SourceKustomize {
 		if err := kustomizeSourceProblem(app); err != nil {
 			return ctrl.Result{}, r.unmapped(ctx, dp, reasonUnsupportedSourceType, err.Error())
 		}
@@ -161,7 +161,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 		case errors.Is(err, gitrepo.ErrAuth):
 			return r.retry(ctx, dp, reasonRepositoryAuthFailed, err)
 		case apierrors.IsNotFound(err):
-			return r.retry(ctx, dp, reasonPolicyNotFound, fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyName))
+			return r.retry(ctx, dp, reasonPolicyNotFound, fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyRef.Name))
 		}
 		return r.retry(ctx, dp, reasonRepositoryUnavailable, fmt.Errorf("cannot read the access to the repository: %w", err))
 	}
@@ -186,7 +186,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 
 	started := time.Now()
 	change, err := r.mapTree(ctx, dp, app, tree, writeTarget(dp).Revision)
-	metrics.Verification(string(dp.Spec.Source.Type), verificationResult(err), time.Since(started))
+	metrics.Verification(string(dp.Spec.First().Type), verificationResult(err), time.Since(started))
 	if err != nil {
 		if verdict, ok := errors.AsType[*verdictError](err); ok {
 			if len(verdict.options) > 0 {
@@ -212,8 +212,10 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 
 	orig := dp.DeepCopy()
 	edits := change.edits()
-	dp.Status.Mapping = &backflowv1alpha1.Mapping{
-		RepoURL:    change.repoURL,
+	for i := range edits {
+		edits[i].RepoURL = change.repoURL
+	}
+	dp.Status.Mapping = &backflowv1beta1.Mapping{
 		Strategy:   change.strategy,
 		Edits:      edits,
 		Verified:   true,
@@ -233,7 +235,7 @@ func (r *DriftProposalReconciler) mapProposal(ctx context.Context, dp *backflowv
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	metrics.MappingResult(string(dp.Spec.Source.Type), string(change.strategy), reason)
+	metrics.MappingResult(string(dp.Spec.First().Type), string(change.strategy), reason)
 	log.Info("Proposal mapped", "proposal", dp.Name, "strategy", change.strategy, "files", change.paths(), "edits", len(edits), "renders", change.renders)
 	return ctrl.Result{}, nil
 }
@@ -274,19 +276,23 @@ func mappingReason(err error) (reason string, ok bool) {
 
 // unmapped records that the change cannot be traced back to Git with
 // certainty. A human decides what to do with it.
-func (r *DriftProposalReconciler) unmapped(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string) error {
+func (r *DriftProposalReconciler) unmapped(ctx context.Context, dp *backflowv1beta1.DriftProposal, reason, message string) error {
 	return r.unmappedWith(ctx, dp, reason, message, nil)
 }
 
+// strategyUnmapped is the strategy label of the metric for a proposal that could not be mapped; the API has
+// no such strategy (the Mapped condition says why).
+const strategyUnmapped = "Unmapped"
+
 // unmappedWith is unmapped with the Application option that sets the value, when
 // one does.
-func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason, message string,
-	application *backflowv1alpha1.ApplicationValue) error {
+func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflowv1beta1.DriftProposal, reason, message string,
+	application *backflowv1beta1.ApplicationValue) error {
 	message = redactText(message)
 	orig := dp.DeepCopy()
-	dp.Status.Phase = backflowv1alpha1.PhaseUnmapped
+	dp.Status.Phase = backflowv1beta1.PhaseUnmapped
 	dp.Status.Message = message
-	dp.Status.Mapping = &backflowv1alpha1.Mapping{Strategy: backflowv1alpha1.StrategyUnmapped, Reason: message, Application: application}
+	dp.Status.Mapping = &backflowv1beta1.Mapping{ApplicationOption: application}
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionMapped, Status: metav1.ConditionFalse, Reason: reason,
 		Message: message, ObservedGeneration: dp.Generation,
@@ -295,7 +301,7 @@ func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflow
 	if err := r.patchStatus(ctx, dp, orig); err != nil {
 		return err
 	}
-	metrics.MappingResult(string(dp.Spec.Source.Type), string(backflowv1alpha1.StrategyUnmapped), reason)
+	metrics.MappingResult(string(dp.Spec.First().Type), strategyUnmapped, reason)
 	return nil
 }
 
@@ -303,7 +309,7 @@ func (r *DriftProposalReconciler) unmappedWith(ctx context.Context, dp *backflow
 // another attempt later. It never gives up: the Mapped condition stays False
 // with the reason, the phase stays Mapping, and the proposal is mapped as
 // soon as the problem is gone.
-func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1alpha1.DriftProposal, reason string, cause error) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) retry(ctx context.Context, dp *backflowv1beta1.DriftProposal, reason string, cause error) (ctrl.Result, error) {
 	cause = errors.New(redactText(cause.Error()))
 	if reason == reasonArgoCDUnauthorized {
 		// The Argo CD token may have been renewed: the next attempt reads its Secret again.
@@ -344,15 +350,15 @@ var heldReasons = map[string]bool{
 // ReportOnly mode, which writes nothing to Git. A change of a policy only
 // enqueues the proposals of that policy.
 func (r *DriftProposalReconciler) heldProposals(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list backflowv1alpha1.DriftProposalList
+	var list backflowv1beta1.DriftProposalList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
-	policy, isPolicy := obj.(*backflowv1alpha1.BackflowPolicy)
+	policy, isPolicy := obj.(*backflowv1beta1.BackflowPolicy)
 	var requests []reconcile.Request
 	for i := range list.Items {
 		p := &list.Items[i]
-		if p.Status.Phase != backflowv1alpha1.PhaseMapping || (isPolicy && p.Spec.PolicyName != policy.Name) {
+		if p.Status.Phase != backflowv1beta1.PhaseMapping || (isPolicy && p.Spec.PolicyRef.Name != policy.Name) {
 			continue
 		}
 		for _, t := range []string{conditionMapped, conditionProposed} {
@@ -393,12 +399,12 @@ func directoryInfoOf(app *unstructured.Unstructured) directorySourceInfo {
 // with the strategy of the proposal's source type. Errors are a *verdictError
 // (the change cannot be traced back), a *heldError (something outside the
 // repository is not usable now), or a failure to read the repository.
-func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
-	switch dp.Spec.Source.Type {
-	case backflowv1alpha1.SourceHelm:
+	switch dp.Spec.First().Type {
+	case backflowv1beta1.SourceHelm:
 		return r.mapHelm(ctx, dp, app, tree, sha)
-	case backflowv1alpha1.SourceKustomize:
+	case backflowv1beta1.SourceKustomize:
 		return r.mapKustomize(ctx, dp, app, tree)
 	}
 	src := directoryInfoOf(app)
@@ -410,10 +416,10 @@ func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alp
 	if policy.Spec.PartialAllowed() {
 		mapDirectory = mapping.MapPartial
 	}
-	res, err := mapDirectory(tree, dp.Spec.Source.Path, src.options, src.destinationNamespace,
+	res, err := mapDirectory(tree, dp.Spec.First().Path, src.options, src.destinationNamespace,
 		mapping.ResourceID{
-			Group: dp.Spec.Resource.Group, Kind: dp.Spec.Resource.Kind,
-			Namespace: dp.Spec.Resource.Namespace, Name: dp.Spec.Resource.Name,
+			Group: dp.Spec.ResourceRef.Group, Kind: dp.Spec.ResourceRef.Kind,
+			Namespace: dp.Spec.ResourceRef.Namespace, Name: dp.Spec.ResourceRef.Name,
 		}, dp.Spec.Changes)
 	if err != nil {
 		if reason, verdict := mappingReason(err); verdict {
@@ -421,7 +427,7 @@ func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alp
 		}
 		return nil, err
 	}
-	change := &mappedChange{strategy: backflowv1alpha1.StrategyDirect, results: []mapping.Result{*res}}
+	change := &mappedChange{strategy: backflowv1beta1.StrategyDirect, results: []mapping.Result{*res}}
 	for _, l := range res.LeftOut {
 		change.leftOut = append(change.leftOut, leftOutField{path: l.Path, reason: reasonCannotApply, message: l.Message()})
 	}
@@ -432,9 +438,9 @@ func (r *DriftProposalReconciler) mapTree(ctx context.Context, dp *backflowv1alp
 // the policy matched to the Application's repository, or nil (anonymous) when
 // there is none. A connection whose token or CA bundle cannot be read is an
 // ErrAuth failure.
-func (r *DriftProposalReconciler) repositoryAuth(ctx context.Context, dp *backflowv1alpha1.DriftProposal) (*gitrepo.Auth, error) {
-	var policy backflowv1alpha1.BackflowPolicy
-	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyName}, &policy); err != nil {
+func (r *DriftProposalReconciler) repositoryAuth(ctx context.Context, dp *backflowv1beta1.DriftProposal) (*gitrepo.Auth, error) {
+	var policy backflowv1beta1.BackflowPolicy
+	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyRef.Name}, &policy); err != nil {
 		return nil, err
 	}
 	access, err := r.accessFor(ctx, dp, &policy)

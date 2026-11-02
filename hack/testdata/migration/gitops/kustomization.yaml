@@ -1,0 +1,6 @@
+# Kustomize sources are not Backflow objects and are left alone.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - backflow.yaml
+  - app.yaml

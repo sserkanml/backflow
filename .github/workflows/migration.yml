@@ -1,0 +1,62 @@
+name: Migration test
+
+# The upgrade from the last release to this version on a kind cluster of its own
+# (hack/test-migration.sh): the CRDs and objects of the last chart
+# (backflow.io/v1alpha1), `backflow migrate`, and the operator of this version
+# started on the result. In the binary mode the migration is run by hand and the
+# operator is the binary of this checkout; in the cluster mode the last release is
+# installed with helm (chart and image), and the upgrade is `helm upgrade` with the
+# chart and the image of this checkout and its migration hook Job. It needs no
+# secret and no Git host: the objects are written straight into the API, and the
+# chart and the image of the last release are read anonymously from ghcr.io.
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  migration:
+    permissions:
+      contents: read
+    name: Upgrade from the last release (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [binary, cluster]
+    env:
+      # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
+      KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+    steps:
+      # The tags tell the script which release is the last one.
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.0
+
+      # kind and kubectl are pinned and checked against their published SHA-256.
+      - name: Install kind and kubectl
+        run: ./hack/ci-install-tools.sh
+
+      - name: Build the manager
+        run: go build -o bin/manager ./cmd
+
+      - name: Upgrade from the last release
+        env:
+          MODE: ${{ matrix.mode }}
+        run: ./hack/test-migration.sh

@@ -22,7 +22,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
@@ -161,26 +161,26 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		cacheDir string
 		renderer *fakeHelmRenderer
 		r        *DriftProposalReconciler
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		app      *unstructured.Unstructured
-		dp       *backflowv1alpha1.DriftProposal
-		conn     *backflowv1alpha1.ScmConnection
+		dp       *backflowv1beta1.DriftProposal
+		conn     *backflowv1beta1.ScmConnection
 	)
 
-	regionChange := backflowv1alpha1.FieldChange{
-		Path: "/data/REGION", Op: backflowv1alpha1.OpReplace, Desired: `"eu-central-1"`, Live: `"us-west-2"`,
+	regionChange := backflowv1beta1.FieldChange{
+		Path: "/data/REGION", Op: backflowv1beta1.OpReplace, Desired: `"eu-central-1"`, Live: `"us-west-2"`,
 	}
 	reconcileDP := func() (reconcile.Result, error) {
 		return r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 	}
-	latest := func() *backflowv1alpha1.DriftProposal {
-		got := &backflowv1alpha1.DriftProposal{}
+	latest := func() *backflowv1beta1.DriftProposal {
+		got := &backflowv1beta1.DriftProposal{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), got)).To(Succeed())
 		return got
 	}
 	condition := func(t string) *metav1.Condition { return meta.FindStatusCondition(latest().Status.Conditions, t) }
 	// settle reconciles until the proposal reaches the phase, or fails.
-	settle := func(phase backflowv1alpha1.ProposalPhase) {
+	settle := func(phase backflowv1beta1.ProposalPhase) {
 		for range 5 {
 			_, err := reconcileDP()
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -190,9 +190,9 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		}
 		Fail(fmt.Sprintf("the proposal did not reach %s: %s", phase, latest().Status.Phase))
 	}
-	recreate := func(mutate func(spec *backflowv1alpha1.DriftProposalSpec)) {
+	recreate := func(mutate func(spec *backflowv1beta1.DriftProposalSpec)) {
 		ExpectWithOffset(1, k8sClient.Delete(ctx, dp)).To(Succeed())
-		fresh := &backflowv1alpha1.DriftProposal{
+		fresh := &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: dp.Name, Namespace: dp.Namespace},
 			Spec:       *dp.Spec.DeepCopy(),
 		}
@@ -200,7 +200,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		ExpectWithOffset(1, k8sClient.Create(ctx, fresh)).To(Succeed())
 		dp = fresh
 	}
-	setMode := func(mode backflowv1alpha1.BackflowMode) {
+	setMode := func(mode backflowv1beta1.BackflowMode) {
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		policy.Spec.Mode = mode
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
@@ -209,9 +209,9 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 	setOverrides := func(on bool) {
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		if policy.Spec.Helm == nil {
-			policy.Spec.Helm = &backflowv1alpha1.HelmOptions{}
+			policy.Spec.Helm = &backflowv1beta1.HelmOptions{}
 		}
-		policy.Spec.Helm.AddOverrides = &on
+		policy.Spec.Helm.AllowValueOverrides = &on
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 	}
 	setHelm := func(helm map[string]any) {
@@ -243,28 +243,27 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 				StringData: map[string]string{"token": "tok-" + name},
 			})).To(Succeed())
 		}
-		conn = &backflowv1alpha1.ScmConnection{
+		conn = &backflowv1beta1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: "helm-scm", Namespace: ns},
-			Spec: backflowv1alpha1.ScmConnectionSpec{
-				Provider: backflowv1alpha1.ScmProviderGitLab, URL: "https://git.test",
-				TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "helm-token"}, Key: "token"},
+			Spec: backflowv1beta1.ScmConnectionSpec{
+				Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://git.test",
+				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "helm-token", Key: "token"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
 
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "helm-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"helm-app"}},
-				Mode:            backflowv1alpha1.ModeMergeRequest,
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "argo-token"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"helm-app"}},
+				Mode:         backflowv1beta1.ModeMergeRequest,
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "argo-token", Key: "token"},
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.Applications = []backflowv1alpha1.ApplicationSummary{{Name: "helm-app", RepoURL: testRepoURL, ScmConnection: "helm-scm"}}
+		policy.Status.Applications = []backflowv1beta1.ApplicationSummary{{Name: "helm-app", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: testRepoURL, ScmConnectionName: "helm-scm"}}}}
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 
 		app = &unstructured.Unstructured{}
@@ -276,18 +275,16 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(unstructured.SetNestedStringSlice(app.Object, []string{"values-dev.yaml"}, "spec", "source", "helm", "valueFiles")).To(Succeed())
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
-		dp = &backflowv1alpha1.DriftProposal{
+		dp = &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: "helm-dp", Namespace: ns},
-			Spec: backflowv1alpha1.DriftProposalSpec{
-				PolicyName:  "helm-policy",
-				Application: backflowv1alpha1.ObjectRef{Name: "helm-app", Namespace: ns},
-				Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo-helm", Name: "demo-helm-config"},
-				Source: backflowv1alpha1.SourceRef{
-					RepoURL: testRepoURL, Revision: initial, TargetRevision: "main",
-					Path: "helm/demo", Type: backflowv1alpha1.SourceHelm,
-				},
-				Changes:    []backflowv1alpha1.FieldChange{regionChange},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
+			Spec: backflowv1beta1.DriftProposalSpec{
+				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: "helm-policy"},
+				ApplicationRef: backflowv1beta1.ObjectRef{Name: "helm-app", Namespace: ns},
+				ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo-helm", Name: "demo-helm-config"},
+				Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main",
+					Path: "helm/demo", Type: backflowv1beta1.SourceHelm}},
+				Changes:    []backflowv1beta1.FieldChange{regionChange},
+				Actor:      &backflowv1beta1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}
@@ -307,13 +304,13 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 
 	It("goes from Detected through Mapping to Proposed with an edit of the value file", func() {
 		Expect(latest().Status.Phase).To(BeEmpty())
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 
 		got := latest()
 		Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
 		Expect(got.Status.Mapping.Verified).To(BeTrue())
-		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
 			File: "helm/demo/values-dev.yaml", Location: "global.region", Value: `"us-west-2"`, ChangeIndex: 0,
 		}}))
 		Expect(got.Status.Mapping.Diff).To(ContainSubstring("-  region: eu-central-1\n+  region: us-west-2\n"))
@@ -327,7 +324,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		Expect(renderer.calls).To(Equal(2+1), "mapped once, the unmodified files twice and the one candidate; the head is the revision it was mapped at, so it is not rendered again")
 
 		By("the branch holds the edited value file, comments intact, and nothing else changed")
-		branch := got.Status.MergeRequest.Branch
+		branch := got.Status.GitBranch()
 		tip := repo.branch(branch)
 		Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "region: eu-central-1", "region: us-west-2", 1)))
 		Expect(repo.file(tip, "helm/demo/values.yaml")).To(Equal(helmValues))
@@ -352,30 +349,30 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 	})
 
 	It("is held in Mapping by ReportOnly mode, with the mapping done", func() {
-		setMode(backflowv1alpha1.ModeReportOnly)
+		setMode(backflowv1beta1.ModeReportOnly)
 		for range 2 {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 		}
 		got := latest()
-		Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+		Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 		Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
 		Expect(condition(conditionProposed).Reason).To(Equal(reasonReportOnly))
 		Expect(provider.created).To(BeEmpty())
 		Expect(repo.branch("main")).To(Equal(initial))
 	})
 
 	It("maps two drifted fields that one key feeds to that key", func() {
-		recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-			s.Changes = []backflowv1alpha1.FieldChange{
-				{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"debug"`, Live: `"trace"`},
-				{Path: "/data/LOG_LEVEL_UP", Op: backflowv1alpha1.OpReplace, Desired: `"DEBUG"`, Live: `"TRACE"`},
+		recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+			s.Changes = []backflowv1beta1.FieldChange{
+				{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"debug"`, Live: `"trace"`},
+				{Path: "/data/LOG_LEVEL_UP", Op: backflowv1beta1.OpReplace, Desired: `"DEBUG"`, Live: `"TRACE"`},
 			}
 		})
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
-		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
 			File: "helm/demo/values-dev.yaml", Location: "config.logLevel", Value: `"trace"`, ChangeIndex: 0,
 		}}))
 		Expect(provider.created[0].Body).To(ContainSubstring("(/data/LOG_LEVEL, /data/LOG_LEVEL_UP)"))
@@ -384,21 +381,21 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 	It("edits two value files in one commit when the fields come from different files", func() {
 		head := repo.commit(map[string]string{"helm/demo/values-extra.yaml": "# Overrides.\nconfig:\n  timeout: 99\n"}, "add the extra values")
 		setHelm(map[string]any{"valueFiles": []any{"values-dev.yaml", "values-extra.yaml"}})
-		recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-			s.Source.Revision = head
-			s.Changes = []backflowv1alpha1.FieldChange{
+		recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+			s.Sources[0].Revision = head
+			s.Changes = []backflowv1beta1.FieldChange{
 				regionChange,
-				{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"99"`, Live: `"120"`},
+				{Path: "/data/TIMEOUT", Op: backflowv1beta1.OpReplace, Desired: `"99"`, Live: `"120"`},
 			}
 		})
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 
 		got := latest()
 		Expect(got.Status.Mapping.Edits).To(ConsistOf(
-			backflowv1alpha1.SourceEdit{File: "helm/demo/values-dev.yaml", Location: "global.region", Value: `"us-west-2"`, ChangeIndex: 0},
-			backflowv1alpha1.SourceEdit{File: "helm/demo/values-extra.yaml", Location: "config.timeout", Value: "120", ChangeIndex: 1},
+			backflowv1beta1.SourceEdit{File: "helm/demo/values-dev.yaml", Location: "global.region", Value: `"us-west-2"`, ChangeIndex: 0},
+			backflowv1beta1.SourceEdit{File: "helm/demo/values-extra.yaml", Location: "config.timeout", Value: "120", ChangeIndex: 1},
 		), "the integer stays an integer")
-		tip := repo.branch(got.Status.MergeRequest.Branch)
+		tip := repo.branch(got.Status.GitBranch())
 		Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(head))
 		Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(ContainSubstring("region: us-west-2"))
 		Expect(repo.file(tip, "helm/demo/values-extra.yaml")).To(Equal("# Overrides.\nconfig:\n  timeout: 120\n"))
@@ -409,18 +406,18 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 	Context("a partial mapping (spec.mapping.allowPartial)", func() {
 		// Besides the region, which a value file feeds, a key of the cluster's
 		// ConfigMap is gone: Helm values cannot say that.
-		gone := backflowv1alpha1.FieldChange{Path: "/data/EXTRA", Op: backflowv1alpha1.OpRemove, Desired: `"x"`}
-		timeout := backflowv1alpha1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}
+		gone := backflowv1beta1.FieldChange{Path: "/data/EXTRA", Op: backflowv1beta1.OpRemove, Desired: `"x"`}
+		timeout := backflowv1beta1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1beta1.OpReplace, Desired: `"30"`, Live: `"45"`}
 		setPartial := func(on bool) {
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Spec.Mapping = &backflowv1alpha1.MappingOptions{AllowPartial: on}
+			policy.Spec.Mapping = &backflowv1beta1.MappingOptions{AllowPartial: on}
 			ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 		}
-		drifted := func(changes ...backflowv1alpha1.FieldChange) {
-			setMode(backflowv1alpha1.ModeReportOnly)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = changes })
+		drifted := func(changes ...backflowv1beta1.FieldChange) {
+			setMode(backflowv1beta1.ModeReportOnly)
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Changes = changes })
 		}
-		mapOnce := func() *backflowv1alpha1.DriftProposal {
+		mapOnce := func() *backflowv1beta1.DriftProposal {
 			for range 2 {
 				_, err := reconcileDP()
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -431,7 +428,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		It("leaves the whole proposal Unmapped when it is off, as before", func() {
 			drifted(regionChange, gone)
 			got := mapOnce()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			Expect(condition(conditionMapped).Reason).To(Equal(rendermap.ReasonRenderMismatch))
 			Expect(got.Status.Mapping.Unmapped).To(BeEmpty())
 		})
@@ -440,22 +437,22 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			setPartial(true)
 			drifted(regionChange, gone)
 			got := mapOnce()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
 			Expect(condition(conditionMapped).Message).To(And(ContainSubstring("1 of 2"), ContainSubstring("/data/REGION"),
 				ContainSubstring("/data/EXTRA"), ContainSubstring(rendermap.ReasonRenderMismatch)))
 			m := got.Status.Mapping
-			Expect(m.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+			Expect(m.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
 			Expect(m.Verified).To(BeTrue())
-			Expect(m.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+			Expect(m.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
 				File: "helm/demo/values-dev.yaml", Location: "global.region", Value: `"us-west-2"`, ChangeIndex: 0,
 			}}))
 			Expect(m.Unmapped).To(HaveLen(1))
 			Expect(m.Unmapped[0].Path).To(Equal("/data/EXTRA"))
 			Expect(m.Unmapped[0].Reason).To(Equal(rendermap.ReasonRenderMismatch))
 			Expect(m.Unmapped[0].Message).NotTo(BeEmpty())
-			Expect(got.Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{regionChange, gone}), "the spec lists every change")
+			Expect(got.Spec.Changes).To(Equal([]backflowv1beta1.FieldChange{regionChange, gone}), "the spec lists every change")
 		})
 
 		It("leaves out a field with no verified key too, and keeps the index of the others", func() {
@@ -473,11 +470,11 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 
 		It("opens a merge request that says it is partial and lists what it leaves out", func() {
 			setPartial(true)
-			setMode(backflowv1alpha1.ModeMergeRequest)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
+			setMode(backflowv1beta1.ModeMergeRequest)
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Changes = []backflowv1beta1.FieldChange{regionChange, gone}
 			})
-			settle(backflowv1alpha1.PhaseProposed)
+			settle(backflowv1beta1.PhaseProposed)
 
 			Expect(provider.created).To(HaveLen(1))
 			Expect(provider.created[0].Title).To(Equal("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)"))
@@ -489,7 +486,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(body).To(ContainSubstring("exactly the drifted fields (/data/REGION) and nothing else"))
 			Expect(body).NotTo(ContainSubstring("(/data/REGION, /data/EXTRA)"))
 
-			tip := repo.branch(latest().Status.MergeRequest.Branch)
+			tip := repo.branch(latest().Status.GitBranch())
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "region: eu-central-1", "region: us-west-2", 1)))
 			msg := repo.commitAt(tip).Message
 			Expect(msg).To(HavePrefix("backflow: sync ConfigMap demo-helm/demo-helm-config from cluster (partial)\n"))
@@ -498,11 +495,11 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 
 		It("commits directly with the same marking", func() {
 			setPartial(true)
-			setMode(backflowv1alpha1.ModeDirectCommit)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{regionChange, gone}
+			setMode(backflowv1beta1.ModeDirectCommit)
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Changes = []backflowv1beta1.FieldChange{regionChange, gone}
 			})
-			settle(backflowv1alpha1.PhaseMerged)
+			settle(backflowv1beta1.PhaseMerged)
 
 			Expect(provider.created).To(BeEmpty())
 			msg := repo.commitAt(repo.branch("main")).Message
@@ -514,27 +511,27 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			setPartial(true)
 			drifted(gone)
 			got := mapOnce()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			Expect(condition(conditionMapped).Reason).To(Equal(rendermap.ReasonRenderMismatch))
 		})
 	})
 
 	Context("a default only the chart defines (spec.helm.addOverrides)", func() {
-		timeout := backflowv1alpha1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}
+		timeout := backflowv1beta1.FieldChange{Path: "/data/TIMEOUT", Op: backflowv1beta1.OpReplace, Desired: `"30"`, Live: `"45"`}
 
 		It("adds the key to the last value file, and says so in the merge request", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })
-			settle(backflowv1alpha1.PhaseProposed)
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Changes = []backflowv1beta1.FieldChange{timeout} })
+			settle(backflowv1beta1.PhaseProposed)
 
 			got := latest()
-			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
-			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
+			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
 				File: "helm/demo/values-dev.yaml", Location: "config.timeout", Value: "45", ChangeIndex: 0,
 			}}))
 			Expect(condition(conditionMapped).Message).To(ContainSubstring("adds 1 key(s) that override chart defaults: config.timeout"))
 
 			By("the branch holds the file with the key added to the config block, everything else unchanged")
-			tip := repo.branch(got.Status.MergeRequest.Branch)
+			tip := repo.branch(got.Status.GitBranch())
 			want := strings.Replace(helmValuesDev, "  minB: 3\n", "  minB: 3\n  timeout: 45\n", 1)
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(want))
 			Expect(repo.file(tip, "helm/demo/values.yaml")).To(Equal(helmValues), "the chart's defaults are never edited")
@@ -560,15 +557,15 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			var head string
 			setTarget := func(file string) {
 				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-				policy.Spec.Helm = &backflowv1alpha1.HelmOptions{TargetValuesFile: file}
+				policy.Spec.Helm = &backflowv1beta1.HelmOptions{TargetValuesFile: file}
 				ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 			}
 			BeforeEach(func() {
 				head = repo.commit(map[string]string{"helm/demo/values-extra.yaml": "# Extras.\nreplicaCount: 1\n"}, "add the extra values")
 				setHelm(map[string]any{"valueFiles": []any{"values-dev.yaml", "values-extra.yaml"}})
-				recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-					s.Source.Revision = head
-					s.Changes = []backflowv1alpha1.FieldChange{timeout}
+				recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+					s.Sources[0].Revision = head
+					s.Changes = []backflowv1beta1.FieldChange{timeout}
 				})
 			})
 			editedFile := func() string {
@@ -577,19 +574,19 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			}
 
 			It("adds the override to the last value file when it is not set", func() {
-				settle(backflowv1alpha1.PhaseProposed)
+				settle(backflowv1beta1.PhaseProposed)
 				Expect(editedFile()).To(Equal("helm/demo/values-extra.yaml"))
 			})
 			It("adds it to the target file, given relative to the chart", func() {
 				setTarget("values-dev.yaml")
-				settle(backflowv1alpha1.PhaseProposed)
+				settle(backflowv1beta1.PhaseProposed)
 				Expect(editedFile()).To(Equal("helm/demo/values-dev.yaml"))
-				tip := repo.branch(latest().Status.MergeRequest.Branch)
+				tip := repo.branch(latest().Status.GitBranch())
 				Expect(repo.file(tip, "helm/demo/values-extra.yaml")).To(Equal("# Extras.\nreplicaCount: 1\n"))
 			})
 			It("accepts a repository path too", func() {
 				setTarget("helm/demo/values-dev.yaml")
-				settle(backflowv1alpha1.PhaseProposed)
+				settle(backflowv1beta1.PhaseProposed)
 				Expect(editedFile()).To(Equal("helm/demo/values-dev.yaml"))
 			})
 			It("is Unmapped with the reason when the target is not one of the Application's value files", func() {
@@ -598,7 +595,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 					_, err := reconcileDP()
 					Expect(err).NotTo(HaveOccurred())
 				}
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 				Expect(condition(conditionMapped).Message).To(And(
 					ContainSubstring(`spec.helm.targetValuesFile "values-prod.yaml" is not one of the Application's value files`),
 					ContainSubstring("helm/demo/values-dev.yaml, helm/demo/values-extra.yaml")))
@@ -608,12 +605,12 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 
 		It("is Unmapped again with addOverrides: false, as in 0.4", func() {
 			setOverrides(false)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout} })
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Changes = []backflowv1beta1.FieldChange{timeout} })
 			for range 2 {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 			}
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			Expect(condition(conditionMapped).Reason).To(Equal(rendermap.ReasonNoVerifiedCandidate))
 			Expect(condition(conditionMapped).Message).To(ContainSubstring("chart defaults are not edited"))
 			Expect(provider.created).To(BeEmpty())
@@ -628,13 +625,13 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		It("with partial proposals, adds the override and leaves out only what cannot be mapped", func() {
 			setPartial := func() {
 				ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-				policy.Spec.Mapping = &backflowv1alpha1.MappingOptions{AllowPartial: true}
+				policy.Spec.Mapping = &backflowv1beta1.MappingOptions{AllowPartial: true}
 				ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 			}
 			setPartial()
-			gone := backflowv1alpha1.FieldChange{Path: "/data/EXTRA", Op: backflowv1alpha1.OpRemove, Desired: `"x"`}
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Changes = []backflowv1alpha1.FieldChange{timeout, gone} })
-			settle(backflowv1alpha1.PhaseProposed)
+			gone := backflowv1beta1.FieldChange{Path: "/data/EXTRA", Op: backflowv1beta1.OpRemove, Desired: `"x"`}
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Changes = []backflowv1beta1.FieldChange{timeout, gone} })
+			settle(backflowv1beta1.PhaseProposed)
 			got := latest()
 			Expect(condition(conditionMapped).Reason).To(Equal(reasonPartiallyMapped))
 			Expect(got.Status.Mapping.Edits).To(HaveLen(1))
@@ -655,16 +652,16 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			imagePath = "/spec/template/spec/containers/0/image"
 		)
 		BeforeEach(func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Resource = backflowv1alpha1.ResourceRef{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm"}
-				s.Changes = []backflowv1alpha1.FieldChange{{
-					Path: imagePath, Op: backflowv1alpha1.OpReplace, Desired: `"` + oldImg + `"`, Live: `"` + newImg + `"`,
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.ResourceRef = backflowv1beta1.ResourceRef{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm"}
+				s.Changes = []backflowv1beta1.FieldChange{{
+					Path: imagePath, Op: backflowv1beta1.OpReplace, Desired: `"` + oldImg + `"`, Live: `"` + newImg + `"`,
 				}}
 			})
 		})
-		allow := func(kinds ...backflowv1alpha1.HelmCollateralKind) {
+		allow := func(kinds ...backflowv1beta1.HelmCollateralKind) {
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Spec.Helm = &backflowv1alpha1.HelmOptions{AllowCollateralChanges: kinds}
+			policy.Spec.Helm = &backflowv1beta1.HelmOptions{AllowCollateralChanges: kinds}
 			ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 		}
 
@@ -673,7 +670,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 			}
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			c := condition(conditionMapped)
 			Expect(c.Reason).To(Equal(rendermap.ReasonValueAffectsOtherFields))
 			for _, want := range []string{"image.tag", "1.28-alpine", "would reproduce " + imagePath, verLabel, podLabel} {
@@ -683,21 +680,21 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		})
 
 		It("is proposed when the policy allows labels, and the merge request lists them", func() {
-			allow(backflowv1alpha1.CollateralLabels)
-			settle(backflowv1alpha1.PhaseProposed)
+			allow(backflowv1beta1.CollateralLabels)
+			settle(backflowv1beta1.PhaseProposed)
 
 			got := latest()
-			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
-			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
+			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
+			Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
 				File: "helm/demo/values-dev.yaml", Location: "image.tag", Value: `"1.28-alpine"`, ChangeIndex: 0,
 			}}))
 			Expect(got.Status.Mapping.Collateral).To(ConsistOf(
-				backflowv1alpha1.CollateralChange{Group: "apps", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm", Path: verLabel, Current: `"1.27-alpine"`, New: `"1.28-alpine"`},
-				backflowv1alpha1.CollateralChange{Group: "apps", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm", Path: podLabel, Current: `"1.27-alpine"`, New: `"1.28-alpine"`},
+				backflowv1beta1.CollateralChange{Group: "apps", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm", Path: verLabel, Current: `"1.27-alpine"`, New: `"1.28-alpine"`},
+				backflowv1beta1.CollateralChange{Group: "apps", Kind: "Deployment", Namespace: "demo-helm", Name: "demo-helm", Path: podLabel, Current: `"1.27-alpine"`, New: `"1.28-alpine"`},
 			))
 			Expect(condition(conditionMapped).Message).To(ContainSubstring("2 label or annotation field(s)"))
 
-			tip := repo.branch(got.Status.MergeRequest.Branch)
+			tip := repo.branch(got.Status.GitBranch())
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(Equal(strings.Replace(helmValuesDev, "tag: 1.27-alpine", "tag: 1.28-alpine", 1)))
 			Expect(repo.file(tip, "helm/demo/values.yaml")).To(Equal(helmValues))
 
@@ -716,26 +713,26 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		})
 
 		It("allowing only annotations does not help with labels", func() {
-			allow(backflowv1alpha1.CollateralAnnotations)
+			allow(backflowv1beta1.CollateralAnnotations)
 			for range 2 {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 			}
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			Expect(condition(conditionMapped).Message).To(ContainSubstring(verLabel))
 		})
 
 		It("keeps the collateral in the head's mapping when the target branch moved", func() {
-			allow(backflowv1alpha1.CollateralLabels)
-			setMode(backflowv1alpha1.ModeReportOnly)
+			allow(backflowv1beta1.CollateralLabels)
+			setMode(backflowv1beta1.ModeReportOnly)
 			for range 2 {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
-			setMode(backflowv1alpha1.ModeMergeRequest)
+			setMode(backflowv1beta1.ModeMergeRequest)
 			repo.commit(map[string]string{"helm/demo/README.md": "changed\n"}, "elsewhere")
-			settle(backflowv1alpha1.PhaseProposed)
+			settle(backflowv1beta1.PhaseProposed)
 			Expect(latest().Status.Mapping.Collateral).To(HaveLen(2))
 		})
 	})
@@ -749,11 +746,11 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			c := condition(conditionMapped)
 			Expect(c.Status).To(Equal(metav1.ConditionFalse))
 			Expect(c.Reason).To(Equal(reason))
-			Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyUnmapped))
+			Expect(got.Status.Mapping.Strategy).To(BeEmpty())
 			for _, m := range message {
 				Expect(c.Message).To(ContainSubstring(m))
 			}
@@ -761,27 +758,27 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 		},
 		Entry("the key is only in the chart's own values.yaml and overrides are off", func() {
 			setOverrides(false)
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/TIMEOUT", Op: backflowv1alpha1.OpReplace, Desired: `"30"`, Live: `"45"`}}
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Changes = []backflowv1beta1.FieldChange{{Path: "/data/TIMEOUT", Op: backflowv1beta1.OpReplace, Desired: `"30"`, Live: `"45"`}}
 			})
 		}, rendermap.ReasonNoVerifiedCandidate, "chart's own defaults", "config.timeout"),
 		Entry("a derived field: the nearest edit also moves another field", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"debug"`, Live: `"trace"`}}
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Changes = []backflowv1beta1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"debug"`, Live: `"trace"`}}
 			})
 		}, rendermap.ReasonValueAffectsOtherFields, "config.logLevel", "would reproduce /data/LOG_LEVEL", "/data/LOG_LEVEL_UP", `current "DEBUG"`),
 		Entry("two keys give the same result", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/AMBIGUOUS", Op: backflowv1alpha1.OpReplace, Desired: `"3"`, Live: `"5"`}}
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Changes = []backflowv1beta1.FieldChange{{Path: "/data/AMBIGUOUS", Op: backflowv1beta1.OpReplace, Desired: `"3"`, Live: `"5"`}}
 			})
 		}, rendermap.ReasonAmbiguousCandidates, "config.minA", "config.minB"),
 		Entry("the render does not give the value Git is expected to", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/REGION", Op: backflowv1alpha1.OpReplace, Desired: `"mars"`, Live: `"venus"`}}
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Changes = []backflowv1beta1.FieldChange{{Path: "/data/REGION", Op: backflowv1beta1.OpReplace, Desired: `"mars"`, Live: `"venus"`}}
 			})
 		}, rendermap.ReasonRenderMismatch, `"eu-central-1"`),
 		Entry("the drifted resource is a Secret", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Resource.Kind, s.Resource.Name = "Secret", "tls" })
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.ResourceRef.Kind, s.ResourceRef.Name = "Secret", "tls" })
 		}, rendermap.ReasonSecretNotVerifiable, "Secret"),
 		Entry("the chart does not render", func() { renderer.err = fmt.Errorf("%w: template: bad", rendermap.ErrRenderFailed) },
 			rendermap.ReasonRenderFailed, "does not render"),
@@ -806,16 +803,16 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(retryMin))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			c := condition(conditionMapped)
 			Expect(c.Status).To(Equal(metav1.ConditionFalse))
 			Expect(c.Reason).To(Equal(reasonArgoCDUnreachable))
 			Expect(c.Message).To(ContainSubstring("connection refused"))
 			Expect(got.Status.Mapping).To(BeNil())
 
-			settle(backflowv1alpha1.PhaseProposed)
+			settle(backflowv1beta1.PhaseProposed)
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
-			Expect(latest().Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
+			Expect(latest().Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
 		})
 
 		It("tells a rejected token from an unreachable server", func() {
@@ -823,7 +820,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			_, _ = reconcileDP()
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping), "a token that is fixed later makes it work again")
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping), "a token that is fixed later makes it work again")
 			Expect(condition(conditionMapped).Reason).To(Equal(reasonArgoCDUnauthorized))
 		})
 
@@ -834,19 +831,19 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 			Expect(condition(conditionMapped).Reason).To(Equal(reasonArgoCDCredentials))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 		})
 	})
 
 	Context("when the target branch moved after the proposal was mapped", func() {
 		mapOnly := func() {
-			setMode(backflowv1alpha1.ModeReportOnly)
+			setMode(backflowv1beta1.ModeReportOnly)
 			for range 2 {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 			}
 			ExpectWithOffset(1, condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
-			setMode(backflowv1alpha1.ModeMergeRequest)
+			setMode(backflowv1beta1.ModeMergeRequest)
 		}
 
 		// settleLogged reconciles to Proposed and returns what the operator logged.
@@ -858,11 +855,11 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			for range 5 {
 				_, err := r.Reconcile(lctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				if latest().Status.Phase == backflowv1alpha1.PhaseProposed {
+				if latest().Status.Phase == backflowv1beta1.PhaseProposed {
 					break
 				}
 			}
-			ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			mu.Lock()
 			defer mu.Unlock()
 			return strings.Join(lines, "\n")
@@ -878,7 +875,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
 			Expect(out).To(ContainSubstring("none of the 2 changed file(s) is one the mapping depends on"))
 			Expect(out).NotTo(ContainSubstring("Mapping again"))
-			tip := repo.branch(latest().Status.MergeRequest.Branch)
+			tip := repo.branch(latest().Status.GitBranch())
 			Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(head))
 			Expect(repo.file(tip, "helm/demo/README.md")).To(Equal("changed\n"))
 			Expect(repo.file(tip, "helm/demo/values-dev.yaml")).To(ContainSubstring("region: us-west-2"))
@@ -904,7 +901,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			Expect(out).To(ContainSubstring("Mapping again at the head of the target branch"))
 			Expect(out).To(ContainSubstring("the target branch changed helm/demo/values.yaml, which the mapping depends on"))
 			Expect(out).NotTo(ContainSubstring("Reusing the mapping"))
-			Expect(repo.commitAt(repo.branch(latest().Status.MergeRequest.Branch)).ParentHashes[0].String()).To(Equal(head))
+			Expect(repo.commitAt(repo.branch(latest().Status.GitBranch())).ParentHashes[0].String()).To(Equal(head))
 		})
 
 		It("maps again when the Application's source changed since the mapping", func() {
@@ -932,7 +929,7 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonSourceChanged))
 			Expect(got.Status.Message).To(ContainSubstring(sourceChangedMessage))
 			Expect(got.Status.Message).To(ContainSubstring(rendermap.ReasonRenderMismatch))
@@ -947,10 +944,10 @@ var _ = Describe("DriftProposal of a Helm Application", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonArgoCDUnreachable))
 
-			settle(backflowv1alpha1.PhaseProposed)
+			settle(backflowv1beta1.PhaseProposed)
 		})
 	})
 })

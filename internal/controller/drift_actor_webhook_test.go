@@ -10,14 +10,15 @@ import (
 	"strings"
 	"time"
 
+	records "github.com/sserkanml/backflow/api/records/v1alpha1"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/actorwebhook"
 )
 
@@ -44,10 +45,7 @@ var _ = Describe("Actor records", func() {
 			"data": map[string]any{"LOG_LEVEL": "debug"},
 		}
 	}
-	changes := []backflowv1alpha1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
-	phase1 := func(mgr string) *backflowv1alpha1.Actor {
-		return &backflowv1alpha1.Actor{Manager: mgr, Operation: "Update", Time: &metav1.Time{Time: t0}}
-	}
+	changes := []backflowv1beta1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
 	record := func(mut func(*actorwebhook.Record)) actorwebhook.Record {
 		r := actorwebhook.Record{
 			UID: "uid-actor-1", Resource: "configmaps", Namespace: "demo", Name: "cfg", FieldManager: "kubectl-edit",
@@ -68,8 +66,15 @@ var _ = Describe("Actor records", func() {
 		}
 		created = nil
 	})
-	refine := func(a *ActorRecords, uid string, mgr string) *backflowv1alpha1.Actor {
-		return a.Refine(ctx, live(uid, mgr, t0), changes, phase1(mgr), actorwebhook.Window{})
+	refine := func(a *ActorRecords, uid string, mgr string) *backflowv1beta1.Actor {
+		return a.Refine(ctx, live(uid, mgr, t0), changes, actorwebhook.Window{})
+	}
+	// nameOf is the user name of an actor that may be nil (no verified record).
+	nameOf := func(a *backflowv1beta1.Actor) string {
+		if a == nil {
+			return ""
+		}
+		return a.Username
 	}
 	actors := func() *ActorRecords { return &ActorRecords{Reader: k8sClient, Namespace: ns} }
 
@@ -78,8 +83,7 @@ var _ = Describe("Actor records", func() {
 		got := refine(actors(), "uid-actor-1", "kubectl-edit")
 		Expect(got.Username).To(Equal("alice"))
 		Expect(got.Groups).To(ConsistOf("devs"))
-		Expect(string(got.Kind)).To(Equal("person"))
-		Expect(got.Manager).To(Equal("kubectl-edit"), "the manager, operation and time stay those of managedFields")
+		Expect(string(got.Kind)).To(Equal("Person"))
 	})
 
 	It("does not believe a forged record: another manager, another time, other fields", func() {
@@ -91,45 +95,43 @@ var _ = Describe("Actor records", func() {
 			r.FieldManager = "kubectl-edit"
 			r.Name = "paths"
 		}))
-		got := refine(actors(), "uid-actor-1", "kubectl-edit")
-		Expect(got.Username).To(BeEmpty())
-		Expect(got.Groups).To(BeEmpty())
-		Expect(got.Manager).To(Equal("kubectl-edit"), "phase 1 behaviour")
+		Expect(refine(actors(), "uid-actor-1", "kubectl-edit")).To(BeNil(), "no record is believed, so there is no actor")
 	})
 
 	It("keeps only the kind when the record holds no name", func() {
 		put(record(func(r *actorwebhook.Record) { r.Username, r.Groups, r.Kind = "", nil, actorwebhook.KindController }))
 		got := refine(actors(), "uid-actor-1", "kubectl-edit")
 		Expect(got.Username).To(BeEmpty())
-		Expect(string(got.Kind)).To(Equal("controller"))
+		Expect(string(got.Kind)).To(Equal("Controller"))
 	})
 
 	It("ignores the records of another object", func() {
 		put(record(func(*actorwebhook.Record) {}))
-		Expect(refine(actors(), "uid-other", "kubectl-edit").Username).To(BeEmpty())
+		Expect(refine(actors(), "uid-other", "kubectl-edit")).To(BeNil())
 	})
 
-	It("never fails or waits: no records, a failing API, no uid and no webhook leave the actor as it is", func() {
-		Expect(refine(actors(), "uid-none", "kubectl-edit")).To(Equal(phase1("kubectl-edit")))
+	It("never fails or waits: no records, a failing API, no uid and no webhook leave the proposal without an actor", func() {
+		Expect(refine(actors(), "uid-none", "kubectl-edit")).To(BeNil())
 		failing := &ActorRecords{Reader: failingLister{k8sClient}, Namespace: ns}
-		Expect(refine(failing, "uid-actor-1", "kubectl-edit")).To(Equal(phase1("kubectl-edit")))
-		Expect(actors().Refine(ctx, map[string]any{}, changes, phase1("kubectl-edit"), actorwebhook.Window{})).To(Equal(phase1("kubectl-edit")))
+		Expect(refine(failing, "uid-actor-1", "kubectl-edit")).To(BeNil())
+		Expect(actors().Refine(ctx, map[string]any{}, changes, actorwebhook.Window{})).To(BeNil())
 		var off *ActorRecords
-		Expect(off.Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, phase1("kubectl-edit"), actorwebhook.Window{})).To(Equal(phase1("kubectl-edit")))
-		Expect(actors().Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, nil, actorwebhook.Window{})).To(BeNil(), "no managedFields actor, nothing to refine")
+		Expect(off.Refine(ctx, live("uid-actor-1", "kubectl-edit", t0), changes, actorwebhook.Window{})).To(BeNil())
+		Expect(actors().Refine(ctx, map[string]any{"metadata": map[string]any{"uid": "uid-actor-1"}}, changes, actorwebhook.Window{})).To(BeNil(),
+			"no managedFields, nothing to check a record against")
 	})
 
 	It("uses the tolerance it is given", func() {
 		put(record(func(r *actorwebhook.Record) { r.LastSeen = t0.Add(25 * time.Second) }))
-		Expect(refine(actors(), "uid-actor-1", "kubectl-edit").Username).To(BeEmpty())
+		Expect(nameOf(refine(actors(), "uid-actor-1", "kubectl-edit"))).To(BeEmpty())
 		wide := &ActorRecords{Reader: k8sClient, Namespace: ns, Tolerance: time.Minute}
-		Expect(refine(wide, "uid-actor-1", "kubectl-edit").Username).To(Equal("alice"))
+		Expect(nameOf(refine(wide, "uid-actor-1", "kubectl-edit"))).To(Equal("alice"))
 	})
 
 	Context("the text of a merge request", func() {
-		dp := func() *backflowv1alpha1.DriftProposal {
-			return &backflowv1alpha1.DriftProposal{Spec: backflowv1alpha1.DriftProposalSpec{
-				Actor: &backflowv1alpha1.Actor{Username: "alice", Groups: []string{"devs"}, Manager: "kubectl-edit"},
+		dp := func() *backflowv1beta1.DriftProposal {
+			return &backflowv1beta1.DriftProposal{Spec: backflowv1beta1.DriftProposalSpec{
+				Actor: &backflowv1beta1.Actor{Username: "alice", Groups: []string{"devs"}},
 			}}
 		}
 		It("leaves the user name out unless usernameInMergeRequest is on", func() {
@@ -150,8 +152,8 @@ var _ = Describe("Actor records", func() {
 		newFlusher := func(b *actorwebhook.Buffer) *actorwebhook.Flusher {
 			return &actorwebhook.Flusher{Client: k8sClient, Reader: k8sClient, Buffer: b, Namespace: ns}
 		}
-		get := func(r actorwebhook.Record) *backflowv1alpha1.ChangeRecord {
-			var c backflowv1alpha1.ChangeRecord
+		get := func(r actorwebhook.Record) *records.ChangeRecord {
+			var c records.ChangeRecord
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: r.ObjectName()}, &c)).To(Succeed())
 			created = append(created, &c)
 			return &c
@@ -206,7 +208,7 @@ var _ = Describe("Actor records", func() {
 			put(old)
 			s := &actorwebhook.Sweeper{Client: k8sClient, Namespace: ns, Retention: 2 * time.Hour, Max: 3}
 			s.Sweep(ctx)
-			var list backflowv1alpha1.ChangeRecordList
+			var list records.ChangeRecordList
 			Expect(k8sClient.List(ctx, &list, client.InNamespace(ns))).To(Succeed())
 			var uids []string
 			for _, c := range list.Items {
@@ -243,7 +245,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			"data": map[string]any{"LOG_LEVEL": "debug"},
 		}
 	}
-	changes := []backflowv1alpha1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
+	changes := []backflowv1beta1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
 	flow := func(recordUsername bool, bodies ...string) *ActorRecords {
 		buf := actorwebhook.NewBuffer(100)
 		h := actorwebhook.NewHandler(actorwebhook.Options{Buffer: buf, RecordUsername: recordUsername, Now: func() time.Time { return now }})
@@ -265,16 +267,20 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		}
 		created = nil
 	})
-	actor := func(mgr string) *backflowv1alpha1.Actor {
-		return &backflowv1alpha1.Actor{Manager: mgr, Operation: "Update", Time: &metav1.Time{Time: now}}
+	// nameOf is the user name of an actor that may be nil (no verified record).
+	nameOf := func(a *backflowv1beta1.Actor) string {
+		if a == nil {
+			return ""
+		}
+		return a.Username
 	}
 
 	It("names the user who patched the ConfigMap", func() {
 		a := flow(true, review("alice", "kubectl-patch", "uid-e2e-1"))
-		got := a.Refine(ctx, live("uid-e2e-1", "kubectl-patch"), changes, actor("kubectl-patch"), actorwebhook.Window{})
+		got := a.Refine(ctx, live("uid-e2e-1", "kubectl-patch"), changes, actorwebhook.Window{})
 		Expect(got.Username).To(Equal("alice"))
 		Expect(got.Groups).To(ConsistOf("devs", "system:authenticated"))
-		Expect(string(got.Kind)).To(Equal("person"))
+		Expect(string(got.Kind)).To(Equal("Person"))
 	})
 
 	It("does not name a user who is claimed by a review nobody made", func() {
@@ -282,25 +288,25 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		// naming another manager and another time.
 		forged := review("mallory", "kubectl-edit", "uid-e2e-2")
 		a := flow(true, forged)
-		got := a.Refine(ctx, live("uid-e2e-2", "kubectl-patch"), changes, actor("kubectl-patch"), actorwebhook.Window{})
-		Expect(got.Username).To(BeEmpty())
+		got := a.Refine(ctx, live("uid-e2e-2", "kubectl-patch"), changes, actorwebhook.Window{})
+		Expect(got).To(BeNil())
 	})
 
 	It("stores no name at all when it is told not to", func() {
 		a := flow(false, review("alice", "kubectl-patch", "uid-e2e-3"))
-		var list backflowv1alpha1.ChangeRecordList
+		var list records.ChangeRecordList
 		Expect(k8sClient.List(ctx, &list, client.InNamespace(ns), client.MatchingLabels{actorwebhook.LabelObjectUID: "uid-e2e-3"})).To(Succeed())
 		Expect(list.Items).To(HaveLen(1))
 		stored, _ := json.Marshal(list.Items[0])
 		Expect(string(stored)).NotTo(Or(ContainSubstring("alice"), ContainSubstring("devs")))
-		got := a.Refine(ctx, live("uid-e2e-3", "kubectl-patch"), changes, actor("kubectl-patch"), actorwebhook.Window{})
+		got := a.Refine(ctx, live("uid-e2e-3", "kubectl-patch"), changes, actorwebhook.Window{})
 		Expect(got.Username).To(BeEmpty())
-		Expect(string(got.Kind)).To(Equal("person"))
+		Expect(string(got.Kind)).To(Equal("Person"))
 	})
 
 	It("never records a value", func() {
 		flow(true, review("alice", "kubectl-patch", "uid-e2e-4"))
-		var list backflowv1alpha1.ChangeRecordList
+		var list records.ChangeRecordList
 		Expect(k8sClient.List(ctx, &list, client.InNamespace(ns), client.MatchingLabels{actorwebhook.LabelObjectUID: "uid-e2e-4"})).To(Succeed())
 		stored, _ := json.Marshal(list.Items[0].Spec)
 		Expect(string(stored)).To(ContainSubstring("/data/LOG_LEVEL"))
@@ -328,30 +334,29 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		}
 		// The Application was last synced an hour ago; the proposal is made now.
 		sinceSync := actorwebhook.Window{After: now.Add(-time.Hour), Before: now.Add(time.Minute)}
-		replicas := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "3"}}
+		replicas := []backflowv1beta1.FieldChange{{Path: "/spec/replicas", Op: backflowv1beta1.OpReplace, Desired: "1", Live: "3"}}
 
 		It("names the user from the scale entry of managedFields, which has no time", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-1"))
-			got := a.Refine(ctx, scaled("uid-scale-1", "scale"), replicas, actor("kubectl"), sinceSync)
+			got := a.Refine(ctx, scaled("uid-scale-1", "scale"), replicas, sinceSync)
 			Expect(got.Username).To(Equal("alice"))
-			Expect(string(got.Kind)).To(Equal("person"))
-			Expect(got.Manager).To(Equal("kubectl"))
+			Expect(string(got.Kind)).To(Equal("Person"))
 		})
 
 		It("does not name a user when the entry is not a scale entry", func() {
 			a := flow(true, scaleReview("mallory", "uid-scale-2"))
-			Expect(a.Refine(ctx, scaled("uid-scale-2", ""), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
+			Expect(nameOf(a.Refine(ctx, scaled("uid-scale-2", ""), replicas, sinceSync))).To(BeEmpty())
 		})
 
 		It("names nobody when no successful sync of the Application is known", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-4"))
-			Expect(a.Refine(ctx, scaled("uid-scale-4", "scale"), replicas, actor("kubectl"), actorwebhook.Window{Before: now.Add(time.Minute)}).Username).To(BeEmpty())
+			Expect(nameOf(a.Refine(ctx, scaled("uid-scale-4", "scale"), replicas, actorwebhook.Window{Before: now.Add(time.Minute)}))).To(BeEmpty())
 		})
 
 		It("names nobody when the record is from before the last sync", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-5"))
 			after := actorwebhook.Window{After: now.Add(time.Minute), Before: now.Add(2 * time.Minute)}
-			Expect(a.Refine(ctx, scaled("uid-scale-5", "scale"), replicas, actor("kubectl"), after).Username).To(BeEmpty())
+			Expect(nameOf(a.Refine(ctx, scaled("uid-scale-5", "scale"), replicas, after))).To(BeEmpty())
 		})
 
 		It("names the user who scaled in the second the last sync finished", func() {
@@ -359,13 +364,13 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			// the sync finished is stored with the very second of the sync. Observed with kubectl scale right after a sync.
 			a := flow(true, scaleReview("alice", "uid-scale-6"))
 			sameSecond := actorwebhook.Window{After: now, Before: now.Add(time.Minute)}
-			Expect(a.Refine(ctx, scaled("uid-scale-6", "scale"), replicas, actor("kubectl"), sameSecond).Username).To(Equal("alice"))
+			Expect(nameOf(a.Refine(ctx, scaled("uid-scale-6", "scale"), replicas, sameSecond))).To(Equal("alice"))
 		})
 
 		It("names nobody for a scale from the second before the last sync", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-7"))
 			after := actorwebhook.Window{After: now.Add(time.Second), Before: now.Add(time.Minute)}
-			Expect(a.Refine(ctx, scaled("uid-scale-7", "scale"), replicas, actor("kubectl"), after).Username).To(BeEmpty())
+			Expect(nameOf(a.Refine(ctx, scaled("uid-scale-7", "scale"), replicas, after))).To(BeEmpty())
 		})
 
 		It("names nobody, not the earlier user, when the newest change was not flushed at the first look", func() {
@@ -374,12 +379,12 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			alice := flow(true, scaleReview("alice", "uid-scale-8"))
 			Expect(alice.Hold()).To(BeNumerically(">", 0))
 			bob := flow(true, scaleReview("bob", "uid-scale-8"))
-			Expect(bob.Refine(ctx, scaled("uid-scale-8", "scale"), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
+			Expect(nameOf(bob.Refine(ctx, scaled("uid-scale-8", "scale"), replicas, sinceSync))).To(BeEmpty())
 		})
 
 		It("names nobody when the records of two users fit", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-3"), scaleReview("mallory", "uid-scale-3"))
-			Expect(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
+			Expect(nameOf(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, sinceSync))).To(BeEmpty())
 		})
 	})
 })

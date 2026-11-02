@@ -13,10 +13,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
-// Package v1alpha1 contains API Schema definitions for the backflow v1alpha1 API group.
+// Package v1alpha1 contains the internal.backflow.io API: objects the operator writes for itself.
+// It carries no compatibility promise and is never graduated; unlike backflow.io, a grant on
+// that group does not reach it.
 // +kubebuilder:object:generate=true
-// +groupName=backflow.io
+// +groupName=internal.backflow.io
 package v1alpha1
 
 import (
@@ -27,10 +28,9 @@ import (
 
 var (
 	// SchemeGroupVersion is group version used to register these objects.
-	// This name is used by applyconfiguration generators (e.g. controller-gen).
-	SchemeGroupVersion = schema.GroupVersion{Group: "backflow.io", Version: "v1alpha1"}
+	SchemeGroupVersion = schema.GroupVersion{Group: "internal.backflow.io", Version: "v1alpha1"}
 
-	// GroupVersion is an alias for SchemeGroupVersion, for backward compatibility.
+	// GroupVersion is an alias for SchemeGroupVersion.
 	GroupVersion = SchemeGroupVersion
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.

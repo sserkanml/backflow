@@ -35,7 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -383,8 +383,8 @@ type pruningStatus struct{ client.SubResourceWriter }
 
 func (w pruningStatus) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
 	err := w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
-	if dp, ok := obj.(*backflowv1alpha1.DriftProposal); ok {
-		dp.Status.PushRejections, dp.Status.LastPushRejectedAt = 0, nil
+	if dp, ok := obj.(*backflowv1beta1.DriftProposal); ok {
+		dp.Status.EnsureGit().EnsurePush().Rejections, dp.Status.EnsureGit().EnsurePush().LastRejectedAt = 0, nil
 	}
 	return err
 }
@@ -438,10 +438,10 @@ var _ = Describe("DriftProposal proposing", func() {
 		cacheDir string
 		writer   RepositoryWriter
 		r        *DriftProposalReconciler
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		app      *unstructured.Unstructured
-		dp       *backflowv1alpha1.DriftProposal
-		conn     *backflowv1alpha1.ScmConnection
+		dp       *backflowv1beta1.DriftProposal
+		conn     *backflowv1beta1.ScmConnection
 		// branch is the branch the proposal dp is pushed to: <prefix><name>-<uid8>.
 		branch string
 	)
@@ -449,8 +449,8 @@ var _ = Describe("DriftProposal proposing", func() {
 	reconcileDP := func() (reconcile.Result, error) {
 		return r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 	}
-	latest := func() *backflowv1alpha1.DriftProposal {
-		got := &backflowv1alpha1.DriftProposal{}
+	latest := func() *backflowv1beta1.DriftProposal {
+		got := &backflowv1beta1.DriftProposal{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), got)).To(Succeed())
 		return got
 	}
@@ -458,18 +458,18 @@ var _ = Describe("DriftProposal proposing", func() {
 	// forgetStatus simulates an operator that restarted before it recorded its work.
 	forgetStatus := func() {
 		got := latest()
-		got.Status = backflowv1alpha1.DriftProposalStatus{}
+		got.Status = backflowv1beta1.DriftProposalStatus{}
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, got)).To(Succeed())
 	}
-	setMode := func(mode backflowv1alpha1.BackflowMode, mr *backflowv1alpha1.MergeRequestOptions) {
+	setMode := func(mode backflowv1beta1.BackflowMode, mr *testGit) {
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		policy.Spec.Mode = mode
-		policy.Spec.MergeRequest = mr
+		policy.Spec.Git = mr.git()
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
 	}
-	recreate := func(mutate func(spec *backflowv1alpha1.DriftProposalSpec)) {
+	recreate := func(mutate func(spec *backflowv1beta1.DriftProposalSpec)) {
 		ExpectWithOffset(1, k8sClient.Delete(ctx, dp)).To(Succeed())
-		fresh := &backflowv1alpha1.DriftProposal{
+		fresh := &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: dp.Name, Namespace: dp.Namespace},
 			Spec:       *dp.Spec.DeepCopy(),
 		}
@@ -479,9 +479,13 @@ var _ = Describe("DriftProposal proposing", func() {
 		branch = "backflow/" + dp.Name + "-" + string(dp.UID)[:8]
 	}
 	setConnection := func(name string) {
-		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-		policy.Status.Applications[0].ScmConnection = name
-		ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		// The policy matches a repository to a connection by host: a connection for another host is none.
+		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(conn), conn)).To(Succeed())
+		conn.Spec.Hosts = nil
+		if name == "" {
+			conn.Spec.Hosts = []string{"unrelated.example.com"}
+		}
+		ExpectWithOffset(1, k8sClient.Update(ctx, conn)).To(Succeed())
 	}
 	reader := func() RepositoryReader { return CacheReader{Cache: gitrepo.NewCache(cacheDir)} }
 
@@ -509,28 +513,26 @@ var _ = Describe("DriftProposal proposing", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "prop-token", Namespace: ns},
 			StringData: map[string]string{"token": "glpat-test"},
 		})).To(Succeed())
-		conn = &backflowv1alpha1.ScmConnection{
+		conn = &backflowv1beta1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: "prop-scm", Namespace: ns},
-			Spec: backflowv1alpha1.ScmConnectionSpec{
-				Provider: backflowv1alpha1.ScmProviderGitLab, URL: "https://git.test",
-				TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "prop-token"}, Key: "token"},
+			Spec: backflowv1beta1.ScmConnectionSpec{
+				Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://git.test",
+				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "prop-token", Key: "token"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
 
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "prop-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"prop-app"}},
-				Mode:            backflowv1alpha1.ModeMergeRequest,
-				MergeRequest: &backflowv1alpha1.MergeRequestOptions{
-					BranchPrefix: "backflow/", Labels: []string{"backflow"}, Reviewers: []string{"bob"}, AssignActor: true,
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				ArgoCD:       backflowv1beta1.ArgoCDSpec{Namespace: ns},
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"prop-app"}},
+				Mode:         backflowv1beta1.ModeMergeRequest,
+				Git:          (&testGit{BranchPrefix: "backflow/", Labels: []string{"backflow"}, Reviewers: []string{"bob"}, AssignActor: true}).git(),
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.Applications = []backflowv1alpha1.ApplicationSummary{{Name: "prop-app", RepoURL: testRepoURL, ScmConnection: "prop-scm"}}
+		policy.Status.Applications = []backflowv1beta1.ApplicationSummary{{Name: "prop-app", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: testRepoURL, ScmConnectionName: "prop-scm"}}}}
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 
 		app = &unstructured.Unstructured{}
@@ -540,20 +542,18 @@ var _ = Describe("DriftProposal proposing", func() {
 		Expect(unstructured.SetNestedField(app.Object, "demo", "spec", "destination", "namespace")).To(Succeed())
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
-		dp = &backflowv1alpha1.DriftProposal{
+		dp = &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: "prop-dp", Namespace: ns},
-			Spec: backflowv1alpha1.DriftProposalSpec{
-				PolicyName:  "prop-policy",
-				Application: backflowv1alpha1.ObjectRef{Name: "prop-app", Namespace: ns},
-				Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
-				Source: backflowv1alpha1.SourceRef{
-					RepoURL: testRepoURL, Revision: initial, TargetRevision: "main",
-					Path: "apps/demo", Type: backflowv1alpha1.SourceDirectory,
-				},
-				Changes: []backflowv1alpha1.FieldChange{{
-					Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`,
+			Spec: backflowv1beta1.DriftProposalSpec{
+				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: "prop-policy"},
+				ApplicationRef: backflowv1beta1.ObjectRef{Name: "prop-app", Namespace: ns},
+				ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
+				Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main",
+					Path: "apps/demo", Type: backflowv1beta1.SourceDirectory}},
+				Changes: []backflowv1beta1.FieldChange{{
+					Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`,
 				}},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
+				Actor:      &backflowv1beta1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}
@@ -578,10 +578,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(res.RequeueAfter).To(Equal(trackInterval), "the merge request is polled from now on")
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-			Expect(got.Status.MergeRequest).To(Equal(&backflowv1alpha1.MergeRequestRef{
-				URL: "https://git.test/group/proj/-/merge_requests/7", Number: 7, Branch: branch, State: "open",
-			}))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+			Expect(got.Status.GitMergeRequest()).To(Equal(&backflowv1beta1.MergeRequestRef{URL: "https://git.test/group/proj/-/merge_requests/7", Number: 7, State: "open"}))
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestOpened))
@@ -639,8 +637,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(3 * time.Minute))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
-			Expect(got.Status.PushRejections).To(Equal(int32(1)))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
+			Expect(got.Status.PushRejectionCount()).To(Equal(int32(1)))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
 			Expect(provider.created).To(BeEmpty())
 
@@ -648,7 +646,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(w.calls).To(Equal(2))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(provider.created).To(HaveLen(1))
 		})
 
@@ -663,20 +661,20 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 			Expect(w.calls).To(Equal(3))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
 			Expect(provider.created).To(BeEmpty())
 		})
 
 		It("uses the committer of the ScmConnection and a custom branch prefix", func() {
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(conn), conn)).To(Succeed())
-			conn.Spec.Committer = &backflowv1alpha1.GitIdentity{Name: "Platform Bot", Email: "bot@example.com"}
+			conn.Spec.Committer = &backflowv1beta1.GitIdentity{Name: "Platform Bot", Email: "bot@example.com"}
 			Expect(k8sClient.Update(ctx, conn)).To(Succeed())
-			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "drift/"})
+			setMode(backflowv1beta1.ModeMergeRequest, &testGit{BranchPrefix: "drift/"})
 
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.MergeRequest.Branch).To(Equal("drift/" + dp.Name + "-" + string(dp.UID)[:8]))
+			Expect(latest().Status.GitBranch()).To(Equal("drift/" + dp.Name + "-" + string(dp.UID)[:8]))
 			c := repo.commitAt(repo.branch("drift/" + dp.Name + "-" + string(dp.UID)[:8]))
 			Expect(c.Committer.Name).To(Equal("Platform Bot"))
 			Expect(c.Committer.Email).To(Equal("bot@example.com"))
@@ -684,10 +682,10 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		It("applies the defaults of a policy without merge request options", func() {
-			setMode(backflowv1alpha1.ModeMergeRequest, nil)
+			setMode(backflowv1beta1.ModeMergeRequest, nil)
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.MergeRequest.Branch).To(Equal(branch))
+			Expect(latest().Status.GitBranch()).To(Equal(branch))
 			Expect(provider.created[0].Assignee).To(Equal("alice"))
 			Expect(provider.created[0].Labels).To(BeEmpty())
 		})
@@ -695,14 +693,14 @@ var _ = Describe("DriftProposal proposing", func() {
 		It("does not assign service accounts or when assignActor is off", func() {
 			// The field is omitempty and defaults to true, so false needs an explicit patch.
 			Expect(k8sClient.Patch(ctx, policy, client.RawPatch(types.MergePatchType,
-				[]byte(`{"spec":{"mergeRequest":{"assignActor":false}}}`)))).To(Succeed())
+				[]byte(`{"spec":{"git":{"mergeRequest":{"assignActor":false}}}}`)))).To(Succeed())
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(provider.created[0].Assignee).To(BeEmpty())
 
-			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{AssignActor: true})
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Actor = &backflowv1alpha1.Actor{Username: "system:serviceaccount:ci:deployer"}
+			setMode(backflowv1beta1.ModeMergeRequest, &testGit{AssignActor: true})
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Actor = &backflowv1beta1.Actor{Username: "system:serviceaccount:ci:deployer"}
 			})
 			provider.open = map[string]*scm.MergeRequest{}
 			_, err = reconcileDP()
@@ -716,7 +714,7 @@ var _ = Describe("DriftProposal proposing", func() {
 
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 
 			tipBefore := repo.branch(branch)
 			c := repo.commitAt(tipBefore)
@@ -739,7 +737,7 @@ var _ = Describe("DriftProposal proposing", func() {
 		It("reuses the mapping when the head changed nothing in the Application's directory", func() {
 			repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change")
 			out := reconcileLogged()
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(out).To(ContainSubstring("Reusing the mapping at the head of the target branch"))
 			Expect(out).To(ContainSubstring("none of the 1 changed file(s) is one the mapping depends on"))
 		})
@@ -748,7 +746,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			edited := strings.Replace(proposeConfigMap, "# Log level of the demo app.", "# Log level of the demo app (edited in Git).", 1)
 			head := repo.commit(map[string]string{"apps/demo/configmap.yaml": edited}, "a comment in the manifest")
 			out := reconcileLogged()
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(out).To(ContainSubstring("Mapping again at the head of the target branch"))
 			Expect(out).To(ContainSubstring("the target branch changed apps/demo/configmap.yaml, which the mapping depends on"))
 			tip := repo.branch(branch)
@@ -763,7 +761,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 			Expect(got.Status.Message).To(HavePrefix("The source changed in Git after the drift was detected."))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonSourceChanged))
@@ -777,7 +775,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 			Expect(got.Status.Message).To(ContainSubstring("The source changed in Git after the drift was detected."))
 			Expect(got.Status.Message).To(ContainSubstring("the edit changes nothing"))
 			Expect(repo.branch(branch)).To(BeEmpty())
@@ -787,7 +785,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			tipBefore := repo.branch(branch)
-			first := latest().Status.MergeRequest.DeepCopy()
+			first := latest().Status.GitMergeRequest().DeepCopy()
 
 			forgetStatus()
 			// A different operator process: empty cache, later clock.
@@ -798,8 +796,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-			Expect(got.Status.MergeRequest).To(Equal(first))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+			Expect(got.Status.GitMergeRequest()).To(Equal(first))
 			Expect(provider.created).To(HaveLen(1), "the open merge request is adopted, not duplicated")
 			Expect(repo.branch(branch)).To(Equal(tipBefore), "the branch is reused")
 		})
@@ -811,7 +809,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonScmUnavailable))
 			tipBefore := repo.branch(branch)
@@ -819,7 +817,7 @@ var _ = Describe("DriftProposal proposing", func() {
 
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(repo.branch(branch)).To(Equal(tipBefore))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
 		})
@@ -833,7 +831,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonBranchConflict))
 			Expect(got.Status.Message).To(ContainSubstring(other))
 			Expect(repo.branch(branch)).To(Equal(other))
@@ -859,7 +857,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonBranchConflict))
 				Expect(got.Status.Message).To(ContainSubstring(why))
 				Expect(repo.branch(branch)).To(Equal(tip), "someone else's branch is never touched")
@@ -873,8 +871,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-				Expect(got.Status.MergeRequest.Branch).To(Equal(branch))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+				Expect(got.Status.GitBranch()).To(Equal(branch))
 				Expect(repo.branch(branch)).To(Equal(tip), "the branch is reused as it is")
 				Expect(repo.commitAt(tip).ParentHashes[0].String()).To(Equal(initial))
 				Expect(repo.branch("main")).To(Equal(head))
@@ -931,7 +929,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				By("same base and same tree: it is the very change, whoever committed it")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 				Expect(repo.branch(branch)).To(Equal(tip))
 
 				By("once the target moved, the trailer is required")
@@ -940,67 +938,64 @@ var _ = Describe("DriftProposal proposing", func() {
 				repo.commit(map[string]string{"README.md": "moved on\n"}, "unrelated change")
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 				Expect(latest().Status.Message).To(ContainSubstring("trailer"))
 				Expect(repo.branch(branch)).To(Equal(tip))
 			})
 		})
 
 		It("fails with TargetNotABranch when the Application tracks a tag", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Source.TargetRevision = "v1.0.0" })
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Sources[0].TargetRevision = "v1.0.0" })
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonTargetNotABranch))
 			Expect(got.Status.Message).To(ContainSubstring("v1.0.0"))
 			Expect(provider.calls).To(BeEmpty())
 		})
 
 		It("fails with TargetNotABranch for a commit SHA", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Source.TargetRevision = initial })
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Sources[0].TargetRevision = initial })
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonTargetNotABranch))
 		})
 
 		It("takes the target branch from the policy when the Application tracks a tag", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Source.TargetRevision = "v1.0.0" })
-			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{TargetBranch: "main", AssignActor: true})
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Sources[0].TargetRevision = "v1.0.0" })
+			setMode(backflowv1beta1.ModeMergeRequest, &testGit{TargetBranch: "main", AssignActor: true})
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(provider.created[0].TargetBranch).To(Equal("main"))
 		})
 
 		It("resolves an Application that tracks HEAD to the default branch", func() {
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) { s.Source.TargetRevision = "HEAD" })
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) { s.Sources[0].TargetRevision = "HEAD" })
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(provider.created[0].TargetBranch).To(Equal("main"))
 		})
 	})
 
 	Context("tracking and cleanup", func() {
-		annotate := func(key, value string) {
-			ExpectWithOffset(1, k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
-				[]byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))))).To(Succeed())
-		}
+		annotate := func(key, value string) { signalProposal(ctx, k8sClient, latest(), key, value) }
 		cleaned := func() *metav1.Condition { return condition(conditionCleanedUp) }
 
 		BeforeEach(func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			provider.calls = nil
 		})
 
 		Context("the Proposed condition follows the phase", func() {
 			// The console shows the conditions first: a proposal that is no
 			// longer open must not say Proposed=True (MergeRequestOpened).
-			expectPhaseAndCondition := func(phase backflowv1alpha1.ProposalPhase, reason string) *metav1.Condition {
+			expectPhaseAndCondition := func(phase backflowv1beta1.ProposalPhase, reason string) *metav1.Condition {
 				got := latest()
 				ExpectWithOffset(1, got.Status.Phase).To(Equal(phase))
 				c := condition(conditionProposed)
@@ -1012,7 +1007,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			}
 
 			It("is Proposed=True while the merge request is open", func() {
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestOpened))
 			})
@@ -1021,8 +1016,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				provider.setState(scm.StateClosed, "")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				c := expectPhaseAndCondition(backflowv1alpha1.PhaseRejected, reasonMergeRequestClosed)
-				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+				c := expectPhaseAndCondition(backflowv1beta1.PhaseRejected, reasonMergeRequestClosed)
+				Expect(c.Message).To(ContainSubstring(latest().Status.GitMergeRequest().URL))
 				Expect(c.Message).To(ContainSubstring("closed without merging"))
 			})
 
@@ -1031,8 +1026,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				provider.setState(scm.StateMerged, merge)
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				c := expectPhaseAndCondition(backflowv1alpha1.PhaseMerged, reasonMergeRequestMerged)
-				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+				c := expectPhaseAndCondition(backflowv1beta1.PhaseMerged, reasonMergeRequestMerged)
+				Expect(c.Message).To(ContainSubstring(latest().Status.GitMergeRequest().URL))
 				Expect(c.Message).To(ContainSubstring(merge))
 			})
 
@@ -1040,18 +1035,18 @@ var _ = Describe("DriftProposal proposing", func() {
 				annotate(annotationReverted, "The live resource is back in sync with Git.")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				c := expectPhaseAndCondition(backflowv1alpha1.PhaseReverted, reasonLiveReverted)
+				c := expectPhaseAndCondition(backflowv1beta1.PhaseReverted, reasonLiveReverted)
 				Expect(c.Message).To(ContainSubstring("back in sync with Git"))
-				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+				Expect(c.Message).To(ContainSubstring(latest().Status.GitMergeRequest().URL))
 			})
 
 			It("is False/SupersededByNewerDrift, naming the new proposal and the merge request", func() {
 				annotate(annotationSupersededBy, "newer-proposal")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				c := expectPhaseAndCondition(backflowv1alpha1.PhaseSuperseded, reasonSuperseded)
+				c := expectPhaseAndCondition(backflowv1beta1.PhaseSuperseded, reasonSuperseded)
 				Expect(c.Message).To(ContainSubstring("newer-proposal"))
-				Expect(c.Message).To(ContainSubstring(latest().Status.MergeRequest.URL))
+				Expect(c.Message).To(ContainSubstring(latest().Status.GitMergeRequest().URL))
 			})
 
 			It("is False/SourceChanged when Git changes under the proposal", func() {
@@ -1064,18 +1059,18 @@ var _ = Describe("DriftProposal proposing", func() {
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				}
 				reconcileAfterRemoval()
-				expectPhaseAndCondition(backflowv1alpha1.PhaseSuperseded, reasonSourceChanged)
+				expectPhaseAndCondition(backflowv1beta1.PhaseSuperseded, reasonSourceChanged)
 			})
 
 			It("is False with the same reason the phase uses when a merge request found after a crash was closed or merged", func() {
 				forgetStatus()
 				got := latest()
-				got.Status.Branch = branch
+				got.Status.EnsureGit().Branch = branch
 				Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
 				provider.setState(scm.StateClosed, "")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				expectPhaseAndCondition(backflowv1alpha1.PhaseRejected, reasonMergeRequestClosed)
+				expectPhaseAndCondition(backflowv1beta1.PhaseRejected, reasonMergeRequestClosed)
 			})
 		})
 
@@ -1085,8 +1080,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(2 * time.Minute))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-			Expect(got.Status.MergeRequest.State).To(Equal("open"))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+			Expect(got.Status.GitMergeRequest().State).To(Equal("open"))
 			Expect(got.ResourceVersion).To(Equal(before.ResourceVersion), "an unchanged state writes nothing")
 			Expect(provider.calls).To(Equal([]string{"get 7"}))
 		})
@@ -1097,9 +1092,9 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.IsZero()).To(BeTrue())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-			Expect(got.Status.CommitSHA).To(Equal("abc123def"))
-			Expect(got.Status.MergeRequest.State).To(Equal("merged"))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+			Expect(got.Status.GitCommit()).To(Equal("abc123def"))
+			Expect(got.Status.GitMergeRequest().State).To(Equal("merged"))
 			Expect(got.Status.Message).To(ContainSubstring("merged"))
 			Expect(provider.calls).To(Equal([]string{"get 7"}), "nothing is closed or deleted after a merge")
 
@@ -1113,8 +1108,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
-			Expect(got.Status.MergeRequest.State).To(Equal("closed"))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseRejected))
+			Expect(got.Status.GitMergeRequest().State).To(Equal("closed"))
 			Expect(got.Status.Message).To(ContainSubstring("Argo CD can revert"))
 			Expect(provider.deleted).To(BeEmpty())
 			Expect(repo.branch(branch)).NotTo(BeEmpty())
@@ -1138,7 +1133,7 @@ var _ = Describe("DriftProposal proposing", func() {
 					"the reason is posted before the merge request is closed")
 				Expect(cleaned().Status).To(Equal(metav1.ConditionTrue))
 				Expect(cleaned().Reason).To(Equal(reasonCleanedUp))
-				Expect(got.Status.MergeRequest.State).To(Equal("closed"))
+				Expect(got.Status.GitMergeRequest().State).To(Equal("closed"))
 			},
 			Entry("superseded by a newer drift", annotationSupersededBy, "newer-dp", "Superseded", "A newer drift on the same resource replaced this proposal."),
 			Entry("reverted: live went back to Git", annotationReverted, "The live resource is back in sync with Git.", "Reverted", "The live resource is back in sync with Git."),
@@ -1158,8 +1153,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-			Expect(got.Status.CommitSHA).To(Equal("abc123"))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+			Expect(got.Status.GitCommit()).To(Equal("abc123"))
 			Expect(provider.comments).To(BeEmpty())
 			Expect(provider.closed).To(BeEmpty())
 			Expect(provider.deleted).To(BeEmpty())
@@ -1170,7 +1165,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			annotate(annotationReverted, "The live resource is back in sync with Git.")
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseRejected))
 			Expect(provider.comments).To(BeEmpty())
 		})
 
@@ -1182,14 +1177,14 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">=", trackInterval))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed), "no verdict without looking")
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed), "no verdict without looking")
 			Expect(got.Status.Message).To(ContainSubstring("Cannot read the state of merge request"))
 			Expect(provider.closed).To(BeEmpty())
 
 			provider.getErr = nil
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseReverted))
 			Expect(provider.closed).To(Equal([]int64{7}))
 		})
 
@@ -1205,7 +1200,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(got.Status.Message).To(Equal(before))
 		})
 
@@ -1231,7 +1226,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(trackInterval))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 		})
 
 		It("does not repeat the comment when closing failed the first time", func() {
@@ -1241,7 +1236,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded), "the phase is already final")
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded), "the phase is already final")
 			Expect(cleaned().Status).To(Equal(metav1.ConditionFalse))
 			Expect(cleaned().Reason).To(Equal(reasonCommented))
 			Expect(provider.comments).To(HaveLen(1))
@@ -1302,12 +1297,12 @@ var _ = Describe("DriftProposal proposing", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">=", trackInterval))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed), "a 404 can also mean the token lost access")
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed), "a 404 can also mean the token lost access")
 		})
 
 		It("only deletes the branch when the merge request of a retired proposal is gone", func() {
 			got := latest()
-			got.Status.Phase = backflowv1alpha1.PhaseReverted
+			got.Status.Phase = backflowv1beta1.PhaseReverted
 			got.Status.Message = "back in sync"
 			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
 			delete(provider.byNumber, 7)
@@ -1332,8 +1327,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(res.RequeueAfter).To(Equal(trackInterval), "tracking goes on")
 
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-				Expect(got.Status.MergeRequest.State).To(Equal("open"))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+				Expect(got.Status.GitMergeRequest().State).To(Equal("open"))
 				Expect(liveReverted().Status).To(Equal(metav1.ConditionTrue))
 				Expect(liveReverted().Reason).To(Equal(reasonSyncedNewRevision))
 				Expect(liveReverted().ObservedGeneration).To(Equal(got.Generation))
@@ -1353,7 +1348,7 @@ var _ = Describe("DriftProposal proposing", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 				Expect(provider.comments).To(HaveLen(1))
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			})
 
 			It("is merged later as usual", func() {
@@ -1365,8 +1360,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-				Expect(got.Status.CommitSHA).To(Equal("abc123"))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+				Expect(got.Status.GitCommit()).To(Equal("abc123"))
 				Expect(provider.closed).To(BeEmpty())
 			})
 
@@ -1378,7 +1373,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				provider.setState(scm.StateClosed, "")
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseRejected))
 				Expect(provider.deleted).To(BeEmpty())
 			})
 
@@ -1390,7 +1385,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				annotate(annotationSupersededBy, "newer-dp")
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 				Expect(provider.closed).To(Equal([]int64{7}))
 				Expect(provider.deleted).To(Equal([]string{branch}))
 			})
@@ -1401,14 +1396,12 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				By("the drift controller removes the annotation when the change returns")
-				got := latest()
-				delete(got.Annotations, annotationLiveReverted)
-				Expect(k8sClient.Update(ctx, got)).To(Succeed())
+				signalProposal(ctx, k8sClient, latest(), annotationLiveReverted, "")
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(liveReverted().Status).To(Equal(metav1.ConditionFalse))
 				Expect(liveReverted().Reason).To(Equal(reasonLiveChangeReturned))
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 				Expect(provider.comments).To(HaveLen(1), "nothing is said when the change returns")
 
 				By("a later reset is a new event")
@@ -1428,7 +1421,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res.RequeueAfter).To(BeNumerically(">=", trackInterval))
 				Expect(liveReverted()).To(BeNil())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 
 				_, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
@@ -1444,14 +1437,14 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.calls = nil
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.IsZero()).To(BeTrue())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0), "it waits for its retention, and does nothing else")
 			Expect(provider.calls).To(BeEmpty())
 		})
 
 		It("cleans up a retired proposal a restarted operator finds", func() {
 			By("the phase is final but the merge request was never closed")
 			got := latest()
-			got.Status.Phase = backflowv1alpha1.PhaseReverted
+			got.Status.Phase = backflowv1beta1.PhaseReverted
 			got.Status.Message = "back in sync"
 			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
 
@@ -1467,7 +1460,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				annotate(annotationSupersededBy, "newer")
 				_, err := reconcileDP()
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				ExpectWithOffset(1, latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 			}
 
 			It("deletes a branch that holds only the proposal's commits", func() {
@@ -1546,7 +1539,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			// was not looking, and is cleaned up when it finds it.
 			retiredElsewhere := func() {
 				got := latest()
-				got.Status.Phase = backflowv1alpha1.PhaseReverted
+				got.Status.Phase = backflowv1beta1.PhaseReverted
 				got.Status.Message = "back in sync"
 				ExpectWithOffset(1, k8sClient.Status().Update(ctx, got)).To(Succeed())
 				_, err := reconcileDP()
@@ -1587,7 +1580,7 @@ var _ = Describe("DriftProposal proposing", func() {
 
 		It("leaves a merge request that was merged during the cleanup alone", func() {
 			got := latest()
-			got.Status.Phase = backflowv1alpha1.PhaseSuperseded
+			got.Status.Phase = backflowv1beta1.PhaseSuperseded
 			got.Status.Message = "replaced"
 			Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())
 			provider.setState(scm.StateMerged, "abc")
@@ -1598,7 +1591,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(provider.deleted).To(BeEmpty())
 			Expect(provider.comments).To(BeEmpty())
 			Expect(cleaned().Reason).To(Equal(reasonAlreadyMerged))
-			Expect(latest().Status.MergeRequest.State).To(Equal("merged"))
+			Expect(latest().Status.GitMergeRequest().State).To(Equal("merged"))
 		})
 
 		It("holds the cleanup while the ScmConnection is gone", func() {
@@ -1608,7 +1601,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(provider.calls).To(BeEmpty())
 		})
 	})
@@ -1616,15 +1609,15 @@ var _ = Describe("DriftProposal proposing", func() {
 	Context("a branch that was recorded", func() {
 		It("is used as it is, so a proposal of an older version keeps its backflow/<name> branch", func() {
 			old := latest()
-			old.Status.Branch = "backflow/prop-dp" // what older versions recorded
+			old.Status.EnsureGit().Branch = "backflow/prop-dp" // what older versions recorded
 			Expect(k8sClient.Status().Update(ctx, old)).To(Succeed())
 
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-			Expect(got.Status.Branch).To(Equal("backflow/prop-dp"))
-			Expect(got.Status.MergeRequest.Branch).To(Equal("backflow/prop-dp"))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+			Expect(got.Status.GitBranch()).To(Equal("backflow/prop-dp"))
+			Expect(got.Status.GitBranch()).To(Equal("backflow/prop-dp"))
 			Expect(repo.branch("backflow/prop-dp")).NotTo(BeEmpty())
 			Expect(repo.branch(branch)).To(BeEmpty(), "the new style name is not used for it")
 			Expect(provider.created[0].SourceBranch).To(Equal("backflow/prop-dp"))
@@ -1634,16 +1627,16 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.createErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			pushed := latest().Status.Branch
+			pushed := latest().Status.GitBranch()
 			Expect(pushed).To(Equal(branch))
 			Expect(repo.branch(pushed)).NotTo(BeEmpty())
 
-			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "drift/"})
+			setMode(backflowv1beta1.ModeMergeRequest, &testGit{BranchPrefix: "drift/"})
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-			Expect(got.Status.MergeRequest.Branch).To(Equal(pushed))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+			Expect(got.Status.GitBranch()).To(Equal(pushed))
 			Expect(provider.created).To(HaveLen(1))
 			Expect(provider.created[0].SourceBranch).To(Equal(pushed))
 			Expect(repo.branch("drift/"+dp.Name+"-"+string(dp.UID)[:8])).To(BeEmpty(), "no second branch under the new prefix")
@@ -1652,10 +1645,9 @@ var _ = Describe("DriftProposal proposing", func() {
 		It("is the one that is cleaned up, whatever the prefix is now", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			pushed := latest().Status.MergeRequest.Branch
-			setMode(backflowv1alpha1.ModeMergeRequest, &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "other/"})
-			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
-				[]byte(`{"metadata":{"annotations":{"`+annotationSupersededBy+`":"newer"}}}`)))).To(Succeed())
+			pushed := latest().Status.GitBranch()
+			setMode(backflowv1beta1.ModeMergeRequest, &testGit{BranchPrefix: "other/"})
+			signalProposal(ctx, k8sClient, latest(), annotationSupersededBy, "newer")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(provider.closed).To(Equal([]int64{7}))
@@ -1663,16 +1655,16 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		It("is computed from the prefix only while nothing is recorded", func() {
-			dp := &backflowv1alpha1.DriftProposal{}
+			dp := &backflowv1beta1.DriftProposal{}
 			dp.Name, dp.UID = "n", "12345678-aaaa"
 			if got := recordedOrNewBranch("backflow/", dp); got != "backflow/n-12345678" {
 				Fail("new: " + got)
 			}
-			dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{Branch: "backflow/n"}
+			dp.Status.EnsureGit().Branch = "backflow/n"
 			if got := recordedOrNewBranch("drift/", dp); got != "backflow/n" {
-				Fail("from the merge request: " + got)
+				Fail("recorded: " + got)
 			}
-			dp.Status.Branch = "keep/me"
+			dp.Status.EnsureGit().Branch = "keep/me"
 			if got := recordedOrNewBranch("drift/", dp); got != "keep/me" {
 				Fail("recorded: " + got)
 			}
@@ -1690,20 +1682,20 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.setState(scm.StateClosed, "")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseRejected))
 
 			By("deleting it and getting the same drift again")
-			recreate(func(*backflowv1alpha1.DriftProposalSpec) {})
+			recreate(func(*backflowv1beta1.DriftProposalSpec) {})
 			Expect(branch).NotTo(Equal(oldBranch), "the object has another UID")
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(trackInterval))
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed), "not Rejected at once because of the old merge request")
-			Expect(got.Status.Branch).To(Equal(branch))
-			Expect(got.Status.MergeRequest.Number).To(Equal(int64(8)))
-			Expect(got.Status.MergeRequest.Branch).To(Equal(branch))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed), "not Rejected at once because of the old merge request")
+			Expect(got.Status.GitBranch()).To(Equal(branch))
+			Expect(got.Status.GitMergeRequest().Number).To(Equal(int64(8)))
+			Expect(got.Status.GitBranch()).To(Equal(branch))
 			Expect(provider.created).To(HaveLen(2))
 			Expect(provider.created[1].SourceBranch).To(Equal(branch))
 			Expect(repo.branch(branch)).NotTo(BeEmpty())
@@ -1717,12 +1709,12 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.setState(scm.StateMerged, repo.commit(map[string]string{"README.md": "merged\n"}, "merge"))
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 
-			recreate(func(*backflowv1alpha1.DriftProposalSpec) {})
+			recreate(func(*backflowv1beta1.DriftProposalSpec) {})
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).NotTo(Equal(backflowv1alpha1.PhaseMerged), "a new proposal is judged on its own work")
+			Expect(latest().Status.Phase).NotTo(Equal(backflowv1beta1.PhaseMerged), "a new proposal is judged on its own work")
 		})
 
 		It("does not close the old merge request when the new proposal is retired without one", func() {
@@ -1731,12 +1723,11 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.setState(scm.StateClosed, "")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			recreate(func(*backflowv1alpha1.DriftProposalSpec) {})
+			recreate(func(*backflowv1beta1.DriftProposalSpec) {})
 			provider.createErr = fmt.Errorf("%w: boom", scm.ErrUnavailable)
 			_, err = reconcileDP() // pushes its branch, no merge request yet
 			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
-				[]byte(`{"metadata":{"annotations":{"`+annotationReverted+`":"back in sync"}}}`)))).To(Succeed())
+			signalProposal(ctx, k8sClient, latest(), annotationReverted, "back in sync")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(provider.closed).To(BeEmpty())
@@ -1750,14 +1741,11 @@ var _ = Describe("DriftProposal proposing", func() {
 		// the branch, as if it stopped before the status patch.
 		loseStatus := func() {
 			got := latest()
-			recorded := got.Status.Branch
-			got.Status = backflowv1alpha1.DriftProposalStatus{Branch: recorded}
+			recorded := got.Status.GitBranch()
+			got.Status = backflowv1beta1.DriftProposalStatus{Git: &backflowv1beta1.GitStatus{Branch: recorded}}
 			ExpectWithOffset(1, k8sClient.Status().Update(ctx, got)).To(Succeed())
 		}
-		annotate := func(key, value string) {
-			ExpectWithOffset(1, k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
-				[]byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))))).To(Succeed())
-		}
+		annotate := func(key, value string) { signalProposal(ctx, k8sClient, latest(), key, value) }
 		restarted := func() {
 			r.Repos = reader()
 			r.Writer = gitrepo.NewCache(cacheDir + "-restarted")
@@ -1780,11 +1768,11 @@ var _ = Describe("DriftProposal proposing", func() {
 
 		It("records the branch before it pushes it", func() {
 			var seen string
-			r.Writer = &branchWriter{RepositoryWriter: writer, hook: func() { seen = latest().Status.Branch }}
+			r.Writer = &branchWriter{RepositoryWriter: writer, hook: func() { seen = latest().Status.GitBranch() }}
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(seen).To(Equal(branch))
-			Expect(latest().Status.Branch).To(Equal(branch))
+			Expect(latest().Status.GitBranch()).To(Equal(branch))
 		})
 
 		Context("after the branch was pushed and before the merge request was opened", func() {
@@ -1793,15 +1781,15 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(repo.branch(branch)).NotTo(BeEmpty())
-				Expect(latest().Status.MergeRequest).To(BeNil())
-				Expect(latest().Status.Branch).To(Equal(branch))
+				Expect(latest().Status.GitMergeRequest()).To(BeNil())
+				Expect(latest().Status.GitBranch()).To(Equal(branch))
 			})
 
 			It("deletes the orphaned branch when the proposal is reverted", func() {
 				annotate(annotationReverted, "back in sync")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseReverted))
 				Expect(provider.deleted).To(Equal([]string{branch}))
 				Expect(provider.closed).To(BeEmpty())
 				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
@@ -1811,7 +1799,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				annotate(annotationSupersededBy, "newer")
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 				Expect(provider.deleted).To(Equal([]string{branch}))
 			})
 		})
@@ -1829,8 +1817,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-				Expect(got.Status.MergeRequest.Number).To(Equal(int64(7)))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+				Expect(got.Status.GitMergeRequest().Number).To(Equal(int64(7)))
 				Expect(provider.created).To(HaveLen(1))
 			})
 
@@ -1840,10 +1828,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res.IsZero()).To(BeTrue())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
-				Expect(got.Status.MergeRequest).To(Equal(&backflowv1alpha1.MergeRequestRef{
-					URL: "https://git.test/group/proj/-/merge_requests/7", Number: 7, Branch: branch, State: "closed",
-				}))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseRejected))
+				Expect(got.Status.GitMergeRequest()).To(Equal(&backflowv1beta1.MergeRequestRef{URL: "https://git.test/group/proj/-/merge_requests/7", Number: 7, State: "closed"}))
 				Expect(provider.created).To(HaveLen(1))
 			})
 
@@ -1853,9 +1839,9 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-				Expect(got.Status.CommitSHA).To(Equal(merged))
-				Expect(got.Status.MergeRequest.State).To(Equal("merged"))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+				Expect(got.Status.GitCommit()).To(Equal(merged))
+				Expect(got.Status.GitMergeRequest().State).To(Equal("merged"))
 				Expect(provider.created).To(HaveLen(1))
 			})
 
@@ -1865,8 +1851,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-				Expect(got.Status.MergeRequest.Number).To(Equal(int64(8)), "a new merge request, not the foreign one")
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+				Expect(got.Status.GitMergeRequest().Number).To(Equal(int64(8)), "a new merge request, not the foreign one")
 				Expect(provider.created).To(HaveLen(2))
 			})
 
@@ -1876,7 +1862,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				forgetStatus()
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseRejected))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseRejected))
 				Expect(provider.created).To(HaveLen(1))
 			})
 
@@ -1885,13 +1871,13 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 				Expect(provider.closed).To(Equal([]int64{7}))
 				Expect(provider.deleted).To(Equal([]string{branch}))
 				Expect(provider.comments).To(HaveLen(1))
-				Expect(got.Status.MergeRequest).NotTo(BeNil(), "the merge request that was found is recorded")
-				Expect(got.Status.MergeRequest.Number).To(Equal(int64(7)))
-				Expect(got.Status.MergeRequest.State).To(Equal("closed"))
+				Expect(got.Status.GitMergeRequest()).NotTo(BeNil(), "the merge request that was found is recorded")
+				Expect(got.Status.GitMergeRequest().Number).To(Equal(int64(7)))
+				Expect(got.Status.GitMergeRequest().State).To(Equal("closed"))
 				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
 			})
 
@@ -1901,12 +1887,12 @@ var _ = Describe("DriftProposal proposing", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 				Expect(provider.comments).To(BeEmpty(), "no comment on a merge request that may not be ours")
 				Expect(provider.closed).To(BeEmpty())
 				Expect(provider.deleted).To(BeEmpty())
 				Expect(repo.branch(branch)).To(Equal(human))
-				Expect(got.Status.MergeRequest).To(BeNil(), "it is not recorded as ours")
+				Expect(got.Status.GitMergeRequest()).To(BeNil(), "it is not recorded as ours")
 				Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition(conditionCleanedUp).Reason).To(Equal(reasonBranchKept))
 				Expect(condition(conditionCleanedUp).Message).To(ContainSubstring("was not closed"))
@@ -1942,7 +1928,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			repo.commit(map[string]string{"apps/demo/configmap.yaml": ""}, "remove the ConfigMap")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 			Expect(provider.deleted).To(Equal([]string{branch}))
 			Expect(condition(conditionCleanedUp).Status).To(Equal(metav1.ConditionTrue))
 		})
@@ -1950,17 +1936,16 @@ var _ = Describe("DriftProposal proposing", func() {
 
 	Context("retiring a proposal that has no merge request yet", func() {
 		It("treats a reset by a sync as a plain revert", func() {
-			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			setMode(backflowv1beta1.ModeReportOnly, nil)
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
-			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
-				[]byte(`{"metadata":{"annotations":{"`+annotationLiveReverted+`":"0123456789abcdef"}}}`)))).To(Succeed())
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
+			signalProposal(ctx, k8sClient, latest(), annotationLiveReverted, "0123456789abcdef")
 
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseReverted))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseReverted))
 			Expect(got.Status.Message).To(ContainSubstring("0123456789abcdef"))
 			Expect(provider.calls).To(BeEmpty())
 			Expect(condition(conditionLiveReverted)).To(BeNil())
@@ -1969,16 +1954,15 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		It("does not touch the provider", func() {
-			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			setMode(backflowv1beta1.ModeReportOnly, nil)
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
-			Expect(k8sClient.Patch(ctx, latest(), client.RawPatch(types.MergePatchType,
-				[]byte(`{"metadata":{"annotations":{"`+annotationSupersededBy+`":"newer"}}}`)))).To(Succeed())
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
+			signalProposal(ctx, k8sClient, latest(), annotationSupersededBy, "newer")
 
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 			Expect(provider.calls).To(BeEmpty())
 			Expect(condition(conditionCleanedUp)).To(BeNil())
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonSuperseded))
@@ -1986,23 +1970,23 @@ var _ = Describe("DriftProposal proposing", func() {
 	})
 
 	Context("DirectCommit mode", func() {
-		BeforeEach(func() { setMode(backflowv1alpha1.ModeDirectCommit, nil) })
+		BeforeEach(func() { setMode(backflowv1beta1.ModeDirectCommit, nil) })
 
 		It("commits to the target branch and records the commit", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 			tip := repo.branch("main")
 			Expect(tip).NotTo(Equal(initial))
-			Expect(got.Status.CommitSHA).To(Equal(tip))
+			Expect(got.Status.GitCommit()).To(Equal(tip))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue), "a commit is the proposal landing: Committed stays True")
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
 			Expect(repo.file(tip, "apps/demo/configmap.yaml")).To(ContainSubstring("# Log level of the demo app.\n  LOG_LEVEL: debug"))
 			Expect(repo.commitAt(tip).Message).To(ContainSubstring("Proposal: prop-dp\n"))
 			Expect(provider.calls).To(BeEmpty(), "no merge request in DirectCommit mode")
-			Expect(got.Status.MergeRequest).To(BeNil())
+			Expect(got.Status.GitMergeRequest()).To(BeNil())
 		})
 
 		It("recognises its own commit after a restart", func() {
@@ -2017,8 +2001,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-			Expect(got.Status.CommitSHA).To(Equal(tip))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+			Expect(got.Status.GitCommit()).To(Equal(tip))
 			Expect(repo.branch("main")).To(Equal(tip), "no second commit")
 		})
 
@@ -2039,8 +2023,8 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-			Expect(got.Status.CommitSHA).To(Equal(ours))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+			Expect(got.Status.GitCommit()).To(Equal(ours))
 			Expect(repo.branch("main")).To(Equal(top), "no second commit")
 		})
 
@@ -2051,7 +2035,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping), "not ended on a failed look")
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping), "not ended on a failed look")
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonRepositoryUnavailable))
 			Expect(repo.branch("main")).To(Equal(initial), "nothing was committed on a guess")
@@ -2059,7 +2043,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			w.err = nil
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 		})
 
 		It("holds the proposal, with a reason, when the history is longer than the scan limit", func() {
@@ -2071,7 +2055,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">=", retryMin))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonHistoryTooLong))
 			Expect(condition(conditionProposed).Message).To(ContainSubstring("more than 3 commits"))
 			Expect(repo.branch("main")).To(Equal(head), "no second commit while it cannot be told")
@@ -2080,7 +2064,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			r.CommitScanLimit = 100
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 		})
 
 		It("does not hold when the scan limit is reached exactly at the revision", func() {
@@ -2090,26 +2074,26 @@ var _ = Describe("DriftProposal proposing", func() {
 			}
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 		})
 
 		It("does not take the commit of an earlier proposal with the same name as its own", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			old := latest()
-			Expect(old.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(old.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 			oldCommit := repo.branch("main")
 			Expect(repo.commitAt(oldCommit).Message).To(ContainSubstring("Proposal-UID: " + string(old.UID) + "\n"))
 
 			By("the user deletes it and the same drift is proposed again under the same name")
-			recreate(func(*backflowv1alpha1.DriftProposalSpec) {})
+			recreate(func(*backflowv1beta1.DriftProposalSpec) {})
 			Expect(dp.UID).NotTo(Equal(old.UID))
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 
 			got := latest()
-			Expect(got.Status.CommitSHA).NotTo(Equal(oldCommit), "the old commit is not this proposal's")
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded), "Git already holds the live value; no second commit")
+			Expect(got.Status.GitCommit()).NotTo(Equal(oldCommit), "the old commit is not this proposal's")
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded), "Git already holds the live value; no second commit")
 			Expect(repo.branch("main")).To(Equal(oldCommit))
 		})
 
@@ -2118,9 +2102,9 @@ var _ = Describe("DriftProposal proposing", func() {
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-			Expect(got.Status.CommitSHA).NotTo(Equal(other))
-			Expect(repo.branch("main")).To(Equal(got.Status.CommitSHA))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+			Expect(got.Status.GitCommit()).NotTo(Equal(other))
+			Expect(repo.branch("main")).To(Equal(got.Status.GitCommit()))
 		})
 
 		It("retries once from the new head when the branch moved during the push", func() {
@@ -2137,7 +2121,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(w.updates).To(Equal(2))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 			tip := repo.branch("main")
 			Expect(repo.file(tip, "README.md")).To(Equal("raced\n"), "the concurrent commit is kept")
 			Expect(repo.file(tip, "apps/demo/configmap.yaml")).To(ContainSubstring("LOG_LEVEL: debug"))
@@ -2155,9 +2139,9 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(w.updates).To(Equal(2), "exactly one retry")
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonNonFastForward))
-			Expect(got.Status.CommitSHA).To(BeEmpty())
+			Expect(got.Status.GitCommit()).To(BeEmpty())
 		})
 
 		Context("when the server declines the push", func() {
@@ -2192,9 +2176,9 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res.RequeueAfter).To(Equal(3 * time.Minute))
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping), "not failed for good")
-				Expect(got.Status.PushRejections).To(Equal(int32(1)))
-				Expect(got.Status.LastPushRejectedAt).NotTo(BeNil())
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping), "not failed for good")
+				Expect(got.Status.PushRejectionCount()).To(Equal(int32(1)))
+				Expect(got.Status.PushLastRejectedAt()).NotTo(BeNil())
 				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
 				Expect(condition(conditionProposed).Message).To(ContainSubstring("attempt 1 of 3"))
@@ -2221,7 +2205,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(w.updates).To(Equal(2))
 				got = latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
 				Expect(repo.branch("main")).NotTo(Equal(initial))
 			})
@@ -2240,7 +2224,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(res.RequeueAfter).To(BeZero(), "not retried: the count would never reach the limit")
 				Expect(pushes).To(Equal(1))
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
 				Expect(got.Status.Message).To(ContainSubstring("CRDs are outdated"))
 				Expect(got.Status.Message).To(ContainSubstring("pre-receive hook declined"))
@@ -2262,8 +2246,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				res, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res.RequeueAfter).To(Equal(7 * time.Minute))
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
-				Expect(latest().Status.PushRejections).To(Equal(int32(2)))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
+				Expect(latest().Status.PushRejectionCount()).To(Equal(int32(2)))
 				advance(7*time.Minute + time.Second)
 				res, err = reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
@@ -2271,7 +2255,7 @@ var _ = Describe("DriftProposal proposing", func() {
 
 				Expect(pushes).To(Equal(3))
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonPushRejected))
 				Expect(got.Status.Message).To(ContainSubstring("declined"))
@@ -2291,20 +2275,20 @@ var _ = Describe("DriftProposal proposing", func() {
 			repo.commit(map[string]string{"apps/demo/configmap.yaml": ""}, "remove the ConfigMap")
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseSuperseded))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
 		})
 	})
 
 	Context("ReportOnly mode", func() {
 		It("writes nothing and stays in Mapping", func() {
-			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			setMode(backflowv1beta1.ModeReportOnly, nil)
 			before := repo.branch("main")
 
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.IsZero()).To(BeTrue())
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonReportOnly))
@@ -2314,27 +2298,27 @@ var _ = Describe("DriftProposal proposing", func() {
 		})
 
 		Context("when the policy goes on to a mode that writes to Git", func() {
-			mrOptions := &backflowv1alpha1.MergeRequestOptions{BranchPrefix: "backflow/", Labels: []string{"backflow"}, AssignActor: true}
+			mrOptions := &testGit{BranchPrefix: "backflow/", Labels: []string{"backflow"}, AssignActor: true}
 
 			BeforeEach(func() {
-				setMode(backflowv1alpha1.ModeReportOnly, nil)
+				setMode(backflowv1beta1.ModeReportOnly, nil)
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonReportOnly))
 			})
 
 			It("is enqueued by a change of its own policy, and not by another policy's", func() {
 				Expect(r.heldProposals(ctx, policy)).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
-				other := &backflowv1alpha1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{Name: "another-policy", Namespace: ns}}
+				other := &backflowv1beta1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{Name: "another-policy", Namespace: ns}}
 				Expect(r.heldProposals(ctx, other)).To(BeEmpty())
-				Expect(r.heldProposals(ctx, &backflowv1alpha1.BackflowPolicy{
+				Expect(r.heldProposals(ctx, &backflowv1beta1.BackflowPolicy{
 					ObjectMeta: metav1.ObjectMeta{Name: policy.Name, Namespace: "elsewhere"}})).To(BeEmpty())
 			})
 
 			It("opens a merge request after the mode is switched to MergeRequest", func() {
 				before := repo.branch("main")
-				setMode(backflowv1alpha1.ModeMergeRequest, mrOptions)
+				setMode(backflowv1beta1.ModeMergeRequest, mrOptions)
 				requests := r.heldProposals(ctx, policy)
 				Expect(requests).To(ConsistOf(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)}))
 
@@ -2342,8 +2326,8 @@ var _ = Describe("DriftProposal proposing", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res.RequeueAfter).To(Equal(trackInterval), "the merge request is polled from now on")
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
-				Expect(got.Status.MergeRequest.Branch).To(Equal(branch))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
+				Expect(got.Status.GitBranch()).To(Equal(branch))
 				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestOpened))
 				Expect(repo.branch(branch)).NotTo(BeEmpty())
@@ -2352,15 +2336,15 @@ var _ = Describe("DriftProposal proposing", func() {
 			})
 
 			It("commits after the mode is switched to DirectCommit", func() {
-				setMode(backflowv1alpha1.ModeDirectCommit, nil)
+				setMode(backflowv1beta1.ModeDirectCommit, nil)
 				requests := r.heldProposals(ctx, policy)
 				Expect(requests).To(HaveLen(1))
 
 				_, err := r.Reconcile(ctx, requests[0])
 				Expect(err).NotTo(HaveOccurred())
 				got := latest()
-				Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
-				Expect(got.Status.CommitSHA).To(Equal(repo.branch("main")))
+				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
+				Expect(got.Status.GitCommit()).To(Equal(repo.branch("main")))
 				Expect(condition(conditionProposed).Reason).To(Equal(reasonCommitted))
 				Expect(provider.calls).To(BeEmpty(), "no merge request in DirectCommit mode")
 			})
@@ -2368,24 +2352,24 @@ var _ = Describe("DriftProposal proposing", func() {
 			It("stays held while the policy is still in ReportOnly mode", func() {
 				_, err := reconcileDP()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 				Expect(provider.created).To(BeEmpty())
 			})
 		})
 
 		It("keeps following an open merge request when the policy is switched to ReportOnly, and does not close it", func() {
-			setMode(backflowv1alpha1.ModeMergeRequest, nil)
+			setMode(backflowv1beta1.ModeMergeRequest, nil)
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 
-			setMode(backflowv1alpha1.ModeReportOnly, nil)
+			setMode(backflowv1beta1.ModeReportOnly, nil)
 			Expect(r.heldProposals(ctx, policy)).To(BeEmpty(), "a proposed proposal is not held")
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(trackInterval), "still polled")
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(provider.closed).To(BeEmpty())
 			Expect(provider.comments).To(BeEmpty())
 			Expect(provider.deleted).To(BeEmpty())
@@ -2394,7 +2378,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.setState(scm.StateMerged, repo.commit(map[string]string{"README.md": "merged\n"}, "merge"))
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMerged))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMerged))
 		})
 	})
 
@@ -2406,7 +2390,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
 			got := latest()
-			Expect(got.Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonMissingScmConnection))
@@ -2418,17 +2402,17 @@ var _ = Describe("DriftProposal proposing", func() {
 			setConnection("prop-scm")
 			_, err = reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseProposed))
 			Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionTrue))
 		})
 
 		It("needs an ScmConnection in DirectCommit mode too", func() {
-			setMode(backflowv1alpha1.ModeDirectCommit, nil)
+			setMode(backflowv1beta1.ModeDirectCommit, nil)
 			setConnection("")
 			before := repo.branch("main")
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonMissingScmConnection))
 			Expect(repo.branch("main")).To(Equal(before))
 		})
@@ -2445,7 +2429,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			res, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonScmAuthFailed))
 			Expect(r.heldProposals(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: ns}})).NotTo(BeEmpty())
 		})
@@ -2454,7 +2438,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
 			// Mapping already succeeded before the policy disappeared.
 			orig := latest()
-			orig.Status.Phase = backflowv1alpha1.PhaseMapping
+			orig.Status.Phase = backflowv1beta1.PhaseMapping
 			meta.SetStatusCondition(&orig.Status.Conditions, metav1.Condition{Type: conditionMapped, Status: metav1.ConditionTrue, Reason: reasonMapped, Message: "ok"})
 			Expect(k8sClient.Status().Update(ctx, orig)).To(Succeed())
 
@@ -2472,7 +2456,7 @@ var _ = Describe("DriftProposal proposing", func() {
 				res, rerr := reconcileDP()
 				Expect(rerr).NotTo(HaveOccurred())
 				Expect(res.RequeueAfter).To(BeNumerically(">", 0))
-				Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+				Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 				Expect(condition(conditionProposed).Status).To(Equal(metav1.ConditionFalse))
 				Expect(condition(conditionProposed).Reason).To(Equal(reason))
 				Expect(condition(conditionProposed).Message).To(ContainSubstring("provider says no"))
@@ -2487,7 +2471,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			provider.createErr = fmt.Errorf("%w: no commits between main and the branch", scm.ErrInvalid)
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseFailed))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseFailed))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonMergeRequestRejected))
 		})
 
@@ -2506,7 +2490,7 @@ var _ = Describe("DriftProposal proposing", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RequeueAfter).To(Equal(45 * time.Second))
 			Expect(condition(conditionProposed).Reason).To(Equal(reasonScmUnavailable))
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 		})
 	})
 
@@ -2515,10 +2499,29 @@ var _ = Describe("DriftProposal proposing", func() {
 			r.Writer = nil
 			_, err := reconcileDP()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(condition(conditionMapped).Status).To(Equal(metav1.ConditionTrue))
 			Expect(condition(conditionProposed)).To(BeNil())
 			Expect(repo.branch(branch)).To(BeEmpty())
 		})
 	})
 })
+
+// testGit are the git settings of a policy as the tests spell them.
+type testGit struct {
+	BranchPrefix, TargetBranch string
+	Labels, Reviewers          []string
+	AssignActor                bool
+}
+
+// git is the policy's spec.git. A nil testGit is a policy that sets none.
+func (g *testGit) git() backflowv1beta1.GitOptions {
+	if g == nil {
+		return backflowv1beta1.GitOptions{}
+	}
+	assign := g.AssignActor
+	return backflowv1beta1.GitOptions{
+		BranchPrefix: g.BranchPrefix, TargetBranch: g.TargetBranch,
+		MergeRequest: backflowv1beta1.MergeRequestOptions{Labels: g.Labels, Reviewers: g.Reviewers, AssignActor: &assign},
+	}
+}

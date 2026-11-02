@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
@@ -35,7 +35,7 @@ var _ = Describe("Repository URLs with credentials", func() {
 	blocked := []string{"cred-https", "cred-ssh-pw", "cred-token", "cred-scp-pw", "cred-multi"}
 	var (
 		ctx      = context.Background()
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		appObjs  []*unstructured.Unstructured
 		recorder *events.FakeRecorder
 		pr       *BackflowPolicyReconciler
@@ -56,23 +56,23 @@ var _ = Describe("Repository URLs with credentials", func() {
 		appObjs = append(appObjs, app)
 		return app
 	}
-	reconcilePolicy := func() *backflowv1alpha1.BackflowPolicy {
+	reconcilePolicy := func() *backflowv1beta1.BackflowPolicy {
 		_, err := pr.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
-		got := &backflowv1alpha1.BackflowPolicy{}
+		got := &backflowv1beta1.BackflowPolicy{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), got)).To(Succeed())
 		return got
 	}
-	summaryOf := func(p *backflowv1alpha1.BackflowPolicy, name string) backflowv1alpha1.ApplicationSummary {
+	summaryOf := func(p *backflowv1beta1.BackflowPolicy, name string) backflowv1beta1.ApplicationSummary {
 		for _, s := range p.Status.Applications {
 			if s.Name == name {
 				return s
 			}
 		}
 		Fail("no summary for " + name)
-		return backflowv1alpha1.ApplicationSummary{}
+		return backflowv1beta1.ApplicationSummary{}
 	}
-	ready := func(p *backflowv1alpha1.BackflowPolicy) *metav1.Condition {
+	ready := func(p *backflowv1beta1.BackflowPolicy) *metav1.Condition {
 		return meta.FindStatusCondition(p.Status.Conditions, "Ready")
 	}
 	drain := func() []string {
@@ -102,18 +102,15 @@ var _ = Describe("Repository URLs with credentials", func() {
 		for _, a := range appObjs {
 			names = append(names, a.GetName())
 		}
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "cred-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: names},
-				Mode:            backflowv1alpha1.ModeReportOnly,
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					URL: "https://argocd.test",
-					TokenSecretRef: corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "cred-argocd-token"}, Key: "token",
-					},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: names},
+				Mode:         backflowv1beta1.ModeReportOnly,
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
+					URL:            "https://argocd.test",
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "cred-argocd-token", Key: "token"},
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
@@ -131,24 +128,24 @@ var _ = Describe("Repository URLs with credentials", func() {
 		got := reconcilePolicy()
 		for _, name := range blocked {
 			s := summaryOf(got, name)
-			Expect(s.Reason).To(Equal("CredentialsInRepoURL"), name)
-			Expect(s.RepoURL).To(ContainSubstring("REDACTED@"), name)
-			Expect(s.Path).To(BeEmpty(), "nothing else of it is stored: "+name)
-			Expect(s.ScmConnection).To(BeEmpty())
+			Expect(string(s.UntrackedReason)).To(Equal("CredentialsInRepoURL"), name)
+			Expect(s.First().RepoURL).To(ContainSubstring("REDACTED@"), name)
+			Expect(s.First().Path).To(BeEmpty(), "nothing else of it is stored: "+name)
+			Expect(s.First().ScmConnectionName).To(BeEmpty())
 		}
-		Expect(summaryOf(got, "cred-https").RepoURL).To(Equal("https://REDACTED@gitlab.com/x/y.git"))
-		Expect(summaryOf(got, "cred-ssh-pw").RepoURL).To(Equal("ssh://REDACTED@gitlab.com/x/y.git"))
-		Expect(summaryOf(got, "cred-scp-pw").RepoURL).To(Equal("REDACTED@gitlab.com:x/y.git"))
-		Expect(summaryOf(got, "cred-multi").RepoURL).To(Equal("https://REDACTED@gitlab.com/x/other.git"))
+		Expect(summaryOf(got, "cred-https").First().RepoURL).To(Equal("https://REDACTED@gitlab.com/x/y.git"))
+		Expect(summaryOf(got, "cred-ssh-pw").First().RepoURL).To(Equal("ssh://REDACTED@gitlab.com/x/y.git"))
+		Expect(summaryOf(got, "cred-scp-pw").First().RepoURL).To(Equal("REDACTED@gitlab.com:x/y.git"))
+		Expect(summaryOf(got, "cred-multi").First().RepoURL).To(Equal("https://REDACTED@gitlab.com/x/other.git"))
 
 		By("URLs with a plain user name still work, as do clean ones")
 		for _, name := range []string{"cred-user-only", "cred-ssh-user", "cred-clean"} {
 			s := summaryOf(got, name)
-			Expect(s.Reason).To(BeEmpty(), name)
-			Expect(s.RepoURL).To(Equal(urls[name]), name)
-			Expect(s.Path).To(Equal("apps/demo"))
+			Expect(s.UntrackedReason).To(BeEmpty(), name)
+			Expect(s.First().RepoURL).To(Equal(urls[name]), name)
+			Expect(s.First().Path).To(Equal("apps/demo"))
 		}
-		Expect(got.Status.MatchedApplications).To(HaveLen(len(urls) + 1))
+		Expect(appNames(got.Status)).To(HaveLen(len(urls) + 1))
 		Expect(ready(got).Status).To(Equal(metav1.ConditionTrue))
 		Expect(ready(got).Message).To(ContainSubstring("not tracked because a repository URL contains credentials"))
 	})
@@ -193,7 +190,7 @@ var _ = Describe("Repository URLs with credentials", func() {
 		Expect(unstructured.SetNestedField(app.Object, "https://gitlab.com/x/y.git", "spec", "source", "repoURL")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
 		got := reconcilePolicy()
-		Expect(summaryOf(got, app.GetName()).Reason).To(BeEmpty())
+		Expect(summaryOf(got, app.GetName()).UntrackedReason).To(BeEmpty())
 
 		Expect(unstructured.SetNestedField(app.Object, original, "spec", "source", "repoURL")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
@@ -207,7 +204,7 @@ var _ = Describe("Repository URLs with credentials", func() {
 
 		// A blocked Application with drift: it must never reach the Argo CD API.
 		for _, a := range appObjs {
-			if summaryOf(got, a.GetName()).Reason == "" {
+			if summaryOf(got, a.GetName()).UntrackedReason == "" {
 				continue
 			}
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(a), a)).To(Succeed())
@@ -230,7 +227,7 @@ var _ = Describe("Repository URLs with credentials", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(argo.calls).To(BeZero(), "no Argo CD API call for an Application that is not tracked")
-		var list backflowv1alpha1.DriftProposalList
+		var list backflowv1beta1.DriftProposalList
 		Expect(k8sClient.List(ctx, &list, client.InNamespace(ns), client.MatchingLabels{labelPolicy: policy.Name})).To(Succeed())
 		Expect(list.Items).To(BeEmpty(), "so no proposal can carry the URL")
 	})

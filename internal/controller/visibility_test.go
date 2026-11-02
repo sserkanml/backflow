@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
@@ -177,14 +177,14 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 			create(app)
 		}
 		create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "vis-token", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-		policy := &backflowv1alpha1.BackflowPolicy{
+		policy := &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "vis-policy", Namespace: argoNS},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: argoNS, Mode: backflowv1alpha1.ModeReportOnly,
-				Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"vis-mine", "vis-theirs-qx17"}},
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "vis-token"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Mode:         backflowv1beta1.ModeReportOnly,
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"vis-mine", "vis-theirs-qx17"}},
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "vis-token", Key: "token"},
+				}},
 			},
 		}
 		create(policy)
@@ -196,9 +196,9 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 
 		Expect(meta.FindStatusCondition(policy.Status.Conditions, "Ready").Status).To(Equal(metav1.ConditionTrue))
-		Expect(policy.Status.MatchedApplications).To(ConsistOf("vis-mine"))
-		Expect(policy.Status.ExcludedApplications).To(BeEquivalentTo(1))
-		Expect(policy.Status.ExcludedReason).To(Equal("NotVisibleToToken"))
+		Expect(appNames(policy.Status)).To(ConsistOf("vis-mine"))
+		Expect(policy.Status.ArgoCD.HiddenCount()).To(BeEquivalentTo(1))
+		Expect(hiddenReason(policy.Status)).To(Equal("NotVisibleToToken"))
 		Expect(fmt.Sprint(policy.Status)).NotTo(ContainSubstring("qx17"))
 
 		By("asking again within the TTL: Argo CD is not asked again")
@@ -208,7 +208,7 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 	})
 
 	Context("when Argo CD cannot be reached", func() {
-		var policy *backflowv1alpha1.BackflowPolicy
+		var policy *backflowv1beta1.BackflowPolicy
 		down := fmt.Errorf("%w: down", argocd.ErrUnreachable)
 		BeforeEach(func() {
 			for _, n := range []string{"out-confirmed", "out-new-zx42"} {
@@ -219,23 +219,23 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 				create(app)
 			}
 			create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "out-token", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-			policy = &backflowv1alpha1.BackflowPolicy{
+			policy = &backflowv1beta1.BackflowPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: "out-policy", Namespace: argoNS},
-				Spec: backflowv1alpha1.BackflowPolicySpec{
-					ArgoCDNamespace: argoNS, Mode: backflowv1alpha1.ModeReportOnly,
-					Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"out-confirmed", "out-new-zx42"}},
-					ArgoCD: &backflowv1alpha1.ArgoCDServer{
-						TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "out-token"}, Key: "token"},
-					},
+				Spec: backflowv1beta1.BackflowPolicySpec{
+					Mode:         backflowv1beta1.ModeReportOnly,
+					Applications: backflowv1beta1.ApplicationSelector{Names: []string{"out-confirmed", "out-new-zx42"}},
+					ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
+						TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "out-token", Key: "token"},
+					}},
 				},
 			}
 			create(policy)
 		})
-		reconcileWith := func(v *ApplicationVisibility) (*backflowv1alpha1.BackflowPolicy, reconcile.Result) {
+		reconcileWith := func(v *ApplicationVisibility) (*backflowv1beta1.BackflowPolicy, reconcile.Result) {
 			r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ArgoCD: &ArgoCDDefaults{}, Visibility: v}
 			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			got := &backflowv1alpha1.BackflowPolicy{}
+			got := &backflowv1beta1.BackflowPolicy{}
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), got)).To(Succeed())
 			return got, res
 		}
@@ -244,14 +244,14 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 			f := &fakeGetter{answers: map[string]error{"out-new-zx42": down}}
 			v := visibilityWith(f, &now)
 			got, _ := reconcileWith(v) // only out-confirmed is asked successfully; out-new is down from the start
-			Expect(got.Status.MatchedApplications).To(ConsistOf("out-confirmed"))
+			Expect(appNames(got.Status)).To(ConsistOf("out-confirmed"))
 
 			f.answers["out-confirmed"] = down
 			now = now.Add(time.Hour)
 			got, res := reconcileWith(v)
-			Expect(got.Status.MatchedApplications).To(ConsistOf("out-confirmed"), "confirmed earlier: still visible")
-			Expect(got.Status.ExcludedApplications).To(BeEquivalentTo(1))
-			Expect(got.Status.ExcludedReason).To(Equal("VisibilityUnknown"))
+			Expect(appNames(got.Status)).To(ConsistOf("out-confirmed"), "confirmed earlier: still visible")
+			Expect(got.Status.ArgoCD.HiddenCount()).To(BeEquivalentTo(1))
+			Expect(hiddenReason(got.Status)).To(Equal("VisibilityUnknown"))
 			Expect(res.RequeueAfter).To(Equal(visibilityRetry))
 			ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
 			Expect(ready.Status).To(Equal(metav1.ConditionTrue))
@@ -263,7 +263,7 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 			f := &fakeGetter{answers: map[string]error{"out-confirmed": down, "out-new-zx42": down}}
 			got, res := reconcileWith(visibilityWith(f, &now))
 			Expect(got.Status.Applications).To(BeEmpty())
-			Expect(got.Status.ExcludedApplications).To(BeEquivalentTo(2))
+			Expect(got.Status.ArgoCD.HiddenCount()).To(BeEquivalentTo(2))
 			ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
 			Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 			Expect(ready.Reason).To(Equal("ApplicationVisibilityUnknown"))
@@ -272,44 +272,44 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 		})
 
 		It("never retires a proposal for it, and does for a definite refusal", func() {
-			dp := &backflowv1alpha1.DriftProposal{
+			dp := &backflowv1beta1.DriftProposal{
 				ObjectMeta: metav1.ObjectMeta{Namespace: argoNS, GenerateName: "out-dp-", Labels: map[string]string{labelPolicy: safeLabel(policy.Name)}},
-				Spec: backflowv1alpha1.DriftProposalSpec{
-					PolicyName:  policy.Name,
-					Application: backflowv1alpha1.ObjectRef{Name: "out-new-zx42", Namespace: argoNS},
-					Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
-					Source: backflowv1alpha1.SourceRef{RepoURL: "https://example.com/r.git", Revision: "abc",
-						Path: "apps/demo", Type: backflowv1alpha1.SourceDirectory},
-					Changes:    []backflowv1alpha1.FieldChange{{Path: "/data/K", Op: backflowv1alpha1.OpReplace, Desired: `"a"`, Live: `"b"`}},
+				Spec: backflowv1beta1.DriftProposalSpec{
+					PolicyRef:      backflowv1beta1.LocalObjectRef{Name: policy.Name},
+					ApplicationRef: backflowv1beta1.ObjectRef{Name: "out-new-zx42", Namespace: argoNS},
+					ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
+					Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "https://example.com/r.git", Revision: "abc",
+						Path: "apps/demo", Type: backflowv1beta1.SourceDirectory}},
+					Changes:    []backflowv1beta1.FieldChange{{Path: "/data/K", Op: backflowv1beta1.OpReplace, Desired: `"a"`, Live: `"b"`}},
 					DetectedAt: metav1.Now(),
 				},
 			}
 			create(dp)
-			dp.Status.Phase = backflowv1alpha1.PhaseMapping
+			dp.Status.Phase = backflowv1beta1.PhaseMapping
 			Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
 
 			f := &fakeGetter{answers: map[string]error{"out-confirmed": down, "out-new-zx42": down}}
 			v := visibilityWith(f, &now)
 			reconcileWith(v)
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), dp)).To(Succeed())
-			Expect(dp.Annotations).NotTo(HaveKey(annotationAccessRevoked), "an outage never retires a proposal")
+			Expect(dp.Status.Signal().AccessRevoked).To(BeFalse(), "an outage never retires a proposal")
 
 			f.answers["out-new-zx42"] = fmt.Errorf("%w: HTTP 403", argocd.ErrUnauthorized)
 			now = now.Add(time.Hour)
 			reconcileWith(v)
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), dp)).To(Succeed())
-			Expect(dp.Annotations).To(HaveKey(annotationAccessRevoked), "a definite 403 does")
+			Expect(dp.Status.Signal().AccessRevoked).To(BeTrue(), "a definite 403 does")
 		})
 	})
 
 	It("is not Ready with the reason SecretForbidden when its token Secret cannot be read", func() {
-		policy := &backflowv1alpha1.BackflowPolicy{
+		policy := &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "vis-forbidden-policy", Namespace: argoNS},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: argoNS, Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"anything"}},
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "locked"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"anything"}},
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "locked", Key: "token"},
+				}},
 			},
 		}
 		create(policy)
@@ -339,17 +339,17 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 		child.SetAnnotations(map[string]string{"argocd.argoproj.io/tracking-id": "vis-parent:argoproj.io/Application:default/vis-child"})
 		create(child)
 		create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "vis-token3", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-		policy := &backflowv1alpha1.BackflowPolicy{
+		policy := &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "vis-parent-policy", Namespace: argoNS},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: argoNS, Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"vis-child"}},
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "vis-token3"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"vis-child"}},
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "vis-token3", Key: "token"},
+				}},
 			},
 		}
 		create(policy)
-		dp := &backflowv1alpha1.DriftProposal{Spec: backflowv1alpha1.DriftProposalSpec{PolicyName: policy.Name}}
+		dp := &backflowv1beta1.DriftProposal{Spec: backflowv1beta1.DriftProposalSpec{PolicyRef: backflowv1beta1.LocalObjectRef{Name: policy.Name}}}
 		dp.Namespace = argoNS
 
 		f := &fakeGetter{answers: map[string]error{"vis-parent": fmt.Errorf("%w: HTTP 403", argocd.ErrUnauthorized)}}

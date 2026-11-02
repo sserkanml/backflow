@@ -13,7 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/mapping"
 )
 
@@ -45,8 +45,8 @@ func SetValue(file string, content []byte, key rendermap.KeyPath, value string) 
 		return nil, fmt.Errorf("%w: %v", ErrCannotSet, err)
 	}
 	pointer := key.Pointer()
-	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{
-		{Path: pointer, Op: v1alpha1.OpReplace, Live: string(live)},
+	edited, err := mapping.Apply(file, content, 0, []v1beta1.FieldChange{
+		{Path: pointer, Op: v1beta1.OpReplace, Live: string(live)},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCannotSet, err)
@@ -215,8 +215,8 @@ func AddValue(file string, content []byte, key rendermap.KeyPath, value, default
 		return nil, fmt.Errorf("%w: %v", ErrCannotSet, err)
 	}
 	pointer := key.Pointer()
-	edited, err := mapping.Apply(file, content, 0, []v1alpha1.FieldChange{
-		{Path: pointer, Op: v1alpha1.OpAdd, Live: string(live)},
+	edited, err := mapping.Apply(file, content, 0, []v1beta1.FieldChange{
+		{Path: pointer, Op: v1beta1.OpAdd, Live: string(live)},
 	})
 	if errors.Is(err, mapping.ErrCannotApply) && !hasMapRoot(content) && !isJSONFile(file) {
 		edited, err = appendKey(content, key, nv)

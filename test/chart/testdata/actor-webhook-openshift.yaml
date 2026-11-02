@@ -42,7 +42,7 @@ metadata:
   namespace: backflow-system
 rules:
 - apiGroups:
-  - backflow.io
+  - internal.backflow.io
   resources:
   - changerecords
   verbs:

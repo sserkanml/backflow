@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/mapping"
 )
 
@@ -68,7 +68,7 @@ func lineInput(files map[string][]byte, found *Found) Input {
 	return Input{
 		App:      App{Name: "x", DestNamespace: "ns"},
 		Resource: ResourceKey{Kind: "ConfigMap", Namespace: "ns", Name: "cm"},
-		Fields: []Field{{Change: v1alpha1.FieldChange{Path: "/data/size", Op: v1alpha1.OpReplace, Desired: `"1"`, Live: `"2"`},
+		Fields: []Field{{Change: v1beta1.FieldChange{Path: "/data/size", Op: v1beta1.OpReplace, Desired: `"1"`, Live: `"2"`},
 			Found: found}},
 		Provider: lineSource{}, Writer: lineWriter{}, Files: files,
 	}

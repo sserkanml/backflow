@@ -27,7 +27,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/scm"
@@ -99,24 +99,24 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 		cacheDir string
 		argo     *fakeChartArgo
 		r        *DriftProposalReconciler
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		app      *unstructured.Unstructured
-		dp       *backflowv1alpha1.DriftProposal
-		conn     *backflowv1alpha1.ScmConnection
+		dp       *backflowv1beta1.DriftProposal
+		conn     *backflowv1beta1.ScmConnection
 	)
 
-	replicas := backflowv1alpha1.FieldChange{Path: "/data/REPLICAS", Op: backflowv1alpha1.OpReplace, Desired: `"2"`, Live: `"5"`}
+	replicas := backflowv1beta1.FieldChange{Path: "/data/REPLICAS", Op: backflowv1beta1.OpReplace, Desired: `"2"`, Live: `"5"`}
 	reconcileDP := func() error {
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 		return err
 	}
-	latest := func() *backflowv1alpha1.DriftProposal {
-		got := &backflowv1alpha1.DriftProposal{}
+	latest := func() *backflowv1beta1.DriftProposal {
+		got := &backflowv1beta1.DriftProposal{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), got)).To(Succeed())
 		return got
 	}
 	mapped := func() *metav1.Condition { return meta.FindStatusCondition(latest().Status.Conditions, conditionMapped) }
-	settle := func(phase backflowv1alpha1.ProposalPhase) {
+	settle := func(phase backflowv1beta1.ProposalPhase) {
 		for range 5 {
 			ExpectWithOffset(1, reconcileDP()).To(Succeed())
 			if latest().Status.Phase == phase {
@@ -125,14 +125,14 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 		}
 		Fail(fmt.Sprintf("the proposal did not reach %s: %s (%v)", phase, latest().Status.Phase, mapped()))
 	}
-	recreate := func(mutate func(spec *backflowv1alpha1.DriftProposalSpec)) {
+	recreate := func(mutate func(spec *backflowv1beta1.DriftProposalSpec)) {
 		ExpectWithOffset(1, k8sClient.Delete(ctx, dp)).To(Succeed())
-		fresh := &backflowv1alpha1.DriftProposal{ObjectMeta: metav1.ObjectMeta{Name: dp.Name, Namespace: dp.Namespace}, Spec: *dp.Spec.DeepCopy()}
+		fresh := &backflowv1beta1.DriftProposal{ObjectMeta: metav1.ObjectMeta{Name: dp.Name, Namespace: dp.Namespace}, Spec: *dp.Spec.DeepCopy()}
 		mutate(&fresh.Spec)
 		ExpectWithOffset(1, k8sClient.Create(ctx, fresh)).To(Succeed())
 		dp = fresh
 	}
-	setPolicy := func(mutate func(*backflowv1alpha1.BackflowPolicy)) {
+	setPolicy := func(mutate func(*backflowv1beta1.BackflowPolicy)) {
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		mutate(policy)
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
@@ -180,34 +180,26 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}, StringData: map[string]string{"token": "tok-" + name},
 			})).To(Succeed())
 		}
-		conn = &backflowv1alpha1.ScmConnection{
+		conn = &backflowv1beta1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: "ms-scm", Namespace: ns},
-			Spec: backflowv1alpha1.ScmConnectionSpec{
-				Provider: backflowv1alpha1.ScmProviderGitLab, URL: "https://git.test",
-				TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "ms-token"}, Key: "token"},
+			Spec: backflowv1beta1.ScmConnectionSpec{
+				Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://git.test",
+				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "ms-token", Key: "token"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
 
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "ms-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns, Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"ms-app"}},
-				Mode: backflowv1alpha1.ModeMergeRequest,
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "ms-argo-token"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"ms-app"}},
+				Mode:         backflowv1beta1.ModeMergeRequest,
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "ms-argo-token", Key: "token"},
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.Applications = []backflowv1alpha1.ApplicationSummary{{
-			Name: "ms-app", RepoURL: "ghcr.io/stefanprodan/charts", ScmConnection: "ms-scm",
-			Sources: []backflowv1alpha1.SourceSummary{
-				{Position: 1, RepoURL: "ghcr.io/stefanprodan/charts", Chart: "podinfo"},
-				{Position: 2, RepoURL: testRepoURL, Ref: "values", ScmConnection: "ms-scm"},
-			},
-		}}
-		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 
 		app = &unstructured.Unstructured{}
 		app.SetGroupVersionKind(applicationGVK)
@@ -222,23 +214,19 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 		}, "spec", "sources")).To(Succeed())
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
-		dp = &backflowv1alpha1.DriftProposal{
+		dp = &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: "ms-dp", Namespace: ns},
-			Spec: backflowv1alpha1.DriftProposalSpec{
-				PolicyName:  "ms-policy",
-				Application: backflowv1alpha1.ObjectRef{Name: "ms-app", Namespace: ns},
-				Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "ms", Name: "ms-config"},
-				Source: backflowv1alpha1.SourceRef{
-					RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1," + initial, TargetRevision: "6.7.*",
-					Path: "podinfo", Type: backflowv1alpha1.SourceHelm,
+			Spec: backflowv1beta1.DriftProposalSpec{
+				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: "ms-policy"},
+				ApplicationRef: backflowv1beta1.ObjectRef{Name: "ms-app", Namespace: ns},
+				ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "ms", Name: "ms-config"},
+				Sources: []backflowv1beta1.ProposalSource{
+					{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1",
+						TargetRevision: "6.7.*", Chart: "podinfo", Type: backflowv1beta1.SourceHelm},
+					{Position: 2, Role: backflowv1beta1.RoleValues, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main", Ref: "values"},
 				},
-				Sources: []backflowv1alpha1.ApplicationSource{
-					{Position: 1, Role: backflowv1alpha1.RoleRender, RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1",
-						TargetRevision: "6.7.*", Chart: "podinfo", Type: backflowv1alpha1.SourceHelm},
-					{Position: 2, Role: backflowv1alpha1.RoleValues, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main", Ref: "values"},
-				},
-				Changes:    []backflowv1alpha1.FieldChange{replicas},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
+				Changes:    []backflowv1beta1.FieldChange{replicas},
+				Actor:      &backflowv1beta1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}
@@ -257,13 +245,13 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 	})
 
 	It("maps a drift to the value file of the ref source and proposes it in that repository", func() {
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
 		Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyHelmValues))
-		Expect(got.Status.Mapping.RepoURL).To(Equal(testRepoURL), "the repository the edits are written to")
-		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
-			File: "env/values.yaml", Location: "replicaCount", Value: "5", ChangeIndex: 0,
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyHelmValues))
+		Expect(got.Status.Mapping.Edits[0].RepoURL).To(Equal(testRepoURL), "the repository the edits are written to")
+		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
+			RepoURL: testRepoURL, File: "env/values.yaml", Location: "replicaCount", Value: "5", ChangeIndex: 0,
 		}}))
 		Expect(got.Status.Mapping.Diff).To(ContainSubstring("-replicaCount: 2\n+replicaCount: 5\n"))
 		Expect(mapped().Message).To(ContainSubstring("env/values.yaml of " + testRepoURL))
@@ -286,7 +274,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 		Expect(repo.branch("main")).To(Equal(initial))
 
 		By("the merge request is made in the values repository, and says where the sources are")
-		branch := got.Status.MergeRequest.Branch
+		branch := got.Status.GitBranch()
 		tip := repo.branch(branch)
 		Expect(repo.file(tip, "env/values.yaml")).To(Equal(strings.Replace(msValues, "replicaCount: 2", "replicaCount: 5", 1)))
 		body := provider.created[0].Body
@@ -295,13 +283,13 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 	})
 
 	It("adds a key that overrides a default the chart's values.yaml gives, read from Argo CD", func() {
-		recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-			s.Changes = []backflowv1alpha1.FieldChange{{Path: "/data/COLOR", Op: backflowv1alpha1.OpReplace, Desired: `"#34577c"`, Live: `"#ff0000"`}}
+		recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+			s.Changes = []backflowv1beta1.FieldChange{{Path: "/data/COLOR", Op: backflowv1beta1.OpReplace, Desired: `"#34577c"`, Live: `"#ff0000"`}}
 		})
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
-		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1alpha1.SourceEdit{{
-			File: "env/values.yaml", Location: "ui.color", Value: `"#ff0000"`, ChangeIndex: 0,
+		Expect(got.Status.Mapping.Edits).To(Equal([]backflowv1beta1.SourceEdit{{
+			RepoURL: testRepoURL, File: "env/values.yaml", Location: "ui.color", Value: `"#ff0000"`, ChangeIndex: 0,
 		}}))
 		Expect(got.Status.Mapping.Diff).To(ContainSubstring("+ui:\n+  color:"))
 		Expect(provider.created[0].Body).To(ContainSubstring("Overrides a chart default"))
@@ -311,8 +299,8 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 
 	Context("scratch branches", func() {
 		It("are not used in ReportOnly mode by default: Unmapped, naming the field", func() {
-			setPolicy(func(p *backflowv1alpha1.BackflowPolicy) { p.Spec.Mode = backflowv1alpha1.ModeReportOnly })
-			settle(backflowv1alpha1.PhaseUnmapped)
+			setPolicy(func(p *backflowv1beta1.BackflowPolicy) { p.Spec.Mode = backflowv1beta1.ModeReportOnly })
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonScratchBranchesDisabled))
 			Expect(mapped().Message).To(ContainSubstring("spec.mapping.scratchBranches"))
 			Expect(argo.queries).To(BeEmpty())
@@ -320,30 +308,30 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 		})
 
 		It("are used in ReportOnly mode when the policy says Always", func() {
-			setPolicy(func(p *backflowv1alpha1.BackflowPolicy) {
-				p.Spec.Mode = backflowv1alpha1.ModeReportOnly
-				p.Spec.Mapping = &backflowv1alpha1.MappingOptions{ScratchBranches: backflowv1alpha1.ScratchBranchesAlways}
+			setPolicy(func(p *backflowv1beta1.BackflowPolicy) {
+				p.Spec.Mode = backflowv1beta1.ModeReportOnly
+				p.Spec.Mapping = &backflowv1beta1.MappingOptions{ScratchBranches: backflowv1beta1.ScratchBranchesAlways}
 			})
 			for range 2 {
 				Expect(reconcileDP()).To(Succeed())
 			}
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(mapped().Status).To(Equal(metav1.ConditionTrue))
 			Expect(scratchBranches()).To(BeEmpty())
 		})
 
 		It("are refused by Never, also in MergeRequest mode", func() {
-			setPolicy(func(p *backflowv1alpha1.BackflowPolicy) {
-				p.Spec.Mapping = &backflowv1alpha1.MappingOptions{ScratchBranches: backflowv1alpha1.ScratchBranchesNever}
+			setPolicy(func(p *backflowv1beta1.BackflowPolicy) {
+				p.Spec.Mapping = &backflowv1beta1.MappingOptions{ScratchBranches: backflowv1beta1.ScratchBranchesNever}
 			})
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonScratchBranchesDisabled))
 		})
 
 		It("a push the repository refuses is Unmapped, and nothing is left", func() {
 			cache := gitrepo.NewCache(cacheDir)
 			r.Writer = refusingWriter{RepositoryWriter: cache, err: gitrepo.ErrPushRejected}
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonScratchBranchRejected))
 			Expect(mapped().Message).To(ContainSubstring("backflow/scratch/"))
 			Expect(scratchBranches()).To(BeEmpty())
@@ -353,7 +341,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 	Context("what stays Unmapped", func() {
 		It("a value file inside a chart that is not in Git has its own reason, naming the file and the source", func() {
 			setHelm(map[string]any{"valueFiles": []any{"values-prod.yaml", "$values/env/values.yaml"}})
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonValueFileNotInGit))
 			Expect(mapped().Message).To(ContainSubstring("values-prod.yaml of source 1"))
 			Expect(mapped().Message).To(ContainSubstring("chart podinfo from ghcr.io/stefanprodan/charts"))
@@ -361,7 +349,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 
 		It("only value files inside the chart: the same reason", func() {
 			setHelm(map[string]any{"valueFiles": []any{"values-prod.yaml"}})
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonValueFileNotInGit))
 		})
 
@@ -371,28 +359,28 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			sources[0].(map[string]any)["helm"] = map[string]any{"valueFiles": []any{"$values/env/values.yaml", "$more/x.yaml"}}
 			Expect(unstructured.SetNestedSlice(app.Object, sources, "spec", "sources")).To(Succeed())
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
-			recreate(func(s *backflowv1alpha1.DriftProposalSpec) {
-				s.Sources = append(s.Sources, backflowv1alpha1.ApplicationSource{Position: 3, Role: backflowv1alpha1.RoleValues,
+			recreate(func(s *backflowv1beta1.DriftProposalSpec) {
+				s.Sources = append(s.Sources, backflowv1beta1.ProposalSource{Position: 3, Role: backflowv1beta1.RoleValues,
 					RepoURL: "https://git.test/other/values.git", Revision: initial, Ref: "more"})
 			})
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonMultipleValueRepositories))
 			Expect(mapped().Message).To(ContainSubstring("2 repositories"))
 		})
 
 		It("a value that the Application sets inline", func() {
 			setHelm(map[string]any{"valueFiles": []any{"$values/env/values.yaml"}, "parameters": []any{map[string]any{"name": "replicaCount", "value": "2"}}})
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(rendermap.ReasonSetByApplication))
 			Expect(mapped().Message).To(ContainSubstring("Set by spec.sources[0].helm.parameters[name=replicaCount] of Application " + ns + "/ms-app"))
 			Expect(mapped().Message).To(ContainSubstring("which is not managed from Git. Backflow cannot verify"))
 			Expect(mapped().Message).To(ContainSubstring("Backflow cannot verify an Application option by rendering, so no merge request is made."))
-			got := latest().Status.Mapping.Application
+			got := latest().Status.Mapping.ApplicationOption
 			Expect(got).NotTo(BeNil())
 			Expect(got.OptionPath).To(Equal("/spec/sources/0/helm/parameters/0/value"))
 			Expect(got.Current).To(Equal(`"2"`))
 			Expect(got.Suggested).To(Equal(`"5"`))
-			Expect(got.Parent.State).To(Equal(backflowv1alpha1.ParentNotManagedFromGit))
+			Expect(got.Parent.State).To(Equal(backflowv1beta1.ParentNotManagedFromGit))
 			Expect(provider.created).To(BeEmpty(), "nothing is proposed")
 			Expect(scratchBranches()).To(BeEmpty(), "nothing is pushed")
 		})
@@ -402,14 +390,14 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 				map[string]any{"repoURL": testRepoURL, "path": "a"}, map[string]any{"repoURL": testRepoURL, "path": "b"},
 			}, "spec", "sources")).To(Succeed())
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonUnsupportedSourceType))
 			Expect(mapped().Message).To(ContainSubstring("not a Helm source"))
 		})
 
 		It("an Argo CD that cannot render by revision", func() {
 			argo.renderErr = fmt.Errorf("%w: unknown field", argocd.ErrUnsupported)
-			settle(backflowv1alpha1.PhaseUnmapped)
+			settle(backflowv1beta1.PhaseUnmapped)
 			Expect(mapped().Reason).To(Equal(reasonArgoCDUnsupported))
 			Expect(mapped().Message).To(ContainSubstring(minArgoCDVersion))
 			Expect(scratchBranches()).To(BeEmpty())
@@ -451,8 +439,9 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 					http.NotFound(w, req)
 				}
 			}))
-			setPolicy(func(p *backflowv1alpha1.BackflowPolicy) {
-				p.Spec.ArgoCD.URL, p.Spec.ArgoCD.InsecureSkipTLSVerify = server.URL, true
+			allowArgoServer(server.URL)
+			setPolicy(func(p *backflowv1beta1.BackflowPolicy) {
+				p.Spec.ArgoCD.Server.URL, p.Spec.ArgoCD.Server.InsecureSkipTLSVerify = server.URL, true
 			})
 		})
 		AfterEach(func() { server.Close() })
@@ -487,7 +476,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			out := everything()
 			// The edit also changes the Secret, which the policy does not allow: the
 			// answer names that change, and must not quote the value.
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			Expect(mapped().Message).To(ContainSubstring("Secret"))
 			Expect(mapped().Message).To(ContainSubstring("hidden:"))
 			Expect(out).NotTo(ContainSubstring(secretValue))
@@ -500,7 +489,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 					"` into int\\napiVersion: v1\\nkind: Secret\\ndata:\\n  password: " + secretValue + "\"}"))
 			}
 			out := everything()
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 			Expect(out).NotTo(ContainSubstring(secretValue))
 			Expect(mapped().Message).To(ContainSubstring("does not render"))
 		})
@@ -511,7 +500,7 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			}
 			out := everything()
 			Expect(out).NotTo(ContainSubstring(secretValue))
-			Expect(latest().Status.Phase).NotTo(Equal(backflowv1alpha1.PhaseProposed))
+			Expect(latest().Status.Phase).NotTo(Equal(backflowv1beta1.PhaseProposed))
 		})
 
 		It("nor when the response is not JSON", func() {
@@ -528,20 +517,20 @@ var _ = Describe("DriftProposal of a multi-source Application", func() {
 			for range 2 {
 				Expect(reconcileDP()).To(Succeed())
 			}
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 			Expect(mapped().Status).To(Equal(metav1.ConditionFalse))
 			Expect(mapped().Reason).To(Equal(reasonChartDefaultsUnavailable))
 			Expect(mapped().Message).To(ContainSubstring("repositories, get"))
 		})
 
 		It("a repository without a ScmConnection", func() {
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications[0].Sources[1].ScmConnection = ""
-			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(conn), conn)).To(Succeed())
+			conn.Spec.Hosts = []string{"unrelated.example.com"} // no connection for the host of the values repository
+			Expect(k8sClient.Update(ctx, conn)).To(Succeed())
 			for range 2 {
 				Expect(reconcileDP()).To(Succeed())
 			}
-			Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseMapping))
+			Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseMapping))
 		})
 	})
 })

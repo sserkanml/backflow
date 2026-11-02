@@ -483,7 +483,7 @@ app_compared_at() {
 # PROPOSALS_OF (demo-config unless a section looks at another ConfigMap):
 #   <name>|<phase>|<supersededBy>|<path>:<op>:<desired>><live>;...
 proposals() {
-  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resource.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resourceRef.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v r="${PROPOSALS_OF:-demo-config}" '$3 == r { print $1 "|" $2 "|" $4 "|" $5 }'
 }
 # proposal_with <phase regex> <changes substring>: names, one per line.
@@ -514,7 +514,7 @@ branch_of() {
   uid="$(dp_field "$1" .metadata.uid | cut -c1-8)"
   branch="$(printf 'backflow/%s-%s' "$1" "$uid")"
   printf '%s: uid8=%s -> %s (status.branch=%s)\n' "$1" "${uid:-<empty>}" "$branch" \
-    "$(dp_field "$1" .status.branch)" >>"$WORKDIR/branches"
+    "$(dp_field "$1" .status.git.branch)" >>"$WORKDIR/branches"
   printf '%s' "$branch"
 }
 
@@ -896,7 +896,7 @@ else
     actor_flags=(--actor-webhook --actor-webhook-path="$ACTOR_PATH" --webhook-port="$ACTOR_PORT"
       --webhook-cert-path="$certs" --operator-namespace="$NS" --actor-flush-interval=1s)
   fi
-  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
+  "$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
     --metrics-bind-address="127.0.0.1:$METRICS_PORT" --metrics-secure=false \
     ${default_flags[@]+"${default_flags[@]}"} ${actor_flags[@]+"${actor_flags[@]}"} >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
@@ -946,48 +946,50 @@ k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token"
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: $SCM_NAME
   namespace: $NS
 spec:
-  provider: $SCM
+  provider: $SCM_LABEL
   url: $SCM_URL
   tokenSecretRef:
     name: $SCM-token
     key: token
 YAML
-ARGOCD_POLICY_BLOCK="  argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token"
+ARGOCD_POLICY_BLOCK="    server:
+      url: $ARGOCD_URL
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token"
 if [[ "$ARGOCD_DEFAULT" == "true" ]]; then ARGOCD_POLICY_BLOCK=""; fi
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
+  argoCD:
+    namespace: $ARGOCD_NS
+$ARGOCD_POLICY_BLOCK
   mode: MergeRequest
   batchWindow: $WINDOW
   applications:
     names: ["$APP"]
-$ARGOCD_POLICY_BLOCK
-  mergeRequest:
+  git:
     branchPrefix: backflow/
-    labels: ["$LABEL"]
-    assignActor: false
+    mergeRequest:
+      labels: ["$LABEL"]
+      assignActor: false
 YAML
 wait_for "ScmConnection is Ready (token accepted by $SCM_HOST)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 if [[ "$ARGOCD_DEFAULT" == "true" ]]; then WANT_SOURCE="OperatorDefault"; else WANT_SOURCE="Policy"; fi
 expect_eq "status.argoCD.source (where the Argo CD connection comes from)" "$WANT_SOURCE" "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.argoCD.source}')"
-policy_has_connection() { [[ "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.applications[0].scmConnection}')" == "$SCM_NAME" ]]; }
+policy_has_connection() { [[ "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.applications[0].sources[0].scmConnectionName}')" == "$SCM_NAME" ]]; }
 wait_for "policy matched the repository to the ScmConnection" policy_has_connection
 
 # ---------------------------------------------------------------------------
@@ -998,13 +1000,14 @@ if [[ "$ARGOCD_DEFAULT" == "true" ]]; then
   # the default connection, and says so without naming an Application.
   k create namespace "$NS-norule" --dry-run=client -o yaml | k apply -f - >/dev/null
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: norule
   namespace: $NS-norule
 spec:
-  argoCDNamespace: $ARGOCD_NS
+  argoCD:
+    namespace: $ARGOCD_NS
   mode: ReportOnly
   applications:
     names: ["$APP"]
@@ -1026,9 +1029,9 @@ if [[ -n "$P_A" ]]; then
   IFS='|' read -r IID_A STATE_A URL_A _ <<<"$(mr_info "$BRANCH_A")"
   expect_nonempty "merge request from $BRANCH_A" "$IID_A"
   expect_eq "merge request state" "opened" "$STATE_A"
-  expect_eq "status.mergeRequest.url" "$URL_A" "$(dp_field "$P_A" .status.mergeRequest.url)"
-  expect_eq "status.mergeRequest.number" "$IID_A" "$(dp_field "$P_A" .status.mergeRequest.number)"
-  expect_eq "status.mergeRequest.branch" "$BRANCH_A" "$(dp_field "$P_A" .status.mergeRequest.branch)"
+  expect_eq "status.mergeRequest.url" "$URL_A" "$(dp_field "$P_A" .status.git.mergeRequest.url)"
+  expect_eq "status.mergeRequest.number" "$IID_A" "$(dp_field "$P_A" .status.git.mergeRequest.number)"
+  expect_eq "status.mergeRequest.branch" "$BRANCH_A" "$(dp_field "$P_A" .status.git.branch)"
   expect_eq "Mapped condition" "True" "$(condition "$P_A" Mapped status)"
   expect_eq "Proposed condition" "True" "$(condition "$P_A" Proposed status)"
   MR_JSON="$(gl GET "$(project_path "/merge_requests/$IID_A")")"
@@ -1059,10 +1062,10 @@ if [[ -n "$P_A" ]]; then
   expect_eq "committer" "Backflow" "$(echo "$COMMIT_JSON" | jx 'd["committer_name"]')"
   expect_contains "commit message trailer" "Proposal: $P_A" "$(echo "$COMMIT_JSON" | jx 'd["message"]')"
   # The drift was made with kubectl; managedFields name the manager (kubectl-patch, kubectl-edit, ...).
-  ACTOR_MANAGER="$(dp_field "$P_A" .spec.actor.manager)"
+  ACTOR_MANAGER="$(dp_field "$P_A" .spec.managers[0].manager)"
   if [[ "$ACTOR_MANAGER" == kubectl* ]]; then pass "spec.actor.manager = $ACTOR_MANAGER"; else fail "spec.actor.manager: expected kubectl*, got '$ACTOR_MANAGER'"; fi
-  expect_eq "spec.actor.operation" "Update" "$(dp_field "$P_A" .spec.actor.operation)"
-  expect_nonempty "spec.actor.time" "$(dp_field "$P_A" .spec.actor.time)"
+  expect_eq "spec.actor.operation" "Update" "$(dp_field "$P_A" .spec.managers[0].operation)"
+  expect_nonempty "spec.actor.time" "$(dp_field "$P_A" .spec.managers[0].time)"
   expect_contains "description (changed with)" "**Changed with:** $ACTOR_MANAGER (Update)" "$(echo "$MR_JSON" | jx 'd["description"]')"
   expect_contains "commit message trailer (changed with)" "Changed-with: $ACTOR_MANAGER (Update)" "$(echo "$COMMIT_JSON" | jx 'd["message"]')"
   expect_metric_at_least "backflow_drifts_detected_total{changed_by=interactive}" backflow_drifts_detected_total 'changed_by="interactive"' 1
@@ -1076,7 +1079,7 @@ step "b. Closing the merge request rejects the proposal"
 if [[ -n "${P_A:-}" ]]; then
   gl PUT "$(project_path "/merge_requests/$IID_A")" '{"state_event":"close"}' >/dev/null || fail "could not close !$IID_A"
   wait_for "proposal is Rejected" phase_is "$P_A" Rejected
-  expect_eq "status.mergeRequest.state" "closed" "$(dp_field "$P_A" .status.mergeRequest.state)"
+  expect_eq "status.mergeRequest.state" "closed" "$(dp_field "$P_A" .status.git.mergeRequest.state)"
   expect_contains "message" "Argo CD can revert" "$(dp_field "$P_A" .status.message)"
   expect_metric_at_least "backflow_merge_requests_total{action=closed}" backflow_merge_requests_total 'action="closed"' 1
   expect_eq "the branch is left for the reviewer" "true" "$(branch_exists "$BRANCH_A" && echo true || echo false)"
@@ -1132,8 +1135,8 @@ if [[ -n "$P_C" ]]; then
   MERGE_SHA="$(gl GET "$(project_path "/merge_requests/$IID_C")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
 
   wait_for "proposal is Merged" phase_is "$P_C" Merged
-  expect_eq "status.commitSHA is the merge commit" "$MERGE_SHA" "$(dp_field "$P_C" .status.commitSHA)"
-  expect_eq "status.mergeRequest.state" "merged" "$(dp_field "$P_C" .status.mergeRequest.state)"
+  expect_eq "status.commitSHA is the merge commit" "$MERGE_SHA" "$(dp_field "$P_C" .status.git.commitSHA)"
+  expect_eq "status.mergeRequest.state" "merged" "$(dp_field "$P_C" .status.git.mergeRequest.state)"
   expect_eq "main is at the merge commit" "$MERGE_SHA" "$(main_sha)"
   if [[ "$(raw_file apps/demo/configmap.yaml main)" == "$(expected_configmap warn)" ]]; then
     pass "main has LOG_LEVEL: warn"
@@ -1192,7 +1195,7 @@ if [[ -n "$P_D" ]]; then
   NOTES="$(gl GET "$(project_path "/merge_requests/$IID_D/notes?per_page=50")" | jx '" ".join(n["body"] for n in d if not n.get("system"))')"
   expect_contains "closing comment" "Backflow is closing this merge request" "$NOTES"
   expect_contains "closing comment (reason)" "back in sync with Git" "$NOTES"
-  expect_eq "status.mergeRequest.state" "closed" "$(dp_field "$P_D" .status.mergeRequest.state)"
+  expect_eq "status.mergeRequest.state" "closed" "$(dp_field "$P_D" .status.git.mergeRequest.state)"
 fi
 
 fi
@@ -1253,7 +1256,7 @@ PY
   MERGE_E="$(gl GET "$(project_path "/merge_requests/$IID_E")" | jx 'd.get("merge_commit_sha") or d["sha"]')"
   wait_for "proposal is Merged" phase_is "$P_E" Merged
   BEFORE_E="$(proposal_count)"
-  expect_eq "status.commitSHA is the merge commit" "$MERGE_E" "$(dp_field "$P_E" .status.commitSHA)"
+  expect_eq "status.commitSHA is the merge commit" "$MERGE_E" "$(dp_field "$P_E" .status.git.commitSHA)"
   wait_for "$APP is Synced at the merge commit" app_synced_at "$MERGE_E"
   level_is_error() { [[ "$(live_log_level)" == "error" ]]; }
   wait_for "the change is back in the cluster after the sync" level_is_error
@@ -1370,7 +1373,7 @@ P_G="$(proposal_with Mapping ">\"$TARGET_G\"" | head -n 1)"
 if [[ -n "$P_G" ]]; then
   wait_for "Proposed condition is False/ReportOnly" held_by_report_only "$P_G"
   expect_eq "Mapped condition" "True" "$(condition "$P_G" Mapped status)"
-  expect_eq "status.mergeRequest.url" "" "$(dp_field "$P_G" .status.mergeRequest.url)"
+  expect_eq "status.mergeRequest.url" "" "$(dp_field "$P_G" .status.git.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_G" "$(gl GET "$(project_path "/merge_requests?state=opened")" | jx 'len(d)')"
 
   if set_mode MergeRequest; then pass "policy mode switched to MergeRequest"; else fail "could not switch the policy to MergeRequest"; fi
@@ -1380,7 +1383,7 @@ if [[ -n "$P_G" ]]; then
   IFS='|' read -r IID_G STATE_G _ _ <<<"$(mr_info "$BRANCH_G")"
   expect_nonempty "merge request from $BRANCH_G" "$IID_G"
   expect_eq "merge request state" "opened" "$STATE_G"
-  expect_eq "status.mergeRequest.branch" "$BRANCH_G" "$(dp_field "$P_G" .status.mergeRequest.branch)"
+  expect_eq "status.mergeRequest.branch" "$BRANCH_G" "$(dp_field "$P_G" .status.git.branch)"
 
   set_log_level "$LEVEL_G"
   wait_for "proposal is Reverted when the live value goes back" phase_is "$P_G" Reverted
@@ -1482,8 +1485,8 @@ remember_proposals
 P_I="$(proposal_with Mapping ">\"$TARGET_I\"" | head -n 1)"
 if [[ -n "$P_I" ]]; then
   expect_eq "spec.actor.username (the user of kubectl patch)" "$WHO_I" "$(dp_field "$P_I" .spec.actor.username)"
-  expect_eq "spec.actor.kind" "person" "$(dp_field "$P_I" .spec.actor.kind)"
-  expect_eq "spec.actor.manager" "kubectl-patch" "$(dp_field "$P_I" .spec.actor.manager)"
+  expect_eq "spec.actor.kind" "Person" "$(dp_field "$P_I" .spec.actor.kind)"
+  expect_eq "spec.actor.manager" "kubectl-patch" "$(dp_field "$P_I" .spec.managers[0].manager)"
   expect_metric_at_least "the webhook was called" backflow_actor_webhook_calls_total 'result="recorded"' 1
   expect_metric_at_least "the record was matched" backflow_actor_matches_total 'result="matched"' 1
 else
@@ -1500,7 +1503,7 @@ remember_proposals
 P_IS="$(proposal_with Mapping ">$REPL_TO" | head -n 1)"
 if [[ -n "$P_IS" ]]; then
   expect_eq "spec.actor.username after kubectl scale" "$WHO_I" "$(dp_field "$P_IS" .spec.actor.username)"
-  expect_eq "spec.actor.kind after kubectl scale" "person" "$(dp_field "$P_IS" .spec.actor.kind)"
+  expect_eq "spec.actor.kind after kubectl scale" "Person" "$(dp_field "$P_IS" .spec.actor.kind)"
 else
   fail "no proposal for the scale"
 fi

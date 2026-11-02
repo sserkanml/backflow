@@ -5,7 +5,7 @@ import (
 
 	"github.com/sserkanml/backflow/internal/rendermap"
 
-	v1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 )
 
 // ScalarOf decodes a change's JSON value when it is a string, a number or a
@@ -28,12 +28,12 @@ func ScalarOf(raw string) (any, bool) {
 // (FindFragments), the image tag of "repository:tag" for example. Fragment
 // keys are tried only when no key holds the whole value. Other changes have no
 // candidates. files are the unmodified files of the render (CollectFiles).
-func FieldsFor(src *Source, files map[string][]byte, changes []v1alpha1.FieldChange) ([]rendermap.Field, error) {
+func FieldsFor(src *Source, files map[string][]byte, changes []v1beta1.FieldChange) ([]rendermap.Field, error) {
 	fields := make([]rendermap.Field, len(changes))
 	for i, ch := range changes {
 		found := &Result{}
 		old, scalar := ScalarOf(ch.Desired)
-		replace := scalar && ch.Op == v1alpha1.OpReplace
+		replace := scalar && ch.Op == v1beta1.OpReplace
 		if replace {
 			var err error
 			if found, err = src.Find(files, old); err != nil {

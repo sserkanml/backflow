@@ -10,7 +10,7 @@ metadata:
     {{- include "backflow.labels" . | nindent 4 }}
 rules:
 - apiGroups:
-  - backflow.io
+  - internal.backflow.io
   resources:
   - changerecords
   verbs:

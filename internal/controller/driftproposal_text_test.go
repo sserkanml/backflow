@@ -11,22 +11,22 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
-func textProposal() *backflowv1alpha1.DriftProposal {
-	return &backflowv1alpha1.DriftProposal{
+func textProposal() *backflowv1beta1.DriftProposal {
+	return &backflowv1beta1.DriftProposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "dp-abc", Namespace: "backflow-system", UID: "uid-1"},
-		Spec: backflowv1alpha1.DriftProposalSpec{
-			Application: backflowv1alpha1.ObjectRef{Name: "demo-app", Namespace: "argocd"},
-			Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
-			Changes: []backflowv1alpha1.FieldChange{
-				{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`},
-				{Path: "/data/NEW", Op: backflowv1alpha1.OpAdd, Live: `"x"`},
-				{Path: "/data/OLD", Op: backflowv1alpha1.OpRemove, Desired: `"y"`},
+		Spec: backflowv1beta1.DriftProposalSpec{
+			ApplicationRef: backflowv1beta1.ObjectRef{Name: "demo-app", Namespace: "argocd"},
+			ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"},
+			Changes: []backflowv1beta1.FieldChange{
+				{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`},
+				{Path: "/data/NEW", Op: backflowv1beta1.OpAdd, Live: `"x"`},
+				{Path: "/data/OLD", Op: backflowv1beta1.OpRemove, Desired: `"y"`},
 			},
-			Actor:      &backflowv1alpha1.Actor{Username: "alice"},
+			Actor:      &backflowv1beta1.Actor{Username: "alice"},
 			DetectedAt: metav1.NewTime(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)),
 		},
 	}
@@ -37,7 +37,7 @@ func TestCommitSubject(t *testing.T) {
 	if got, want := commitSubject(dp, nil), "backflow: sync ConfigMap demo/demo-config from cluster"; got != want {
 		t.Errorf("subject = %q, want %q", got, want)
 	}
-	dp.Spec.Resource = backflowv1alpha1.ResourceRef{Kind: "ClusterRole", Name: "viewer"}
+	dp.Spec.ResourceRef = backflowv1beta1.ResourceRef{Kind: "ClusterRole", Name: "viewer"}
 	if got, want := commitSubject(dp, nil), "backflow: sync ClusterRole viewer from cluster"; got != want {
 		t.Errorf("cluster-scoped subject = %q, want %q", got, want)
 	}
@@ -76,19 +76,19 @@ func TestHasProposalTrailer(t *testing.T) {
 	if !hasProposalTrailer(msg, dp) {
 		t.Error("own trailer not found")
 	}
-	with := func(mutate func(d *backflowv1alpha1.DriftProposal)) *backflowv1alpha1.DriftProposal {
+	with := func(mutate func(d *backflowv1beta1.DriftProposal)) *backflowv1beta1.DriftProposal {
 		d := textProposal()
 		mutate(d)
 		return d
 	}
-	for name, other := range map[string]*backflowv1alpha1.DriftProposal{
-		"a name that is a prefix":    with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-ab" }),
-		"a name that extends it":     with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-abcd" }),
-		"a name with a space":        with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-abc " }),
-		"the same name, another UID": with(func(d *backflowv1alpha1.DriftProposal) { d.UID = "uid-2" }),
-		"another name, the same UID": with(func(d *backflowv1alpha1.DriftProposal) { d.Name = "dp-xyz" }),
-		"a UID that is a prefix":     with(func(d *backflowv1alpha1.DriftProposal) { d.UID = "uid-" }),
-		"an object without a UID":    with(func(d *backflowv1alpha1.DriftProposal) { d.UID = "" }),
+	for name, other := range map[string]*backflowv1beta1.DriftProposal{
+		"a name that is a prefix":    with(func(d *backflowv1beta1.DriftProposal) { d.Name = "dp-ab" }),
+		"a name that extends it":     with(func(d *backflowv1beta1.DriftProposal) { d.Name = "dp-abcd" }),
+		"a name with a space":        with(func(d *backflowv1beta1.DriftProposal) { d.Name = "dp-abc " }),
+		"the same name, another UID": with(func(d *backflowv1beta1.DriftProposal) { d.UID = "uid-2" }),
+		"another name, the same UID": with(func(d *backflowv1beta1.DriftProposal) { d.Name = "dp-xyz" }),
+		"a UID that is a prefix":     with(func(d *backflowv1beta1.DriftProposal) { d.UID = "uid-" }),
+		"an object without a UID":    with(func(d *backflowv1beta1.DriftProposal) { d.UID = "" }),
 	} {
 		if hasProposalTrailer(msg, other) {
 			t.Errorf("%s matched", name)
@@ -181,7 +181,7 @@ func TestSingleLine(t *testing.T) {
 }
 
 func TestClosingCommentMentionsAKeptBranch(t *testing.T) {
-	dp := &backflowv1alpha1.DriftProposal{}
+	dp := &backflowv1beta1.DriftProposal{}
 	dp.Name, dp.Namespace = "dp", "ns"
 	dp.Status.Message = "A newer drift replaced this proposal."
 	if got := closingComment(dp, "", ""); strings.Contains(got, "not deleted") {
@@ -194,8 +194,8 @@ func TestClosingCommentMentionsAKeptBranch(t *testing.T) {
 }
 
 func TestProposalBranch(t *testing.T) {
-	dp := func(name, uid string) *backflowv1alpha1.DriftProposal {
-		d := &backflowv1alpha1.DriftProposal{}
+	dp := func(name, uid string) *backflowv1beta1.DriftProposal {
+		d := &backflowv1beta1.DriftProposal{}
 		d.Name, d.UID = name, types.UID(uid)
 		return d
 	}
@@ -231,7 +231,7 @@ func TestLeaveProposedIfProposed(t *testing.T) {
 	t.Run("one with a merge request is closed out and names it", func(t *testing.T) {
 		dp := textProposal()
 		dp.Generation = 4
-		dp.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: "https://git.test/mr/7", Number: 7}
+		dp.Status.EnsureGit().MergeRequest = &backflowv1beta1.MergeRequestRef{URL: "https://git.test/mr/7", Number: 7}
 		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 			Type: conditionProposed, Status: metav1.ConditionTrue, Reason: reasonMergeRequestOpened, Message: "open"})
 		leaveProposedIfProposed(dp, reasonSuperseded, "Replaced by the newer proposal n.")
@@ -317,9 +317,9 @@ func TestPartialTexts(t *testing.T) {
 
 func TestOverrideTexts(t *testing.T) {
 	dp := textProposal()
-	dp.Status.Mapping = &backflowv1alpha1.Mapping{
-		Strategy: backflowv1alpha1.StrategyHelmValues,
-		Edits:    []backflowv1alpha1.SourceEdit{{File: "env/prod.yaml", Location: "config.mode", Value: `"a|b"`, ChangeIndex: 0}},
+	dp.Status.Mapping = &backflowv1beta1.Mapping{
+		Strategy: backflowv1beta1.StrategyHelmValues,
+		Edits:    []backflowv1beta1.SourceEdit{{File: "env/prod.yaml", Location: "config.mode", Value: `"a|b"`, ChangeIndex: 0}},
 	}
 	dp.Spec.Changes = dp.Spec.Changes[:1]
 	overrides := []rendermap.AppliedOverride{{
@@ -362,14 +362,15 @@ func TestBoundedEditValue(t *testing.T) {
 	}
 }
 
-func managedActor(manager string) *backflowv1alpha1.Actor {
+func managedManagers(manager string) []backflowv1beta1.ManagerWrite {
 	at := metav1.NewTime(time.Date(2026, 11, 1, 13, 26, 26, 0, time.UTC))
-	return &backflowv1alpha1.Actor{Manager: manager, Operation: "Update", Time: &at}
+	return []backflowv1beta1.ManagerWrite{{Manager: manager, Operation: "Update", Time: &at}}
 }
 
 func TestTextNamesTheManager(t *testing.T) {
 	dp := textProposal()
-	dp.Spec.Actor = managedActor("kubectl-patch")
+	dp.Spec.Actor = nil // the managers are known, the user is not
+	dp.Spec.Managers = managedManagers("kubectl-patch")
 	msg := commitMessage(dp, nil, nil)
 	if !strings.Contains(msg, "Changed-with: kubectl-patch (Update) at 2026-11-01 13:26:26 UTC\n") {
 		t.Errorf("commit message = %q", msg)
@@ -392,7 +393,7 @@ func TestTextNamesTheManager(t *testing.T) {
 
 	t.Run("a controller gets the note", func(t *testing.T) {
 		dp := textProposal()
-		dp.Spec.Actor = managedActor("kube-controller-manager")
+		dp.Spec.Managers = managedManagers("kube-controller-manager")
 		body := mergeRequestBody(dp, nil, nil, "")
 		if !strings.Contains(body, "changed by the controller `kube-controller-manager`, not by a person") {
 			t.Errorf("no note in\n%s", body)
@@ -401,7 +402,7 @@ func TestTextNamesTheManager(t *testing.T) {
 	t.Run("a manager nobody has verified gets no note", func(t *testing.T) {
 		for _, manager := range []string{"some-custom-tool", "ocp-manager", "horizontal-pod-autoscaler"} {
 			dp := textProposal()
-			dp.Spec.Actor = managedActor(manager)
+			dp.Spec.Managers = managedManagers(manager)
 			body := mergeRequestBody(dp, nil, nil, "")
 			if strings.Contains(body, "Note:") || strings.Contains(body, "not by a person") {
 				t.Errorf("%s: the note says it was not a person:\n%s", manager, body)
@@ -413,15 +414,15 @@ func TestTextNamesTheManager(t *testing.T) {
 	})
 	t.Run("other managers are listed", func(t *testing.T) {
 		dp := textProposal()
-		dp.Spec.Actor = managedActor("kubectl-set")
-		dp.Spec.Actor.Others = []backflowv1alpha1.ActorManager{{Manager: "kubectl"}, {Manager: "oc-edit"}}
+		dp.Spec.Managers = managedManagers("kubectl-set")
+		dp.Spec.Managers = append(dp.Spec.Managers, backflowv1beta1.ManagerWrite{Manager: "kubectl"}, backflowv1beta1.ManagerWrite{Manager: "oc-edit"})
 		if body := mergeRequestBody(dp, nil, nil, ""); !strings.Contains(body, "- **Also changed with:** kubectl, oc-edit\n") {
 			t.Errorf("body =\n%s", body)
 		}
 	})
 	t.Run("the username and the manager together", func(t *testing.T) {
 		dp := textProposal()
-		dp.Spec.Actor.Manager, dp.Spec.Actor.Operation = "kubectl-edit", "Update"
+		dp.Spec.Managers = []backflowv1beta1.ManagerWrite{{Manager: "kubectl-edit", Operation: "Update"}}
 		body := mergeRequestBody(dp, nil, nil, "")
 		if !strings.Contains(body, "**Changed by:** alice") || !strings.Contains(body, "**Changed with:** kubectl-edit (Update)\n") {
 			t.Errorf("body =\n%s", body)
@@ -429,7 +430,7 @@ func TestTextNamesTheManager(t *testing.T) {
 	})
 	t.Run("a hostile manager name stays on its line", func(t *testing.T) {
 		dp := textProposal()
-		dp.Spec.Actor = managedActor("kubectl\nProposal: other")
+		dp.Spec.Managers = managedManagers("kubectl\nProposal: other")
 		got := commitMessage(dp, nil, nil)
 		forged := textProposal()
 		forged.Name = "other"
@@ -437,9 +438,9 @@ func TestTextNamesTheManager(t *testing.T) {
 			t.Errorf("injection through the manager: %q", got)
 		}
 	})
-	t.Run("no actor, no line", func(t *testing.T) {
+	t.Run("no manager, no line", func(t *testing.T) {
 		dp := textProposal()
-		dp.Spec.Actor = nil
+		dp.Spec.Managers = nil
 		if got := commitMessage(dp, nil, nil); strings.Contains(got, trailerChangedWith) {
 			t.Errorf("message = %q", got)
 		}

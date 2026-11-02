@@ -7,7 +7,7 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
 
 // pendingKey identifies a drifted resource of an Application under a policy.
@@ -34,8 +34,8 @@ type pendingDrift struct {
 // the final state gets one. When it is not ready, wait says when to look again.
 //
 // The state is kept in memory. Losing it on a restart only delays a proposal.
-func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, resource, label string,
-	changes []backflowv1alpha1.FieldChange, st aheadState) (ready bool, wait time.Duration) {
+func (r *DriftReconciler) stable(policy *backflowv1beta1.BackflowPolicy, app, resource, label string,
+	changes []backflowv1beta1.FieldChange, st aheadState) (ready bool, wait time.Duration) {
 	enc, _ := json.Marshal(changes)
 	key := pendingKey{policy: policy.Namespace + "/" + policy.Name, app: app, resource: resource}
 	window := r.stableWindow(policy)
@@ -67,7 +67,7 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 // batchWindow, and with the actor webhook at least the time its records need to be written, so that the
 // actor is not resolved while the newest change is still in the webhook's buffer. The observation of
 // the drift is the newest change that can be known: a drift with other changes starts again.
-func (r *DriftReconciler) stableWindow(policy *backflowv1alpha1.BackflowPolicy) time.Duration {
+func (r *DriftReconciler) stableWindow(policy *backflowv1beta1.BackflowPolicy) time.Duration {
 	return max(policy.Spec.EffectiveBatchWindow(), r.Actors.Hold())
 }
 
@@ -82,7 +82,7 @@ func (r *DriftReconciler) stableWindow(policy *backflowv1alpha1.BackflowPolicy) 
 // for two windows (the Application is paused or held) is left to the periodic
 // resync and to events, so a paused Application does not make the controller
 // spin.
-func (r *DriftReconciler) nextStableCheck(policy *backflowv1alpha1.BackflowPolicy) time.Duration {
+func (r *DriftReconciler) nextStableCheck(policy *backflowv1beta1.BackflowPolicy) time.Duration {
 	pol := policy.Namespace + "/" + policy.Name
 	window := r.stableWindow(policy)
 	now := r.now()
@@ -115,7 +115,7 @@ const retryStableAfter = 5 * time.Second
 // which tells why a resource was dropped. Each drop is logged at V(1): a drift
 // that appears and goes away is never proposed, and without the line there is
 // nothing to tell why.
-func (r *DriftReconciler) forgetStable(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy, app string,
+func (r *DriftReconciler) forgetStable(ctx context.Context, policy *backflowv1beta1.BackflowPolicy, app string,
 	keep, outOfSync map[string]bool) {
 	pol := policy.Namespace + "/" + policy.Name
 	type dropped struct {

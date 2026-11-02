@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 )
 
 func decode(t *testing.T, s string) map[string]any {
@@ -44,26 +44,26 @@ func TestLookup(t *testing.T) {
 }
 
 func TestWhere(t *testing.T) {
-	replace := v1alpha1.FieldChange{Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `"warn"`, Live: `"error"`}
-	add := v1alpha1.FieldChange{Path: "/data/NEW", Op: v1alpha1.OpAdd, Live: `"1"`}
-	remove := v1alpha1.FieldChange{Path: "/data/OLD", Op: v1alpha1.OpRemove, Desired: `"y"`}
+	replace := v1beta1.FieldChange{Path: "/data/LOG_LEVEL", Op: v1beta1.OpReplace, Desired: `"warn"`, Live: `"error"`}
+	add := v1beta1.FieldChange{Path: "/data/NEW", Op: v1beta1.OpAdd, Live: `"1"`}
+	remove := v1beta1.FieldChange{Path: "/data/OLD", Op: v1beta1.OpRemove, Desired: `"y"`}
 
 	tests := []struct {
 		name              string
 		state             string
-		changes           []v1alpha1.FieldChange
+		changes           []v1beta1.FieldChange
 		atDesired, atLive bool
 	}{
-		{"reset to Git", `{"data":{"LOG_LEVEL":"warn"}}`, []v1alpha1.FieldChange{replace}, true, false},
-		{"still changed", `{"data":{"LOG_LEVEL":"error"}}`, []v1alpha1.FieldChange{replace}, false, true},
-		{"a third value", `{"data":{"LOG_LEVEL":"debug"}}`, []v1alpha1.FieldChange{replace}, false, false},
-		{"field gone", `{"data":{}}`, []v1alpha1.FieldChange{replace}, false, false},
-		{"added field reset: absent again", `{"data":{}}`, []v1alpha1.FieldChange{add}, true, false},
-		{"added field still there", `{"data":{"NEW":"1"}}`, []v1alpha1.FieldChange{add}, false, true},
-		{"removed field reset: back", `{"data":{"OLD":"y"}}`, []v1alpha1.FieldChange{remove}, true, false},
-		{"removed field still gone", `{"data":{}}`, []v1alpha1.FieldChange{remove}, false, true},
-		{"all fields reset", `{"data":{"LOG_LEVEL":"warn","OLD":"y"}}`, []v1alpha1.FieldChange{replace, add, remove}, true, false},
-		{"only some fields reset", `{"data":{"LOG_LEVEL":"warn"}}`, []v1alpha1.FieldChange{replace, remove}, false, false},
+		{"reset to Git", `{"data":{"LOG_LEVEL":"warn"}}`, []v1beta1.FieldChange{replace}, true, false},
+		{"still changed", `{"data":{"LOG_LEVEL":"error"}}`, []v1beta1.FieldChange{replace}, false, true},
+		{"a third value", `{"data":{"LOG_LEVEL":"debug"}}`, []v1beta1.FieldChange{replace}, false, false},
+		{"field gone", `{"data":{}}`, []v1beta1.FieldChange{replace}, false, false},
+		{"added field reset: absent again", `{"data":{}}`, []v1beta1.FieldChange{add}, true, false},
+		{"added field still there", `{"data":{"NEW":"1"}}`, []v1beta1.FieldChange{add}, false, true},
+		{"removed field reset: back", `{"data":{"OLD":"y"}}`, []v1beta1.FieldChange{remove}, true, false},
+		{"removed field still gone", `{"data":{}}`, []v1beta1.FieldChange{remove}, false, true},
+		{"all fields reset", `{"data":{"LOG_LEVEL":"warn","OLD":"y"}}`, []v1beta1.FieldChange{replace, add, remove}, true, false},
+		{"only some fields reset", `{"data":{"LOG_LEVEL":"warn"}}`, []v1beta1.FieldChange{replace, remove}, false, false},
 		{"no changes", `{}`, nil, false, false},
 	}
 	for _, tt := range tests {

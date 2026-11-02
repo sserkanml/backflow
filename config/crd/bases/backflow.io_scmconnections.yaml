@@ -8,6 +8,8 @@ metadata:
 spec:
   group: backflow.io
   names:
+    categories:
+    - backflow
     kind: ScmConnection
     listKind: ScmConnectionList
     plural: scmconnections
@@ -32,7 +34,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1alpha1
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: ScmConnection is a connection to a Git hosting service.
@@ -58,29 +60,23 @@ spec:
             description: ScmConnectionSpec defines the desired state of ScmConnection
             properties:
               caSecretRef:
-                description: Optional Secret key holding a PEM CA bundle for self-hosted
-                  providers.
+                description: Optional Secret key, in this namespace, holding a PEM
+                  CA bundle for self-hosted providers.
                 properties:
                   key:
-                    description: The key of the secret to select from.  Must be a
-                      valid secret key.
+                    description: Key of the Secret that holds the value.
+                    maxLength: 253
+                    minLength: 1
                     type: string
                   name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
                     type: string
-                  optional:
-                    description: Specify whether the Secret or its key must be defined
-                    type: boolean
                 required:
                 - key
+                - name
                 type: object
-                x-kubernetes-map-type: atomic
               committer:
                 description: |-
                   Identity used as Git committer. The Kubernetes user who made the change
@@ -88,8 +84,11 @@ spec:
                 properties:
                   email:
                     format: email
+                    maxLength: 254
                     type: string
                   name:
+                    maxLength: 256
+                    minLength: 1
                     type: string
                 required:
                 - email
@@ -98,45 +97,47 @@ spec:
               hosts:
                 description: |-
                   Repository hosts this connection is used for. A repository URL from an
-                  Argo CD Application is matched against these hosts. Defaults to the host of URL.
+                  Argo CD Application is matched against these hosts. Defaults to the host of URL
+                  (status.hosts shows what is used).
                 items:
+                  maxLength: 253
+                  pattern: ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$
                   type: string
+                maxItems: 16
                 type: array
+                x-kubernetes-list-type: set
               provider:
                 description: Provider type.
                 enum:
-                - gitlab
-                - github
+                - GitLab
+                - GitHub
                 type: string
               tokenSecretRef:
                 description: |-
-                  Secret key holding an API token with permission to push branches and
+                  Secret key, in this namespace, holding an API token with permission to push branches and
                   open merge requests (GitLab: api + write_repository; GitHub: contents + pull_requests).
                 properties:
                   key:
-                    description: The key of the secret to select from.  Must be a
-                      valid secret key.
+                    description: Key of the Secret that holds the value.
+                    maxLength: 253
+                    minLength: 1
                     type: string
                   name:
-                    default: ""
-                    description: |-
-                      Name of the referent.
-                      This field is effectively required, but due to backwards compatibility is
-                      allowed to be empty. Instances of this type with an empty value here are
-                      almost certainly wrong.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
                     type: string
-                  optional:
-                    description: Specify whether the Secret or its key must be defined
-                    type: boolean
                 required:
                 - key
+                - name
                 type: object
-                x-kubernetes-map-type: atomic
               url:
-                description: Base URL of the provider, e.g. https://gitlab.example.com
-                  or https://github.com.
-                pattern: ^https?://.+
+                description: |-
+                  Base URL of the provider, e.g. https://gitlab.example.com or https://github.com. Its host
+                  must be in the allowlist the installer set for the operator (scm.allowedHosts); otherwise
+                  the connection is not Ready (HostNotAllowed) and no request is made.
+                maxLength: 2048
+                pattern: ^https?://[^\s/]+(/\S*)?$
                 type: string
             required:
             - provider
@@ -205,10 +206,25 @@ spec:
                   - type
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              hosts:
+                description: 'The hosts the connection is used for: spec.hosts, or
+                  the host of spec.url.'
+                items:
+                  type: string
+                maxItems: 16
+                type: array
+                x-kubernetes-list-type: set
               lastCheckTime:
                 description: Last time the token was verified.
                 format: date-time
                 type: string
+              observedGeneration:
+                description: The generation of the spec that the conditions describe.
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

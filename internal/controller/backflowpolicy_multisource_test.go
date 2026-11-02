@@ -5,41 +5,40 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
 
 var _ = Describe("BackflowPolicy and multi-source Applications", func() {
 	const ns = "default"
 	var (
 		ctx    = context.Background()
-		policy *backflowv1alpha1.BackflowPolicy
+		policy *backflowv1beta1.BackflowPolicy
 		app    *unstructured.Unstructured
-		conns  []*backflowv1alpha1.ScmConnection
+		conns  []*backflowv1beta1.ScmConnection
 	)
 
 	connection := func(name, url string) {
-		c := &backflowv1alpha1.ScmConnection{
+		c := &backflowv1beta1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec: backflowv1alpha1.ScmConnectionSpec{
-				Provider: backflowv1alpha1.ScmProviderGitLab, URL: url,
-				TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "ms-token"}, Key: "token"},
+			Spec: backflowv1beta1.ScmConnectionSpec{
+				Provider: backflowv1beta1.ScmProviderGitLab, URL: url,
+				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "ms-token", Key: "token"},
 			},
 		}
 		ExpectWithOffset(1, k8sClient.Create(ctx, c)).To(Succeed())
 		conns = append(conns, c)
 	}
-	reconcilePolicy := func() *backflowv1alpha1.BackflowPolicy {
+	reconcilePolicy := func() *backflowv1beta1.BackflowPolicy {
 		r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
-		got := &backflowv1alpha1.BackflowPolicy{}
+		got := &backflowv1beta1.BackflowPolicy{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), got)).To(Succeed())
 		return got
 	}
@@ -60,12 +59,12 @@ var _ = Describe("BackflowPolicy and multi-source Applications", func() {
 		Expect(unstructured.SetNestedStringSlice(app.Object, []string{"Helm", "", ""}, "status", "sourceTypes")).To(Succeed())
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "ms-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"ms-app"}},
-				Mode:            backflowv1alpha1.ModeMergeRequest,
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				ArgoCD:       backflowv1beta1.ArgoCDSpec{Namespace: ns},
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"ms-app"}},
+				Mode:         backflowv1beta1.ModeMergeRequest,
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
@@ -87,16 +86,15 @@ var _ = Describe("BackflowPolicy and multi-source Applications", func() {
 		Expect(meta.IsStatusConditionTrue(got.Status.Conditions, "Ready")).To(BeTrue(), "%+v", got.Status.Conditions)
 		Expect(got.Status.Applications).To(HaveLen(1))
 		s := got.Status.Applications[0]
-		Expect(s.RepoURL).To(Equal("ghcr.io/stefanprodan/charts"), "the first source stays in the fields above")
+		Expect(s.First().RepoURL).To(Equal("ghcr.io/stefanprodan/charts"), "the first source is the first entry")
 		Expect(s.Sources).To(HaveLen(3))
-		Expect(s.Sources[0]).To(Equal(backflowv1alpha1.SourceSummary{
+		Expect(s.Sources[0]).To(Equal(backflowv1beta1.SourceSummary{
 			Position: 1, RepoURL: "ghcr.io/stefanprodan/charts", Chart: "podinfo", TargetRevision: "6.7.*",
-			Revision: "6.7.1", SyncedRevision: "6.7.0", SourceType: "Helm",
+			Revision: "6.7.1", SyncedRevision: "6.7.0", Type: "Helm",
 		}), "a chart from a registry has no ScmConnection")
 		Expect(s.Sources[1].Ref).To(Equal("values"))
-		Expect(s.Sources[1].ScmConnection).To(Equal("ms-gitlab"))
-		Expect(s.Sources[2].ScmConnection).To(Equal("ms-example"), "matched by its own host")
-		Expect(s.ScmConnection).To(Equal("ms-gitlab"), "the first ref source stands for the Application")
+		Expect(s.Sources[1].ScmConnectionName).To(Equal("ms-gitlab"))
+		Expect(s.Sources[2].ScmConnectionName).To(Equal("ms-example"), "matched by its own host")
 	})
 
 	It("is MissingScmConnection when a Git repository of the Application has none, not for a chart repository", func() {
@@ -106,10 +104,10 @@ var _ = Describe("BackflowPolicy and multi-source Applications", func() {
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal("MissingScmConnection"))
 		Expect(cond.Message).To(ContainSubstring("ms-app"))
-		Expect(got.Status.Applications[0].Sources[2].ScmConnection).To(BeEmpty())
+		Expect(got.Status.Applications[0].Sources[2].ScmConnectionName).To(BeEmpty())
 	})
 
-	It("does not list sources for an Application with one source", func() {
+	It("lists one source for an Application with one source", func() {
 		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, app))).To(Succeed())
 		app = &unstructured.Unstructured{}
 		app.SetGroupVersionKind(applicationGVK)
@@ -119,7 +117,8 @@ var _ = Describe("BackflowPolicy and multi-source Applications", func() {
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
 		connection("ms-gitlab", "https://gitlab.com")
 		got := reconcilePolicy()
-		Expect(got.Status.Applications[0].Sources).To(BeEmpty())
-		Expect(got.Status.Applications[0].ScmConnection).To(Equal("ms-gitlab"))
+		Expect(got.Status.Applications[0].Sources).To(HaveLen(1))
+		Expect(got.Status.Applications[0].First().RepoURL).To(Equal("https://gitlab.com/x/y.git"))
+		Expect(got.Status.Applications[0].First().ScmConnectionName).To(Equal("ms-gitlab"))
 	})
 })

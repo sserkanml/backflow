@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/metrics/metricstest"
@@ -26,7 +28,7 @@ import (
 
 func TestProposalName(t *testing.T) {
 	res := appResource{Kind: "ConfigMap", Name: "demo-config", Namespace: "demo"}
-	changes := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpAdd, Live: `"1"`}}
+	changes := []backflowv1beta1.FieldChange{{Path: "/data/a", Op: backflowv1beta1.OpAdd, Live: `"1"`}}
 
 	name := proposalName("argocd", "demo-app", res, changes, 0)
 	if !strings.HasPrefix(name, "demo-app-configmap-demo-config-") {
@@ -35,7 +37,7 @@ func TestProposalName(t *testing.T) {
 	if name != proposalName("argocd", "demo-app", res, changes, 0) {
 		t.Error("name is not deterministic")
 	}
-	other := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpAdd, Live: `"2"`}}
+	other := []backflowv1beta1.FieldChange{{Path: "/data/a", Op: backflowv1beta1.OpAdd, Live: `"2"`}}
 	if name == proposalName("argocd", "demo-app", res, other, 0) {
 		t.Error("different changes produced the same name")
 	}
@@ -374,45 +376,45 @@ func TestResourceHold(t *testing.T) {
 }
 
 func TestBlockingProposal(t *testing.T) {
-	changes := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpReplace, Desired: `"1"`, Live: `"2"`}}
-	other := []backflowv1alpha1.FieldChange{{Path: "/data/a", Op: backflowv1alpha1.OpReplace, Desired: `"1"`, Live: `"3"`}}
-	proposal := func(phase backflowv1alpha1.ProposalPhase, revision string, ch []backflowv1alpha1.FieldChange) backflowv1alpha1.DriftProposal {
-		p := backflowv1alpha1.DriftProposal{}
+	changes := []backflowv1beta1.FieldChange{{Path: "/data/a", Op: backflowv1beta1.OpReplace, Desired: `"1"`, Live: `"2"`}}
+	other := []backflowv1beta1.FieldChange{{Path: "/data/a", Op: backflowv1beta1.OpReplace, Desired: `"1"`, Live: `"3"`}}
+	proposal := func(phase backflowv1beta1.ProposalPhase, revision string, ch []backflowv1beta1.FieldChange) backflowv1beta1.DriftProposal {
+		p := backflowv1beta1.DriftProposal{}
 		p.Name = "p"
 		p.Labels = map[string]string{labelApplication: "app", labelResource: "res"}
-		p.Spec.Source.Revision = revision
+		p.Spec.Sources = []backflowv1beta1.ProposalSource{{Revision: revision}}
 		p.Spec.Changes = ch
 		p.Status.Phase = phase
 		return p
 	}
 	tests := []struct {
 		name  string
-		p     backflowv1alpha1.DriftProposal
+		p     backflowv1beta1.DriftProposal
 		app   string
 		block bool
 	}{
-		{"merged, same changes, same revision", proposal(backflowv1alpha1.PhaseMerged, "r1", changes), "app", true},
-		{"merged, same changes, new revision", proposal(backflowv1alpha1.PhaseMerged, "r0", changes), "app", false},
-		{"merged, different changes", proposal(backflowv1alpha1.PhaseMerged, "r1", other), "app", false},
-		{"merged, another application", proposal(backflowv1alpha1.PhaseMerged, "r1", changes), "other-app", false},
-		{"rejected, same changes, same revision", proposal(backflowv1alpha1.PhaseRejected, "r1", changes), "app", true},
-		{"failed, same changes, same revision", proposal(backflowv1alpha1.PhaseFailed, "r1", changes), "app", true},
-		{"reverted never blocks", proposal(backflowv1alpha1.PhaseReverted, "r1", changes), "app", false},
-		{"proposed is open, not a blocker", proposal(backflowv1alpha1.PhaseProposed, "r1", changes), "app", false},
+		{"merged, same changes, same revision", proposal(backflowv1beta1.PhaseMerged, "r1", changes), "app", true},
+		{"merged, same changes, new revision", proposal(backflowv1beta1.PhaseMerged, "r0", changes), "app", false},
+		{"merged, different changes", proposal(backflowv1beta1.PhaseMerged, "r1", other), "app", false},
+		{"merged, another application", proposal(backflowv1beta1.PhaseMerged, "r1", changes), "other-app", false},
+		{"rejected, same changes, same revision", proposal(backflowv1beta1.PhaseRejected, "r1", changes), "app", true},
+		{"failed, same changes, same revision", proposal(backflowv1beta1.PhaseFailed, "r1", changes), "app", true},
+		{"reverted never blocks", proposal(backflowv1beta1.PhaseReverted, "r1", changes), "app", false},
+		{"proposed is open, not a blocker", proposal(backflowv1beta1.PhaseProposed, "r1", changes), "app", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := blockingProposal([]backflowv1alpha1.DriftProposal{tt.p}, tt.app, "res", changes, "r1")
+			got := blockingProposal([]backflowv1beta1.DriftProposal{tt.p}, tt.app, "res", changes, "r1")
 			if (got != nil) != tt.block {
 				t.Errorf("blocked = %v, want %v", got != nil, tt.block)
 			}
 		})
 	}
 	t.Run("the remainder of a merged partial proposal is a different change", func(t *testing.T) {
-		both := append(append([]backflowv1alpha1.FieldChange{}, changes...),
-			backflowv1alpha1.FieldChange{Path: "/data/b", Op: backflowv1alpha1.OpRemove, Desired: `"x"`})
-		merged := proposal(backflowv1alpha1.PhaseMerged, "r1", both)
-		all := []backflowv1alpha1.DriftProposal{merged}
+		both := append(append([]backflowv1beta1.FieldChange{}, changes...),
+			backflowv1beta1.FieldChange{Path: "/data/b", Op: backflowv1beta1.OpRemove, Desired: `"x"`})
+		merged := proposal(backflowv1beta1.PhaseMerged, "r1", both)
+		all := []backflowv1beta1.DriftProposal{merged}
 		if blockingProposal(all, "app", "res", both, "r1") == nil {
 			t.Error("the merged changes at the same revision must block until Argo CD syncs the merge")
 		}
@@ -424,13 +426,13 @@ func TestBlockingProposal(t *testing.T) {
 		}
 	})
 	t.Run("superseded by Git blocks, by a newer drift does not", func(t *testing.T) {
-		byGit := proposal(backflowv1alpha1.PhaseSuperseded, "r1", changes)
-		if blockingProposal([]backflowv1alpha1.DriftProposal{byGit}, "app", "res", changes, "r1") == nil {
+		byGit := proposal(backflowv1beta1.PhaseSuperseded, "r1", changes)
+		if blockingProposal([]backflowv1beta1.DriftProposal{byGit}, "app", "res", changes, "r1") == nil {
 			t.Error("a proposal replaced because the source changed must block")
 		}
-		byDrift := proposal(backflowv1alpha1.PhaseSuperseded, "r1", changes)
+		byDrift := proposal(backflowv1beta1.PhaseSuperseded, "r1", changes)
 		byDrift.Status.SupersededBy = "newer"
-		if blockingProposal([]backflowv1alpha1.DriftProposal{byDrift}, "app", "res", changes, "r1") != nil {
+		if blockingProposal([]backflowv1beta1.DriftProposal{byDrift}, "app", "res", changes, "r1") != nil {
 			t.Error("a proposal replaced by a newer drift must not block")
 		}
 	})
@@ -546,7 +548,7 @@ var _ = Describe("Drift detection", func() {
 	const ns = "default"
 	var (
 		ctx      = context.Background()
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		app      *unstructured.Unstructured
 		argo     *fakeArgo
 		recorder *events.FakeRecorder
@@ -601,7 +603,7 @@ var _ = Describe("Drift detection", func() {
 		reconcileDrift()
 		settle()
 		reconcileDrift()
-		var list backflowv1alpha1.DriftProposalList
+		var list backflowv1beta1.DriftProposalList
 		ExpectWithOffset(1, k8sClient.List(ctx, &list, client.InNamespace(ns),
 			client.MatchingLabels{labelPolicy: policy.Name})).To(Succeed())
 		pr := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
@@ -610,14 +612,14 @@ var _ = Describe("Drift detection", func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 		}
 	}
-	proposals := func() []backflowv1alpha1.DriftProposal {
-		var list backflowv1alpha1.DriftProposalList
+	proposals := func() []backflowv1beta1.DriftProposal {
+		var list backflowv1beta1.DriftProposalList
 		ExpectWithOffset(1, k8sClient.List(ctx, &list, client.InNamespace(ns),
 			client.MatchingLabels{labelPolicy: policy.Name})).To(Succeed())
 		return list.Items
 	}
-	byPhase := func(phase backflowv1alpha1.ProposalPhase) []backflowv1alpha1.DriftProposal {
-		var out []backflowv1alpha1.DriftProposal
+	byPhase := func(phase backflowv1beta1.ProposalPhase) []backflowv1beta1.DriftProposal {
+		var out []backflowv1beta1.DriftProposal
 		for _, p := range proposals() {
 			if p.Status.Phase == phase {
 				out = append(out, p)
@@ -632,27 +634,20 @@ var _ = Describe("Drift detection", func() {
 			StringData: map[string]string{"token": "tok"},
 		})).To(Succeed())
 
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "drift-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"drift-app"}},
-				Mode:            backflowv1alpha1.ModeReportOnly,
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					URL: "https://argocd.test",
-					TokenSecretRef: corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "argocd-token-drift"}, Key: "token",
-					},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"drift-app"}},
+				Mode:         backflowv1beta1.ModeReportOnly,
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
+					URL:            "https://argocd.test",
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "argocd-token-drift", Key: "token"},
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 		policy.Status.Conditions = []metav1.Condition{{
 			Type: "Ready", Status: metav1.ConditionTrue, Reason: "Resolved", LastTransitionTime: metav1.Now(),
-		}}
-		policy.Status.Applications = []backflowv1alpha1.ApplicationSummary{{
-			Name: "drift-app", RepoURL: "https://gitlab.com/x/y.git", Path: "apps/demo",
-			TargetRevision: "main", SyncedRevision: "abc123", SourceType: "Directory",
 		}}
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 
@@ -660,6 +655,9 @@ var _ = Describe("Drift detection", func() {
 		app.SetGroupVersionKind(applicationGVK)
 		app.SetName("drift-app")
 		app.SetNamespace(ns)
+		Expect(unstructured.SetNestedMap(app.Object, map[string]any{
+			"repoURL": "https://gitlab.com/x/y.git", "targetRevision": "main", "path": "apps/demo",
+		}, "spec", "source")).To(Succeed())
 		Expect(k8sClient.Create(ctx, app)).To(Succeed())
 		// The last sync is at the revision Argo CD compares against.
 		setRevisions("abc123", "abc123")
@@ -697,7 +695,7 @@ var _ = Describe("Drift detection", func() {
 		}
 		return live
 	}
-	driftedProposal := func() backflowv1alpha1.DriftProposal {
+	driftedProposal := func() backflowv1beta1.DriftProposal {
 		reconcileDrift()
 		settle()
 		reconcileDrift()
@@ -713,12 +711,12 @@ var _ = Describe("Drift detection", func() {
 		before := detectedBy("interactive")
 		argo.items[0].NormalizedLiveState = withManagedFields("kubectl-patch")
 		dp := driftedProposal()
-		Expect(dp.Spec.Actor).NotTo(BeNil())
-		Expect(dp.Spec.Actor.Manager).To(Equal("kubectl-patch"), "Argo CD's own manager is not the actor, although it wrote later")
-		Expect(dp.Spec.Actor.Operation).To(Equal("Update"))
-		Expect(dp.Spec.Actor.Time).NotTo(BeNil())
-		Expect(dp.Spec.Actor.Time.UTC().Format(time.RFC3339)).To(Equal("2026-11-01T13:26:26Z"))
-		Expect(dp.Spec.Actor.Username).To(BeEmpty(), "managedFields hold no username")
+		Expect(dp.Spec.Managers).NotTo(BeEmpty())
+		Expect(dp.Spec.Managers[0].Manager).To(Equal("kubectl-patch"), "Argo CD's own manager is not the actor, although it wrote later")
+		Expect(string(dp.Spec.Managers[0].Operation)).To(Equal("Update"))
+		Expect(dp.Spec.Managers[0].Time).NotTo(BeNil())
+		Expect(dp.Spec.Managers[0].Time.UTC().Format(time.RFC3339)).To(Equal("2026-11-01T13:26:26Z"))
+		Expect(dp.Spec.Actor).To(BeNil(), "managedFields hold no username, so there is no actor")
 		Expect(detectedBy("interactive") - before).To(Equal(1.0))
 	})
 
@@ -726,8 +724,8 @@ var _ = Describe("Drift detection", func() {
 		before := detectedBy("controller")
 		argo.items[0].NormalizedLiveState = withManagedFields("kube-controller-manager")
 		dp := driftedProposal()
-		Expect(dp.Spec.Actor).NotTo(BeNil())
-		Expect(dp.Spec.Actor.Manager).To(Equal("kube-controller-manager"))
+		Expect(dp.Spec.Managers).NotTo(BeEmpty())
+		Expect(dp.Spec.Managers[0].Manager).To(Equal("kube-controller-manager"))
 		Expect(detectedBy("controller") - before).To(Equal(1.0))
 	})
 
@@ -735,8 +733,8 @@ var _ = Describe("Drift detection", func() {
 		before := detectedBy("unknown")
 		argo.items[0].NormalizedLiveState = withManagedFields("some-custom-tool")
 		dp := driftedProposal()
-		Expect(dp.Spec.Actor).NotTo(BeNil())
-		Expect(dp.Spec.Actor.Manager).To(Equal("some-custom-tool"))
+		Expect(dp.Spec.Managers).NotTo(BeEmpty())
+		Expect(dp.Spec.Managers[0].Manager).To(Equal("some-custom-tool"))
 		Expect(detectedBy("unknown") - before).To(Equal(1.0))
 	})
 
@@ -757,7 +755,7 @@ var _ = Describe("Drift detection", func() {
 		reconcileOnce()
 		Expect(proposals()).To(HaveLen(1))
 		Expect(proposals()[0].Name).To(Equal(first.Name))
-		Expect(proposals()[0].Spec.Actor.Manager).To(Equal("kubectl-patch"), "spec is immutable")
+		Expect(proposals()[0].Spec.Managers[0].Manager).To(Equal("kubectl-patch"), "spec is immutable")
 	})
 
 	It("creates one proposal per drift and follows it until it is reverted", func() {
@@ -773,15 +771,15 @@ var _ = Describe("Drift detection", func() {
 		reconcileOnce()
 		Expect(proposals()).To(HaveLen(1))
 		first := proposals()[0]
-		Expect(first.Status.Phase).To(Equal(backflowv1alpha1.PhaseDetected))
-		Expect(first.Spec.PolicyName).To(Equal(policy.Name))
-		Expect(first.Spec.Application.Name).To(Equal("drift-app"))
-		Expect(first.Spec.Resource.Kind).To(Equal("ConfigMap"))
-		Expect(first.Spec.Resource.Version).To(Equal("v1"))
-		Expect(first.Spec.Source.Revision).To(Equal("abc123"))
-		Expect(first.Spec.Source.Type).To(Equal(backflowv1alpha1.SourceDirectory))
-		Expect(first.Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{{
-			Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"debug"`,
+		Expect(first.Status.Phase).To(Equal(backflowv1beta1.PhaseDetected))
+		Expect(first.Spec.PolicyRef.Name).To(Equal(policy.Name))
+		Expect(first.Spec.ApplicationRef.Name).To(Equal("drift-app"))
+		Expect(first.Spec.ResourceRef.Kind).To(Equal("ConfigMap"))
+		Expect(first.Spec.ResourceRef.Version).To(Equal("v1"))
+		Expect(first.Spec.First().Revision).To(Equal("abc123"))
+		Expect(first.Spec.First().Type).To(Equal(backflowv1beta1.SourceDirectory))
+		Expect(first.Spec.Changes).To(Equal([]backflowv1beta1.FieldChange{{
+			Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`,
 		}}))
 		Expect(first.Spec.Actor).To(BeNil())
 		Expect(first.Labels).To(HaveKeyWithValue(labelPolicy, policy.Name))
@@ -799,33 +797,33 @@ var _ = Describe("Drift detection", func() {
 		argo.items[0].NormalizedLiveState = configMapState("trace")
 		reconcileOnce()
 		Expect(proposals()).To(HaveLen(2))
-		detected := byPhase(backflowv1alpha1.PhaseDetected)
-		superseded := byPhase(backflowv1alpha1.PhaseSuperseded)
+		detected := byPhase(backflowv1beta1.PhaseDetected)
+		superseded := byPhase(backflowv1beta1.PhaseSuperseded)
 		Expect(detected).To(HaveLen(1))
 		Expect(superseded).To(HaveLen(1))
 		Expect(superseded[0].Name).To(Equal(first.Name))
 		Expect(superseded[0].Status.SupersededBy).To(Equal(detected[0].Name))
-		Expect(superseded[0].Annotations).To(HaveKeyWithValue(annotationSupersededBy, detected[0].Name))
+		Expect(superseded[0].Status.Signal().SupersededBy).To(Equal(detected[0].Name))
 		Expect(superseded[0].Spec).To(Equal(first.Spec), "spec of an existing proposal must not change")
 
 		By("reverting once the resource is Synced again")
 		setResources(configMapRes("Synced"))
 		reconcileOnce()
-		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(HaveLen(1))
-		Expect(byPhase(backflowv1alpha1.PhaseReverted)[0].Annotations).To(HaveKey(annotationReverted))
-		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(BeEmpty())
+		Expect(byPhase(backflowv1beta1.PhaseReverted)).To(HaveLen(1))
+		Expect(byPhase(backflowv1beta1.PhaseReverted)[0].Status.Signal().Reverted).NotTo(BeEmpty())
+		Expect(byPhase(backflowv1beta1.PhaseDetected)).To(BeEmpty())
 
 		By("creating a fresh proposal when the same drift comes back")
 		argo.items[0].NormalizedLiveState = configMapState("debug")
 		setResources(configMapRes("OutOfSync"))
 		reconcileOnce()
 		Expect(proposals()).To(HaveLen(3))
-		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 	})
 
 	Context("a drift that was already handled and ended without a fix", func() {
 		// retire puts the only proposal into a terminal phase, as its controller would.
-		retire := func(phase backflowv1alpha1.ProposalPhase, mutate func(st *backflowv1alpha1.DriftProposalStatus)) {
+		retire := func(phase backflowv1beta1.ProposalPhase, mutate func(st *backflowv1beta1.DriftProposalStatus)) {
 			p := proposals()[0]
 			p.Status.Phase = phase
 			if mutate != nil {
@@ -833,8 +831,8 @@ var _ = Describe("Drift detection", func() {
 			}
 			ExpectWithOffset(1, k8sClient.Status().Update(ctx, &p)).To(Succeed())
 		}
-		rejected := func(st *backflowv1alpha1.DriftProposalStatus) {
-			st.MergeRequest = &backflowv1alpha1.MergeRequestRef{URL: "https://git.test/-/merge_requests/7", Number: 7, State: "closed"}
+		rejected := func(st *backflowv1beta1.DriftProposalStatus) {
+			st.EnsureGit().MergeRequest = &backflowv1beta1.MergeRequestRef{URL: "https://git.test/-/merge_requests/7", Number: 7, State: "closed"}
 		}
 		drainEvents := func() []string {
 			var out []string
@@ -857,10 +855,7 @@ var _ = Describe("Drift detection", func() {
 			return n
 		}
 		setRevision := func(rev string) {
-			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications[0].SyncedRevision = rev
-			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
-			setRevisions(rev, rev) // the Application moves first; the policy status follows
+			setRevisions(rev, rev)
 		}
 
 		BeforeEach(func() {
@@ -869,7 +864,7 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("does not reopen a Rejected proposal, and reports the rejection once", func() {
-			retire(backflowv1alpha1.PhaseRejected, rejected)
+			retire(backflowv1beta1.PhaseRejected, rejected)
 			drainEvents()
 
 			seen := make([]string, 0, 8)
@@ -882,11 +877,11 @@ var _ = Describe("Drift detection", func() {
 			Expect(seen).To(ContainElement(And(
 				ContainSubstring("Normal"), ContainSubstring("ChangeRejected"),
 				ContainSubstring("merge_requests/7"), ContainSubstring("Sync Application drift-app in Argo CD"))))
-			Expect(proposals()[0].Annotations).To(HaveKey(annotationRejectionReported))
+			Expect(proposals()[0].Status.Signal().RejectionReported).To(BeTrue())
 		})
 
 		It("does not reopen a Failed proposal, and stays quiet about it", func() {
-			retire(backflowv1alpha1.PhaseFailed, func(st *backflowv1alpha1.DriftProposalStatus) {
+			retire(backflowv1beta1.PhaseFailed, func(st *backflowv1beta1.DriftProposalStatus) {
 				st.Message = "targetRevision is not a branch"
 			})
 			drainEvents()
@@ -898,7 +893,7 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("does not reopen a proposal superseded because Git changed", func() {
-			retire(backflowv1alpha1.PhaseSuperseded, func(st *backflowv1alpha1.DriftProposalStatus) {
+			retire(backflowv1beta1.PhaseSuperseded, func(st *backflowv1beta1.DriftProposalStatus) {
 				st.Message = "The source changed in Git after the drift was detected."
 			})
 			for range 3 {
@@ -908,46 +903,46 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("proposes again when the changes differ", func() {
-			retire(backflowv1alpha1.PhaseRejected, rejected)
+			retire(backflowv1beta1.PhaseRejected, rejected)
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
 
 			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
-			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+			Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 		})
 
 		It("proposes again when Argo CD synced a new revision", func() {
-			retire(backflowv1alpha1.PhaseRejected, rejected)
+			retire(backflowv1beta1.PhaseRejected, rejected)
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
 
 			setRevision("def456")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
-			fresh := byPhase(backflowv1alpha1.PhaseDetected)
+			fresh := byPhase(backflowv1beta1.PhaseDetected)
 			Expect(fresh).To(HaveLen(1))
-			Expect(fresh[0].Spec.Source.Revision).To(Equal("def456"))
+			Expect(fresh[0].Spec.First().Revision).To(Equal("def456"))
 		})
 
 		It("proposes again for a Failed or Git-superseded one when a new revision is synced", func() {
-			retire(backflowv1alpha1.PhaseFailed, nil)
+			retire(backflowv1beta1.PhaseFailed, nil)
 			setRevision("def456")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
 		})
 
 		It("reports a second rejection of a different drift again", func() {
-			retire(backflowv1alpha1.PhaseRejected, rejected)
+			retire(backflowv1beta1.PhaseRejected, rejected)
 			reconcileOnce()
 			Expect(rejections(drainEvents())).To(Equal(1))
 
 			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileOnce()
-			second := byPhase(backflowv1alpha1.PhaseDetected)
+			second := byPhase(backflowv1beta1.PhaseDetected)
 			Expect(second).To(HaveLen(1))
-			second[0].Status.Phase = backflowv1alpha1.PhaseRejected
+			second[0].Status.Phase = backflowv1beta1.PhaseRejected
 			Expect(k8sClient.Status().Update(ctx, &second[0])).To(Succeed())
 			drainEvents()
 
@@ -958,7 +953,7 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("does not propose a change again while its merge is not synced yet", func() {
-			retire(backflowv1alpha1.PhaseMerged, nil)
+			retire(backflowv1beta1.PhaseMerged, nil)
 			drainEvents()
 			for range 3 {
 				reconcileOnce() // each looks twice, a batch window apart
@@ -968,22 +963,22 @@ var _ = Describe("Drift detection", func() {
 		})
 
 		It("proposes again once Argo CD compares against a newer revision", func() {
-			retire(backflowv1alpha1.PhaseMerged, nil)
+			retire(backflowv1beta1.PhaseMerged, nil)
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
 
 			setRevision("def456") // Argo CD has seen the merge commit, or anything else changed
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
-			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+			Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 		})
 
 		It("proposes a different drift after a merge, at the same revision", func() {
-			retire(backflowv1alpha1.PhaseMerged, nil)
+			retire(backflowv1beta1.PhaseMerged, nil)
 			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
-			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+			Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 		})
 
 		Context("after a partial proposal was merged", func() {
@@ -1004,7 +999,7 @@ var _ = Describe("Drift detection", func() {
 				reconcileOnce()
 				Expect(proposals()).To(HaveLen(1))
 				Expect(proposals()[0].Spec.Changes).To(HaveLen(2))
-				retire(backflowv1alpha1.PhaseMerged, nil)
+				retire(backflowv1beta1.PhaseMerged, nil)
 			})
 
 			It("does not propose the merged changes again while the merge is not synced", func() {
@@ -1024,22 +1019,22 @@ var _ = Describe("Drift detection", func() {
 				}
 				all := proposals()
 				Expect(all).To(HaveLen(2), "one new proposal, no duplicate of the merged one")
-				fresh := byPhase(backflowv1alpha1.PhaseDetected)
+				fresh := byPhase(backflowv1beta1.PhaseDetected)
 				Expect(fresh).To(HaveLen(1))
 				Expect(fresh[0].Name).NotTo(Equal(merged.Name))
-				Expect(fresh[0].Spec.Source.Revision).To(Equal("def456"))
+				Expect(fresh[0].Spec.First().Revision).To(Equal("def456"))
 				Expect(fresh[0].Spec.Changes).To(HaveLen(1))
 				Expect(fresh[0].Spec.Changes[0].Path).To(Equal("/data/EXTRA"))
 
 				By("the merged proposal is left as it was")
-				Expect(byPhase(backflowv1alpha1.PhaseMerged)).To(HaveLen(1))
-				Expect(byPhase(backflowv1alpha1.PhaseMerged)[0].Spec.Changes).To(Equal(merged.Spec.Changes))
-				Expect(byPhase(backflowv1alpha1.PhaseMerged)[0].Annotations).NotTo(HaveKey(annotationSupersededBy))
+				Expect(byPhase(backflowv1beta1.PhaseMerged)).To(HaveLen(1))
+				Expect(byPhase(backflowv1beta1.PhaseMerged)[0].Spec.Changes).To(Equal(merged.Spec.Changes))
+				Expect(byPhase(backflowv1beta1.PhaseMerged)[0].Status.Signal().SupersededBy).To(BeEmpty())
 			})
 		})
 
 		It("does not let a Reverted proposal block the same drift coming back", func() {
-			retire(backflowv1alpha1.PhaseReverted, nil)
+			retire(backflowv1beta1.PhaseReverted, nil)
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(2))
 		})
@@ -1048,14 +1043,14 @@ var _ = Describe("Drift detection", func() {
 			By("a newer drift supersedes the first")
 			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileOnce()
-			Expect(byPhase(backflowv1alpha1.PhaseSuperseded)).To(HaveLen(1))
-			Expect(byPhase(backflowv1alpha1.PhaseSuperseded)[0].Status.SupersededBy).NotTo(BeEmpty())
+			Expect(byPhase(backflowv1beta1.PhaseSuperseded)).To(HaveLen(1))
+			Expect(byPhase(backflowv1beta1.PhaseSuperseded)[0].Status.SupersededBy).NotTo(BeEmpty())
 
 			By("the original drift returns")
 			argo.items[0].NormalizedLiveState = configMapState("debug")
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(3))
-			Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+			Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 		})
 	})
 
@@ -1148,13 +1143,13 @@ var _ = Describe("Drift detection", func() {
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1), "a different drift is not proposed, so nothing is superseded")
 			Expect(proposals()[0].Name).To(Equal(first.Name))
-			Expect(proposals()[0].Annotations).NotTo(HaveKey(annotationSupersededBy))
-			Expect(proposals()[0].Annotations).NotTo(HaveKey(annotationReverted))
+			Expect(proposals()[0].Status.Signal().SupersededBy).To(BeEmpty())
+			Expect(proposals()[0].Status.Signal().Reverted).To(BeEmpty())
 
 			By("it is retired as usual when the resource is in sync again")
 			setResources(configMapRes("Synced"))
 			reconcileOnce()
-			Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(HaveLen(1))
+			Expect(byPhase(backflowv1beta1.PhaseReverted)).To(HaveLen(1))
 		})
 
 		DescribeTable("pauses when the last sync did not apply everything, even at the compared revision",
@@ -1206,23 +1201,17 @@ var _ = Describe("Drift detection", func() {
 
 		It("stamps the proposal with the revision the Application compares against, not the policy status", func() {
 			setRevisions(sha2, sha2)
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications[0].SyncedRevision = sha1 // the policy controller has not caught up
-			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
-			Expect(proposals()[0].Spec.Source.Revision).To(Equal(sha2))
+			Expect(proposals()[0].Spec.First().Revision).To(Equal(sha2))
 		})
 
 		It("blocks on the fresh revision: a rejected proposal at the compared revision is not recreated", func() {
 			setRevisions(sha2, sha2)
-			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications[0].SyncedRevision = sha1
-			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
 			p := proposals()[0]
-			p.Status.Phase = backflowv1alpha1.PhaseRejected
+			p.Status.Phase = backflowv1beta1.PhaseRejected
 			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
 			reconcileDrift()
 			settle()
@@ -1272,9 +1261,8 @@ var _ = Describe("Drift detection", func() {
 			}
 		}
 		setSourceType := func(t string) {
-			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications[0].SourceType = t
-			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, t, "status", "sourceType")).To(Succeed())
+			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
 		}
 
 		BeforeEach(func() {
@@ -1506,20 +1494,20 @@ var _ = Describe("Drift detection", func() {
 			Expect(window()).To(Equal(30 * time.Second))
 
 			By("and for one that never went through the API server")
-			Expect(backflowv1alpha1.BackflowPolicySpec{}.EffectiveBatchWindow()).To(Equal(backflowv1alpha1.DefaultBatchWindow))
+			Expect(backflowv1beta1.BackflowPolicySpec{}.EffectiveBatchWindow()).To(Equal(backflowv1beta1.DefaultBatchWindow))
 		})
 
 		It("keeps an explicit 0s", func() {
-			zero := &backflowv1alpha1.BackflowPolicy{
+			zero := &backflowv1beta1.BackflowPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: "window-zero", Namespace: ns},
-				Spec: backflowv1alpha1.BackflowPolicySpec{
-					Applications: backflowv1alpha1.ApplicationSelector{Names: []string{"x"}},
+				Spec: backflowv1beta1.BackflowPolicySpec{
+					Applications: backflowv1beta1.ApplicationSelector{Names: []string{"x"}},
 					BatchWindow:  &metav1.Duration{},
 				},
 			}
 			Expect(k8sClient.Create(ctx, zero)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, zero)).To(Succeed()) }()
-			var got backflowv1alpha1.BackflowPolicy
+			var got backflowv1beta1.BackflowPolicy
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(zero), &got)).To(Succeed())
 			Expect(got.Spec.BatchWindow).NotTo(BeNil())
 			Expect(got.Spec.EffectiveBatchWindow()).To(BeZero(), "0s is a choice, not a missing value")
@@ -1527,7 +1515,7 @@ var _ = Describe("Drift detection", func() {
 
 		It("defaults the window for a manifest that leaves it out", func() {
 			raw := &unstructured.Unstructured{Object: map[string]any{
-				"apiVersion": "backflow.io/v1alpha1", "kind": "BackflowPolicy",
+				"apiVersion": "backflow.io/v1beta1", "kind": "BackflowPolicy",
 				"metadata": map[string]any{"name": "window-default", "namespace": ns},
 				"spec": map[string]any{
 					"applications": map[string]any{"names": []any{"x"}},
@@ -1535,7 +1523,7 @@ var _ = Describe("Drift detection", func() {
 			}}
 			Expect(k8sClient.Create(ctx, raw)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, raw)).To(Succeed()) }()
-			var got backflowv1alpha1.BackflowPolicy
+			var got backflowv1beta1.BackflowPolicy
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(raw), &got)).To(Succeed())
 			Expect(got.Spec.EffectiveBatchWindow()).To(Equal(30 * time.Second))
 		})
@@ -1584,8 +1572,8 @@ var _ = Describe("Drift detection", func() {
 			advance(10 * time.Second)
 			reconcileDrift()
 			Expect(proposals()).To(HaveLen(1))
-			Expect(proposals()[0].Spec.Changes).To(Equal([]backflowv1alpha1.FieldChange{{
-				Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"info"`, Live: `"warn"`,
+			Expect(proposals()[0].Spec.Changes).To(Equal([]backflowv1beta1.FieldChange{{
+				Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"warn"`,
 			}}), "the final state, not an intermediate one")
 		})
 
@@ -1621,7 +1609,7 @@ var _ = Describe("Drift detection", func() {
 			advance(window())
 			reconcileDrift()
 			Expect(proposals()).To(HaveLen(1))
-			Expect(proposals()[0].Spec.Source.Revision).To(Equal("def456"), "the revision comes from the Application")
+			Expect(proposals()[0].Spec.First().Revision).To(Equal("def456"), "the revision comes from the Application")
 		})
 
 		It("starts over when only the compared revision moves", func() {
@@ -1677,15 +1665,15 @@ var _ = Describe("Drift detection", func() {
 			argo.items[0].NormalizedLiveState = configMapState("trace")
 			reconcileDrift()
 			Expect(proposals()).To(HaveLen(1))
-			Expect(proposals()[0].Annotations).NotTo(HaveKey(annotationSupersededBy), "not before the new drift is stable")
+			Expect(proposals()[0].Status.Signal().SupersededBy).To(BeEmpty(), "not before the new drift is stable")
 
 			advance(window() + time.Second)
 			reconcileDrift()
 			Expect(proposals()).To(HaveLen(2))
 			Expect(byPhase("")).NotTo(BeEmpty())
-			var got backflowv1alpha1.DriftProposal
+			var got backflowv1beta1.DriftProposal
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&first), &got)).To(Succeed())
-			Expect(got.Annotations).To(HaveKey(annotationSupersededBy))
+			Expect(got.Status.Signal().SupersededBy).NotTo(BeEmpty())
 		})
 
 		It("loses what it has seen on a restart, which only delays the proposal", func() {
@@ -1737,16 +1725,14 @@ var _ = Describe("Drift detection", func() {
 		// A sync of rev: Argo CD compares against it and has synced it.
 		setSyncedRevision := func(rev string) { setRevisions(rev, rev) }
 		// proposed puts the only proposal into Proposed with an open merge request.
-		proposed := func() backflowv1alpha1.DriftProposal {
+		proposed := func() backflowv1beta1.DriftProposal {
 			p := proposals()[0]
-			p.Status.Phase = backflowv1alpha1.PhaseProposed
-			p.Status.MergeRequest = &backflowv1alpha1.MergeRequestRef{
-				URL: "https://git.test/-/merge_requests/7", Number: 7, Branch: "backflow/x", State: "open",
-			}
+			p.Status.Phase = backflowv1beta1.PhaseProposed
+			p.Status.EnsureGit().MergeRequest = &backflowv1beta1.MergeRequestRef{URL: "https://git.test/-/merge_requests/7", Number: 7, State: "open"}
 			ExpectWithOffset(1, k8sClient.Status().Update(ctx, &p)).To(Succeed())
 			return p
 		}
-		annotations := func() map[string]string { return proposals()[0].Annotations }
+		annotations := func() map[string]string { return signalMap(&proposals()[0]) }
 
 		BeforeEach(func() {
 			setSyncedRevision(syncedAt)
@@ -1820,8 +1806,8 @@ var _ = Describe("Drift detection", func() {
 
 		It("retires a proposal that has no merge request, whatever reset the cluster", func() {
 			p := proposals()[0]
-			p.Status.Phase = backflowv1alpha1.PhaseMapping
-			p.Status.MergeRequest = nil
+			p.Status.Phase = backflowv1beta1.PhaseMapping
+			p.Status.EnsureGit().MergeRequest = nil
 			Expect(k8sClient.Status().Update(ctx, &p)).To(Succeed())
 			setSyncedRevision("def456")
 
@@ -1856,8 +1842,8 @@ var _ = Describe("Drift detection", func() {
 
 	It("honours ignoreFields, include/exclude and skips Secrets", func() {
 		By("ignoring a drifted field")
-		policy.Spec.IgnoreFields = []backflowv1alpha1.IgnoreRule{{
-			KindSelector: backflowv1alpha1.KindSelector{Kind: "ConfigMap"},
+		policy.Spec.IgnoreFields = []backflowv1beta1.IgnoreRule{{
+			KindSelector: backflowv1beta1.KindSelector{Kind: "ConfigMap"},
 			JSONPointers: []string{"/data/LOG_LEVEL"},
 		}}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
@@ -1867,7 +1853,7 @@ var _ = Describe("Drift detection", func() {
 
 		By("not calling Argo CD for excluded kinds and Secrets")
 		policy.Spec.IgnoreFields = nil
-		policy.Spec.Exclude = []backflowv1alpha1.KindSelector{{Kind: "ConfigMap"}}
+		policy.Spec.Exclude = []backflowv1beta1.KindSelector{{Kind: "ConfigMap"}}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 		setResources(configMapRes("OutOfSync"), map[string]any{
 			"version": "v1", "kind": "Secret", "namespace": "demo", "name": "s", "status": "OutOfSync",
@@ -1886,22 +1872,22 @@ var _ = Describe("Drift detection", func() {
 
 	It("keeps proposals when Argo CD is unreachable", func() {
 		reconcileOnce()
-		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 		argo.err = argocd.ErrUnreachable
 		reconcileOnce()
-		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
-		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(BeEmpty())
+		Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
+		Expect(byPhase(backflowv1beta1.PhaseReverted)).To(BeEmpty())
 	})
 
 	It("leaves a proposal untouched and warns when its resource was deleted from the cluster", func() {
 		reconcileOnce()
-		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
+		Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
 
 		By("deleting the resource: OutOfSync, but only Git has a state")
 		argo.items[0].NormalizedLiveState = nil
 		reconcileOnce()
-		Expect(byPhase(backflowv1alpha1.PhaseDetected)).To(HaveLen(1))
-		Expect(byPhase(backflowv1alpha1.PhaseReverted)).To(BeEmpty())
+		Expect(byPhase(backflowv1beta1.PhaseDetected)).To(HaveLen(1))
+		Expect(byPhase(backflowv1beta1.PhaseReverted)).To(BeEmpty())
 		Expect(proposals()).To(HaveLen(1))
 
 		warnings := func(reason string) int {
@@ -1958,9 +1944,6 @@ var _ = Describe("Drift detection", func() {
 			ExpectWithOffset(1, unstructured.SetNestedField(app.Object, sources[0], "status", "operationState", "syncResult", "source")).To(Succeed())
 			ExpectWithOffset(1, unstructured.SetNestedSlice(app.Object, sources, "status", "operationState", "syncResult", "sources")).To(Succeed())
 			ExpectWithOffset(1, k8sClient.Update(ctx, app)).To(Succeed())
-			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications[0].SourceType = "Helm"
-			ExpectWithOffset(1, k8sClient.Status().Update(ctx, policy)).To(Succeed())
 		}
 		eventsMatching := func(sub string) int {
 			n := 0
@@ -1977,10 +1960,10 @@ var _ = Describe("Drift detection", func() {
 			reconcileOnce()
 			Expect(proposals()).To(HaveLen(1))
 			Expect(eventsMatching("UnsupportedSource")).To(BeZero())
-			Expect(proposals()[0].Spec.Sources).To(Equal([]backflowv1alpha1.ApplicationSource{
-				{Position: 1, Role: backflowv1alpha1.RoleRender, RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1",
-					TargetRevision: "6.7.*", Chart: "podinfo", Type: backflowv1alpha1.SourceHelm},
-				{Position: 2, Role: backflowv1alpha1.RoleValues, RepoURL: "https://gitlab.com/x/values.git", Revision: values,
+			Expect(proposals()[0].Spec.Sources).To(Equal([]backflowv1beta1.ProposalSource{
+				{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "ghcr.io/stefanprodan/charts", Revision: "6.7.1",
+					TargetRevision: "6.7.*", Chart: "podinfo", Type: backflowv1beta1.SourceHelm},
+				{Position: 2, Role: backflowv1beta1.RoleValues, RepoURL: "https://gitlab.com/x/values.git", Revision: values,
 					TargetRevision: "main", Ref: "values"},
 			}), "every source at the revision Argo CD compares against, and the one the edits are written to")
 		})
@@ -2030,7 +2013,7 @@ var _ = Describe("Drift detection", func() {
 			list := proposals()
 			out := make([]string, 0, len(list))
 			for _, p := range list {
-				out = append(out, p.Spec.Resource.Kind)
+				out = append(out, p.Spec.ResourceRef.Kind)
 			}
 			return out
 		}
@@ -2119,28 +2102,29 @@ var _ = Describe("Drift detection", func() {
 		Expect(unstructured.SetNestedSlice(second.Object, []any{configMapRes("OutOfSync")}, "status", "resources")).To(Succeed())
 		Expect(k8sClient.Update(ctx, second)).To(Succeed())
 
+		Expect(unstructured.SetNestedMap(second.Object, map[string]any{
+			"repoURL": "https://gitlab.com/x/y.git", "targetRevision": "main", "path": "apps/demo",
+		}, "spec", "source")).To(Succeed())
+		Expect(k8sClient.Update(ctx, second)).To(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-		policy.Status.Applications = append(policy.Status.Applications, backflowv1alpha1.ApplicationSummary{
-			Name: "drift-app-2", RepoURL: "https://gitlab.com/x/y.git", Path: "apps/demo",
-			TargetRevision: "main", SyncedRevision: "abc123", SourceType: "Directory",
-		})
-		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+		policy.Spec.Applications.Names = []string{"drift-app", "drift-app-2"}
+		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 
 		reconcileOnce()
 		got := proposals()
 		Expect(got).To(HaveLen(2), "the same drift in another Application is its own proposal")
 		Expect(got[0].Name).NotTo(Equal(got[1].Name))
-		Expect([]string{got[0].Spec.Application.Name, got[1].Spec.Application.Name}).To(ConsistOf("drift-app", "drift-app-2"))
+		Expect([]string{got[0].Spec.ApplicationRef.Name, got[1].Spec.ApplicationRef.Name}).To(ConsistOf("drift-app", "drift-app-2"))
 
 		By("a rejected proposal of one Application does not block the other")
 		for i := range got {
-			if got[i].Spec.Application.Name == "drift-app" {
-				got[i].Status.Phase = backflowv1alpha1.PhaseRejected
+			if got[i].Spec.ApplicationRef.Name == "drift-app" {
+				got[i].Status.Phase = backflowv1beta1.PhaseRejected
 				Expect(k8sClient.Status().Update(ctx, &got[i])).To(Succeed())
 			}
 		}
 		for _, p := range got {
-			if p.Spec.Application.Name == "drift-app-2" {
+			if p.Spec.ApplicationRef.Name == "drift-app-2" {
 				Expect(k8sClient.Delete(ctx, &p)).To(Succeed())
 			}
 		}
@@ -2148,7 +2132,7 @@ var _ = Describe("Drift detection", func() {
 		list := proposals()
 		again := make([]string, 0, len(list))
 		for _, p := range list {
-			again = append(again, p.Spec.Application.Name)
+			again = append(again, p.Spec.ApplicationRef.Name)
 		}
 		Expect(again).To(ConsistOf("drift-app", "drift-app-2"), "drift-app-2 is proposed again; drift-app stays blocked")
 
@@ -2157,9 +2141,9 @@ var _ = Describe("Drift detection", func() {
 		reconcileOnce()
 		superseded := 0
 		for _, p := range proposals() {
-			if p.Status.Phase == backflowv1alpha1.PhaseSuperseded {
+			if p.Status.Phase == backflowv1beta1.PhaseSuperseded {
 				superseded++
-				Expect(p.Spec.Application.Name).To(Equal("drift-app-2"))
+				Expect(p.Spec.ApplicationRef.Name).To(Equal("drift-app-2"))
 			}
 		}
 		Expect(superseded).To(Equal(1))
@@ -2281,7 +2265,7 @@ var _ = Describe("Drift detection", func() {
 		It("forgets a policy without argoCD settings at once", func() {
 			fill()
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Spec.ArgoCD = nil
+			policy.Spec.ArgoCD.Server = nil
 			Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 			reconcileResult()
 			p, rep, c := sizes()
@@ -2299,11 +2283,11 @@ var _ = Describe("Drift detection", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 		})
 
-		It("forgets an Application that dropped out of the policy status", func() {
+		It("forgets an Application that dropped out of the policy", func() {
 			fill()
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-			policy.Status.Applications = nil
-			Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+			policy.Spec.Applications.Names = []string{"not-this-one"}
+			Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 			reconcileDrift()
 			p, rep, c := sizes()
 			Expect([]int{p, rep}).To(Equal([]int{0, 0}))
@@ -2311,10 +2295,77 @@ var _ = Describe("Drift detection", func() {
 		})
 	})
 
-	It("reports an unsupported source type once per revision", func() {
+	Context("a drift with more changes than a proposal holds", func() {
+		bigState := func(value string, keys int) map[string]any {
+			data := map[string]any{}
+			for i := range keys {
+				data[fmt.Sprintf("K%03d", i)] = value
+			}
+			return map[string]any{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]any{"name": "demo-config", "resourceVersion": value},
+				"data":     data,
+			}
+		}
+
+		It("is created with the first 256 changes, truncated, and the proposal controller leaves it Unmapped", func() {
+			argo.items[0].PredictedLiveState, argo.items[0].NormalizedLiveState = bigState("a", 300), bigState("b", 300)
+			reconcileDrift()
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			dp := proposals()[0]
+			Expect(dp.Spec.Truncated).To(BeTrue())
+			Expect(dp.Spec.Changes).To(HaveLen(backflowv1beta1.MaxChanges))
+
+			reconciler := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Repos: &fakeRepos{}}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&dp)})
+			Expect(err).NotTo(HaveOccurred())
+			got := proposals()[0]
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
+			mapped := meta.FindStatusCondition(got.Status.Conditions, conditionMapped)
+			Expect(mapped).NotTo(BeNil())
+			Expect(mapped.Status).To(Equal(metav1.ConditionFalse))
+			Expect(mapped.Reason).To(Equal(backflowv1beta1.ReasonTooManyChanges))
+			Expect(got.Status.Mapping.Edits).To(BeEmpty(), "nothing is proposed for part of a drift")
+			Expect(isOpen(&got)).To(BeTrue(), "Unmapped stays open, for a person")
+
+			By("the same drift is not proposed again")
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("exactly 256 changes is a proposal like any other", func() {
+			argo.items[0].PredictedLiveState, argo.items[0].NormalizedLiveState = bigState("a", 256), bigState("b", 256)
+			reconcileDrift()
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(proposals()[0].Spec.Truncated).To(BeFalse())
+			Expect(proposals()[0].Spec.Changes).To(HaveLen(256))
+		})
+	})
+
+	It("watches an Application that the capped status.applications of the policy does not list", func() {
+		// The policy controller lists at most 100 Applications in the status. The drift controller does
+		// not read that list: it resolves the Applications itself.
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-		policy.Status.Applications[0].SourceType = "Plugin"
+		listed := make([]backflowv1beta1.ApplicationSummary, 100)
+		for i := range listed {
+			listed[i] = backflowv1beta1.ApplicationSummary{Name: fmt.Sprintf("other-%03d", i)}
+		}
+		policy.Status.Applications, policy.Status.ApplicationCount, policy.Status.ApplicationsTruncated = listed, 101, true
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+
+		reconcileOnce()
+		Expect(proposals()).To(HaveLen(1), "drift-app is not in status.applications, and is watched")
+		Expect(proposals()[0].Spec.ApplicationRef.Name).To(Equal("drift-app"))
+	})
+
+	It("reports an unsupported source type once per revision", func() {
+		Expect(unstructured.SetNestedField(app.Object, "Plugin", "status", "sourceType")).To(Succeed())
+		Expect(k8sClient.Update(ctx, app)).To(Succeed())
 		for range 3 {
 			reconcileOnce()
 		}
@@ -2329,16 +2380,14 @@ var _ = Describe("Drift detection", func() {
 	})
 
 	It("skips policies without argoCD or that are not Ready", func() {
-		policy.Spec.ArgoCD = nil
+		policy.Spec.ArgoCD.Server = nil
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 		reconcileOnce()
 		Expect(argo.calls).To(BeZero())
 
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-		policy.Spec.ArgoCD = &backflowv1alpha1.ArgoCDServer{
-			TokenSecretRef: corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "argocd-token-drift"}, Key: "token",
-			},
+		policy.Spec.ArgoCD.Server = &backflowv1beta1.ArgoCDServer{
+			TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "argocd-token-drift", Key: "token"},
 		}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 		policy.Status.Conditions[0].Status = metav1.ConditionFalse
@@ -2358,13 +2407,13 @@ var _ = Describe("Drift detection", func() {
 })
 
 func TestConnectionForGitHubHostSpellings(t *testing.T) {
-	conn := func(name, url string, hosts ...string) backflowv1alpha1.ScmConnection {
-		c := backflowv1alpha1.ScmConnection{}
+	conn := func(name, url string, hosts ...string) backflowv1beta1.ScmConnection {
+		c := backflowv1beta1.ScmConnection{}
 		c.Name = name
 		c.Spec.URL, c.Spec.Hosts = url, hosts
 		return c
 	}
-	conns := []backflowv1alpha1.ScmConnection{
+	conns := []backflowv1beta1.ScmConnection{
 		conn("gh", "https://www.GitHub.com"),
 		conn("gl", "https://gitlab.com", "GitLab.com"),
 	}
