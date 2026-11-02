@@ -141,7 +141,7 @@ func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfi
 				switch {
 				case window.After.IsZero():
 					note(metrics.ActorNoWindow)
-				case rec.LastSeen.After(window.After) && (window.Before.IsZero() || !rec.LastSeen.After(window.Before.Add(tolerance))):
+				case !beforeSecondOf(rec.LastSeen, window.After) && (window.Before.IsZero() || !rec.LastSeen.After(window.Before.Add(tolerance))):
 					timeless = append(timeless, i)
 				default:
 					note(metrics.ActorTimeMismatch)
@@ -157,6 +157,30 @@ func MatchSubresource(uid string, actor managedfields.Owner, entries []managedfi
 		return Verdict{Record: records[best], Result: metrics.ActorMatched}
 	}
 	return pickTimeless(records, timeless, result)
+}
+
+// beforeSecondOf reports whether t is before the second that after is in. The time Argo CD gives for the end of a
+// sync (finishedAt, deployedAt) and the lastSeen of a ChangeRecord are whole seconds, rounded down, so a change
+// made in the second the sync finished is stored with that very second and cannot be told from one before it.
+// Such a change counts as after the sync: the sync put the resource back to Git's state, so a drift that is still
+// there was made after the sync wrote it, and no more than a second can be wrong.
+func beforeSecondOf(t, after time.Time) bool {
+	return t.Truncate(time.Second).Before(after.Truncate(time.Second))
+}
+
+// Resolve is the verdict for the manager that owns the drifted fields: Match, and for a record without a field
+// manager (a write to a subresource) MatchSubresource over the entries of managedFields. When nothing matches, the
+// result is the reason of the closest refusal, which for a scale is the subresource's, not "manager_mismatch".
+func Resolve(uid string, owner managedfields.Owner, entries []managedfields.Entry, records []Record,
+	tolerance time.Duration, window Window) Verdict {
+	verdict := Match(uid, owner, records, tolerance)
+	if verdict.Result == metrics.ActorMatched {
+		return verdict
+	}
+	if sub := MatchSubresource(uid, owner, entries, records, tolerance, window); sub.Result != metrics.ActorNoRecord {
+		return sub
+	}
+	return verdict
 }
 
 // pickTimeless decides among the records that fit an entry without a time: the latest of one
