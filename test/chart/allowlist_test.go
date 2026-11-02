@@ -20,7 +20,7 @@ func TestAllowlistsReachTheOperator(t *testing.T) {
 		return args
 	}
 
-	t.Run("gitlab.com and github.com are allowed Git hosts by default, and no other Argo CD server than the operator's", func(t *testing.T) {
+	t.Run("gitlab.com and github.com are allowed by default, no other Argo CD server", func(t *testing.T) {
 		args := deployment()
 		if got := flag(args, "--scm-allowed-hosts="); !slices.Equal(got, []string{"gitlab.com", "github.com"}) {
 			t.Errorf("--scm-allowed-hosts = %v", got)
@@ -33,7 +33,8 @@ func TestAllowlistsReachTheOperator(t *testing.T) {
 		args := deployment(
 			"--set", "argocd.allowedServers={https://argocd.team-a.example.com,https://*.argo.corp:8443}",
 			"--set", "scm.allowedHosts={git.example.com,*.corp.example.com}")
-		if got := flag(args, "--argocd-allowed-servers="); !slices.Equal(got, []string{"https://argocd.team-a.example.com", "https://*.argo.corp:8443"}) {
+		wantServers := []string{"https://argocd.team-a.example.com", "https://*.argo.corp:8443"}
+		if got := flag(args, "--argocd-allowed-servers="); !slices.Equal(got, wantServers) {
 			t.Errorf("--argocd-allowed-servers = %v", got)
 		}
 		if got := flag(args, "--scm-allowed-hosts="); !slices.Equal(got, []string{"git.example.com", "*.corp.example.com"}) {
