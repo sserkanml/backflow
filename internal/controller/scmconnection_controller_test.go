@@ -21,7 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,7 +28,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
 
 var _ = Describe("ScmConnection Controller", func() {
@@ -45,24 +44,21 @@ var _ = Describe("ScmConnection Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		scmconnection := &backflowv1alpha1.ScmConnection{}
+		scmconnection := &backflowv1beta1.ScmConnection{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind ScmConnection")
 			err := k8sClient.Get(ctx, typeNamespacedName, scmconnection)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &backflowv1alpha1.ScmConnection{
+				resource := &backflowv1beta1.ScmConnection{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					Spec: backflowv1alpha1.ScmConnectionSpec{
-						Provider: backflowv1alpha1.ScmProviderGitLab,
-						URL:      "https://gitlab.example.com",
-						TokenSecretRef: corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{Name: "scm-token"},
-							Key:                  "token",
-						},
+					Spec: backflowv1beta1.ScmConnectionSpec{
+						Provider:       backflowv1beta1.ScmProviderGitLab,
+						URL:            "https://gitlab.example.com",
+						TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "scm-token", Key: "token"},
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -70,7 +66,7 @@ var _ = Describe("ScmConnection Controller", func() {
 		})
 
 		AfterEach(func() {
-			resource := &backflowv1alpha1.ScmConnection{}
+			resource := &backflowv1beta1.ScmConnection{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 

@@ -500,3 +500,14 @@ func init() {
 		return nil
 	})
 }
+
+// ActorKind says what kind of identity changed a resource.
+// +kubebuilder:validation:Enum=person;controller
+type ActorKind string
+
+const (
+	// ActorPerson is a user, or anything that is not a service account.
+	ActorPerson ActorKind = "person"
+	// ActorController is a service account.
+	ActorController ActorKind = "controller"
+)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -70,7 +71,7 @@ func (r *ScmConnectionReconciler) recheckInterval() time.Duration {
 func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var conn backflowv1alpha1.ScmConnection
+	var conn backflowv1beta1.ScmConnection
 	if err := r.Get(ctx, req.NamespacedName, &conn); err != nil {
 		// Deleted in the meantime: its series go with it.
 		if apierrors.IsNotFound(err) {
@@ -79,12 +80,19 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	user, checkErr := r.verify(ctx, &conn)
+	// A host the installer did not allow is never contacted, and the token is not read.
+	var user string
+	checkErr := checkScmHost(&conn)
+	if checkErr == nil {
+		user, checkErr = r.verify(ctx, &conn)
+	}
 
 	now := metav1.Now()
+	conn.Status.ObservedGeneration = conn.Generation
+	conn.Status.Hosts = effectiveHosts(&conn)
 	conn.Status.LastCheckTime = &now
 	cond := metav1.Condition{
-		Type:               "Ready",
+		Type:               backflowv1beta1.ScmConnectionReady,
 		ObservedGeneration: conn.Generation,
 	}
 	if checkErr != nil {
@@ -117,9 +125,20 @@ func (r *ScmConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: r.recheckInterval()}, nil
 }
 
+// effectiveHosts are the hosts a connection is used for: spec.hosts, else the host of spec.url.
+func effectiveHosts(conn *backflowv1beta1.ScmConnection) []string {
+	if len(conn.Spec.Hosts) > 0 {
+		return slices.Clone(conn.Spec.Hosts)
+	}
+	if h := repoHost(conn.Spec.URL); h != "" {
+		return []string{h}
+	}
+	return nil
+}
+
 // verify reads the token, calls the provider's "current user" endpoint
 // and returns the username the token belongs to.
-func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1alpha1.ScmConnection) (string, error) {
+func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1beta1.ScmConnection) (string, error) {
 	tokenBytes, err := r.secretValue(ctx, conn.Namespace, conn.Spec.TokenSecretRef)
 	if err != nil {
 		return "", secretCheckError(err)
@@ -133,7 +152,7 @@ func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1al
 
 	baseURL := strings.TrimRight(conn.Spec.URL, "/")
 	switch conn.Spec.Provider {
-	case backflowv1alpha1.ScmProviderGitLab:
+	case backflowv1beta1.ScmProviderGitLab:
 		var u struct {
 			Username string `json:"username"`
 		}
@@ -141,7 +160,7 @@ func (r *ScmConnectionReconciler) verify(ctx context.Context, conn *backflowv1al
 			map[string]string{"PRIVATE-TOKEN": token}, &u)
 		return u.Username, err
 
-	case backflowv1alpha1.ScmProviderGitHub:
+	case backflowv1beta1.ScmProviderGitHub:
 		apiURL := scm.GitHubAPIRoot(baseURL)
 		var u struct {
 			Login string `json:"login"`
@@ -167,7 +186,7 @@ func secretCheckError(err error) error {
 }
 
 // secretValue returns one key of a Secret in the given namespace.
-func (r *ScmConnectionReconciler) secretValue(ctx context.Context, namespace string, ref corev1.SecretKeySelector) ([]byte, error) {
+func (r *ScmConnectionReconciler) secretValue(ctx context.Context, namespace string, ref backflowv1beta1.SecretKeyReference) ([]byte, error) {
 	var secret corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -183,7 +202,7 @@ func (r *ScmConnectionReconciler) secretValue(ctx context.Context, namespace str
 }
 
 // httpClient builds an HTTP client, trusting the optional custom CA.
-func (r *ScmConnectionReconciler) httpClient(ctx context.Context, conn *backflowv1alpha1.ScmConnection) (*http.Client, error) {
+func (r *ScmConnectionReconciler) httpClient(ctx context.Context, conn *backflowv1beta1.ScmConnection) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
 	if conn.Spec.CASecretRef != nil {
@@ -264,7 +283,7 @@ func (r *ScmConnectionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		// Only react to spec changes; our own status updates must not
 		// trigger another reconcile (that would loop forever).
-		For(&backflowv1alpha1.ScmConnection{},
+		For(&backflowv1beta1.ScmConnection{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("scmconnection").
 		Complete(r)

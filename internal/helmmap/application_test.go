@@ -5,7 +5,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/appvalues"
 )
 
@@ -35,12 +35,12 @@ func TestApplicationOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes := []v1alpha1.FieldChange{
-		{Path: "/data/FEATURE", Op: v1alpha1.OpReplace, Desired: `"beta"`, Live: `"gamma"`},
-		{Path: "/spec/image", Op: v1alpha1.OpReplace, Desired: `"repo/app:1.27"`, Live: `"repo/app:1.28"`},
-		{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: `"3"`, Live: `"5"`},
-		{Path: "/data/COLOR", Op: v1alpha1.OpReplace, Desired: `"red"`, Live: `"blue"`},
-		{Path: "/data/OTHER", Op: v1alpha1.OpReplace, Desired: `"zzz"`, Live: `"yyy"`},
+	changes := []v1beta1.FieldChange{
+		{Path: "/data/FEATURE", Op: v1beta1.OpReplace, Desired: `"beta"`, Live: `"gamma"`},
+		{Path: "/spec/image", Op: v1beta1.OpReplace, Desired: `"repo/app:1.27"`, Live: `"repo/app:1.28"`},
+		{Path: "/spec/replicas", Op: v1beta1.OpReplace, Desired: `"3"`, Live: `"5"`},
+		{Path: "/data/COLOR", Op: v1beta1.OpReplace, Desired: `"red"`, Live: `"blue"`},
+		{Path: "/data/OTHER", Op: v1beta1.OpReplace, Desired: `"zzz"`, Live: `"yyy"`},
 	}
 	fields, err := FieldsFor(src, files, changes)
 	if err != nil {

@@ -10,7 +10,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/jsonedit"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
@@ -78,10 +78,10 @@ func result(file string, edited []byte, location, live string) *rendermap.Writte
 		Edits: []mapping.Edit{{File: file, Location: location, Value: live}}}}
 }
 
-func applyPointer(file string, content []byte, doc int, pointer string, op v1alpha1.ChangeOperation, desired, live string) ([]byte, error) {
+func applyPointer(file string, content []byte, doc int, pointer string, op v1beta1.ChangeOperation, desired, live string) ([]byte, error) {
 	// A scalar that is replaced is replaced where it stands, which keeps the
 	// layout of the line and of the list around it.
-	if op == v1alpha1.OpReplace && doc == 0 && live != "" && !isJSONName(file) {
+	if op == v1beta1.OpReplace && doc == 0 && live != "" && !isJSONName(file) {
 		if docs, err := mapping.Documents(content); err == nil && len(docs) == 1 {
 			if n := nodeAt(docs[0].Root, pointer); n != nil && n.Kind == yaml.ScalarNode {
 				if s, err := replaceScalar(string(content), pointer, live); err == nil {
@@ -90,7 +90,7 @@ func applyPointer(file string, content []byte, doc int, pointer string, op v1alp
 			}
 		}
 	}
-	return mapping.Apply(file, content, doc, []v1alpha1.FieldChange{{Path: pointer, Op: op, Desired: desired, Live: live}})
+	return mapping.Apply(file, content, doc, []v1beta1.FieldChange{{Path: pointer, Op: op, Desired: desired, Live: live}})
 }
 
 // editInline edits a patch that is a string in a kustomization: the patches
@@ -121,7 +121,7 @@ func editInline(file string, content []byte, e *Edit, live string) ([]byte, erro
 		return nil, fmt.Errorf("%s in %s: %w", e.Holder, file, err)
 	}
 	quoted, _ := json.Marshal(next)
-	return applyPointer(file, content, e.Document, e.Holder, v1alpha1.OpReplace, "", string(quoted))
+	return applyPointer(file, content, e.Document, e.Holder, v1beta1.OpReplace, "", string(quoted))
 }
 
 // editJSONText replaces a scalar in a patch written as JSON; the result is
@@ -293,9 +293,9 @@ func registerPatch(kfile string, content []byte, patchFile string) ([]byte, erro
 		}
 		items = append(items, map[string]any{"path": rel})
 		b, _ := json.Marshal(items)
-		op := v1alpha1.OpAdd
+		op := v1beta1.OpAdd
 		if list != nil {
-			op = v1alpha1.OpReplace
+			op = v1beta1.OpReplace
 		}
 		return applyPointer(kfile, content, 0, "/"+keyPatches, op, "", string(b))
 	}

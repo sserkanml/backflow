@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/rendermap"
@@ -164,25 +164,25 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 		cacheDir string
 		renderer *fakeKustomizeRenderer
 		r        *DriftProposalReconciler
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		app      *unstructured.Unstructured
 		prodApp  *unstructured.Unstructured
-		dp       *backflowv1alpha1.DriftProposal
-		conn     *backflowv1alpha1.ScmConnection
+		dp       *backflowv1beta1.DriftProposal
+		conn     *backflowv1beta1.ScmConnection
 	)
 	noPatches := false
-	imageChange := backflowv1alpha1.FieldChange{
-		Path: "/spec/template/spec/containers/0/image", Op: backflowv1alpha1.OpReplace, Desired: `"nginx:1.1"`, Live: `"nginx:2.0"`,
+	imageChange := backflowv1beta1.FieldChange{
+		Path: "/spec/template/spec/containers/0/image", Op: backflowv1beta1.OpReplace, Desired: `"nginx:1.1"`, Live: `"nginx:2.0"`,
 	}
-	envChange := backflowv1alpha1.FieldChange{
-		Path: "/spec/template/spec/containers/0/env/0/value", Op: backflowv1alpha1.OpReplace, Desired: `"base"`, Live: `"live"`,
+	envChange := backflowv1beta1.FieldChange{
+		Path: "/spec/template/spec/containers/0/env/0/value", Op: backflowv1beta1.OpReplace, Desired: `"base"`, Live: `"live"`,
 	}
-	latest := func() *backflowv1alpha1.DriftProposal {
-		got := &backflowv1alpha1.DriftProposal{}
+	latest := func() *backflowv1beta1.DriftProposal {
+		got := &backflowv1beta1.DriftProposal{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), got)).To(Succeed())
 		return got
 	}
-	settle := func(phase backflowv1alpha1.ProposalPhase) {
+	settle := func(phase backflowv1beta1.ProposalPhase) {
 		for range 5 {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
@@ -192,14 +192,14 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 		}
 		Fail(fmt.Sprintf("the proposal did not reach %s: %s", phase, latest().Status.Phase))
 	}
-	recreate := func(changes ...backflowv1alpha1.FieldChange) {
+	recreate := func(changes ...backflowv1beta1.FieldChange) {
 		ExpectWithOffset(1, k8sClient.Delete(ctx, dp)).To(Succeed())
-		fresh := &backflowv1alpha1.DriftProposal{ObjectMeta: metav1.ObjectMeta{Name: dp.Name, Namespace: dp.Namespace}, Spec: *dp.Spec.DeepCopy()}
+		fresh := &backflowv1beta1.DriftProposal{ObjectMeta: metav1.ObjectMeta{Name: dp.Name, Namespace: dp.Namespace}, Spec: *dp.Spec.DeepCopy()}
 		fresh.Spec.Changes = changes
 		ExpectWithOffset(1, k8sClient.Create(ctx, fresh)).To(Succeed())
 		dp = fresh
 	}
-	setKustomize := func(opts *backflowv1alpha1.KustomizeOptions) {
+	setKustomize := func(opts *backflowv1beta1.KustomizeOptions) {
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		policy.Spec.Kustomize = opts
 		ExpectWithOffset(1, k8sClient.Update(ctx, policy)).To(Succeed())
@@ -235,46 +235,40 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}, StringData: map[string]string{"token": "tok-" + name},
 			})).To(Succeed())
 		}
-		conn = &backflowv1alpha1.ScmConnection{
+		conn = &backflowv1beta1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: "kust-scm", Namespace: ns},
-			Spec: backflowv1alpha1.ScmConnectionSpec{
-				Provider: backflowv1alpha1.ScmProviderGitLab, URL: "https://git.test",
-				TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "kust-token"}, Key: "token"},
+			Spec: backflowv1beta1.ScmConnectionSpec{
+				Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://git.test",
+				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "kust-token", Key: "token"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "kust-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"kust-app", "kust-prod"}},
-				Mode:            backflowv1alpha1.ModeMergeRequest,
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "kust-argo-token"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"kust-app", "kust-prod"}},
+				Mode:         backflowv1beta1.ModeMergeRequest,
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "kust-argo-token", Key: "token"},
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.Applications = []backflowv1alpha1.ApplicationSummary{
-			{Name: "kust-app", RepoURL: testRepoURL, Path: "kust/overlays/dev", SourceType: "Kustomize", ScmConnection: "kust-scm"},
-			{Name: "kust-prod", RepoURL: testRepoURL, Path: "kust/overlays/prod", SourceType: "Kustomize", ScmConnection: "kust-scm"},
-		}
+		policy.Status.Applications = []backflowv1beta1.ApplicationSummary{{Name: "kust-app", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: testRepoURL, Path: "kust/overlays/dev", ScmConnectionName: "kust-scm", Type: backflowv1beta1.SourceType("Kustomize")}}}, {Name: "kust-prod", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: testRepoURL, Path: "kust/overlays/prod", ScmConnectionName: "kust-scm", Type: backflowv1beta1.SourceType("Kustomize")}}}}
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 		app = newApp("kust-app", "kust/overlays/dev")
 		prodApp = newApp("kust-prod", "kust/overlays/prod")
 
-		dp = &backflowv1alpha1.DriftProposal{
+		dp = &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: "kust-dp", Namespace: ns},
-			Spec: backflowv1alpha1.DriftProposalSpec{
-				PolicyName:  "kust-policy",
-				Application: backflowv1alpha1.ObjectRef{Name: "kust-app", Namespace: ns},
-				Resource:    backflowv1alpha1.ResourceRef{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "demo-kust", Name: "demo-kust"},
-				Source: backflowv1alpha1.SourceRef{
-					RepoURL: testRepoURL, Revision: initial, TargetRevision: "main",
-					Path: "kust/overlays/dev", Type: backflowv1alpha1.SourceKustomize,
-				},
-				Changes:    []backflowv1alpha1.FieldChange{imageChange},
-				Actor:      &backflowv1alpha1.Actor{Username: "alice"},
+			Spec: backflowv1beta1.DriftProposalSpec{
+				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: "kust-policy"},
+				ApplicationRef: backflowv1beta1.ObjectRef{Name: "kust-app", Namespace: ns},
+				ResourceRef:    backflowv1beta1.ResourceRef{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "demo-kust", Name: "demo-kust"},
+				Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main",
+					Path: "kust/overlays/dev", Type: backflowv1beta1.SourceKustomize}},
+				Changes:    []backflowv1beta1.FieldChange{imageChange},
+				Actor:      &backflowv1beta1.Actor{Username: "alice"},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
 		}
@@ -293,17 +287,17 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 	})
 
 	It("maps an image drift to the setting of the overlay and opens a merge request", func() {
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
 		Expect(meta.IsStatusConditionTrue(got.Status.Conditions, conditionMapped)).To(BeTrue())
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyKustomizePatch))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyKustomizePatch))
 		Expect(got.Status.Mapping.Verified).To(BeTrue())
 		Expect(got.Status.Mapping.Edits).To(HaveLen(1))
 		Expect(got.Status.Mapping.Edits[0].File).To(Equal("kust/overlays/dev/kustomization.yaml"))
 		Expect(got.Status.Mapping.Edits[0].Location).To(Equal("/images/0/newTag"))
 		Expect(got.Status.Mapping.Edits[0].Value).To(Equal(`"2.0"`))
 
-		tip := repo.branch(got.Status.MergeRequest.Branch)
+		tip := repo.branch(got.Status.GitBranch())
 		Expect(repo.file(tip, "kust/overlays/dev/kustomization.yaml")).To(Equal(strings.Replace(kustDevOverlay, `"1.1"`, `"2.0"`, 1)))
 		Expect(repo.file(tip, "kust/base/deployment.yaml")).To(Equal(kustBaseDeployment))
 		Expect(repo.branch("main")).To(Equal(initial))
@@ -321,9 +315,9 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 
 	It("adds a Backflow patch for a value the shared base holds, creating the file in the same commit", func() {
 		recreate(envChange)
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyKustomizePatch))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyKustomizePatch))
 		files := make([]string, 0, len(got.Status.Mapping.Edits))
 		for _, e := range got.Status.Mapping.Edits {
 			files = append(files, e.File)
@@ -331,7 +325,7 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 		Expect(files).To(ConsistOf("kust/overlays/dev/backflow-patches/deployment-demo-kust.yaml", "kust/overlays/dev/kustomization.yaml"))
 		Expect(meta.FindStatusCondition(got.Status.Conditions, conditionMapped).Message).To(ContainSubstring("It adds the new file(s) kust/overlays/dev/backflow-patches/deployment-demo-kust.yaml"))
 
-		tip := repo.branch(got.Status.MergeRequest.Branch)
+		tip := repo.branch(got.Status.GitBranch())
 		patch := repo.file(tip, "kust/overlays/dev/backflow-patches/deployment-demo-kust.yaml")
 		Expect(patch).To(ContainSubstring("name: MODE"))
 		Expect(patch).To(ContainSubstring("value: live"))
@@ -343,10 +337,10 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 
 	It("edits a base another Application uses only when no patch can be added, and says who is affected", func() {
 		recreate(envChange)
-		setKustomize(&backflowv1alpha1.KustomizeOptions{EditBases: true, AddPatches: &noPatches})
-		settle(backflowv1alpha1.PhaseProposed)
+		setKustomize(&backflowv1beta1.KustomizeOptions{AllowBaseEdits: true, AllowNewPatches: &noPatches})
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyDirect))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyDirect))
 		Expect(got.Status.Mapping.Edits).To(HaveLen(1))
 		Expect(got.Status.Mapping.Edits[0].File).To(Equal("kust/base/deployment.yaml"))
 		Expect(meta.FindStatusCondition(got.Status.Conditions, conditionMapped).Message).To(ContainSubstring("default/kust-prod"))
@@ -357,29 +351,29 @@ var _ = Describe("DriftProposal of a Kustomize Application", func() {
 
 	It("tries a new patch before a base other Applications use, even with editBases on", func() {
 		recreate(envChange)
-		setKustomize(&backflowv1alpha1.KustomizeOptions{EditBases: true})
-		settle(backflowv1alpha1.PhaseProposed)
-		Expect(latest().Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyKustomizePatch))
+		setKustomize(&backflowv1beta1.KustomizeOptions{AllowBaseEdits: true})
+		settle(backflowv1beta1.PhaseProposed)
+		Expect(latest().Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyKustomizePatch))
 	})
 
 	It("edits a base no other Application uses before adding a patch", func() {
 		recreate(envChange)
-		setKustomize(&backflowv1alpha1.KustomizeOptions{EditBases: true})
+		setKustomize(&backflowv1beta1.KustomizeOptions{AllowBaseEdits: true})
 		Expect(k8sClient.Delete(ctx, prodApp)).To(Succeed())
-		settle(backflowv1alpha1.PhaseProposed)
+		settle(backflowv1beta1.PhaseProposed)
 		got := latest()
-		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1alpha1.StrategyDirect))
+		Expect(got.Status.Mapping.Strategy).To(Equal(backflowv1beta1.StrategyDirect))
 		Expect(got.Status.Mapping.Edits[0].File).To(Equal("kust/base/deployment.yaml"))
 	})
 
 	It("is Unmapped when the Application sets the image itself", func() {
 		Expect(unstructured.SetNestedStringSlice(app.Object, []string{"nginx=nginx:1.1"}, "spec", "source", "kustomize", "images")).To(Succeed())
 		Expect(k8sClient.Update(ctx, app)).To(Succeed())
-		settle(backflowv1alpha1.PhaseUnmapped)
+		settle(backflowv1beta1.PhaseUnmapped)
 		c := meta.FindStatusCondition(latest().Status.Conditions, conditionMapped)
 		Expect(c.Reason).To(Equal(rendermap.ReasonSetByApplication))
 		Expect(c.Message).To(ContainSubstring("Set by spec.source.kustomize.images[nginx] of Application " + ns + "/kust-app"))
-		val := latest().Status.Mapping.Application
+		val := latest().Status.Mapping.ApplicationOption
 		Expect(val).NotTo(BeNil())
 		Expect(val.OptionPath).To(Equal("/spec/source/kustomize/images/0"))
 		Expect(val.Current).To(Equal(`"nginx=nginx:1.1"`))

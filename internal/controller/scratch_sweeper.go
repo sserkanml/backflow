@@ -8,7 +8,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/scm"
 	"github.com/sserkanml/backflow/internal/scratch"
 )
@@ -68,7 +68,7 @@ func (s *ScratchSweeper) Sweep(ctx context.Context) {
 	if s.Now != nil {
 		now = s.Now()
 	}
-	var policies backflowv1alpha1.BackflowPolicyList
+	var policies backflowv1beta1.BackflowPolicyList
 	if err := s.Client.List(ctx, &policies); err != nil {
 		log.Error(err, "Cannot list the policies")
 		return
@@ -82,7 +82,7 @@ func (s *ScratchSweeper) Sweep(ctx context.Context) {
 		for _, app := range policy.Status.Applications {
 			for _, src := range app.Sources {
 				key := policy.Namespace + "\x00" + src.RepoURL
-				if src.Ref == "" || src.ScmConnection == "" || done[key] {
+				if src.Ref == "" || src.ScmConnectionName == "" || done[key] {
 					continue
 				}
 				done[key] = true

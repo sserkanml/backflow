@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/metrics"
 )
@@ -416,11 +416,11 @@ type aheadShape struct {
 // Helm or Kustomize source, or a Helm source with Git ref sources, both
 // revisions must be commits (per source for several), and the repository must
 // be readable.
-func (r *DriftReconciler) aheadShapeOf(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
+func (r *DriftReconciler) aheadShapeOf(ctx context.Context, summary backflowv1beta1.ApplicationSummary,
 	app *unstructured.Unstructured, st aheadState) (shape aheadShape, ok bool) {
 	shape.multi = len(specSources(app)) > 0
-	shape.helm = !shape.multi && summary.SourceType == string(backflowv1alpha1.SourceHelm)
-	shape.kust = !shape.multi && summary.SourceType == string(backflowv1alpha1.SourceKustomize)
+	shape.helm = !shape.multi && summary.First().Type == backflowv1beta1.SourceHelm
+	shape.kust = !shape.multi && summary.First().Type == backflowv1beta1.SourceKustomize
 	if shape.multi {
 		ms, why := helmMultiSource(app)
 		if ms == nil {
@@ -431,8 +431,8 @@ func (r *DriftReconciler) aheadShapeOf(ctx context.Context, summary backflowv1al
 		shape.ms = ms
 		return shape, r.Git != nil
 	}
-	if r.Git == nil || (!shape.helm && !shape.kust && summary.SourceType != string(backflowv1alpha1.SourceDirectory)) ||
-		summary.RepoURL == "" || !isFullSHA(st.compared) || !isFullSHA(st.synced) {
+	if r.Git == nil || (!shape.helm && !shape.kust && summary.First().Type != backflowv1beta1.SourceDirectory) ||
+		summary.First().RepoURL == "" || !isFullSHA(st.compared) || !isFullSHA(st.synced) {
 		return shape, false
 	}
 	// Jsonnet can read any file, so which files the Application is made of
@@ -453,15 +453,15 @@ func (r *DriftReconciler) aheadShapeOf(ctx context.Context, summary backflowv1al
 // Directory source counts the files below its directory; a Helm or Kustomize
 // source counts the files its render depends on, wherever they are (see
 // lookAtHelm and lookAtKustomize).
-func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured, st aheadState) (changed int, checked bool) {
+func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
+	summary backflowv1beta1.ApplicationSummary, app *unstructured.Unstructured, st aheadState) (changed int, checked bool) {
 	shape, ok := r.aheadShapeOf(ctx, summary, app, st)
 	if !ok {
 		return 0, false
 	}
 	multi, helm, kust, ms := shape.multi, shape.helm, shape.kust, shape.ms
 	recurse, _, _ := unstructured.NestedBool(app.Object, "spec", "source", "directory", "recurse")
-	key := aheadKey{repo: summary.RepoURL, from: st.synced, to: st.compared, path: summary.Path, recurse: recurse}
+	key := aheadKey{repo: summary.First().RepoURL, from: st.synced, to: st.compared, path: summary.First().PathOrChart(), recurse: recurse}
 	if helm {
 		key.helm = helmFingerprint(app, summary)
 	}
@@ -477,7 +477,7 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 	r.aheadMu.Unlock()
 	if !ok || (hit.err != nil && r.now().Sub(hit.at) >= aheadErrorTTL) {
 		var auth *gitrepo.Auth
-		access, err := scmAccessFor(ctx, r.Client, policy.Namespace, policy, summary.Name)
+		access, err := scmAccessForRepo(ctx, r.Client, policy.Namespace, policy, summary.Name, summary.First().RepoURL)
 		if err == nil && access != nil {
 			auth = access.auth
 		}
@@ -525,17 +525,17 @@ func (r *DriftReconciler) changedUnderPath(ctx context.Context, policy *backflow
 // A symbolic link or a Jsonnet file below the directory at either revision
 // means the directory can depend on files the comparison of paths does not
 // see, so no answer is given.
-func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflowv1alpha1.ApplicationSummary,
+func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflowv1beta1.ApplicationSummary,
 	st aheadState, recurse bool, auth *gitrepo.Auth) (aheadCheck, error) {
 	for _, sha := range []string{st.synced, st.compared} {
-		linked, err := r.Git.HasSymlink(ctx, summary.RepoURL, sha, summary.Path, auth)
+		linked, err := r.Git.HasSymlink(ctx, summary.First().RepoURL, sha, summary.First().PathOrChart(), auth)
 		if err != nil {
 			return aheadCheck{}, err
 		}
 		if linked {
 			return aheadCheck{unchecked: "a symbolic link below the directory"}, nil
 		}
-		jsonnet, err := r.Git.HasFileWithSuffix(ctx, summary.RepoURL, sha, summary.Path, auth, jsonnetSuffixes...)
+		jsonnet, err := r.Git.HasFileWithSuffix(ctx, summary.First().RepoURL, sha, summary.First().PathOrChart(), auth, jsonnetSuffixes...)
 		if err != nil {
 			return aheadCheck{}, err
 		}
@@ -543,18 +543,18 @@ func (r *DriftReconciler) lookAtRepository(ctx context.Context, summary backflow
 			return aheadCheck{unchecked: "a Jsonnet file below the directory"}, nil
 		}
 	}
-	paths, err := r.Git.ChangedPaths(ctx, summary.RepoURL, st.synced, st.compared, auth)
+	paths, err := r.Git.ChangedPaths(ctx, summary.First().RepoURL, st.synced, st.compared, auth)
 	if err != nil {
 		return aheadCheck{}, err
 	}
-	return aheadCheck{changed: countUnderPath(paths, summary.Path, recurse)}, nil
+	return aheadCheck{changed: countUnderPath(paths, summary.First().PathOrChart(), recurse)}, nil
 }
 
 // detectionPausedReason says why no new proposal may be made for the
 // Application now ("" when one may), and says so in an Event when that is Git
 // being ahead.
-func (r *DriftReconciler) detectionPausedReason(ctx context.Context, policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, app *unstructured.Unstructured) string {
+func (r *DriftReconciler) detectionPausedReason(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
+	summary backflowv1beta1.ApplicationSummary, app *unstructured.Unstructured) string {
 	st := gitAhead(app)
 	if st.settling {
 		logf.FromContext(ctx).V(1).Info("A sync is running or not yet compared; no new proposals", "application", summary.Name)
@@ -589,8 +589,8 @@ func (r *DriftReconciler) detectionPausedReason(ctx context.Context, policy *bac
 // holdResource tells ensureProposal whether drift of the resource must not be
 // proposed now: the Application is paused as a whole, or the last sync did not
 // apply this resource. The latter is said once per resource and revision.
-func (r *DriftReconciler) holdResource(policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, res appResource, st aheadState, appPaused bool) bool {
+func (r *DriftReconciler) holdResource(policy *backflowv1beta1.BackflowPolicy,
+	summary backflowv1beta1.ApplicationSummary, res appResource, st aheadState, appPaused bool) bool {
 	if appPaused {
 		return true
 	}
@@ -609,8 +609,8 @@ func (r *DriftReconciler) holdResource(policy *backflowv1alpha1.BackflowPolicy,
 // reportHeld emits one Event per Application, revision and reason when drift
 // detection is paused because the Application's source changed since the last
 // sync.
-func (r *DriftReconciler) reportHeld(policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, st aheadState) {
+func (r *DriftReconciler) reportHeld(policy *backflowv1beta1.BackflowPolicy,
+	summary backflowv1beta1.ApplicationSummary, st aheadState) {
 	if !r.reportOnce(policy, summary.Name, "ahead", "", "held/"+st.compared+"/"+st.hold()) {
 		return
 	}
@@ -628,7 +628,7 @@ type reportKey struct {
 // emitted for, per policy and Application, and per resource when given. It
 // says whether the value is new, so the same Event is not repeated on every
 // reconcile.
-func (r *DriftReconciler) reportOnce(policy *backflowv1alpha1.BackflowPolicy, app, kind, resource, value string) bool {
+func (r *DriftReconciler) reportOnce(policy *backflowv1beta1.BackflowPolicy, app, kind, resource, value string) bool {
 	key := reportKey{policy: policy.Namespace + "/" + policy.Name, app: app, kind: kind, resource: resource}
 	r.aheadMu.Lock()
 	defer r.aheadMu.Unlock()
@@ -642,8 +642,8 @@ func (r *DriftReconciler) reportOnce(policy *backflowv1alpha1.BackflowPolicy, ap
 
 // reportGitAhead emits one Event per Application and combination of compared
 // and synced revision, so a long wait does not repeat itself.
-func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy,
-	summary backflowv1alpha1.ApplicationSummary, st aheadState, changed int, checked bool) {
+func (r *DriftReconciler) reportGitAhead(policy *backflowv1beta1.BackflowPolicy,
+	summary backflowv1beta1.ApplicationSummary, st aheadState, changed int, checked bool) {
 	if !r.reportOnce(policy, summary.Name, "ahead", "", st.compared+">"+st.synced) {
 		return
 	}
@@ -652,20 +652,20 @@ func (r *DriftReconciler) reportGitAhead(policy *backflowv1alpha1.BackflowPolicy
 		synced = shortRevision(st.synced)
 	}
 	revs := fmt.Sprintf("%s vs %s", shortRevision(st.compared), synced)
-	if checked && summary.SourceType == string(backflowv1alpha1.SourceHelm) {
+	if checked && summary.First().Type == backflowv1beta1.SourceHelm {
 		r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
 			"Git is ahead of the last sync of %s and %d file(s) its Helm chart renders from changed (%s); drift detection for it is paused until Argo CD syncs.",
 			summary.Name, changed, revs))
 		return
 	}
-	if checked && summary.SourceType == string(backflowv1alpha1.SourceKustomize) {
+	if checked && summary.First().Type == backflowv1beta1.SourceKustomize {
 		r.event(policy, corev1.EventTypeNormal, "GitAhead", fmt.Sprintf(
 			"Git is ahead of the last sync of %s and %d file(s) its kustomization builds from changed (%s); drift detection for it is paused until Argo CD syncs.",
 			summary.Name, changed, revs))
 		return
 	}
 	if checked {
-		where := summary.Path
+		where := summary.First().PathOrChart()
 		if strings.Trim(where, "./") == "" {
 			where = "the repository root"
 		}

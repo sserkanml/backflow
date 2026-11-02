@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/rendermap"
@@ -97,10 +97,10 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		renderer *fakeParentRenderer
 		recorder *events.FakeRecorder
 		r        *DriftProposalReconciler
-		policy   *backflowv1alpha1.BackflowPolicy
+		policy   *backflowv1beta1.BackflowPolicy
 		child    *unstructured.Unstructured
 		parents  []*unstructured.Unstructured
-		dp       *backflowv1alpha1.DriftProposal
+		dp       *backflowv1beta1.DriftProposal
 	)
 
 	files := func() map[string]string {
@@ -143,19 +143,19 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		parents = append(parents, p)
 		return p
 	}
-	latest := func() *backflowv1alpha1.DriftProposal {
-		got := &backflowv1alpha1.DriftProposal{}
+	latest := func() *backflowv1beta1.DriftProposal {
+		got := &backflowv1beta1.DriftProposal{}
 		ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), got)).To(Succeed())
 		return got
 	}
 	mapped := func() *metav1.Condition { return meta.FindStatusCondition(latest().Status.Conditions, conditionMapped) }
-	settle := func() *backflowv1alpha1.ApplicationValue {
+	settle := func() *backflowv1beta1.ApplicationValue {
 		for range 5 {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			if latest().Status.Phase == backflowv1alpha1.PhaseUnmapped {
+			if latest().Status.Phase == backflowv1beta1.PhaseUnmapped {
 				ExpectWithOffset(1, mapped().Reason).To(Equal(rendermap.ReasonSetByApplication), mapped().Message)
-				val := latest().Status.Mapping.Application
+				val := latest().Status.Mapping.ApplicationOption
 				ExpectWithOffset(1, val).NotTo(BeNil())
 				return val
 			}
@@ -187,19 +187,18 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "av-argo-token", Namespace: ns}, StringData: map[string]string{"token": "tok"},
 		})).To(Succeed())
-		policy = &backflowv1alpha1.BackflowPolicy{
+		policy = &backflowv1beta1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "av-policy", Namespace: ns},
-			Spec: backflowv1alpha1.BackflowPolicySpec{
-				ArgoCDNamespace: ns,
-				Applications:    backflowv1alpha1.ApplicationSelector{Names: []string{"child-app"}},
-				Mode:            backflowv1alpha1.ModeMergeRequest,
-				ArgoCD: &backflowv1alpha1.ArgoCDServer{
-					TokenSecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "av-argo-token"}, Key: "token"},
-				},
+			Spec: backflowv1beta1.BackflowPolicySpec{
+				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"child-app"}},
+				Mode:         backflowv1beta1.ModeMergeRequest,
+				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
+					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "av-argo-token", Key: "token"},
+				}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-		policy.Status.Applications = []backflowv1alpha1.ApplicationSummary{{Name: "child-app", RepoURL: testRepoURL}}
+		policy.Status.Applications = []backflowv1beta1.ApplicationSummary{{Name: "child-app", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: testRepoURL}}}}
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
 
 		// The child: the demo chart with the region set by a parameter that equals
@@ -217,17 +216,15 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		}, nil)
 		parents = nil
 
-		dp = &backflowv1alpha1.DriftProposal{
+		dp = &backflowv1beta1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: "av-dp", Namespace: ns},
-			Spec: backflowv1alpha1.DriftProposalSpec{
-				PolicyName:  "av-policy",
-				Application: backflowv1alpha1.ObjectRef{Name: "child-app", Namespace: ns},
-				Resource:    backflowv1alpha1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo-helm", Name: "demo-helm-config"},
-				Source: backflowv1alpha1.SourceRef{
-					RepoURL: testRepoURL, Revision: initial, TargetRevision: "main", Path: "helm/demo", Type: backflowv1alpha1.SourceHelm,
-				},
-				Changes: []backflowv1alpha1.FieldChange{{
-					Path: "/data/REGION", Op: backflowv1alpha1.OpReplace, Desired: `"eu-central-1"`, Live: `"us-west-2"`,
+			Spec: backflowv1beta1.DriftProposalSpec{
+				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: "av-policy"},
+				ApplicationRef: backflowv1beta1.ObjectRef{Name: "child-app", Namespace: ns},
+				ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo-helm", Name: "demo-helm-config"},
+				Sources:        []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: testRepoURL, Revision: initial, TargetRevision: "main", Path: "helm/demo", Type: backflowv1beta1.SourceHelm}},
+				Changes: []backflowv1beta1.FieldChange{{
+					Path: "/data/REGION", Op: backflowv1beta1.OpReplace, Desired: `"eu-central-1"`, Live: `"us-west-2"`,
 				}},
 				DetectedAt: metav1.NewTime(time.Now().Add(-time.Hour)),
 			},
@@ -249,7 +246,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 	expectNothingWritten := func() {
 		ExpectWithOffset(1, provider.created).To(BeEmpty(), "no merge request")
 		ExpectWithOffset(1, repo.branch("main")).To(Equal(initial))
-		ExpectWithOffset(1, latest().Status.MergeRequest).To(BeNil())
+		ExpectWithOffset(1, latest().Status.GitMergeRequest()).To(BeNil())
 		ExpectWithOffset(1, latest().Status.Mapping.Edits).To(BeEmpty())
 	}
 
@@ -257,12 +254,12 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		It("finds the manifest of a Directory parent, with the diff verified", func() {
 			parent("parent-dir", "Directory", "apps/children", nil)
 			val := settle()
-			Expect(val.Application).To(Equal(ns + "/child-app"))
+			Expect(val.ApplicationRef).To(Equal(backflowv1beta1.ObjectRef{Name: "child-app", Namespace: ns}))
 			Expect(val.Option).To(Equal("spec.source.helm.parameters[name=global.region]"))
 			Expect(val.OptionPath).To(Equal("/spec/source/helm/parameters/0/value"))
 			Expect(val.Current).To(Equal(`"eu-central-1"`))
 			Expect(val.Suggested).To(Equal(`"us-west-2"`))
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentLocated))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentLocated))
 			Expect(val.Parent.Name).To(Equal(ns + "/parent-dir"))
 			Expect(val.Parent.File).To(Equal("apps/children/child-app.yaml"))
 			Expect(val.Parent.Location).To(Equal("/spec/source/helm/parameters/0/value"))
@@ -279,7 +276,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		It("finds the template value of a Helm parent, verified by rendering the parent", func() {
 			parent("parent-helm", "Helm", "charts/parent", map[string]any{"valueFiles": []any{"values.yaml"}})
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentLocated), val.Parent.Message)
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentLocated), val.Parent.Message)
 			Expect(val.Parent.File).To(Equal("charts/parent/values.yaml"))
 			Expect(val.Parent.Location).To(Equal("feature"))
 			Expect(val.Parent.Diff).To(ContainSubstring("-feature: eu-central-1\n+feature: us-west-2\n"))
@@ -290,7 +287,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 		It("finds the resource file of a Kustomize parent, the file that holds the value and not a new patch", func() {
 			parent("parent-kust", "Kustomize", "kust/overlays/dev", nil)
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentLocated), val.Parent.Message)
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentLocated), val.Parent.Message)
 			Expect(val.Parent.File).To(Equal("kust/base/child.yaml"))
 			Expect(val.Parent.Location).To(Equal("/spec/source/helm/parameters/0/value"))
 			Expect(val.Parent.Diff).To(ContainSubstring("+          value: us-west-2"))
@@ -323,7 +320,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 			Expect(val.Option).To(Equal("spec.source.helm.values (key global.region)"))
 			Expect(val.OptionPath).To(Equal("/spec/source/helm/values"))
 			Expect(val.Suggested).To(BeEmpty())
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentLocated), val.Parent.Message)
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentLocated), val.Parent.Message)
 			Expect(val.Parent.File).To(Equal("apps/values-children/child-app.yaml"))
 			Expect(val.Parent.Location).To(Equal("/spec/source/helm/values"))
 			Expect(val.Parent.Diff).To(BeEmpty(), "there is no value to propose, so the probe edit is not shown")
@@ -335,7 +332,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 			setChildHelm(map[string]any{"valueFiles": []any{"values-dev.yaml"}, "values": "global:\n  region: eu-central-1\n"})
 			parent("parent-dir", "Directory", "apps/children", nil) // its file sets a parameter, not helm.values
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentNotVerifiable))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentNotVerifiable))
 			Expect(val.Parent.Message).To(ContainSubstring("does not hold the current value"))
 		})
 	})
@@ -343,7 +340,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 	Context("there is no Git file to point to", func() {
 		It("says the Application is not managed from Git", func() {
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentNotManagedFromGit))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentNotManagedFromGit))
 			Expect(mapped().Message).To(Equal("Set by spec.source.helm.parameters[name=global.region] of Application " + ns + "/child-app, which is not managed from Git. " +
 				"Backflow cannot verify an Application option by rendering, so no merge request is made."))
 			Expect(val.Suggested).To(Equal(`"us-west-2"`), "the value to set is still known")
@@ -355,7 +352,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 			Expect(k8sClient.Update(ctx, child)).To(Succeed())
 			parent("parent-dir", "Directory", "apps/children", nil) // does not matter: the ApplicationSet owns it
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentGeneratedByApplicationSet))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentGeneratedByApplicationSet))
 			Expect(val.Parent.Name).To(Equal(ns + "/regions"))
 			Expect(mapped().Message).To(ContainSubstring("generated by ApplicationSet " + ns + "/regions. Backflow cannot verify"))
 			expectNothingWritten()
@@ -365,7 +362,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 			parent("parent-a", "Directory", "apps/children", nil)
 			parent("parent-b", "Directory", "apps/children", nil)
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentAmbiguous))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentAmbiguous))
 			Expect(val.Parent.Message).To(And(ContainSubstring("parent-a"), ContainSubstring("parent-b")))
 		})
 
@@ -374,7 +371,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 			Expect(unstructured.SetNestedField(p.Object, "OutOfSync", "status", "sync", "status")).To(Succeed())
 			Expect(k8sClient.Update(ctx, p)).To(Succeed())
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentOutOfSync))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentOutOfSync))
 			Expect(val.Parent.File).To(BeEmpty())
 		})
 
@@ -383,7 +380,7 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 			Expect(unstructured.SetNestedSlice(p.Object, []any{map[string]any{"repoURL": testRepoURL}, map[string]any{"repoURL": testRepoURL}}, "spec", "sources")).To(Succeed())
 			Expect(k8sClient.Update(ctx, p)).To(Succeed())
 			val := settle()
-			Expect(val.Parent.State).To(Equal(backflowv1alpha1.ParentNotVerifiable))
+			Expect(val.Parent.State).To(Equal(backflowv1beta1.ParentNotVerifiable))
 			Expect(val.Parent.Message).To(ContainSubstring("several sources"))
 
 			By("a chart from a Helm repository")
@@ -403,25 +400,25 @@ var _ = Describe("DriftProposal whose value an option of the Application sets", 
 	})
 
 	It("keeps the engine's reason when some unmapped field is not set by the Application", func() {
-		dp.Spec.Changes = append(dp.Spec.Changes, backflowv1alpha1.FieldChange{Path: "/data/LOG_LEVEL", Op: backflowv1alpha1.OpReplace, Desired: `"debug"`, Live: `"warn"`})
+		dp.Spec.Changes = append(dp.Spec.Changes, backflowv1beta1.FieldChange{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"debug"`, Live: `"warn"`})
 		recreateDP(ctx, &dp)
 		for range 5 {
 			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
-			if latest().Status.Phase == backflowv1alpha1.PhaseUnmapped {
+			if latest().Status.Phase == backflowv1beta1.PhaseUnmapped {
 				break
 			}
 		}
-		Expect(latest().Status.Phase).To(Equal(backflowv1alpha1.PhaseUnmapped))
+		Expect(latest().Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
 		Expect(mapped().Reason).NotTo(Equal(rendermap.ReasonSetByApplication))
 		Expect(mapped().Message).To(ContainSubstring("Set by spec.source.helm.parameters[name=global.region] of Application"))
 	})
 })
 
 // recreateDP replaces the proposal with a copy of its spec, so it is mapped again.
-func recreateDP(ctx context.Context, dp **backflowv1alpha1.DriftProposal) {
+func recreateDP(ctx context.Context, dp **backflowv1beta1.DriftProposal) {
 	old := *dp
 	ExpectWithOffset(1, k8sClient.Delete(ctx, old)).To(Succeed())
-	fresh := &backflowv1alpha1.DriftProposal{ObjectMeta: metav1.ObjectMeta{Name: old.Name, Namespace: old.Namespace}, Spec: *old.Spec.DeepCopy()}
+	fresh := &backflowv1beta1.DriftProposal{ObjectMeta: metav1.ObjectMeta{Name: old.Name, Namespace: old.Namespace}, Spec: *old.Spec.DeepCopy()}
 	ExpectWithOffset(1, k8sClient.Create(ctx, fresh)).To(Succeed())
 	*dp = fresh
 }

@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/managedfields"
 )
 
@@ -21,37 +21,34 @@ const (
 // "unknown" is a manager that was named but is neither a known tool nor a known controller.
 const changedByNone = "none"
 
-// actorOf says, from the managedFields of the live object Argo CD returned, which manager
-// wrote the drifted fields last, and how that manager is to be counted (interactive,
-// controller, unknown or, without an actor, none: the label of the metric). It returns a nil
-// Actor when nothing can be told, and never an error: a proposal does not wait for it.
-func actorOf(ctx context.Context, live map[string]any, changes []backflowv1alpha1.FieldChange) (*backflowv1alpha1.Actor, string) {
+// managersOf says, from the managedFields of the live object Argo CD returned, which managers
+// wrote the drifted fields, the latest first (spec.managers), and how the latest is to be counted
+// (interactive, controller, unknown or, without any, none: the label of the metric). It returns
+// no managers when nothing can be told, and never an error: a proposal does not wait for it.
+func managersOf(ctx context.Context, live map[string]any, changes []backflowv1beta1.FieldChange) ([]backflowv1beta1.ManagerWrite, string) {
 	pointers := make([]string, 0, len(changes))
 	for _, c := range changes {
 		pointers = append(pointers, c.Path)
 	}
 	attr, err := managedfields.Attribute(live, pointers)
 	if err != nil {
-		logf.FromContext(ctx).V(1).Info("The managedFields of the live object cannot be read; the proposal has no actor", "error", err.Error())
+		logf.FromContext(ctx).V(1).Info("The managedFields of the live object cannot be read; the proposal has no managers", "error", err.Error())
 		return nil, changedByNone
 	}
 	if attr == nil {
 		return nil, changedByNone
 	}
-	actor := &backflowv1alpha1.Actor{
-		Manager:   attr.Latest.Manager,
-		Operation: operationOf(attr.Latest.Operation),
-		Time:      timeOf(attr.Latest.Time),
+	managers := []backflowv1beta1.ManagerWrite{writeOf(attr.Latest)}
+	for _, o := range attr.Others[:min(len(attr.Others), maxActorOthers)] {
+		managers = append(managers, writeOf(o))
 	}
-	if len(attr.Others) > 0 {
-		actor.Fields = capped(attr.Latest.Paths, maxActorFields)
-		for _, o := range attr.Others[:min(len(attr.Others), maxActorOthers)] {
-			actor.Others = append(actor.Others, backflowv1alpha1.ActorManager{
-				Manager: o.Manager, Operation: operationOf(o.Operation), Time: timeOf(o.Time), Fields: capped(o.Paths, maxActorFields),
-			})
-		}
+	return managers, string(managedfields.Classify(attr.Latest.Manager))
+}
+
+func writeOf(o managedfields.Owner) backflowv1beta1.ManagerWrite {
+	return backflowv1beta1.ManagerWrite{
+		Manager: o.Manager, Operation: operationOf(o.Operation), Time: timeOf(o.Time), Fields: capped(o.Paths, maxActorFields),
 	}
-	return actor, string(managedfields.Classify(actor.Manager))
 }
 
 // timeOf is the time of a managedFields entry; an entry without one has none.
@@ -63,9 +60,9 @@ func timeOf(t time.Time) *metav1.Time {
 }
 
 // operationOf keeps the two operations the API accepts; anything else is left out.
-func operationOf(op string) string {
+func operationOf(op string) backflowv1beta1.ManagedFieldsOperation {
 	if op == managedfields.OperationUpdate || op == managedfields.OperationApply {
-		return op
+		return backflowv1beta1.ManagedFieldsOperation(op)
 	}
 	return ""
 }

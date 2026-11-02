@@ -8,14 +8,14 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/appvalues"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
 // blocked says why a change cannot be mapped whatever is edited: the Application
 // sets the value on top of Git, or the value feeds a hashed generator name.
-func (f *finder) blocked(ch v1alpha1.FieldChange) *rendermap.Blocked {
+func (f *finder) blocked(ch v1beta1.FieldChange) *rendermap.Blocked {
 	if kind := f.setByApplication(ch); kind != "" {
 		opt := f.appOption(kind, ch)
 		opt.Fields = []string{ch.Path}
@@ -34,7 +34,7 @@ func (f *finder) blocked(ch v1alpha1.FieldChange) *rendermap.Blocked {
 
 // setByApplication returns the option of spec.source.kustomize that sets the
 // field the change is about, or "".
-func (f *finder) setByApplication(ch v1alpha1.FieldChange) string {
+func (f *finder) setByApplication(ch v1beta1.FieldChange) string {
 	o := f.src.Options
 	segs := parseSegments(ch.Path)
 	last := ""
@@ -80,7 +80,7 @@ func (f *finder) setByApplication(ch v1alpha1.FieldChange) string {
 }
 
 // appPatchSets reports whether a patch of the Application sets the field.
-func (f *finder) appPatchSets(p AppPatch, ch v1alpha1.FieldChange, segs []string) bool {
+func (f *finder) appPatchSets(p AppPatch, ch v1beta1.FieldChange, segs []string) bool {
 	if p.Kind != "" && p.Kind != f.obj.GetKind() {
 		return false
 	}
@@ -120,7 +120,7 @@ func (f *finder) appPatchSets(p AppPatch, ch v1alpha1.FieldChange, segs []string
 // that sets the field: where it is in the Application and, when the option's
 // value is exactly what the field copies, the value that reproduces the live
 // state.
-func (f *finder) appOption(kind string, ch v1alpha1.FieldChange) appvalues.Option {
+func (f *finder) appOption(kind string, ch v1beta1.FieldChange) appvalues.Option {
 	o := f.src.Options
 	base := "/spec/source/kustomize/"
 	j := func(v any) string { b, _ := json.Marshal(v); return string(b) }

@@ -10,7 +10,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 )
 
@@ -76,7 +76,7 @@ func msApp(chart map[string]any, valueFile string, compared, synced []any) *unst
 func TestChangedUnderPathMultiSource(t *testing.T) {
 	ociChart := map[string]any{"repoURL": "ghcr.io/stefanprodan/charts", "chart": "podinfo", "targetRevision": "6.7.1"}
 	gitChart := map[string]any{"repoURL": chartRepo, "path": "charts/app", "targetRevision": "main"}
-	summary := backflowv1alpha1.ApplicationSummary{Name: "multi", RepoURL: "x", SourceType: "Helm"}
+	summary := backflowv1beta1.ApplicationSummary{Name: "multi", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: "x"}}}
 
 	tests := []struct {
 		name      string
@@ -171,7 +171,7 @@ func TestChangedUnderPathMultiSource(t *testing.T) {
 			if !st.paused {
 				t.Fatalf("the Application is not paused: %+v", st)
 			}
-			changed, checked := r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, summary, app, st)
+			changed, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary, app, st)
 			if checked == tt.unchecked {
 				t.Fatalf("checked = %v, want %v", checked, !tt.unchecked)
 			}
@@ -189,7 +189,7 @@ func TestChangedUnderPathMultiSourceOutsideTheShape(t *testing.T) {
 	}, []any{cNew, vNew}, []any{cOld, vOld}, []any{"Kustomize", ""})
 	r := &DriftReconciler{Git: &repoDiffer{}}
 	st := gitAhead(app)
-	if _, checked := r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, backflowv1alpha1.ApplicationSummary{Name: "multi"}, app, st); checked {
+	if _, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, backflowv1beta1.ApplicationSummary{Name: "multi"}, app, st); checked {
 		t.Error("a Kustomize source with a ref was looked at")
 	}
 }
@@ -202,7 +202,7 @@ func TestChangedUnderPathMultiSourceIsRemembered(t *testing.T) {
 	r := &DriftReconciler{Git: git}
 	st := gitAhead(app)
 	for range 3 {
-		if n, checked := r.changedUnderPath(context.Background(), &backflowv1alpha1.BackflowPolicy{}, backflowv1alpha1.ApplicationSummary{Name: "multi"}, app, st); !checked || n != 1 {
+		if n, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, backflowv1beta1.ApplicationSummary{Name: "multi"}, app, st); !checked || n != 1 {
 			t.Fatalf("n = %d, checked = %v", n, checked)
 		}
 	}

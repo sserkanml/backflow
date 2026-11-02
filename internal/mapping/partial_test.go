@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 )
 
 const mountedDeployment = `apiVersion: apps/v1
@@ -34,9 +34,9 @@ func mountedRepo() map[string]string {
 
 var (
 	deployment    = ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"}
-	scaleUp       = change("/spec/replicas", v1alpha1.OpReplace, `1`, `3`)
-	removedMount  = change("/spec/template/spec/containers/0/volumeMounts/1", v1alpha1.OpRemove, `{"name":"cache","mountPath":"/cache"}`, "")
-	scaleUpWithIt = []v1alpha1.FieldChange{scaleUp, removedMount}
+	scaleUp       = change("/spec/replicas", v1beta1.OpReplace, `1`, `3`)
+	removedMount  = change("/spec/template/spec/containers/0/volumeMounts/1", v1beta1.OpRemove, `{"name":"cache","mountPath":"/cache"}`, "")
+	scaleUpWithIt = []v1beta1.FieldChange{scaleUp, removedMount}
 )
 
 func TestMapPartialLeavesOutWhatCannotBeWritten(t *testing.T) {
@@ -71,7 +71,7 @@ func TestMapPartialLeavesOutWhatCannotBeWritten(t *testing.T) {
 
 func TestMapPartialKeepsTheIndexesOfTheProposal(t *testing.T) {
 	res, err := MapPartial(files(mountedRepo()), "apps/demo", DirectoryOptions{}, "demo", deployment,
-		[]v1alpha1.FieldChange{removedMount, scaleUp})
+		[]v1beta1.FieldChange{removedMount, scaleUp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestMapPartialKeepsTheIndexesOfTheProposal(t *testing.T) {
 }
 
 func TestMapPartialIsMapWhenEverythingCanBeWritten(t *testing.T) {
-	changes := []v1alpha1.FieldChange{scaleUp}
+	changes := []v1beta1.FieldChange{scaleUp}
 	want, err := Map(files(mountedRepo()), "apps/demo", DirectoryOptions{}, "demo", deployment, changes)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestMapPartialIsMapWhenEverythingCanBeWritten(t *testing.T) {
 
 func TestMapPartialWithNothingToWriteIsNotMapped(t *testing.T) {
 	_, err := MapPartial(files(mountedRepo()), "apps/demo", DirectoryOptions{}, "demo", deployment,
-		[]v1alpha1.FieldChange{removedMount})
+		[]v1beta1.FieldChange{removedMount})
 	if !errors.Is(err, ErrCannotApply) {
 		t.Errorf("err = %v, want ErrCannotApply", err)
 	}

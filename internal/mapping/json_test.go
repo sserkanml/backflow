@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 )
 
 const jsonConfigMap = `{
@@ -100,7 +100,7 @@ func TestLocateJSONAsArgoCDReadsIt(t *testing.T) {
 }
 
 func TestMapEditsJSONInPlace(t *testing.T) {
-	logLevel := []v1alpha1.FieldChange{change("/data/LOG_LEVEL", v1alpha1.OpReplace, `"info"`, `"debug"`)}
+	logLevel := []v1beta1.FieldChange{change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `"debug"`)}
 	t.Run("a single object: the diff changes only the value line", func(t *testing.T) {
 		res, err := Map(files(map[string]string{"a/cm.json": jsonConfigMap}), "a", DirectoryOptions{}, "demo", demoConfig, logLevel)
 		if err != nil {
@@ -135,9 +135,9 @@ func TestMapEditsJSONInPlace(t *testing.T) {
 		}
 	})
 	t.Run("an added and a removed field", func(t *testing.T) {
-		res, err := Map(files(map[string]string{"a/cm.json": jsonConfigMap}), "a", DirectoryOptions{}, "demo", demoConfig, []v1alpha1.FieldChange{
-			change("/data/NEW", v1alpha1.OpAdd, ``, `"x"`),
-			change("/data/REGION", v1alpha1.OpRemove, `"eu"`, ``),
+		res, err := Map(files(map[string]string{"a/cm.json": jsonConfigMap}), "a", DirectoryOptions{}, "demo", demoConfig, []v1beta1.FieldChange{
+			change("/data/NEW", v1beta1.OpAdd, ``, `"x"`),
+			change("/data/REGION", v1beta1.OpRemove, `"eu"`, ``),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -150,7 +150,7 @@ func TestMapEditsJSONInPlace(t *testing.T) {
 	t.Run("a defaulted field the file does not spell out is added", func(t *testing.T) {
 		dep := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"demo","namespace":"demo"},"spec":{"replicas":1}}`
 		res, err := Map(files(map[string]string{"a/d.json": dep}), "a", DirectoryOptions{}, "demo", ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"},
-			[]v1alpha1.FieldChange{change("/spec/revisionHistoryLimit", v1alpha1.OpReplace, `10`, `3`)})
+			[]v1beta1.FieldChange{change("/spec/revisionHistoryLimit", v1beta1.OpReplace, `10`, `3`)})
 		if err != nil || !strings.Contains(string(res.Edited), `"spec":{"replicas":1,"revisionHistoryLimit":3}`) {
 			t.Errorf("%s, %v", res.Edited, err)
 		}
@@ -158,7 +158,7 @@ func TestMapEditsJSONInPlace(t *testing.T) {
 }
 
 func TestVerifyJSONRefusesWhatIsNotTheChange(t *testing.T) {
-	logLevel := []v1alpha1.FieldChange{change("/data/LOG_LEVEL", v1alpha1.OpReplace, `"info"`, `"debug"`)}
+	logLevel := []v1beta1.FieldChange{change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `"debug"`)}
 	edited := strings.Replace(jsonList, `"LOG_LEVEL": "info"`, `"LOG_LEVEL": "debug"`, 1)
 	if err := VerifyFile("l.json", []byte(jsonList), []byte(edited), 1, logLevel); err != nil {
 		t.Fatalf("the right edit: %v", err)

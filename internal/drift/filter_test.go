@@ -4,34 +4,34 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 )
 
-func ks(group, kind string) v1alpha1.KindSelector {
-	return v1alpha1.KindSelector{Group: group, Kind: kind}
+func ks(group, kind string) v1beta1.KindSelector {
+	return v1beta1.KindSelector{Group: group, Kind: kind}
 }
 
 func TestAllowed(t *testing.T) {
 	tests := []struct {
 		name             string
 		group, kind      string
-		include, exclude []v1alpha1.KindSelector
+		include, exclude []v1beta1.KindSelector
 		want             bool
 	}{
 		{"no filters allow", "apps", "Deployment", nil, nil, true},
 		{"core configmap", "", "ConfigMap", nil, nil, true},
-		{"include match", "apps", "Deployment", []v1alpha1.KindSelector{ks("apps", "Deployment")}, nil, true},
-		{"include miss", "", "ConfigMap", []v1alpha1.KindSelector{ks("apps", "Deployment")}, nil, false},
-		{"include any group wildcard", "apps", "Deployment", []v1alpha1.KindSelector{ks("*", "Deployment")}, nil, true},
-		{"empty group is core only", "apps", "Deployment", []v1alpha1.KindSelector{ks("", "Deployment")}, nil, false},
-		{"kind prefix wildcard", "apps", "StatefulSet", []v1alpha1.KindSelector{ks("apps", "State*")}, nil, true},
-		{"kind infix wildcard", "x.io", "FooBarBaz", []v1alpha1.KindSelector{ks("*", "Foo*Baz")}, nil, true},
-		{"exclude wins", "apps", "Deployment", nil, []v1alpha1.KindSelector{ks("apps", "*")}, false},
-		{"exclude after include", "apps", "Deployment", []v1alpha1.KindSelector{ks("*", "*")}, []v1alpha1.KindSelector{ks("apps", "Deployment")}, false},
+		{"include match", "apps", "Deployment", []v1beta1.KindSelector{ks("apps", "Deployment")}, nil, true},
+		{"include miss", "", "ConfigMap", []v1beta1.KindSelector{ks("apps", "Deployment")}, nil, false},
+		{"include any group wildcard", "apps", "Deployment", []v1beta1.KindSelector{ks("*", "Deployment")}, nil, true},
+		{"empty group is core only", "apps", "Deployment", []v1beta1.KindSelector{ks("", "Deployment")}, nil, false},
+		{"kind prefix wildcard", "apps", "StatefulSet", []v1beta1.KindSelector{ks("apps", "State*")}, nil, true},
+		{"kind infix wildcard", "x.io", "FooBarBaz", []v1beta1.KindSelector{ks("*", "Foo*Baz")}, nil, true},
+		{"exclude wins", "apps", "Deployment", nil, []v1beta1.KindSelector{ks("apps", "*")}, false},
+		{"exclude after include", "apps", "Deployment", []v1beta1.KindSelector{ks("*", "*")}, []v1beta1.KindSelector{ks("apps", "Deployment")}, false},
 		{"secret excluded by default", "", "Secret", nil, nil, false},
-		{"secret excluded by wildcard include", "", "Secret", []v1alpha1.KindSelector{ks("*", "*")}, nil, false},
-		{"secret explicitly included", "", "Secret", []v1alpha1.KindSelector{ks("", "Secret")}, nil, true},
-		{"secret explicit but excluded", "", "Secret", []v1alpha1.KindSelector{ks("", "Secret")}, []v1alpha1.KindSelector{ks("", "Secret")}, false},
+		{"secret excluded by wildcard include", "", "Secret", []v1beta1.KindSelector{ks("*", "*")}, nil, false},
+		{"secret explicitly included", "", "Secret", []v1beta1.KindSelector{ks("", "Secret")}, nil, true},
+		{"secret explicit but excluded", "", "Secret", []v1beta1.KindSelector{ks("", "Secret")}, []v1beta1.KindSelector{ks("", "Secret")}, false},
 		{"non-core Secret kind unaffected", "x.io", "Secret", nil, nil, true},
 	}
 	for _, tt := range tests {
@@ -44,7 +44,7 @@ func TestAllowed(t *testing.T) {
 }
 
 func TestIgnorePointers(t *testing.T) {
-	rules := []v1alpha1.IgnoreRule{
+	rules := []v1beta1.IgnoreRule{
 		{KindSelector: ks("apps", "Deployment"), JSONPointers: []string{"/spec/replicas"}},
 		{KindSelector: ks("apps", "Deployment"), Name: "other", JSONPointers: []string{"/spec/paused"}},
 		{KindSelector: ks("", "ConfigMap"), Name: "demo-*", JSONPointers: []string{"/data/x"}},

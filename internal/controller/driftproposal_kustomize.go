@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/kustomize"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -39,12 +39,12 @@ func kustomizeSourceProblem(app *unstructured.Unstructured) error {
 // shared bases, a new patch), each accepted only when a render of the edited
 // files through Argo CD reproduces exactly the drifted fields. Errors are as
 // for mapHelm.
-func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS) (*mappedChange, error) {
 	if err := kustomizeSourceProblem(app); err != nil {
 		return nil, err
 	}
-	src, err := kustomize.NewSource(tree, dp.Spec.Source.Path, kustomizeOptionsOf(app))
+	src, err := kustomize.NewSource(tree, dp.Spec.First().Path, kustomizeOptionsOf(app))
 	if err != nil {
 		if reason := kustomize.ReasonOf(err); reason != "" {
 			return nil, &verdictError{reason: reason, err: err}
@@ -68,7 +68,7 @@ func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflow
 	if err != nil {
 		return nil, renderFailure(ctx, err)
 	}
-	res := dp.Spec.Resource
+	res := dp.Spec.ResourceRef
 	key := rendermap.ResourceKey{Group: res.Group, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name}
 	if located.Objects[key] == nil {
 		return nil, &verdictError{reason: rendermap.ReasonRenderMismatch,
@@ -133,21 +133,22 @@ func renderFailure(ctx context.Context, err error) error {
 // Application's path to the other Kustomize Applications, of any
 // BackflowPolicy, that build it. Applications that no policy tracks cannot be
 // known; the text of a merge request says so.
-func (r *DriftProposalReconciler) otherUsers(ctx context.Context, dp *backflowv1alpha1.DriftProposal,
+func (r *DriftProposalReconciler) otherUsers(ctx context.Context, dp *backflowv1beta1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, src *kustomize.Source) (map[string][]string, error) {
-	var policies backflowv1alpha1.BackflowPolicyList
+	var policies backflowv1beta1.BackflowPolicyList
 	if err := r.List(ctx, &policies); err != nil {
 		return nil, err
 	}
 	mine := src.Relevance().Files()
 	users := map[string][]string{}
 	seen := map[types.NamespacedName]bool{{Namespace: app.GetNamespace(), Name: app.GetName()}: true}
-	repo := normalRepoURL(dp.Spec.Source.RepoURL)
+	repo := normalRepoURL(dp.Spec.First().RepoURL)
 	for i := range policies.Items {
 		p := &policies.Items[i]
 		for _, s := range p.Status.Applications {
-			id := types.NamespacedName{Namespace: p.Spec.ArgoCDNamespace, Name: s.Name}
-			if seen[id] || s.SourceType != string(backflowv1alpha1.SourceKustomize) || normalRepoURL(s.RepoURL) != repo {
+			id := types.NamespacedName{Namespace: p.Spec.ApplicationNamespace(), Name: s.Name}
+			first := s.First()
+			if seen[id] || first.Type != backflowv1beta1.SourceKustomize || normalRepoURL(first.RepoURL) != repo {
 				continue
 			}
 			seen[id] = true
@@ -156,7 +157,7 @@ func (r *DriftProposalReconciler) otherUsers(ctx context.Context, dp *backflowv1
 			if err := r.Get(ctx, id, other); err != nil {
 				continue // gone, or not readable: it cannot be named
 			}
-			rel, err := kustomize.RelevantFiles(tree, kustomizeSpecOf(other, s.Path))
+			rel, err := kustomize.RelevantFiles(tree, kustomizeSpecOf(other, first.PathOrChart()))
 			if err != nil {
 				continue
 			}
@@ -181,7 +182,7 @@ func normalRepoURL(u string) string {
 // Kustomize edit: what kind of edit each one is, that it was verified, and
 // the warnings of files outside the Application's path. Empty for other
 // strategies.
-func kustomizeNotes(dp *backflowv1alpha1.DriftProposal, m *mappedChange) string {
+func kustomizeNotes(dp *backflowv1beta1.DriftProposal, m *mappedChange) string {
 	if m == nil || m.kustomize == nil {
 		return ""
 	}
@@ -207,7 +208,7 @@ func singleLinesKeepBreaks(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-func kustomizeNoteList(dp *backflowv1alpha1.DriftProposal, m *mappedChange) []string {
+func kustomizeNoteList(dp *backflowv1beta1.DriftProposal, m *mappedChange) []string {
 	if n := kustomizeNotes(dp, m); n != "" {
 		return []string{n}
 	}

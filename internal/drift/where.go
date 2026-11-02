@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 )
 
 // Lookup returns the value at a JSON pointer in a decoded resource. ok is
@@ -47,17 +47,17 @@ func Lookup(state map[string]any, pointer string) (value any, ok bool) {
 // reset to Git. atLive is true when every field has the live value that was
 // recorded: the cluster still holds the change, or Git adopted it. Neither is
 // true when the fields hold something else. With no changes both are false.
-func Where(state map[string]any, changes []v1alpha1.FieldChange) (atDesired, atLive bool) {
+func Where(state map[string]any, changes []v1beta1.FieldChange) (atDesired, atLive bool) {
 	if len(changes) == 0 {
 		return false, false
 	}
 	atDesired, atLive = true, true
 	for _, ch := range changes {
 		v, found := Lookup(state, ch.Path)
-		if !matches(v, found, ch.Op != v1alpha1.OpAdd, ch.Desired) {
+		if !matches(v, found, ch.Op != v1beta1.OpAdd, ch.Desired) {
 			atDesired = false
 		}
-		if !matches(v, found, ch.Op != v1alpha1.OpRemove, ch.Live) {
+		if !matches(v, found, ch.Op != v1beta1.OpRemove, ch.Live) {
 			atLive = false
 		}
 	}

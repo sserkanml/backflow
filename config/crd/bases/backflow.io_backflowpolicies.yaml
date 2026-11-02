@@ -1317,12 +1317,13 @@ spec:
                           enum:
                           - ProjectNotAllowed
                           - NotVisibleToToken
+                          - VisibilityUnknown
                           type: string
                       required:
                       - count
                       - reason
                       type: object
-                    maxItems: 2
+                    maxItems: 3
                     type: array
                     x-kubernetes-list-map-keys:
                     - reason

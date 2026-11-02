@@ -37,7 +37,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	records "github.com/sserkanml/backflow/api/records/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/controller"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
@@ -54,7 +55,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(backflowv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(backflowv1beta1.AddToScheme(scheme))
+	utilruntime.Must(records.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -73,6 +75,7 @@ func main() {
 	var enableHTTP2 bool
 	var argoCD controller.ArgoCDDefaults
 	var trustedCAFile string
+	var argoAllowedServers, scmAllowedHosts stringList
 	var actor actorOptions
 	var unpackFileDeps bool
 	var tlsOpts []func(*tls.Config)
@@ -119,6 +122,13 @@ func main() {
 	flag.BoolVar(&argoCD.InsecureSkipTLSVerify, "argocd-insecure-skip-tls-verify", false,
 		"Do not verify the certificate of --argocd-server. For development only (a port-forward to a kind cluster); "+
 			"the Helm chart has no value for it.")
+	flag.Var(&argoAllowedServers, "argocd-allowed-servers",
+		"Argo CD servers a BackflowPolicy may name in spec.argoCD.server.url, besides --argocd-server (always allowed): "+
+			"comma separated URLs such as https://argocd.example.com or https://*.argo.corp:8443. Empty: none. A policy "+
+			"that names another server is not Ready (ServerNotAllowed) and no request is made. Repeatable.")
+	flag.Var(&scmAllowedHosts, "scm-allowed-hosts",
+		"Git hosts a ScmConnection may name in spec.url: comma separated host names such as gitlab.com or *.example.com. "+
+			"Empty: none. A connection to another host is not Ready (HostNotAllowed) and no request is made. Repeatable.")
 	flag.Var(&argoCD.Access, "argocd-default-access",
 		"Which Applications the policies of which namespaces may match through --argocd-server: "+
 			"<namespace>[,<namespace>...]:<project>[,<project>...] (\"*\" matches any), for example team-a:team-a. "+
@@ -146,6 +156,17 @@ func main() {
 
 	if err := argoCD.Validate(); err != nil {
 		setupLog.Error(err, "Invalid Argo CD flags")
+		os.Exit(1)
+	}
+	controller.SetArgoCDAllowedServers(argoAllowedServers.values)
+	controller.SetScmAllowedHosts(scmAllowedHosts.values)
+	setupLog.Info("Allowlists", "argoCDServers", argoAllowedServers.values, "scmHosts", scmAllowedHosts.values)
+
+	// Objects stored in an older version would be read with the fields of this version only: do
+	// not start until they have been migrated.
+	restConfig := ctrl.GetConfigOrDie()
+	if err := checkCRDs(restConfig); err != nil {
+		setupLog.Error(err, "The CustomResourceDefinitions are not ready for this version of the operator")
 		os.Exit(1)
 	}
 	if argoCD.Configured() {
@@ -230,7 +251,7 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -324,6 +345,8 @@ func main() {
 		Git:      repoCache,
 		ArgoCD:   &argoCD,
 		Actors:   actors,
+
+		Visibility: visibility,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "drift")
 		os.Exit(1)

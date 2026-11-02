@@ -7,7 +7,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/appvalues"
 )
 
@@ -52,10 +52,10 @@ func TestApplicationOptionsOfTheKustomizeOptions(t *testing.T) {
 	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "Deployment",
 		"metadata": map[string]any{"name": "web", "namespace": "ns", "labels": map[string]any{"env": "prod"}},
 		"spec":     map[string]any{"replicas": int64(4), "template": map[string]any{"spec": map[string]any{"containers": []any{map[string]any{"name": "web", "image": "registry/nginx:1.99"}}}}}}}
-	changes := []v1alpha1.FieldChange{
-		{Path: "/spec/template/spec/containers/0/image", Op: v1alpha1.OpReplace, Desired: `"registry/nginx:1.99"`, Live: `"registry/nginx:2.0"`},
-		{Path: "/metadata/labels/env", Op: v1alpha1.OpReplace, Desired: `"prod"`, Live: `"stage"`},
-		{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: `4`, Live: `6`},
+	changes := []v1beta1.FieldChange{
+		{Path: "/spec/template/spec/containers/0/image", Op: v1beta1.OpReplace, Desired: `"registry/nginx:1.99"`, Live: `"registry/nginx:2.0"`},
+		{Path: "/metadata/labels/env", Op: v1beta1.OpReplace, Desired: `"prod"`, Live: `"stage"`},
+		{Path: "/spec/replicas", Op: v1beta1.OpReplace, Desired: `4`, Live: `6`},
 	}
 	fields, err := FieldsFor(src, files, nil, obj, Policy{Application: "demo"}, changes)
 	if err != nil {
@@ -82,7 +82,7 @@ func TestApplicationOptionsOfTheKustomizeOptions(t *testing.T) {
 	}
 
 	t.Run("an inline patch is a location only", func(t *testing.T) {
-		ch := []v1alpha1.FieldChange{{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: `9`, Live: `3`}}
+		ch := []v1beta1.FieldChange{{Path: "/spec/replicas", Op: v1beta1.OpReplace, Desired: `9`, Live: `3`}}
 		o2 := ParseOptions(map[string]any{"patches": raw["patches"]})
 		s2, _ := NewSource(fsys, "k/overlay", o2)
 		f2, _ := FieldsFor(s2, files, nil, obj, Policy{Application: "demo"}, ch)

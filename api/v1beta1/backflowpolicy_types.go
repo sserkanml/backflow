@@ -553,7 +553,7 @@ const (
 )
 
 // HiddenReason says why a selected Application is not visible to the policy.
-// +kubebuilder:validation:Enum=ProjectNotAllowed;NotVisibleToToken
+// +kubebuilder:validation:Enum=ProjectNotAllowed;NotVisibleToToken;VisibilityUnknown
 type HiddenReason string
 
 const (
@@ -562,6 +562,9 @@ const (
 	HiddenProjectNotAllowed HiddenReason = "ProjectNotAllowed"
 	// HiddenNotVisibleToToken: the policy's own token cannot get the Application.
 	HiddenNotVisibleToToken HiddenReason = "NotVisibleToToken"
+	// HiddenVisibilityUnknown: Argo CD could not be asked whether the policy's token may see them;
+	// none is shown until it can.
+	HiddenVisibilityUnknown HiddenReason = "VisibilityUnknown"
 )
 
 // ArgoCDStatus is the Argo CD connection a policy uses.
@@ -572,7 +575,7 @@ type ArgoCDStatus struct {
 	URL string `json:"url"`
 	// How many Applications the spec selects that the policy may not see, by reason. Only
 	// counts are shown, never a name, repository, path or project.
-	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:MaxItems=3
 	// +listType=map
 	// +listMapKey=reason
 	// +optional

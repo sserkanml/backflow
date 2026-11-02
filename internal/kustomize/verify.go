@@ -6,7 +6,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -46,7 +46,7 @@ func Locate(ctx context.Context, r rendermap.Renderer, src *Source, files map[st
 type Input struct {
 	App      rendermap.App
 	Resource rendermap.ResourceKey
-	Changes  []v1alpha1.FieldChange
+	Changes  []v1beta1.FieldChange
 	Source   *Source
 	// Files are the unmodified files of the render (CollectFiles).
 	Files   map[string][]byte

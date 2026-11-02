@@ -19,9 +19,9 @@ type Kind string
 
 const (
 	// KindPerson is a user, or anything that is not a service account.
-	KindPerson Kind = "person"
+	KindPerson Kind = "Person"
 	// KindController is a service account.
-	KindController Kind = "controller"
+	KindController Kind = "Controller"
 )
 
 // KindOf classifies a user name.

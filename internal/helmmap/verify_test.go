@@ -14,7 +14,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1alpha1"
+	"github.com/sserkanml/backflow/api/v1beta1"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -208,7 +208,7 @@ func drift(t *testing.T, src *Source, files map[string][]byte, index int, key, d
 	}
 	return rendermap.Field{
 		Index:  index,
-		Change: v1alpha1.FieldChange{Path: "/data/" + key, Op: v1alpha1.OpReplace, Desired: d, Live: l},
+		Change: v1beta1.FieldChange{Path: "/data/" + key, Op: v1beta1.OpReplace, Desired: d, Live: l},
 		Found:  found.Found(),
 	}
 }
@@ -470,11 +470,11 @@ func TestVerifySecretIsNeverRendered(t *testing.T) {
 func TestVerifyUnsupportedChanges(t *testing.T) {
 	env := newDemo(t, Spec{})
 	rend := &demoRenderer{src: env.src}
-	tests := map[string]v1alpha1.FieldChange{
-		"null":           {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `null`, Live: `"x"`},
-		"null live":      {Path: "/data/NEW", Op: v1alpha1.OpAdd, Live: `null`},
-		"not json":       {Path: "/data/LOG_LEVEL", Op: v1alpha1.OpReplace, Desired: `debug`, Live: `"x"`},
-		"whole resource": {Path: "", Op: v1alpha1.OpAdd, Live: `{"a":"b"}`},
+	tests := map[string]v1beta1.FieldChange{
+		"null":           {Path: "/data/LOG_LEVEL", Op: v1beta1.OpReplace, Desired: `null`, Live: `"x"`},
+		"null live":      {Path: "/data/NEW", Op: v1beta1.OpAdd, Live: `null`},
+		"not json":       {Path: "/data/LOG_LEVEL", Op: v1beta1.OpReplace, Desired: `debug`, Live: `"x"`},
+		"whole resource": {Path: "", Op: v1beta1.OpAdd, Live: `{"a":"b"}`},
 		"unknown op":     {Path: "/data/LOG_LEVEL", Op: "Move", Desired: `"debug"`, Live: `"x"`},
 	}
 	for name, ch := range tests {
@@ -1061,7 +1061,7 @@ func TestVerifyCollateral(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		f2 := rendermap.Field{Index: 1, Found: found.Found(), Change: v1alpha1.FieldChange{Path: "/spec/replicas", Op: v1alpha1.OpReplace, Desired: "2", Live: "3"}}
+		f2 := rendermap.Field{Index: 1, Found: found.Found(), Change: v1beta1.FieldChange{Path: "/spec/replicas", Op: v1beta1.OpReplace, Desired: "2", Live: "3"}}
 		out, err := Verify(context.Background(), rend, env.input(keyDeploy, f1, f2), rendermap.Options{AllowCollateral: labels})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)

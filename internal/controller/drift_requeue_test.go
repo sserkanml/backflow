@@ -9,7 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/priorityqueue"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1alpha1 "github.com/sserkanml/backflow/api/v1alpha1"
+	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
 )
 
 // controller-runtime (v0.25, priority queue on by default) keeps one entry per
@@ -44,9 +44,9 @@ func TestRequeueAfterIsUsedUpByAnEvent(t *testing.T) {
 func TestNextStableCheck(t *testing.T) {
 	now := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
 	window := 30 * time.Second
-	policy := &backflowv1alpha1.BackflowPolicy{
+	policy := &backflowv1beta1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
-		Spec:       backflowv1alpha1.BackflowPolicySpec{BatchWindow: &metav1.Duration{Duration: window}},
+		Spec:       backflowv1beta1.BackflowPolicySpec{BatchWindow: &metav1.Duration{Duration: window}},
 	}
 	seen := func(app, pol string, firstAgo, lastAgo time.Duration, observations int) (pendingKey, *pendingDrift) {
 		return pendingKey{policy: pol, app: app, resource: "r"},
@@ -93,11 +93,11 @@ func TestNextStableCheck(t *testing.T) {
 func TestStableHoldsForTheActorRecords(t *testing.T) {
 	start := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
 	now := start
-	policy := &backflowv1alpha1.BackflowPolicy{
+	policy := &backflowv1beta1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
-		Spec:       backflowv1alpha1.BackflowPolicySpec{BatchWindow: &metav1.Duration{}},
+		Spec:       backflowv1beta1.BackflowPolicySpec{BatchWindow: &metav1.Duration{}},
 	}
-	changes := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "2"}}
+	changes := []backflowv1beta1.FieldChange{{Path: "/spec/replicas", Op: backflowv1beta1.OpReplace, Desired: "1", Live: "2"}}
 	run := func(actors *ActorRecords) (*DriftReconciler, func(at time.Duration) bool) {
 		r := &DriftReconciler{Now: func() time.Time { return now }, Actors: actors}
 		return r, func(at time.Duration) bool {
@@ -143,7 +143,7 @@ func TestStableHoldsForTheActorRecords(t *testing.T) {
 		r, seen := run(actors)
 		seen(0)
 		now = start.Add(4 * time.Second)
-		other := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "3"}}
+		other := []backflowv1beta1.FieldChange{{Path: "/spec/replicas", Op: backflowv1beta1.OpReplace, Desired: "1", Live: "3"}}
 		if ready, _ := r.stable(policy, "app", "res", "Deployment demo", other, aheadState{}); ready {
 			t.Error("Bob's change (another value) must not be ready on Alice's clock")
 		}
