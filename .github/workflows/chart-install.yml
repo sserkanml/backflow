@@ -1,0 +1,40 @@
+name: Chart install
+
+# The chart of the working tree, installed from scratch on a kind cluster (hack/test-chart-install.sh): helm install applies
+# charts/backflow/crds, so a CRD the API server rejects fails here (the released 0.18.0 had three without a group). The
+# CRDs are Established, the operator is Ready, config/samples are applied and reconciled, and helm uninstall works. No secret
+# and no Git host.
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  install:
+    permissions:
+      contents: read
+    name: Install the chart from scratch
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
+      KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.0
+
+      # kind and kubectl are pinned and checked against their published SHA-256.
+      - name: Install kind and kubectl
+        run: ./hack/ci-install-tools.sh
+
+      - name: Install the chart, with the image of this checkout
+        run: ./hack/test-chart-install.sh
