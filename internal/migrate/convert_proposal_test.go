@@ -73,14 +73,13 @@ status:
     - {type: Proposed, status: "True", reason: MergeRequestOpen, message: open, lastTransitionTime: "2026-11-01T08:02:00Z"}
 `
 
-func convertProposal(t *testing.T, text, policyUID string) (*Result, obj) {
+func convertProposal(t *testing.T, text, policyUID string) *Result {
 	t.Helper()
-	in := parse(t, text)
-	res, err := ConvertDriftProposal(in, policyUID)
+	res, err := ConvertDriftProposal(parse(t, text), policyUID)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
-	return res, in
+	return res
 }
 
 func TestConvertDriftProposalSpec(t *testing.T) {
@@ -134,7 +133,7 @@ detectedAt: "2026-11-01T08:00:00Z"
 }
 
 func TestConvertDriftProposalStatusRoundTripsEveryField(t *testing.T) {
-	res, _ := convertProposal(t, dpOpen, "")
+	res := convertProposal(t, dpOpen, "")
 	same(t, "status", res.Status, `
 phase: Proposed
 message: The merge request is open.
@@ -167,7 +166,7 @@ signals: {liveRevertedAtRevision: abc123}
 }
 
 func TestConvertDriftProposalSingleSource(t *testing.T) {
-	res, _ := convertProposal(t, `
+	res := convertProposal(t, `
 metadata: {name: dp, namespace: team-a, creationTimestamp: "2026-11-01T08:00:00Z"}
 spec:
   policyName: p1
@@ -216,7 +215,7 @@ spec:
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, _ := convertProposal(t, fmt.Sprintf(base, tt.actor), "")
+			res := convertProposal(t, fmt.Sprintf(base, tt.actor), "")
 			spec := res.Object["spec"].(obj)
 			if tt.who == "" {
 				if _, has := spec["actor"]; has {
@@ -237,7 +236,7 @@ spec:
 }
 
 func TestConvertDriftProposalSignalsFromTheFiveAnnotations(t *testing.T) {
-	res, _ := convertProposal(t, `
+	res := convertProposal(t, `
 metadata:
   name: dp
   namespace: team-a
@@ -308,7 +307,7 @@ status: {phase: %s, conditions: %s}
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, _ := convertProposal(t, proposal(tt.phase, created, tt.conds), "")
+			res := convertProposal(t, proposal(tt.phase, created, tt.conds), "")
 			got, has := res.Status["finishedAt"]
 			if tt.want == "" {
 				if has {
@@ -327,7 +326,7 @@ status: {phase: %s, conditions: %s}
 }
 
 func TestConvertDriftProposalUnmappedMapping(t *testing.T) {
-	res, _ := convertProposal(t, `
+	res := convertProposal(t, `
 metadata: {name: dp, namespace: team-a, creationTimestamp: "2026-11-01T08:00:00Z"}
 spec:
   policyName: p1
@@ -363,7 +362,7 @@ applicationOption:
 	}
 
 	// Nothing else in the mapping: it is not written at all.
-	res, _ = convertProposal(t, `
+	res = convertProposal(t, `
 metadata: {name: dp, namespace: team-a}
 spec:
   policyName: p1
@@ -383,7 +382,7 @@ status: {phase: Unmapped, mapping: {strategy: Unmapped, reason: NoVerifiedCandid
 }
 
 func TestConvertDriftProposalMergedKeepsTheCommit(t *testing.T) {
-	res, _ := convertProposal(t, `
+	res := convertProposal(t, `
 metadata: {name: dp, namespace: team-a, creationTimestamp: "2026-11-01T08:00:00Z"}
 spec:
   policyName: p1
@@ -408,7 +407,7 @@ mergeRequest: {url: "https://x/y/-/merge_requests/3", number: 3, state: merged}`
 }
 
 func TestConvertDriftProposalConditionsAreKeyedByType(t *testing.T) {
-	res, _ := convertProposal(t, `
+	res := convertProposal(t, `
 metadata: {name: dp, namespace: team-a}
 spec:
   policyName: p1
@@ -431,7 +430,7 @@ status:
 
 func TestConvertDriftProposalLongValuesAreCutAndSaid(t *testing.T) {
 	long := strings.Repeat("x", 3000)
-	res, _ := convertProposal(t, fmt.Sprintf(`
+	res := convertProposal(t, fmt.Sprintf(`
 metadata: {name: dp, namespace: team-a}
 spec:
   policyName: p1
@@ -472,7 +471,7 @@ status:
 `, strings.Join(changes, ","), phase)
 	}
 	// A finished one keeps the first 256, as the operator does for a drift that big, and says so.
-	res, _ := convertProposal(t, text("Merged"), "")
+	res := convertProposal(t, text("Merged"), "")
 	spec := res.Object["spec"].(obj)
 	if len(spec["changes"].([]any)) != 256 || spec["truncated"] != true {
 		t.Errorf("changes %d, truncated %v", len(spec["changes"].([]any)), spec["truncated"])
@@ -484,7 +483,7 @@ status:
 	// An open one is not cut: that would drop what its merge request is about.
 	mustFailProposal(t, text("Proposed"), "holds 256")
 	mustFailProposal(t, text("Detected"), "holds 256")
-	if res, _ := convertProposal(t, text("Unmapped"), ""); res.Object["spec"].(obj)["truncated"] != true {
+	if res := convertProposal(t, text("Unmapped"), ""); res.Object["spec"].(obj)["truncated"] != true {
 		t.Error("an Unmapped proposal is cut like a finished one")
 	}
 }
@@ -514,8 +513,7 @@ spec:
   changes: [{path: /data/a, op: Add, live: '"2"'}]
   detectedAt: "2026-11-01T08:00:00Z"
 `
-	mustConvertProposal := func(text string) { convertProposal(t, text, "") }
-	mustConvertProposal(ok)
+	convertProposal(t, ok, "")
 	tests := []struct{ name, text, want string }{
 		{"no spec", "metadata: {name: dp, namespace: team-a}", "no spec"},
 		{"no name", strings.Replace(ok, "name: dp,", "", 1), "metadata.name"},
@@ -549,12 +547,12 @@ spec:
   changes: [{path: /data/a, op: Add, live: '"2"'}]
   detectedAt: "2026-11-01T08:00:00Z"
 `
-	res, _ := convertProposal(t, text, "live")
+	res := convertProposal(t, text, "live")
 	same(t, "owners", res.Object["metadata"].(obj)["ownerReferences"], `
 - {apiVersion: backflow.io/v1beta1, kind: BackflowPolicy, name: p1, uid: live}
 - {apiVersion: v1, kind: ConfigMap, name: other, uid: keep}`)
 	// Without a uid to put in, the old one is kept and only the apiVersion changes.
-	res, _ = convertProposal(t, text, "")
+	res = convertProposal(t, text, "")
 	if refs := res.Object["metadata"].(obj)["ownerReferences"].([]any); refs[0].(obj)["uid"] != "old" || refs[0].(obj)["apiVersion"] != "backflow.io/v1beta1" {
 		t.Errorf("owners = %v", refs)
 	}

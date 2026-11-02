@@ -27,6 +27,25 @@ const (
 // that was stored as v1alpha1 and one that was rewritten look alike through the v1alpha1 endpoint.
 const AnnotationMigrated = "migrate.backflow.io/migrated-from"
 
+// Keys of the objects that the conversions repeat.
+const (
+	keyName           = "name"
+	keyAPIVersion     = "apiVersion"
+	keyURL            = "url"
+	keyPosition       = "position"
+	keyPath           = "path"
+	keyRevision       = "revision"
+	keyTargetRevision = "targetRevision"
+	keySupersededBy   = "supersededBy"
+	kindController    = "Controller"
+	kindPerson        = "Person"
+	keyKind           = "kind"
+	keyMetadata       = "metadata"
+	keySpec           = "spec"
+	keyStatus         = "status"
+	keyRepoURL        = "repoURL"
+)
+
 type obj = map[string]any
 
 // notes collects what a conversion did.
@@ -95,20 +114,20 @@ func secretRef(old any, path string, n *notes, required bool) (obj, error) {
 		}
 		return nil, nil
 	}
-	name, key := asString(m["name"]), asString(m["key"])
+	name, key := asString(m[keyName]), asString(m["key"])
 	if name == "" || key == "" {
 		return nil, bad("%s needs a name and a key (name %q, key %q)", path, name, key)
 	}
 	if opt, ok := asBool(m["optional"]); ok && opt {
 		n.add("%s.optional was true and is dropped: the Secret and its key are required", path)
 	}
-	return obj{"name": name, "key": key}, nil
+	return obj{keyName: name, "key": key}, nil
 }
 
 // metadataOf copies the metadata of an object and marks it migrated.
 func metadataOf(old obj, n *notes) (obj, error) {
-	meta, ok := asMap(old["metadata"])
-	if !ok || asString(meta["name"]) == "" {
+	meta, ok := asMap(old[keyMetadata])
+	if !ok || asString(meta[keyName]) == "" {
 		return nil, bad("the object has no metadata.name")
 	}
 	out := maps.Clone(meta)
@@ -136,7 +155,7 @@ func ConvertScmConnection(old obj) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	spec, ok := asMap(old["spec"])
+	spec, ok := asMap(old[keySpec])
 	if !ok {
 		return nil, bad("the object has no spec")
 	}
@@ -153,11 +172,11 @@ func ConvertScmConnection(old obj) (*Result, error) {
 		n.add("spec.provider: %s -> %s", provider, converted)
 	}
 	out["provider"] = converted
-	url := asString(spec["url"])
+	url := asString(spec[keyURL])
 	if url == "" {
 		return nil, bad("spec.url is empty")
 	}
-	out["url"] = url
+	out[keyURL] = url
 	if hosts, ok := asList(spec["hosts"]); ok && len(hosts) > 0 {
 		deduped := dedupe(hosts)
 		if len(deduped) != len(hosts) {
@@ -179,8 +198,8 @@ func ConvertScmConnection(old obj) (*Result, error) {
 		out["committer"] = committer
 	}
 
-	res := &Result{Object: obj{"apiVersion": newAPIVersion, "kind": "ScmConnection", "metadata": meta, "spec": out}}
-	res.Status = scmStatus(old["status"], n)
+	res := &Result{Object: obj{keyAPIVersion: newAPIVersion, keyKind: "ScmConnection", keyMetadata: meta, keySpec: out}}
+	res.Status = scmStatus(old[keyStatus], n)
 	res.Notes = n.sorted()
 	return res, nil
 }
@@ -209,7 +228,7 @@ func ConvertBackflowPolicy(old obj) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	spec, ok := asMap(old["spec"])
+	spec, ok := asMap(old[keySpec])
 	if !ok {
 		return nil, bad("the object has no spec")
 	}
@@ -222,8 +241,8 @@ func ConvertBackflowPolicy(old obj) (*Result, error) {
 	}
 	if own, ok := asMap(spec["argoCD"]); ok && len(own) > 0 {
 		server := obj{}
-		if url := asString(own["url"]); url != "" {
-			server["url"] = url
+		if url := asString(own[keyURL]); url != "" {
+			server[keyURL] = url
 		}
 		if v, ok := asBool(own["insecureSkipTLSVerify"]); ok {
 			server["insecureSkipTLSVerify"] = v
@@ -281,8 +300,8 @@ func ConvertBackflowPolicy(old obj) (*Result, error) {
 	}
 	// spec.retention is not set: the API default (14 days for finished proposals) applies.
 
-	res := &Result{Object: obj{"apiVersion": newAPIVersion, "kind": "BackflowPolicy", "metadata": meta, "spec": out}}
-	res.Status = policyStatus(old["status"], n)
+	res := &Result{Object: obj{keyAPIVersion: newAPIVersion, keyKind: "BackflowPolicy", keyMetadata: meta, keySpec: out}}
+	res.Status = policyStatus(old[keyStatus], n)
 	res.Notes = n.sorted()
 	return res, nil
 }
@@ -361,7 +380,7 @@ func policyStatus(old any, n *notes) obj {
 		out["applications"] = converted
 	}
 	if a, ok := asMap(st["argoCD"]); ok && len(a) > 0 {
-		argo := obj{"source": a["source"], "url": a["url"]}
+		argo := obj{"source": a["source"], keyURL: a[keyURL]}
 		if count, ok := number(st["excludedApplications"]); ok && count > 0 {
 			if reason := asString(st["excludedReason"]); reason != "" {
 				argo["hiddenApplications"] = []any{obj{"reason": reason, "count": count}}
@@ -394,7 +413,7 @@ var sourceTypes = []string{"Directory", "Kustomize", "Helm", "Plugin"}
 // applicationSummary converts an entry of status.applications: the fields of the first source move into
 // sources[0] (an Application with one source has one entry), scmConnection is a name, reason became untrackedReason.
 func applicationSummary(old obj) obj {
-	out := obj{"name": old["name"]}
+	out := obj{keyName: old[keyName]}
 	if v, ok := number(old["managedResources"]); ok {
 		out["managedResources"] = v
 	}
@@ -409,15 +428,15 @@ func applicationSummary(old obj) obj {
 			}
 		}
 	} else {
-		first := obj{"position": int64(1)}
-		for _, k := range []string{"repoURL", "path", "targetRevision", "syncedRevision", "sourceType", "scmConnection"} {
+		first := obj{keyPosition: int64(1)}
+		for _, k := range []string{keyRepoURL, keyPath, keyTargetRevision, "syncedRevision", "sourceType", "scmConnection"} {
 			if v, ok := old[k]; ok {
 				first[k] = v
 			}
 		}
 		// A single-source Application reports no other revision than the one it synced.
 		if v, ok := old["syncedRevision"]; ok {
-			first["revision"] = v
+			first[keyRevision] = v
 		}
 		sources = []any{sourceSummary(first)}
 	}
@@ -429,7 +448,7 @@ func applicationSummary(old obj) obj {
 
 func sourceSummary(old obj) obj {
 	out := obj{}
-	for _, k := range []string{"position", "repoURL", "path", "chart", "targetRevision", "revision", "syncedRevision", "ref"} {
+	for _, k := range []string{keyPosition, keyRepoURL, keyPath, "chart", keyTargetRevision, keyRevision, "syncedRevision", "ref"} {
 		if v, ok := old[k]; ok && v != "" {
 			out[k] = v
 		}

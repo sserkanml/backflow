@@ -124,7 +124,7 @@ func (r *runner) proposal(ctx context.Context, it *proposalItem) bool {
 		// The old object is deleted next. Before that the API server is asked whether it would take the new one.
 		if err := r.validate(ctx, res.Object); err != nil {
 			r.printf("%s: FAILED, the API server would refuse the %s object, so the proposal is not deleted: %v", it, NewVersion, err)
-			r.keepRejectedProposal(it, res)
+			r.keepRejectedProposal(res)
 			return false
 		}
 	}
@@ -156,13 +156,13 @@ func (r *runner) proposal(ctx context.Context, it *proposalItem) bool {
 		}
 		if err := r.create(ctx, res.Object); err != nil {
 			r.printf("%s: FAILED, deleted and not created (run again: it is created from its backup): %v", it, err)
-			r.keepRejectedProposal(it, res)
+			r.keepRejectedProposal(res)
 			return false
 		}
 	}
 	if err := r.restoreStatus(ctx, it, res); err != nil {
 		r.printf("%s: FAILED, created without its status (run again to give it): %v", it, err)
-		r.keepRejectedProposal(it, res)
+		r.keepRejectedProposal(res)
 		return false
 	}
 	if err := b.MarkDone(KindProposal, it.namespace, it.name); err != nil {
@@ -195,7 +195,7 @@ func (r *runner) dropFinished(ctx context.Context, it *proposalItem, phase strin
 }
 
 // keepRejectedProposal writes the v1beta1 form of a proposal, status included, that the API server refused.
-func (r *runner) keepRejectedProposal(it *proposalItem, res *Result) {
+func (r *runner) keepRejectedProposal(res *Result) {
 	object := copyJSON(res.Object)
 	if res.Status != nil {
 		object["status"] = copyJSON(res.Status)

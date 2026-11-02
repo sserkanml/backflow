@@ -95,8 +95,9 @@ status: {phase: Rejected}
 
 // openProposal is dpOpen as the operator would have created it: without what the API server fills in.
 func openProposal() string {
-	var keep []string
-	for _, line := range strings.Split(dpOpen, "\n") {
+	lines := strings.Split(dpOpen, "\n")
+	keep := make([]string, 0, len(lines))
+	for _, line := range lines {
 		switch key, _, _ := strings.Cut(strings.TrimSpace(line), ":"); key {
 		case "uid", "resourceVersion", "generation", "creationTimestamp", "finalizers", "ownerReferences", "managedFields":
 			continue
@@ -107,9 +108,9 @@ func openProposal() string {
 }
 
 // withProposals is a cluster of the last release with one proposal of each end, owned by p1 as the operator makes them.
-func withProposals(t *testing.T, servedAlpha bool) *cluster {
+func withProposals(t *testing.T) *cluster {
 	t.Helper()
-	return upgraded(t, servedAlpha, func(cl *cluster) {
+	return upgraded(t, true, func(cl *cluster) {
 		for _, text := range []string{openProposal(), dpMergedYAML, dpUnmappedYAML, dpSupersededYAML, dpRejectedYAML} {
 			cl.createOld("DriftProposal", text)
 		}
@@ -201,7 +202,7 @@ func (cl *cluster) runWith(f *fault, opt Options) (*Report, string, error) {
 }
 
 func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	policyUID := cl.raw(NewVersion, "BackflowPolicy", "p1")["metadata"].(obj)["uid"]
 	dir := filepath.Join(t.TempDir(), "backup")
 	rep, out, err := cl.run(Options{BackupDir: dir})
@@ -216,6 +217,13 @@ func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 		t.Errorf("storedVersions = %v", got)
 	}
 
+	checkOpenProposal(t, cl, policyUID)
+	checkEndedProposals(t, cl)
+	checkProposalBackups(t, dir)
+}
+
+func checkOpenProposal(t *testing.T, cl *cluster, policyUID any) {
+	t.Helper()
 	open := cl.proposal("dp-open")
 	if open.Status.Phase != backflowv1beta1.PhaseProposed || open.Status.Message != "The merge request is open." {
 		t.Errorf("phase/message: %q %q", open.Status.Phase, open.Status.Message)
@@ -239,6 +247,11 @@ func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 	if open.Status.Signals == nil || open.Status.Signals.LiveRevertedAtRevision != "abc123" || open.Status.FinishedAt != nil {
 		t.Errorf("signals = %+v, finishedAt %v", open.Status.Signals, open.Status.FinishedAt)
 	}
+	checkOpenProposalSpec(t, open, policyUID)
+}
+
+func checkOpenProposalSpec(t *testing.T, open *backflowv1beta1.DriftProposal, policyUID any) {
+	t.Helper()
 	// The spec.
 	if open.Spec.PolicyRef.Name != "p1" || open.Spec.ApplicationRef.Name != "a" || open.Spec.ResourceRef.Kind != "Deployment" ||
 		len(open.Spec.Sources) != 2 || open.Spec.Sources[1].Role != backflowv1beta1.RoleValues || len(open.Spec.Changes) != 3 ||
@@ -259,7 +272,10 @@ func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 		open.OwnerReferences[0].Name != "p1" || open.OwnerReferences[0].Kind != "BackflowPolicy" {
 		t.Errorf("ownerReferences = %+v, want the policy %v", open.OwnerReferences, policyUID)
 	}
+}
 
+func checkEndedProposals(t *testing.T, cl *cluster) {
+	t.Helper()
 	merged := cl.proposal("dp-merged")
 	if merged.Status.Git == nil || merged.Status.Git.CommitSHA != "0123456789abcdef" || merged.Status.Git.MergeRequest.State != "merged" ||
 		merged.Status.FinishedAt == nil || !merged.Status.FinishedAt.Time.Equal(time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)) {
@@ -284,7 +300,10 @@ func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 	if rejected.Status.FinishedAt == nil || !rejected.Status.FinishedAt.Time.Equal(created) {
 		t.Errorf("rejected finishedAt = %v, created %v", rejected.Status.FinishedAt, created)
 	}
+}
 
+func checkProposalBackups(t *testing.T, dir string) {
+	t.Helper()
 	// The backups are the v1alpha1 objects, each marked done.
 	for _, n := range []string{"dp-open", "dp-merged", "dp-unmapped", "dp-superseded", "dp-rejected", "dp-1"} {
 		data, err := os.ReadFile(filepath.Join(dir, "DriftProposal", "team-a."+n+".yaml"))
@@ -298,18 +317,18 @@ func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsRetentionDoesNotRestart(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	if _, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	// The retention counts from status.finishedAt, as the proposal controller does (finishedTime): a proposal that finished
 	// on 20 October is past a 14 day retention on 5 November whenever it was created again.
 	merged := cl.proposal("dp-merged")
-	if merged.Status.FinishedAt == nil || merged.Status.FinishedAt.Time.After(time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)) {
+	if merged.Status.FinishedAt == nil || merged.Status.FinishedAt.After(time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("finishedAt = %v", merged.Status.FinishedAt)
 	}
 	created := merged.CreationTimestamp.Time
-	if !created.After(merged.Status.FinishedAt.Time.Add(time.Hour)) {
+	if !created.After(merged.Status.FinishedAt.Add(time.Hour)) {
 		t.Fatalf("the proposal was created again at %v, after it finished at %v; the retention must not count from there", created, merged.Status.FinishedAt)
 	}
 	policy := cl.policy("p1")
@@ -329,7 +348,7 @@ func TestMigrateDriftProposalsRetentionDoesNotRestart(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsIsIdempotent(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	if _, out, err := cl.run(Options{BackupDir: dir}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
@@ -355,7 +374,7 @@ func TestMigrateDriftProposalsIsIdempotent(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsACrashBetweenDeleteAndCreate(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	oldUID := cl.raw(OldVersion, "DriftProposal", "dp-open")["metadata"].(obj)["uid"]
 
@@ -403,7 +422,7 @@ func TestMigrateDriftProposalsACrashBetweenDeleteAndCreate(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsACrashBetweenCreateAndStatus(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 
 	rep, out, err := cl.runWith(&fault{status: nameIs("dp-merged")}, Options{BackupDir: dir})
@@ -439,7 +458,7 @@ func TestMigrateDriftProposalsACrashBetweenCreateAndStatus(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsACrashBeforeTheDelete(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	rep, out, err := cl.runWith(&fault{del: nameIs("dp-rejected")}, Options{BackupDir: dir})
 	if err != nil {
@@ -485,7 +504,7 @@ func TestMigrateDriftProposalsWhatTheAPIServerWouldRefuseIsNotDeleted(t *testing
 }
 
 func TestMigrateDriftProposalsSkipFinished(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	rep, out, err := cl.run(Options{BackupDir: dir, SkipFinished: true})
 	if err != nil {
@@ -525,7 +544,7 @@ func TestMigrateDriftProposalsSkipFinished(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsADroppedOneDeletedByACrashIsNotBroughtBack(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	// The first run drops dp-merged, fails on dp-superseded (so the CRD is not finished), and we then take away the file that
 	// says dp-merged is complete, as if the tool had stopped after the delete.
@@ -590,7 +609,7 @@ func TestMigrateDriftProposalsWithoutItsPolicyIsNotTouched(t *testing.T) {
 }
 
 func TestMigrateDriftProposalsDryRunChangesNothingAndSaysWhatItWould(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	dir := filepath.Join(t.TempDir(), "backup")
 	before := cl.raw(OldVersion, "DriftProposal", "dp-open")["metadata"].(obj)["resourceVersion"]
 	rep, out, err := cl.run(Options{BackupDir: dir, DryRun: true, SkipFinished: true})
@@ -632,7 +651,7 @@ func TestMigrateDriftProposalsDryRunNamesWhatTheServerWouldRefuse(t *testing.T) 
 // The tool reads and creates objects through unstructured clients; this is what makes sure the typed client of the operator
 // reads the same object (dp-open has every kind of field).
 func TestMigratedProposalReadsThroughV1alpha1AsMigrated(t *testing.T) {
-	cl := withProposals(t, true)
+	cl := withProposals(t)
 	if _, out, err := cl.run(Options{BackupDir: filepath.Join(t.TempDir(), "backup")}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

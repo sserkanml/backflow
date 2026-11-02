@@ -40,9 +40,9 @@ func openPhase(phase string) bool { return phase != phaseUnmapped && !FinishedPh
 // maxLengths are the bounds v1beta1 put on strings of the status, which v1alpha1 did not have. A value longer than
 // its bound is cut, with a note, because the API server would refuse the whole status for it.
 var maxLengths = map[string]int{
-	"message": 2048, "supersededBy": 253, "branch": 255, "commitSHA": 64, "url": 2048, "state": 64,
-	"value": 16384, "file": 1024, "location": 1024, "repoURL": 2048, "path": 1024, "current": 16384, "new": 16384,
-	"suggested": 16384, "option": 1024, "optionPath": 1024, "revision": 255, "diff": 32768, "name": 512,
+	"message": 2048, keySupersededBy: 253, "branch": 255, "commitSHA": 64, keyURL: 2048, "state": 64,
+	"value": 16384, "file": 1024, "location": 1024, keyRepoURL: 2048, keyPath: 1024, "current": 16384, "new": 16384,
+	"suggested": 16384, "option": 1024, "optionPath": 1024, keyRevision: 255, "diff": 32768, keyName: 512,
 }
 
 // clip cuts the strings of m that are longer than their bound.
@@ -65,11 +65,11 @@ func clip(m obj, path string, n *notes) obj {
 // the status to write to it after. policyUID, when not empty, is the uid of the policy that owns the proposal now.
 func ConvertDriftProposal(old obj, policyUID string) (*Result, error) {
 	n := &notes{}
-	spec, ok := asMap(old["spec"])
+	spec, ok := asMap(old[keySpec])
 	if !ok {
 		return nil, bad("the object has no spec")
 	}
-	st, _ := asMap(old["status"])
+	st, _ := asMap(old[keyStatus])
 	phase := asString(st["phase"])
 	meta, err := proposalMetadata(old, policyUID, n)
 	if err != nil {
@@ -79,7 +79,7 @@ func ConvertDriftProposal(old obj, policyUID string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Object: obj{"apiVersion": newAPIVersion, "kind": "DriftProposal", "metadata": meta, "spec": out}}
+	res := &Result{Object: obj{keyAPIVersion: newAPIVersion, keyKind: "DriftProposal", keyMetadata: meta, keySpec: out}}
 	res.Status = proposalStatus(old, spec, kept, n)
 	res.Notes = n.sorted()
 	return res, nil
@@ -87,7 +87,7 @@ func ConvertDriftProposal(old obj, policyUID string) (*Result, error) {
 
 // signalOf maps a lifecycle annotation to the field of status.signals that replaces it.
 var signalOf = []struct{ annotation, field string }{
-	{annSupersededBy, "supersededBy"}, {annReverted, "reverted"}, {annLiveReverted, "liveRevertedAtRevision"},
+	{annSupersededBy, keySupersededBy}, {annReverted, "reverted"}, {annLiveReverted, "liveRevertedAtRevision"},
 	{annAccessRevoked, "accessRevoked"}, {annRejectionReported, "rejectionReported"},
 }
 
@@ -95,11 +95,11 @@ var signalOf = []struct{ annotation, field string }{
 // API server owns (uid, resourceVersion, creationTimestamp, managedFields) and the finalizers of the old instance do
 // not go over.
 func proposalMetadata(old obj, policyUID string, n *notes) (obj, error) {
-	meta, ok := asMap(old["metadata"])
-	if !ok || asString(meta["name"]) == "" || asString(meta["namespace"]) == "" {
+	meta, ok := asMap(old[keyMetadata])
+	if !ok || asString(meta[keyName]) == "" || asString(meta["namespace"]) == "" {
 		return nil, bad("the object has no metadata.name or metadata.namespace")
 	}
-	out := obj{"name": meta["name"], "namespace": meta["namespace"]}
+	out := obj{keyName: meta[keyName], "namespace": meta["namespace"]}
 	if labels, ok := asMap(meta["labels"]); ok && len(labels) > 0 {
 		out["labels"] = maps.Clone(labels)
 	}
@@ -128,10 +128,10 @@ func proposalMetadata(old obj, policyUID string, n *notes) (obj, error) {
 			continue
 		}
 		ref = maps.Clone(ref)
-		if strings.HasPrefix(asString(ref["apiVersion"]), Group+"/") {
-			ref["apiVersion"] = newAPIVersion
+		if strings.HasPrefix(asString(ref[keyAPIVersion]), Group+"/") {
+			ref[keyAPIVersion] = newAPIVersion
 		}
-		if policyUID != "" && asString(ref["kind"]) == "BackflowPolicy" {
+		if policyUID != "" && asString(ref[keyKind]) == "BackflowPolicy" {
 			ref["uid"] = policyUID
 		}
 		out["ownerReferences"] = append(asListOr(out["ownerReferences"]), ref)
@@ -144,7 +144,7 @@ func proposalMetadata(old obj, policyUID string, n *notes) (obj, error) {
 
 func asListOr(v any) []any { l, _ := asList(v); return l }
 
-var actorKinds = map[string]string{"person": "Person", "controller": "Controller", "Person": "Person", "Controller": "Controller"}
+var actorKinds = map[string]string{"person": kindPerson, "controller": kindController, kindPerson: kindPerson, kindController: kindController}
 
 // proposalSpec converts the spec. It returns how many changes were kept.
 func proposalSpec(spec obj, phase string, n *notes) (obj, int, error) {
@@ -153,7 +153,7 @@ func proposalSpec(spec obj, phase string, n *notes) (obj, int, error) {
 	if policy == "" {
 		return nil, 0, bad("spec.policyName is empty")
 	}
-	out["policyRef"] = obj{"name": policy}
+	out["policyRef"] = obj{keyName: policy}
 	n.add("spec.policyName -> spec.policyRef.name")
 	for _, f := range []struct{ from, to string }{{"application", "applicationRef"}, {"resource", "resourceRef"}} {
 		m, ok := asMap(spec[f.from])
@@ -212,11 +212,11 @@ func proposalSources(spec obj, n *notes) ([]any, error) {
 		return out, nil
 	}
 	src, ok := asMap(spec["source"])
-	if !ok || asString(src["repoURL"]) == "" {
+	if !ok || asString(src[keyRepoURL]) == "" {
 		return nil, bad("spec.source is missing")
 	}
-	first := obj{"position": int64(1), "role": "Render"}
-	for _, k := range []string{"repoURL", "revision", "targetRevision", "path", "type"} {
+	first := obj{keyPosition: int64(1), "role": "Render"}
+	for _, k := range []string{keyRepoURL, keyRevision, keyTargetRevision, keyPath, "type"} {
 		if v, ok := src[k]; ok && v != "" {
 			first[k] = v
 		}
@@ -237,12 +237,12 @@ func proposalActor(spec, out obj, n *notes) error {
 			who[k] = v
 		}
 	}
-	if kind := asString(a["kind"]); kind != "" {
+	if kind := asString(a[keyKind]); kind != "" {
 		converted, known := actorKinds[kind]
 		if !known {
 			return bad("spec.actor.kind %q is not person or controller", kind)
 		}
-		who["kind"] = converted
+		who[keyKind] = converted
 		n.add("spec.actor.kind: %s -> %s", kind, converted)
 	}
 	if len(who) > 0 {
@@ -280,8 +280,8 @@ func managerWrite(m obj) obj {
 
 // proposalStatus converts the status and the annotations that were state. It is nil when there is nothing to write.
 func proposalStatus(old, spec obj, kept int, n *notes) obj {
-	st, _ := asMap(old["status"])
-	meta, _ := asMap(old["metadata"])
+	st, _ := asMap(old[keyStatus])
+	meta, _ := asMap(old[keyMetadata])
 	out := obj{}
 	phase := asString(st["phase"])
 	if phase != "" {
@@ -296,9 +296,9 @@ func proposalStatus(old, spec obj, kept int, n *notes) obj {
 	if g := proposalGit(st, n); g != nil {
 		out["git"] = g
 	}
-	for _, k := range []string{"supersededBy", "message"} {
+	for _, k := range []string{keySupersededBy, "message"} {
 		if s := asString(st[k]); s != "" {
-			out[k] = clip(obj{k: s}, "status", n)[k]
+			out[k] = clip(obj{k: s}, keyStatus, n)[k]
 		}
 	}
 	if FinishedPhase(phase) {
@@ -365,7 +365,7 @@ func proposalGit(st obj, n *notes) obj {
 	}
 	if hasMR && len(mr) > 0 {
 		out := obj{}
-		for _, k := range []string{"url", "number", "state"} {
+		for _, k := range []string{keyURL, "number", "state"} {
 			if v, ok := mr[k]; ok {
 				out[k] = v
 			}
@@ -423,7 +423,7 @@ func proposalSignals(meta obj, n *notes) obj {
 	}
 	for k, v := range out {
 		if s, ok := v.(string); ok {
-			limit := map[string]int{"supersededBy": 253, "reverted": 1024, "liveRevertedAtRevision": 255}[k]
+			limit := map[string]int{keySupersededBy: 253, "reverted": 1024, "liveRevertedAtRevision": 255}[k]
 			if r := []rune(s); limit > 0 && len(r) > limit {
 				out[k] = string(r[:limit])
 				n.add("status.signals.%s: cut to %d characters", k, limit)
@@ -485,7 +485,7 @@ func proposalMapping(v any, spec obj, kept int, n *notes) obj {
 }
 
 func mappingEdits(old obj, kept int, n *notes) []any {
-	repo := asString(old["repoURL"])
+	repo := asString(old[keyRepoURL])
 	list, _ := asList(old["edits"])
 	var edits []any
 	for _, e := range list {
@@ -498,8 +498,8 @@ func mappingEdits(old obj, kept int, n *notes) []any {
 			continue
 		}
 		m = maps.Clone(m)
-		if _, has := m["repoURL"]; !has && repo != "" {
-			m["repoURL"] = repo
+		if _, has := m[keyRepoURL]; !has && repo != "" {
+			m[keyRepoURL] = repo
 		}
 		edits = append(edits, clip(m, "status.mapping.edits", n))
 	}
@@ -524,7 +524,7 @@ func applicationOption(app, spec obj, n *notes) obj {
 		namespace, name = asString(appRef["namespace"]), ref
 		n.add("status.mapping.application %q has no namespace: the namespace of spec.application (%s) is used", ref, namespace)
 	}
-	out["applicationRef"] = obj{"name": name, "namespace": namespace}
+	out["applicationRef"] = obj{keyName: name, "namespace": namespace}
 	clip(out, "status.mapping.applicationOption", n)
 	if parent, ok := asMap(out["parent"]); ok {
 		out["parent"] = clip(maps.Clone(parent), "status.mapping.applicationOption.parent", n)
