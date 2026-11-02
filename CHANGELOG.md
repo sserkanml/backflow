@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.18.0](https://github.com/sserkanml/backflow/compare/v0.17.0...v0.18.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **api:** all Backflow CRDs are now backflow.io/v1beta1 and v1alpha1 is no longer served. Run the migration before upgrading and convert manifests kept in Git; see docs/upgrade-v1beta1.md. Argo CD servers and SCM hosts must be listed in argocd.allowedServers and scm.allowedHosts.
+
+### Features
+
+* **api:** v1beta1 API; v1alpha1 is removed from the CRDs ([dab25a6](https://github.com/sserkanml/backflow/commit/dab25a6578456253bbf5778140bcff04bf770ead))
+* **drift:** proposals with more than 256 changes are Unmapped with TooManyChanges ([dab25a6](https://github.com/sserkanml/backflow/commit/dab25a6578456253bbf5778140bcff04bf770ead))
+* **migrate:** manager migrate, convert-files and restore, and a chart migration hook ([dab25a6](https://github.com/sserkanml/backflow/commit/dab25a6578456253bbf5778140bcff04bf770ead))
+* **policy:** finished proposals are deleted after a retention period ([dab25a6](https://github.com/sserkanml/backflow/commit/dab25a6578456253bbf5778140bcff04bf770ead))
+
+
+### Documentation
+
+* upgrade guide to v1beta1 ([dab25a6](https://github.com/sserkanml/backflow/commit/dab25a6578456253bbf5778140bcff04bf770ead))
+
 ## [0.17.0](https://github.com/sserkanml/backflow/compare/v0.16.0...v0.17.0) (2026-11-02)
 
 
