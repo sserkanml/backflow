@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // cluster is an API server with the CRDs of backflow.io in the state of the upgrade: the objects are stored as v1alpha1
@@ -73,7 +73,7 @@ func startCluster(t *testing.T) *cluster {
 		t.Fatal(err)
 	}
 	ts := runtime.NewScheme()
-	if err := backflowv1beta1.AddToScheme(ts); err != nil {
+	if err := backflowv1.AddToScheme(ts); err != nil {
 		t.Fatal(err)
 	}
 	typ, err := client.New(cfg, client.Options{Scheme: ts})

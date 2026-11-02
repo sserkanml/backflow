@@ -9,7 +9,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/drift"
 )
 
@@ -55,7 +55,7 @@ func demoRepo() map[string]string {
 }
 
 func TestMapLogLevel(t *testing.T) {
-	changes := []v1beta1.FieldChange{change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `"debug"`)}
+	changes := []v1.FieldChange{change("/data/LOG_LEVEL", v1.OpReplace, `"info"`, `"debug"`)}
 	res, err := Map(files(demoRepo()), "apps/demo", DirectoryOptions{}, "demo",
 		ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"}, changes)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestMapLogLevel(t *testing.T) {
 }
 
 func TestMapReplicas(t *testing.T) {
-	changes := []v1beta1.FieldChange{change("/spec/replicas", v1beta1.OpReplace, `1`, `3`)}
+	changes := []v1.FieldChange{change("/spec/replicas", v1.OpReplace, `1`, `3`)}
 	res, err := Map(files(demoRepo()), "apps/demo", DirectoryOptions{}, "demo",
 		ResourceID{Group: "apps", Kind: "Deployment", Namespace: "demo", Name: "demo"}, changes)
 	if err != nil {
@@ -108,7 +108,7 @@ func TestMapReplicas(t *testing.T) {
 
 func TestMapFailures(t *testing.T) {
 	cm := ResourceID{Kind: "ConfigMap", Namespace: "demo", Name: "demo-config"}
-	logLevel := []v1beta1.FieldChange{change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `"debug"`)}
+	logLevel := []v1.FieldChange{change("/data/LOG_LEVEL", v1.OpReplace, `"info"`, `"debug"`)}
 
 	t.Run("not found", func(t *testing.T) {
 		_, err := Map(files(demoRepo()), "apps/other", DirectoryOptions{}, "demo", cm, logLevel)
@@ -126,7 +126,7 @@ func TestMapFailures(t *testing.T) {
 	})
 	t.Run("a replace below a scalar cannot be applied", func(t *testing.T) {
 		_, err := Map(files(demoRepo()), "apps/demo", DirectoryOptions{}, "demo", cm,
-			[]v1beta1.FieldChange{change("/data/LOG_LEVEL/x", v1beta1.OpReplace, `"a"`, `"b"`)})
+			[]v1.FieldChange{change("/data/LOG_LEVEL/x", v1.OpReplace, `"a"`, `"b"`)})
 		if !errors.Is(err, ErrCannotApply) {
 			t.Errorf("err = %v", err)
 		}
@@ -141,7 +141,7 @@ func TestMapFailures(t *testing.T) {
 	t.Run("an edit that changes nothing fails verification", func(t *testing.T) {
 		// The file already holds the live value, so the edit is a no-op.
 		_, err := Map(files(demoRepo()), "apps/demo", DirectoryOptions{}, "demo", cm,
-			[]v1beta1.FieldChange{change("/data/GREETING", v1beta1.OpReplace, `"hi"`, `"hello"`)})
+			[]v1.FieldChange{change("/data/GREETING", v1.OpReplace, `"hi"`, `"hello"`)})
 		if !errors.Is(err, ErrVerificationFailed) {
 			t.Errorf("err = %v", err)
 		}
@@ -313,7 +313,7 @@ func TestMapDefaultedFields(t *testing.T) {
 			changes := drift.Diff(predicted, live)
 			var replaced bool
 			for _, c := range changes {
-				if c.Path == tt.wantPath && c.Op == v1beta1.OpReplace {
+				if c.Path == tt.wantPath && c.Op == v1.OpReplace {
 					replaced = true
 				}
 			}

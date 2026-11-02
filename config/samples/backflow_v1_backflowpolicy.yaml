@@ -3,7 +3,7 @@
 # and a Secret with an Argo CD API token (read access to applications):
 #   kubectl -n backflow-system create secret generic argocd-token --from-literal=token="$ARGOCD_TOKEN"
 # The Argo CD server must be the operator's own (chart value argocd.server) or in argocd.allowedServers.
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   labels:

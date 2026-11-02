@@ -12,7 +12,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 // mapTag is the YAML tag of a mapping.
@@ -37,7 +37,7 @@ const nullTag = "!!null"
 //
 // Array items are addressed by index. Apply does not check the result; use
 // Verify.
-func Apply(file string, original []byte, document int, changes []v1beta1.FieldChange) ([]byte, error) {
+func Apply(file string, original []byte, document int, changes []v1.FieldChange) ([]byte, error) {
 	if ext := path.Ext(file); ext == ".jsonnet" || ext == ".libsonnet" {
 		return nil, fmt.Errorf("%w: editing Jsonnet (%s)", ErrUnsupportedFileFormat, file)
 	}
@@ -125,7 +125,7 @@ type edit struct {
 	repl       string
 }
 
-func applyOne(text string, seg segment, ch v1beta1.FieldChange) (string, error) {
+func applyOne(text string, seg segment, ch v1.FieldChange) (string, error) {
 	root, err := parseDocument(text, seg)
 	if err != nil {
 		return "", cannot("the document cannot be parsed: %v", err)
@@ -141,11 +141,11 @@ func applyOne(text string, seg segment, ch v1beta1.FieldChange) (string, error) 
 
 	var e edit
 	switch ch.Op {
-	case v1beta1.OpReplace:
+	case v1.OpReplace:
 		e, err = replaceEdit(li, root, segs, ch.Live)
-	case v1beta1.OpAdd:
+	case v1.OpAdd:
 		e, err = addEdit(li, root, segs, ch.Live)
-	case v1beta1.OpRemove:
+	case v1.OpRemove:
 		e, err = removeEdit(li, root, segs)
 	default:
 		err = cannot("unknown operation %q", ch.Op)

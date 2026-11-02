@@ -9,7 +9,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -66,7 +66,7 @@ func (f *finder) holders(k kust) []patchHolder {
 
 // patches offers the values inside the patches the kustomizations already
 // have: the field of a strategic merge patch, a JSON 6902 operation.
-func (f *finder) patches(ch v1beta1.FieldChange, segs []string, desired string) []rendermap.Candidate {
+func (f *finder) patches(ch v1.FieldChange, segs []string, desired string) []rendermap.Candidate {
 	steps, stepsOK := stepsOf(f.group, f.obj.Object, segs)
 	var out []rendermap.Candidate
 	for _, k := range f.ks {
@@ -91,7 +91,7 @@ func (f *finder) patches(ch v1beta1.FieldChange, segs []string, desired string) 
 					if !ok {
 						continue
 					}
-					if ch.Op == v1beta1.OpReplace {
+					if ch.Op == v1.OpReplace {
 						if v, isScalar := n.scalar(); !isScalar || v != desired {
 							continue
 						}
@@ -100,7 +100,7 @@ func (f *finder) patches(ch v1beta1.FieldChange, segs []string, desired string) 
 					if h.inline != "" {
 						kind = KindPatchInline
 					}
-				case d.root.Kind == yaml.SequenceNode && ch.Op == v1beta1.OpReplace && f.holderTargets(h):
+				case d.root.Kind == yaml.SequenceNode && ch.Op == v1.OpReplace && f.holderTargets(h):
 					idx := jsonOp(d.root, ch.Path, desired)
 					if idx < 0 {
 						continue
@@ -209,7 +209,7 @@ func jsonOp(list *yaml.Node, pointer, desired string) int {
 
 // ---- tier 3 and 4: the resource file --------------------------------------
 
-func (f *finder) resourceFile(ch v1beta1.FieldChange) *rendermap.Candidate {
+func (f *finder) resourceFile(ch v1.FieldChange) *rendermap.Candidate {
 	file := f.origin.File
 	if file == "" {
 		return nil
@@ -237,7 +237,7 @@ func (f *finder) resourceFile(ch v1beta1.FieldChange) *rendermap.Candidate {
 
 // ---- tier 5: a new patch --------------------------------------------------
 
-func (f *finder) newPatch(ch v1beta1.FieldChange) []rendermap.Candidate {
+func (f *finder) newPatch(ch v1.FieldChange) []rendermap.Candidate {
 	if !f.pol.AddPatches || f.origin.Generated {
 		return nil
 	}
@@ -280,15 +280,15 @@ func (f *finder) newPatch(ch v1beta1.FieldChange) []rendermap.Candidate {
 // buildPatch makes the strategic merge patch of one change: the nested keys
 // down to the field, the list items found by their merge key on the way, and
 // the whole live list where a list has no merge key.
-func buildPatch(group string, desired, live any, segs []string, op v1beta1.ChangeOperation, value any) (map[string]any, bool) {
+func buildPatch(group string, desired, live any, segs []string, op v1.ChangeOperation, value any) (map[string]any, bool) {
 	out, ok := patchAt(group, desired, live, segs, "", "", op, value)
 	m, isMap := out.(map[string]any)
 	return m, ok && isMap
 }
 
-func patchAt(group string, des, live any, segs []string, parent, grand string, op v1beta1.ChangeOperation, value any) (any, bool) {
+func patchAt(group string, des, live any, segs []string, parent, grand string, op v1.ChangeOperation, value any) (any, bool) {
 	if len(segs) == 0 {
-		if op == v1beta1.OpRemove {
+		if op == v1.OpRemove {
 			return nil, true
 		}
 		dl, desIsList := des.([]any)
@@ -316,7 +316,7 @@ func patchAt(group string, des, live any, segs []string, parent, grand string, o
 		}
 		if i == len(c) { // an item is added
 			item, isMap := value.(map[string]any)
-			if op != v1beta1.OpAdd || len(segs) != 1 || !isMap {
+			if op != v1.OpAdd || len(segs) != 1 || !isMap {
 				return nil, false
 			}
 			return append(keyOnly(mk, c), item), true
@@ -328,9 +328,9 @@ func patchAt(group string, des, live any, segs []string, parent, grand string, o
 		before := keyOnly(mk, c[:i])
 		if len(segs) == 1 {
 			switch op {
-			case v1beta1.OpRemove:
+			case v1.OpRemove:
 				return append(before, map[string]any{mk: key, "$patch": "delete"}), true
-			case v1beta1.OpReplace, v1beta1.OpAdd:
+			case v1.OpReplace, v1.OpAdd:
 				if m, isMap := value.(map[string]any); isMap {
 					return append(before, m), true
 				}
@@ -361,7 +361,7 @@ func patchAt(group string, des, live any, segs []string, parent, grand string, o
 
 // liveObject applies the changes to a copy of the rendered object: the state
 // the cluster has.
-func liveObject(obj map[string]any, changes []v1beta1.FieldChange) map[string]any {
+func liveObject(obj map[string]any, changes []v1.FieldChange) map[string]any {
 	b, _ := json.Marshal(obj)
 	var out map[string]any
 	_ = json.Unmarshal(b, &out)
@@ -375,7 +375,7 @@ func liveObject(obj map[string]any, changes []v1beta1.FieldChange) map[string]an
 	return out
 }
 
-func setAt(root map[string]any, segs []string, op v1beta1.ChangeOperation, v any) {
+func setAt(root map[string]any, segs []string, op v1.ChangeOperation, v any) {
 	var cur any = root
 	var parents []any
 	for i, seg := range segs {
@@ -383,7 +383,7 @@ func setAt(root map[string]any, segs []string, op v1beta1.ChangeOperation, v any
 		switch c := cur.(type) {
 		case map[string]any:
 			switch {
-			case last && op == v1beta1.OpRemove:
+			case last && op == v1.OpRemove:
 				delete(c, seg)
 			case last:
 				c[seg] = v
@@ -400,7 +400,7 @@ func setAt(root map[string]any, segs []string, op v1beta1.ChangeOperation, v any
 				return
 			}
 			switch {
-			case last && op == v1beta1.OpRemove && idx < len(c):
+			case last && op == v1.OpRemove && idx < len(c):
 				replaceInParent(parents, segs[i-1], append(c[:idx:idx], c[idx+1:]...))
 			case last && idx == len(c):
 				replaceInParent(parents, segs[i-1], append(c, v))

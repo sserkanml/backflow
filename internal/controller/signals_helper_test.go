@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // The keys of the signals the policy and drift controllers leave in status.signals, as the tests
@@ -21,7 +21,7 @@ const (
 )
 
 // setSignalKey sets one signal by its test key.
-func setSignalKey(s *backflowv1beta1.Signals, key, value string) {
+func setSignalKey(s *backflowv1.Signals, key, value string) {
 	switch key {
 	case annotationSupersededBy:
 		s.SupersededBy = value
@@ -37,7 +37,7 @@ func setSignalKey(s *backflowv1beta1.Signals, key, value string) {
 }
 
 // signalMap lists the signals that are set, by test key.
-func signalMap(dp *backflowv1beta1.DriftProposal) map[string]string {
+func signalMap(dp *backflowv1.DriftProposal) map[string]string {
 	out := map[string]string{}
 	sg := dp.Status.Signal()
 	for k, v := range map[string]string{
@@ -55,7 +55,7 @@ func signalMap(dp *backflowv1beta1.DriftProposal) map[string]string {
 
 // signalProposal does what the drift controller does: it records a signal in the status of the proposal, with a
 // merge patch of status.signals only.
-func signalProposal(ctx context.Context, c client.Client, dp *backflowv1beta1.DriftProposal, key, value string) {
+func signalProposal(ctx context.Context, c client.Client, dp *backflowv1.DriftProposal, key, value string) {
 	GinkgoHelper()
 	orig := dp.DeepCopy()
 	setSignalKey(dp.Status.EnsureSignals(), key, value)
@@ -63,7 +63,7 @@ func signalProposal(ctx context.Context, c client.Client, dp *backflowv1beta1.Dr
 }
 
 // appNames are the names in status.applications.
-func appNames(st backflowv1beta1.BackflowPolicyStatus) []string {
+func appNames(st backflowv1.BackflowPolicyStatus) []string {
 	names := make([]string, 0, len(st.Applications))
 	for _, a := range st.Applications {
 		names = append(names, a.Name)
@@ -72,7 +72,7 @@ func appNames(st backflowv1beta1.BackflowPolicyStatus) []string {
 }
 
 // hiddenReason is the reason in status.argoCD.hiddenApplications, empty when none are hidden.
-func hiddenReason(st backflowv1beta1.BackflowPolicyStatus) string {
+func hiddenReason(st backflowv1.BackflowPolicyStatus) string {
 	if st.ArgoCD == nil || len(st.ArgoCD.HiddenApplications) == 0 {
 		return ""
 	}

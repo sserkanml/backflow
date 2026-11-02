@@ -10,7 +10,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
@@ -142,7 +142,7 @@ func (v *ApplicationVisibility) forget(policyKey string) {
 // tokenVisible is the answer for a policy with its own spec.argoCD: what its own
 // token can get. Without a visibility checker nothing is asked and everything is
 // visible (a test, or an operator that does not check).
-func tokenVisible(ctx context.Context, v *ApplicationVisibility, c client.Reader, policy *backflowv1beta1.BackflowPolicy,
+func tokenVisible(ctx context.Context, v *ApplicationVisibility, c client.Reader, policy *backflowv1.BackflowPolicy,
 	defaults *ArgoCDDefaults, name, namespace string) (Visibility, error) {
 	if v == nil {
 		return VisibilityVisible, nil

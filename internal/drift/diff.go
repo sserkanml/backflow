@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 // builtinIgnores are JSON pointers that are always noise. A pointer also
@@ -27,7 +27,7 @@ var builtinIgnores = []string{
 // Diff returns the changes needed to turn desired into live, ordered by path.
 // Add means the field only exists live, Remove that it only exists in desired.
 // extraIgnores are additional JSON pointers to skip, including their subtrees.
-func Diff(desired, live map[string]any, extraIgnores ...string) []v1beta1.FieldChange {
+func Diff(desired, live map[string]any, extraIgnores ...string) []v1.FieldChange {
 	d := differ{ignores: append(append([]string{}, builtinIgnores...), extraIgnores...)}
 	d.diffMaps("", desired, live)
 	return d.changes
@@ -35,7 +35,7 @@ func Diff(desired, live map[string]any, extraIgnores ...string) []v1beta1.FieldC
 
 type differ struct {
 	ignores []string
-	changes []v1beta1.FieldChange
+	changes []v1.FieldChange
 }
 
 func (d *differ) ignored(path string) bool {
@@ -69,9 +69,9 @@ func (d *differ) diffMaps(path string, desired, live map[string]any) {
 		lv, lOK := live[k]
 		switch {
 		case dOK && !lOK:
-			d.changes = append(d.changes, v1beta1.FieldChange{Path: p, Op: v1beta1.OpRemove, Desired: encode(dv)})
+			d.changes = append(d.changes, v1.FieldChange{Path: p, Op: v1.OpRemove, Desired: encode(dv)})
 		case !dOK && lOK:
-			d.changes = append(d.changes, v1beta1.FieldChange{Path: p, Op: v1beta1.OpAdd, Live: encode(lv)})
+			d.changes = append(d.changes, v1.FieldChange{Path: p, Op: v1.OpAdd, Live: encode(lv)})
 		default:
 			d.diffValues(p, dv, lv)
 		}
@@ -100,8 +100,8 @@ func (d *differ) diffValues(path string, desired, live any) {
 	if reflect.DeepEqual(desired, live) {
 		return
 	}
-	d.changes = append(d.changes, v1beta1.FieldChange{
-		Path: path, Op: v1beta1.OpReplace, Desired: encode(desired), Live: encode(live),
+	d.changes = append(d.changes, v1.FieldChange{
+		Path: path, Op: v1.OpReplace, Desired: encode(desired), Live: encode(live),
 	})
 }
 

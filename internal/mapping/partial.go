@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"regexp"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 // LeftOut is a change a partial mapping does not make.
@@ -34,7 +34,7 @@ func (l LeftOut) Message() string { return changePrefix.ReplaceAllString(l.Err.E
 // error is the one Map gives. Result.LeftOut lists the changes not made, and
 // each Edit's ChangeIndex points into changes.
 func MapPartial(fsys fs.FS, appPath string, opts DirectoryOptions, destNamespace string, res ResourceID,
-	changes []v1beta1.FieldChange) (*Result, error) {
+	changes []v1.FieldChange) (*Result, error) {
 	loc, err := Locate(fsys, appPath, opts, destNamespace, res)
 	if err != nil {
 		return nil, err
@@ -44,11 +44,11 @@ func MapPartial(fsys fs.FS, appPath string, opts DirectoryOptions, destNamespace
 		return nil, fmt.Errorf("reading %s: %w", loc.File, err)
 	}
 
-	var mapped []v1beta1.FieldChange
+	var mapped []v1.FieldChange
 	var index []int // index[i] is the position of mapped[i] in changes
 	var left []LeftOut
 	for i, ch := range changes {
-		_, err := Apply(loc.File, original, loc.Document, []v1beta1.FieldChange{ch})
+		_, err := Apply(loc.File, original, loc.Document, []v1.FieldChange{ch})
 		switch {
 		case err == nil:
 			mapped = append(mapped, ch)

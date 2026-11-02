@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
@@ -47,7 +47,7 @@ type ChartArgo interface {
 
 // chartArgo returns the policy's Argo CD client for charts and renders by
 // revision, cached per policy like the renderer.
-func (r *DriftProposalReconciler) chartArgo(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) (ChartArgo, error) {
+func (r *DriftProposalReconciler) chartArgo(ctx context.Context, policy *backflowv1.BackflowPolicy) (ChartArgo, error) {
 	if _, ok := argoCDSource(policy, r.ArgoCD); !ok {
 		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD and the operator has no default Argo CD connection", policy.Name)}
 	}
@@ -64,10 +64,10 @@ func (r *DriftProposalReconciler) chartArgo(ctx context.Context, policy *backflo
 
 // valuesSource is the one source whose files hold the values and receive the
 // edits.
-func valuesSource(dp *backflowv1beta1.DriftProposal, helm map[string]any, render backflowv1beta1.ProposalSource) (backflowv1beta1.ProposalSource, error) {
-	var found []backflowv1beta1.ProposalSource
+func valuesSource(dp *backflowv1.DriftProposal, helm map[string]any, render backflowv1.ProposalSource) (backflowv1.ProposalSource, error) {
+	var found []backflowv1.ProposalSource
 	for _, s := range dp.Spec.Sources {
-		if s.Role == backflowv1beta1.RoleValues {
+		if s.Role == backflowv1.RoleValues {
 			found = append(found, s)
 		}
 	}
@@ -77,20 +77,20 @@ func valuesSource(dp *backflowv1beta1.DriftProposal, helm map[string]any, render
 	case 0:
 		for _, f := range valueFileRefs(helm) {
 			if f.Ref == "" && render.Chart != "" {
-				return backflowv1beta1.ProposalSource{}, &verdictError{reason: reasonValueFileNotInGit, err: fmt.Errorf(
+				return backflowv1.ProposalSource{}, &verdictError{reason: reasonValueFileNotInGit, err: fmt.Errorf(
 					"the value file %s of source %d is inside the chart %s from %s, which is not in a Git repository, so Backflow cannot edit it; "+
 						"only value files in a Git repository ($ref/...) are edited",
 					f.Raw, render.Position, render.Chart, scm.RedactURL(render.RepoURL))}
 			}
 		}
-		return backflowv1beta1.ProposalSource{}, &verdictError{reason: rendermap.ReasonNoVerifiedCandidate,
+		return backflowv1.ProposalSource{}, &verdictError{reason: rendermap.ReasonNoVerifiedCandidate,
 			err: errors.New("no value file of the Helm source is in a ref source ($ref/path), so there is no file of a Git repository to edit")}
 	}
 	names := make([]string, len(found))
 	for i, s := range found {
 		names[i] = "$" + s.Ref + " (" + scm.RedactURL(s.RepoURL) + ")"
 	}
-	return backflowv1beta1.ProposalSource{}, &verdictError{reason: reasonMultipleValueRepositories,
+	return backflowv1.ProposalSource{}, &verdictError{reason: reasonMultipleValueRepositories,
 		err: fmt.Errorf("the value files come from %d repositories (%s); a proposal is written to one repository, so only one is supported",
 			len(found), strings.Join(names, ", "))}
 }
@@ -101,7 +101,7 @@ func valuesSource(dp *backflowv1beta1.DriftProposal, helm map[string]any, render
 // inside a chart that is not in Git (from a Helm repository or a registry) cannot
 // be edited at all (ValueFileNotInGit); one inside a chart in Git, or in another
 // ref source, is in a second repository (MultipleValueRepositories).
-func translateValueFiles(helm map[string]any, ref string, render backflowv1beta1.ProposalSource) (valueFiles []string, params []helmmap.FileParameter, err error) {
+func translateValueFiles(helm map[string]any, ref string, render backflowv1.ProposalSource) (valueFiles []string, params []helmmap.FileParameter, err error) {
 	for _, f := range valueFileRefs(helm) {
 		switch {
 		case f.Ref == ref:
@@ -135,9 +135,9 @@ func translateValueFiles(helm map[string]any, ref string, render backflowv1beta1
 // a chart from a Helm repository or a registry, from the chart's repository for
 // a chart in Git. Subcharts' defaults are not available, and are reported as
 // unread.
-func (r *DriftProposalReconciler) chartDefaults(ctx context.Context, dp *backflowv1beta1.DriftProposal,
-	policy *backflowv1beta1.BackflowPolicy, app *unstructured.Unstructured, argo ChartArgo,
-	render backflowv1beta1.ProposalSource) (*helmmap.ExternalChart, error) {
+func (r *DriftProposalReconciler) chartDefaults(ctx context.Context, dp *backflowv1.DriftProposal,
+	policy *backflowv1.BackflowPolicy, app *unstructured.Unstructured, argo ChartArgo,
+	render backflowv1.ProposalSource) (*helmmap.ExternalChart, error) {
 	ext := &helmmap.ExternalChart{Name: render.Chart, Version: render.Revision}
 	sources := specSources(app)
 	if render.Chart != "" {
@@ -192,8 +192,8 @@ func mapOf(app *unstructured.Unstructured, path ...string) map[string]any {
 
 // authForRepo returns the credentials of the ScmConnection matched to a
 // repository of the proposal's Application, or nil.
-func (r *DriftProposalReconciler) authForRepo(ctx context.Context, dp *backflowv1beta1.DriftProposal,
-	policy *backflowv1beta1.BackflowPolicy, repoURL string) (*gitrepo.Auth, error) {
+func (r *DriftProposalReconciler) authForRepo(ctx context.Context, dp *backflowv1.DriftProposal,
+	policy *backflowv1.BackflowPolicy, repoURL string) (*gitrepo.Auth, error) {
 	access, err := scmAccessForRepo(ctx, r.Client, dp.Namespace, policy, dp.Spec.ApplicationRef.Name, repoURL)
 	if err != nil {
 		return nil, &heldError{reason: reasonRepositoryAuthFailed, cause: err}
@@ -207,15 +207,15 @@ func (r *DriftProposalReconciler) authForRepo(ctx context.Context, dp *backflowv
 // scratchPushOptions are the push options of the provider that keep a scratch
 // branch from running a pipeline. GitHub has none; its commit message carries
 // [skip ci].
-func scratchPushOptions(provider backflowv1beta1.ScmProvider) map[string]string {
-	if provider == backflowv1beta1.ScmProviderGitLab {
+func scratchPushOptions(provider backflowv1.ScmProvider) map[string]string {
+	if provider == backflowv1.ScmProviderGitLab {
 		return map[string]string{"ci.skip": ""}
 	}
 	return nil
 }
 
 // scratchPrefix is the prefix of the scratch branches of one proposal.
-func scratchPrefix(dp *backflowv1beta1.DriftProposal) string {
+func scratchPrefix(dp *backflowv1.DriftProposal) string {
 	uid := strings.ReplaceAll(string(dp.UID), "-", "")
 	if len(uid) < 8 {
 		uid = fmt.Sprintf("%-8s", uid)
@@ -231,7 +231,7 @@ func scratchPrefix(dp *backflowv1beta1.DriftProposal) string {
 // edit is accepted only when the render shows it changes exactly the drifted
 // fields (see helmmap.Verify). tree is the repository of the value files at sha.
 // Errors are as for mapHelm.
-func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflowv1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
 	log := logf.FromContext(ctx)
 	ms, why := helmMultiSource(app)
@@ -351,7 +351,7 @@ func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflow
 		}
 		return nil, &verdictError{reason: out.Unmapped.Reason, err: errors.New(msg)}
 	}
-	change := &mappedChange{strategy: backflowv1beta1.StrategyHelmValues, results: out.Results, collateral: out.Collateral,
+	change := &mappedChange{strategy: backflowv1.StrategyHelmValues, results: out.Results, collateral: out.Collateral,
 		overrides: out.Overrides, renders: out.Renders, repoURL: values.RepoURL}
 	for _, l := range out.LeftOut {
 		change.leftOut = append(change.leftOut, leftOutField{path: l.Pointer, reason: l.Reason, message: l.Detail})
@@ -359,11 +359,11 @@ func (r *DriftProposalReconciler) mapHelmMulti(ctx context.Context, dp *backflow
 	return change, nil
 }
 
-func scratchMode(policy *backflowv1beta1.BackflowPolicy) backflowv1beta1.ScratchBranchesMode {
+func scratchMode(policy *backflowv1.BackflowPolicy) backflowv1.ScratchBranchesMode {
 	if policy.Spec.Mapping != nil && policy.Spec.Mapping.ScratchBranches != "" {
 		return policy.Spec.Mapping.ScratchBranches
 	}
-	return backflowv1beta1.ScratchBranchesAuto
+	return backflowv1.ScratchBranchesAuto
 }
 
 // committerOf is the identity of the commits Backflow makes with a connection.
@@ -395,7 +395,7 @@ func scratchFailure(err error) error {
 // verify runs helmmap.Verify with the renderer, within the render budget of the
 // operator (Options.Budget unless the options set one), and says at V(0) how it
 // went: the renders, and the wall time.
-func (r *DriftProposalReconciler) verify(ctx context.Context, dp *backflowv1beta1.DriftProposal, rend rendermap.Renderer,
+func (r *DriftProposalReconciler) verify(ctx context.Context, dp *backflowv1.DriftProposal, rend rendermap.Renderer,
 	in helmmap.Input, opts rendermap.Options) (*rendermap.Outcome, error) {
 	if opts.Budget == 0 {
 		opts.Budget = r.RenderBudget

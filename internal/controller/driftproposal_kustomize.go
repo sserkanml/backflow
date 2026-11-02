@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/kustomize"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -39,7 +39,7 @@ func kustomizeSourceProblem(app *unstructured.Unstructured) error {
 // shared bases, a new patch), each accepted only when a render of the edited
 // files through Argo CD reproduces exactly the drifted fields. Errors are as
 // for mapHelm.
-func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) mapKustomize(ctx context.Context, dp *backflowv1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS) (*mappedChange, error) {
 	if err := kustomizeSourceProblem(app); err != nil {
 		return nil, err
@@ -133,9 +133,9 @@ func renderFailure(ctx context.Context, err error) error {
 // Application's path to the other Kustomize Applications, of any
 // BackflowPolicy, that build it. Applications that no policy tracks cannot be
 // known; the text of a merge request says so.
-func (r *DriftProposalReconciler) otherUsers(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) otherUsers(ctx context.Context, dp *backflowv1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, src *kustomize.Source) (map[string][]string, error) {
-	var policies backflowv1beta1.BackflowPolicyList
+	var policies backflowv1.BackflowPolicyList
 	if err := r.List(ctx, &policies); err != nil {
 		return nil, err
 	}
@@ -148,7 +148,7 @@ func (r *DriftProposalReconciler) otherUsers(ctx context.Context, dp *backflowv1
 		for _, s := range p.Status.Applications {
 			id := types.NamespacedName{Namespace: p.Spec.ApplicationNamespace(), Name: s.Name}
 			first := s.First()
-			if seen[id] || first.Type != backflowv1beta1.SourceKustomize || normalRepoURL(first.RepoURL) != repo {
+			if seen[id] || first.Type != backflowv1.SourceKustomize || normalRepoURL(first.RepoURL) != repo {
 				continue
 			}
 			seen[id] = true
@@ -182,7 +182,7 @@ func normalRepoURL(u string) string {
 // Kustomize edit: what kind of edit each one is, that it was verified, and
 // the warnings of files outside the Application's path. Empty for other
 // strategies.
-func kustomizeNotes(dp *backflowv1beta1.DriftProposal, m *mappedChange) string {
+func kustomizeNotes(dp *backflowv1.DriftProposal, m *mappedChange) string {
 	if m == nil || m.kustomize == nil {
 		return ""
 	}
@@ -208,7 +208,7 @@ func singleLinesKeepBreaks(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-func kustomizeNoteList(dp *backflowv1beta1.DriftProposal, m *mappedChange) []string {
+func kustomizeNoteList(dp *backflowv1.DriftProposal, m *mappedChange) []string {
 	if n := kustomizeNotes(dp, m); n != "" {
 		return []string{n}
 	}

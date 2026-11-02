@@ -10,7 +10,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/kustomize"
 )
@@ -37,7 +37,7 @@ func kustomizeSpecOf(app *unstructured.Unstructured, path string) kustomize.Spec
 // kustomizeFingerprint identifies what decides the files of a Kustomize source
 // besides the repository and the two revisions, so a changed Application is
 // looked at again.
-func kustomizeFingerprint(app *unstructured.Unstructured, summary backflowv1beta1.ApplicationSummary) string {
+func kustomizeFingerprint(app *unstructured.Unstructured, summary backflowv1.ApplicationSummary) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%#v", kustomizeSpecOf(app, summary.First().PathOrChart()))))
 	return hex.EncodeToString(sum[:8])
 }
@@ -48,7 +48,7 @@ func kustomizeFingerprint(app *unstructured.Unstructured, summary backflowv1beta
 // (kustomize.RelevantFiles). When the set is not closed (a remote base,
 // helmCharts, a reference that cannot be followed) no answer is given and the
 // Application stays paused as for any Git-ahead state.
-func (r *DriftReconciler) lookAtKustomize(ctx context.Context, summary backflowv1beta1.ApplicationSummary,
+func (r *DriftReconciler) lookAtKustomize(ctx context.Context, summary backflowv1.ApplicationSummary,
 	app *unstructured.Unstructured, st aheadState, auth *gitrepo.Auth) (aheadCheck, error) {
 	return r.countRelevant(ctx, summary.First().RepoURL, st.synced, st.compared, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
 		rel, err := kustomize.RelevantFiles(fsys, kustomizeSpecOf(app, summary.First().PathOrChart()))

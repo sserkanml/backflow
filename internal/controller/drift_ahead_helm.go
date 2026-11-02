@@ -11,7 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
 )
@@ -65,7 +65,7 @@ func helmSpecFrom(app *unstructured.Unstructured, helm map[string]any, repoURL, 
 // helmFingerprint identifies what a look at a Helm source depends on besides
 // the repository and the two revisions, so a changed Application is looked at
 // again.
-func helmFingerprint(app *unstructured.Unstructured, summary backflowv1beta1.ApplicationSummary) string {
+func helmFingerprint(app *unstructured.Unstructured, summary backflowv1.ApplicationSummary) string {
 	spec := helmSpecAt(app, summary.First().RepoURL, summary.First().PathOrChart(), "")
 	delete(spec.Env, "ARGOCD_APP_REVISION")
 	delete(spec.Env, "ARGOCD_APP_REVISION_SHORT")
@@ -84,7 +84,7 @@ func helmFingerprint(app *unstructured.Unstructured, summary backflowv1beta1.App
 // missing value file or a dependency outside the repository gives no answer
 // (unchecked), and the Application stays paused as for any Git-ahead state; a
 // tree that cannot be read is an error, tried again later.
-func (r *DriftReconciler) lookAtHelm(ctx context.Context, summary backflowv1beta1.ApplicationSummary,
+func (r *DriftReconciler) lookAtHelm(ctx context.Context, summary backflowv1.ApplicationSummary,
 	app *unstructured.Unstructured, st aheadState, auth *gitrepo.Auth) (aheadCheck, error) {
 	return r.countRelevant(ctx, summary.First().RepoURL, st.synced, st.compared, auth, func(fsys fs.FS, sha string) (relevantFiles, string, error) {
 		rel, err := helmmap.RelevantFiles(fsys, helmSpecAt(app, summary.First().RepoURL, summary.First().PathOrChart(), sha))

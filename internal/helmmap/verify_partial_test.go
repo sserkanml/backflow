@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -14,7 +14,7 @@ import (
 // gone from the cluster.
 func removed(index int, path, was string) rendermap.Field {
 	return rendermap.Field{Index: index, Found: &rendermap.Found{},
-		Change: v1beta1.FieldChange{Path: path, Op: v1beta1.OpRemove, Desired: was}}
+		Change: v1.FieldChange{Path: path, Op: v1.OpRemove, Desired: was}}
 }
 
 func pointersOfFailures(ff []rendermap.FieldFailure) []string {

@@ -128,7 +128,7 @@ expect_nonempty() {
 apply_policy() {
   local name="$1" applications="$2" mode="${3:-MergeRequest}"
   k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: $name
@@ -228,7 +228,7 @@ expect_reason by-label MissingScmConnection "$WAIT_TIMEOUT" "by-label is back wi
 step "ScmConnection appears (watch on ScmConnection)"
 k -n "$NS" create secret generic scm-token --from-literal=token=dummy >/dev/null
 k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata:
   name: test-scm

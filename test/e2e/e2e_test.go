@@ -322,7 +322,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}).Should(Succeed())
 
 			By("expecting a policy that names another Argo CD server to be refused before any request: ServerNotAllowed")
-			other := `apiVersion: backflow.io/v1beta1
+			other := `apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata: {name: other-server, namespace: ` + namespace + `}
 spec:

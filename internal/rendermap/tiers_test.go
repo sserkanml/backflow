@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/mapping"
 )
 
@@ -215,8 +215,8 @@ func TestBlockedField(t *testing.T) {
 	})
 	t.Run("with a partial mapping the other fields are still mapped", func(t *testing.T) {
 		in := tierInput(files, &Found{Candidates: []Candidate{sizeCand("a.txt")}})
-		in.Fields = append(in.Fields, Field{Index: 1, Found: blocked, Change: v1beta1.FieldChange{
-			Path: "/data/name", Op: v1beta1.OpReplace, Desired: `"a"`, Live: `"b"`}})
+		in.Fields = append(in.Fields, Field{Index: 1, Found: blocked, Change: v1.FieldChange{
+			Path: "/data/name", Op: v1.OpReplace, Desired: `"a"`, Live: `"b"`}})
 		out, err := Verify(context.Background(), &tierRenderer{}, in, Options{AllowPartial: true})
 		if err != nil || !out.Mapped() {
 			t.Fatalf("out = %+v, err = %v", out, err)

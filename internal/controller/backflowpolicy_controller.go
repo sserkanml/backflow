@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -65,7 +65,7 @@ type BackflowPolicyReconciler struct {
 
 // reasonCredentialsInRepoURL is the reason of the Event for an Application that is not tracked
 // because a repository URL of it contains credentials.
-const reasonCredentialsInRepoURL = string(backflowv1beta1.UntrackedCredentialsInRepoURL)
+const reasonCredentialsInRepoURL = string(backflowv1.UntrackedCredentialsInRepoURL)
 
 // maxStatusApplications is how many Applications status.applications lists; the policy covers all.
 const maxStatusApplications = 100
@@ -83,7 +83,7 @@ const maxStatusApplications = 100
 func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var policy backflowv1beta1.BackflowPolicy
+	var policy backflowv1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetPolicy(req.Namespace, req.Name)
@@ -106,14 +106,14 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	var conns backflowv1beta1.ScmConnectionList
+	var conns backflowv1.ScmConnectionList
 	if err := r.List(ctx, &conns, client.InNamespace(policy.Namespace)); err != nil {
 		return ctrl.Result{}, err
 	}
-	slices.SortFunc(conns.Items, func(a, b backflowv1beta1.ScmConnection) int { return cmp.Compare(a.Name, b.Name) })
+	slices.SortFunc(conns.Items, func(a, b backflowv1.ScmConnection) int { return cmp.Compare(a.Name, b.Name) })
 
 	names := make([]string, 0, len(apps))
-	summaries := make([]backflowv1beta1.ApplicationSummary, 0, len(apps))
+	summaries := make([]backflowv1.ApplicationSummary, 0, len(apps))
 	var missingScm, withCredentials []string
 	for i := range apps {
 		names = append(names, apps[i].GetName())
@@ -121,9 +121,9 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// Application is stored: only the redacted URL is kept, and the
 		// Application is not tracked.
 		if redacted, found := credentialedRepoURL(&apps[i]); found {
-			summaries = append(summaries, backflowv1beta1.ApplicationSummary{
-				Name: apps[i].GetName(), UntrackedReason: backflowv1beta1.UntrackedCredentialsInRepoURL,
-				Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: redacted}},
+			summaries = append(summaries, backflowv1.ApplicationSummary{
+				Name: apps[i].GetName(), UntrackedReason: backflowv1.UntrackedCredentialsInRepoURL,
+				Sources: []backflowv1.SourceSummary{{Position: 1, RepoURL: redacted}},
 			})
 			withCredentials = append(withCredentials, apps[i].GetName())
 			r.reportCredentials(&policy, apps[i].GetName(), redacted)
@@ -140,7 +140,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	r.forgetCredentialReports(&policy, withCredentials)
 
-	var proposals backflowv1beta1.DriftProposalList
+	var proposals backflowv1.DriftProposalList
 	if err := r.List(ctx, &proposals, client.InNamespace(policy.Namespace),
 		client.MatchingLabels{labelPolicy: safeLabel(policy.Name)}); err != nil {
 		return ctrl.Result{}, err
@@ -178,7 +178,7 @@ func (r *BackflowPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		cond.Reason = "ApplicationConflict"
 		cond.Message = fmt.Sprintf("Application %q is already managed by BackflowPolicy %q, which is older; "+
 			"an Application can be managed by one policy only", conflict.application, conflict.policy)
-	case len(missingScm) > 0 && policy.Spec.Mode != backflowv1beta1.ModeReportOnly:
+	case len(missingScm) > 0 && policy.Spec.Mode != backflowv1.ModeReportOnly:
 		cond.Status = metav1.ConditionFalse
 		cond.Reason = "MissingScmConnection"
 		cond.Message = fmt.Sprintf("No ScmConnection in namespace %q matches the repository of: %s",
@@ -256,7 +256,7 @@ func nextResync(secretForbidden, visibilityUnknown bool) time.Duration {
 // argoCDSecretForbidden returns a SecretForbidden error when the operator may
 // not read the Argo CD token or CA Secret of the policy. A Secret that is
 // missing, or any other error, is not reported here.
-func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) error {
+func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, policy *backflowv1.BackflowPolicy) error {
 	spec := policy.Spec.ArgoCD.Server
 	if spec == nil {
 		// The token of the operator's default connection, in the namespace the installer named.
@@ -271,7 +271,7 @@ func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, po
 		}
 		return nil
 	}
-	refs := []backflowv1beta1.SecretKeyReference{spec.TokenSecretRef}
+	refs := []backflowv1.SecretKeyReference{spec.TokenSecretRef}
 	if spec.CASecretRef != nil {
 		refs = append(refs, *spec.CASecretRef)
 	}
@@ -291,7 +291,7 @@ func (r *BackflowPolicyReconciler) argoCDSecretForbidden(ctx context.Context, po
 // about the Application that its policy cannot see. The signal is written with a merge
 // patch of that one object, so it does not overwrite what the proposal controller writes.
 func (r *BackflowPolicyReconciler) retireExcluded(ctx context.Context,
-	proposals []backflowv1beta1.DriftProposal, excluded []string, all bool) error {
+	proposals []backflowv1.DriftProposal, excluded []string, all bool) error {
 	if len(excluded) == 0 && !all {
 		return nil
 	}
@@ -338,7 +338,7 @@ func credentialedRepoURL(app *unstructured.Unstructured) (redacted string, found
 
 // reportCredentials emits one Event per Application (and URL) saying that it is
 // not tracked.
-func (r *BackflowPolicyReconciler) reportCredentials(policy *backflowv1beta1.BackflowPolicy, app, redacted string) {
+func (r *BackflowPolicyReconciler) reportCredentials(policy *backflowv1.BackflowPolicy, app, redacted string) {
 	key := policy.Namespace + "/" + policy.Name + "/" + app
 	r.mu.Lock()
 	last, known := r.reported[key]
@@ -358,7 +358,7 @@ func (r *BackflowPolicyReconciler) reportCredentials(policy *backflowv1beta1.Bac
 
 // forgetCredentialReports drops the reports of Applications of the policy that
 // are no longer blocked, so a returning credential is reported again.
-func (r *BackflowPolicyReconciler) forgetCredentialReports(policy *backflowv1beta1.BackflowPolicy, blocked []string) {
+func (r *BackflowPolicyReconciler) forgetCredentialReports(policy *backflowv1.BackflowPolicy, blocked []string) {
 	prefix := policy.Namespace + "/" + policy.Name + "/"
 	keep := map[string]bool{}
 	for _, app := range blocked {
@@ -388,9 +388,9 @@ type resolution struct {
 
 // Reasons Applications are excluded (status.argoCD.hiddenApplications[].reason).
 const (
-	excludedProjectNotAllowed = string(backflowv1beta1.HiddenProjectNotAllowed)
-	excludedNotVisibleToToken = string(backflowv1beta1.HiddenNotVisibleToToken)
-	excludedVisibilityUnknown = string(backflowv1beta1.HiddenVisibilityUnknown)
+	excludedProjectNotAllowed = string(backflowv1.HiddenProjectNotAllowed)
+	excludedNotVisibleToToken = string(backflowv1.HiddenNotVisibleToToken)
+	excludedVisibilityUnknown = string(backflowv1.HiddenVisibilityUnknown)
 )
 
 // visibilityRetry is how soon a policy whose Applications could not be checked looks again.
@@ -398,14 +398,14 @@ const visibilityRetry = 30 * time.Second
 
 // recordIn writes the counts of the hidden Applications by reason, and nothing that names one,
 // to the status.
-func (res resolution) recordIn(st *backflowv1beta1.BackflowPolicyStatus) {
+func (res resolution) recordIn(st *backflowv1.BackflowPolicyStatus) {
 	n := int32(len(res.excluded) + res.unknown)
 	if st.ArgoCD == nil {
 		return
 	}
 	st.ArgoCD.HiddenApplications = nil
 	if n > 0 {
-		st.ArgoCD.HiddenApplications = []backflowv1beta1.HiddenApplications{{Reason: backflowv1beta1.HiddenReason(res.excludedReason), Count: n}}
+		st.ArgoCD.HiddenApplications = []backflowv1.HiddenApplications{{Reason: backflowv1.HiddenReason(res.excludedReason), Count: n}}
 	}
 }
 
@@ -420,12 +420,12 @@ func excludedExplanation(reason string) string {
 }
 
 // resolveApplications is the Applications a policy selects and may see (see appResolver).
-func (r *BackflowPolicyReconciler) resolveApplications(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) (resolution, error) {
+func (r *BackflowPolicyReconciler) resolveApplications(ctx context.Context, policy *backflowv1.BackflowPolicy) (resolution, error) {
 	return r.resolver().resolve(ctx, policy)
 }
 
 // matchApplications is the Applications a policy selects and may see.
-func (r *BackflowPolicyReconciler) matchApplications(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) ([]unstructured.Unstructured, error) {
+func (r *BackflowPolicyReconciler) matchApplications(ctx context.Context, policy *backflowv1.BackflowPolicy) ([]unstructured.Unstructured, error) {
 	res, err := r.resolveApplications(ctx, policy)
 	return res.apps, err
 }
@@ -441,7 +441,7 @@ type applicationConflict struct {
 }
 
 // policyOlder orders policies by creationTimestamp, then name, then namespace.
-func policyOlder(a, b *backflowv1beta1.BackflowPolicy) bool {
+func policyOlder(a, b *backflowv1.BackflowPolicy) bool {
 	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
 		return a.CreationTimestamp.Before(&b.CreationTimestamp)
 	}
@@ -456,13 +456,13 @@ func policyOlder(a, b *backflowv1beta1.BackflowPolicy) bool {
 // their Applications in age order, and a policy that is itself blocked claims
 // nothing, so the oldest policy always wins and a blocked one cannot block a
 // younger one. Policies whose own selection is invalid are ignored.
-func (r *BackflowPolicyReconciler) findConflict(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
+func (r *BackflowPolicyReconciler) findConflict(ctx context.Context, policy *backflowv1.BackflowPolicy,
 	apps []unstructured.Unstructured) (*applicationConflict, error) {
-	var all backflowv1beta1.BackflowPolicyList
+	var all backflowv1.BackflowPolicyList
 	if err := r.List(ctx, &all); err != nil {
 		return nil, err
 	}
-	var older []*backflowv1beta1.BackflowPolicy
+	var older []*backflowv1.BackflowPolicy
 	for i := range all.Items {
 		p := &all.Items[i]
 		if p.Spec.ApplicationNamespace() != policy.Spec.ApplicationNamespace() || p.DeletionTimestamp != nil ||
@@ -471,7 +471,7 @@ func (r *BackflowPolicyReconciler) findConflict(ctx context.Context, policy *bac
 		}
 		older = append(older, p)
 	}
-	slices.SortFunc(older, func(a, b *backflowv1beta1.BackflowPolicy) int {
+	slices.SortFunc(older, func(a, b *backflowv1.BackflowPolicy) int {
 		switch {
 		case policyOlder(a, b):
 			return -1
@@ -517,11 +517,11 @@ func (r *BackflowPolicyReconciler) findConflict(ctx context.Context, policy *bac
 // which of them wins an Application depends on each other. A policy whose
 // argoCDNamespace changed leaves its old peers to the periodic resync.
 func (r *BackflowPolicyReconciler) policiesSharingArgoCDNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
-	changed, ok := obj.(*backflowv1beta1.BackflowPolicy)
+	changed, ok := obj.(*backflowv1.BackflowPolicy)
 	if !ok {
 		return nil
 	}
-	var list backflowv1beta1.BackflowPolicyList
+	var list backflowv1.BackflowPolicyList
 	if err := r.List(ctx, &list); err != nil {
 		return nil
 	}
@@ -541,8 +541,8 @@ func (r *BackflowPolicyReconciler) policiesSharingArgoCDNamespace(ctx context.Co
 // summarizeApplication extracts what Backflow needs from an Application: its sources, always
 // at least one (an Application with a single source has one entry), each with what Argo CD
 // resolved for it.
-func summarizeApplication(app *unstructured.Unstructured) backflowv1beta1.ApplicationSummary {
-	s := backflowv1beta1.ApplicationSummary{Name: app.GetName()}
+func summarizeApplication(app *unstructured.Unstructured) backflowv1.ApplicationSummary {
+	s := backflowv1.ApplicationSummary{Name: app.GetName()}
 	if resources, ok, _ := unstructured.NestedSlice(app.Object, fieldStatus, "resources"); ok {
 		s.ManagedResources = int32(len(resources))
 	}
@@ -554,7 +554,7 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1beta1.Applic
 	if !found {
 		src = map[string]any{}
 	}
-	one := backflowv1beta1.SourceSummary{
+	one := backflowv1.SourceSummary{
 		Position: 1, RepoURL: strField(src, "repoURL"), TargetRevision: strField(src, "targetRevision"),
 		Path: strField(src, "path"), Chart: strField(src, "chart"),
 	}
@@ -571,23 +571,23 @@ func summarizeApplication(app *unstructured.Unstructured) backflowv1beta1.Applic
 	// Argo CD reports the detected type in status.sourceType. Fall back to
 	// the spec when the Application has not been reconciled yet.
 	detected, _, _ := unstructured.NestedString(app.Object, fieldStatus, "sourceType")
-	one.Type = backflowv1beta1.SourceType(detected)
+	one.Type = backflowv1.SourceType(detected)
 	if one.Type == "" {
 		switch {
 		case one.Chart != "", src["helm"] != nil:
 			one.Type = sourceTypeHelm
 		case src["kustomize"] != nil:
-			one.Type = backflowv1beta1.SourceKustomize
+			one.Type = backflowv1.SourceKustomize
 		default:
-			one.Type = backflowv1beta1.SourceDirectory
+			one.Type = backflowv1.SourceDirectory
 		}
 	}
-	s.Sources = []backflowv1beta1.SourceSummary{one}
+	s.Sources = []backflowv1.SourceSummary{one}
 	return s
 }
 
 // matchSourceConnections sets the ScmConnection of every Git source.
-func matchSourceConnections(sources []backflowv1beta1.SourceSummary, conns []backflowv1beta1.ScmConnection) {
+func matchSourceConnections(sources []backflowv1.SourceSummary, conns []backflowv1.ScmConnection) {
 	for i := range sources {
 		if isGitSource(sources[i]) {
 			sources[i].ScmConnectionName = connectionFor(sources[i].RepoURL, conns)
@@ -598,7 +598,7 @@ func matchSourceConnections(sources []backflowv1beta1.SourceSummary, conns []bac
 // missingConnection reports whether a repository Backflow reads or writes has
 // no ScmConnection: the repository of a single-source Application, or any Git
 // source of a multi-source one.
-func missingConnection(s backflowv1beta1.ApplicationSummary) bool {
+func missingConnection(s backflowv1.ApplicationSummary) bool {
 	for _, src := range s.Sources {
 		if isGitSource(src) && src.ScmConnectionName == "" {
 			return true
@@ -629,7 +629,7 @@ func repoHost(repoURL string) string {
 // connectionFor returns the name of the first ScmConnection whose hosts
 // include the repository's host. Connections without spec.hosts match the
 // host of their spec.url.
-func connectionFor(repoURL string, conns []backflowv1beta1.ScmConnection) string {
+func connectionFor(repoURL string, conns []backflowv1.ScmConnection) string {
 	host := repoHost(repoURL)
 	if host == "" {
 		return ""
@@ -657,7 +657,7 @@ func (r *BackflowPolicyReconciler) policiesForApplication(ctx context.Context, o
 // policiesInNamespace enqueues every policy in the namespace of the changed
 // ScmConnection.
 func (r *BackflowPolicyReconciler) policiesInNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list backflowv1beta1.BackflowPolicyList
+	var list backflowv1.BackflowPolicyList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace())); err != nil {
 		return nil
 	}
@@ -698,15 +698,15 @@ func applicationChanged() predicate.Predicate {
 // SetupWithManager sets up the controller with the Manager.
 func (r *BackflowPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&backflowv1beta1.BackflowPolicy{},
+		For(&backflowv1.BackflowPolicy{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&backflowv1beta1.BackflowPolicy{},
+		Watches(&backflowv1.BackflowPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.policiesSharingArgoCDNamespace),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&backflowv1beta1.ScmConnection{},
+		Watches(&backflowv1.ScmConnection{},
 			handler.EnqueueRequestsFromMapFunc(r.policiesInNamespace),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&backflowv1beta1.DriftProposal{},
+		Watches(&backflowv1.DriftProposal{},
 			handler.EnqueueRequestsFromMapFunc(policyOfProposal),
 			builder.WithPredicates(proposalPhaseChanged())).
 		Named("backflowpolicy")
@@ -730,7 +730,7 @@ func (r *BackflowPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // policyOfProposal enqueues the policy that owns a DriftProposal.
 func policyOfProposal(_ context.Context, obj client.Object) []reconcile.Request {
 	for _, ref := range obj.GetOwnerReferences() {
-		if ref.Kind == "BackflowPolicy" && strings.HasPrefix(ref.APIVersion, backflowv1beta1.GroupVersion.Group+"/") {
+		if ref.Kind == "BackflowPolicy" && strings.HasPrefix(ref.APIVersion, backflowv1.GroupVersion.Group+"/") {
 			return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: ref.Name}}}
 		}
 	}
@@ -742,8 +742,8 @@ func policyOfProposal(_ context.Context, obj client.Object) []reconcile.Request 
 func proposalPhaseChanged() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldP, ok1 := e.ObjectOld.(*backflowv1beta1.DriftProposal)
-			newP, ok2 := e.ObjectNew.(*backflowv1beta1.DriftProposal)
+			oldP, ok1 := e.ObjectOld.(*backflowv1.DriftProposal)
+			newP, ok2 := e.ObjectNew.(*backflowv1.DriftProposal)
 			return !ok1 || !ok2 || isOpenPhase(oldP.Status.Phase) != isOpenPhase(newP.Status.Phase)
 		},
 	}

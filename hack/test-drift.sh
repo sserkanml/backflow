@@ -380,7 +380,7 @@ TOKEN=""
 apply_policy() {
   local ignore="${1:-}"
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: $POLICY

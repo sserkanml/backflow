@@ -39,7 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	records "github.com/sserkanml/backflow/api/records/v1alpha1"
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/controller"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
@@ -57,7 +57,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(backflowv1beta1.AddToScheme(scheme))
+	utilruntime.Must(backflowv1.AddToScheme(scheme))
 	utilruntime.Must(records.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }

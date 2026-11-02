@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // multiApp builds an Application with these sources and, when given, status
@@ -47,7 +47,7 @@ func TestSummarizeSources(t *testing.T) {
 	app := multiApp([]any{chartSource, valuesRef},
 		[]any{"6.7.1", "aaaa"}, []any{"6.7.0", "bbbb"}, []any{"Helm", ""})
 	got := summarizeSources(app)
-	want := []backflowv1beta1.SourceSummary{
+	want := []backflowv1.SourceSummary{
 		{Position: 1, RepoURL: "ghcr.io/stefanprodan/charts", Chart: "podinfo", TargetRevision: "6.7.*",
 			Revision: "6.7.1", SyncedRevision: "6.7.0", Type: "Helm"},
 		{Position: 2, RepoURL: "https://gitlab.com/x/values.git", TargetRevision: "main", Ref: "values",
@@ -161,12 +161,12 @@ func TestProposalSources(t *testing.T) {
 	other := map[string]any{"repoURL": "https://gitlab.com/x/more.git", "targetRevision": "dev", "ref": "more"}
 	app := multiApp([]any{chartSource, valuesRef, other}, []any{"6.7.1", "aaaa", "bbbb"}, nil, []any{"Helm", "", ""})
 	got := proposalSources(app)
-	roles := make([]backflowv1beta1.SourceRole, len(got))
+	roles := make([]backflowv1.SourceRole, len(got))
 	revs := make([]string, len(got))
 	for i, s := range got {
 		roles[i], revs[i] = s.Role, s.Revision
 	}
-	if !reflect.DeepEqual(roles, []backflowv1beta1.SourceRole{backflowv1beta1.RoleRender, backflowv1beta1.RoleValues, backflowv1beta1.RoleReference}) ||
+	if !reflect.DeepEqual(roles, []backflowv1.SourceRole{backflowv1.RoleRender, backflowv1.RoleValues, backflowv1.RoleReference}) ||
 		!reflect.DeepEqual(revs, []string{"6.7.1", "aaaa", "bbbb"}) {
 		t.Errorf("sources = %+v", got)
 	}
@@ -180,7 +180,7 @@ func TestProposalSources(t *testing.T) {
 	t.Run("two ref sources that hold value files are both Values", func(t *testing.T) {
 		c := map[string]any{"repoURL": "ghcr.io/x", "chart": "c", "helm": map[string]any{"valueFiles": []any{"$values/a.yaml", "$more/b.yaml"}}}
 		got := proposalSources(multiApp([]any{c, valuesRef, other}, nil, nil, nil))
-		if got[1].Role != backflowv1beta1.RoleValues || got[2].Role != backflowv1beta1.RoleValues {
+		if got[1].Role != backflowv1.RoleValues || got[2].Role != backflowv1.RoleValues {
 			t.Errorf("sources = %+v", got)
 		}
 	})
@@ -192,13 +192,13 @@ func TestProposalSources(t *testing.T) {
 }
 
 func TestTranslateValueFiles(t *testing.T) {
-	registryChart := backflowv1beta1.ProposalSource{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "ghcr.io/x/charts", Chart: "podinfo"}
-	gitChart := backflowv1beta1.ProposalSource{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "https://gitlab.com/x/chart.git", Path: "charts/app"}
+	registryChart := backflowv1.ProposalSource{Position: 1, Role: backflowv1.RoleRender, RepoURL: "ghcr.io/x/charts", Chart: "podinfo"}
+	gitChart := backflowv1.ProposalSource{Position: 1, Role: backflowv1.RoleRender, RepoURL: "https://gitlab.com/x/chart.git", Path: "charts/app"}
 	helm := func(files ...any) map[string]any { return map[string]any{"valueFiles": files} }
 	tests := []struct {
 		name   string
 		helm   map[string]any
-		render backflowv1beta1.ProposalSource
+		render backflowv1.ProposalSource
 		reason string
 		msg    string
 		want   []string

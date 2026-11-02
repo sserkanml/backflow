@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 func TestParseAccessRule(t *testing.T) {
@@ -134,22 +134,22 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 			Expect(unstructured.SetNestedField(app.Object, project, "spec", "project")).To(Succeed())
 			return app
 		}
-		newPolicy = func(ns, name string, appNames ...string) *backflowv1beta1.BackflowPolicy {
-			p := &backflowv1beta1.BackflowPolicy{
+		newPolicy = func(ns, name string, appNames ...string) *backflowv1.BackflowPolicy {
+			p := &backflowv1.BackflowPolicy{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-				Spec: backflowv1beta1.BackflowPolicySpec{
-					ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS}, Applications: backflowv1beta1.ApplicationSelector{Names: appNames},
-					Mode: backflowv1beta1.ModeReportOnly,
+				Spec: backflowv1.BackflowPolicySpec{
+					ArgoCD: backflowv1.ArgoCDSpec{Namespace: argoNS}, Applications: backflowv1.ApplicationSelector{Names: appNames},
+					Mode: backflowv1.ModeReportOnly,
 				},
 			}
 			create(p)
 			return p
 		}
-		reconcilePolicy = func(d *ArgoCDDefaults, p *backflowv1beta1.BackflowPolicy) *backflowv1beta1.BackflowPolicy {
+		reconcilePolicy = func(d *ArgoCDDefaults, p *backflowv1.BackflowPolicy) *backflowv1.BackflowPolicy {
 			r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ArgoCD: d, Recorder: recorder}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			got := &backflowv1beta1.BackflowPolicy{}
+			got := &backflowv1.BackflowPolicy{}
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(p), got)).To(Succeed())
 			return got
 		}
@@ -178,7 +178,7 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 	})
 
 	// shows is everything a user of the policy can read about it.
-	shows := func(p *backflowv1beta1.BackflowPolicy) string {
+	shows := func(p *backflowv1.BackflowPolicy) string {
 		status, err := json.Marshal(p.Status)
 		Expect(err).NotTo(HaveOccurred())
 		var evs []string
@@ -201,7 +201,7 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 	})
 
 	It("lets only the operator's namespace use the default when there are no rules", func() {
-		by := func(ns string) *backflowv1beta1.BackflowPolicy {
+		by := func(ns string) *backflowv1.BackflowPolicy {
 			return reconcilePolicy(rule(""), newPolicy(ns, "access-opns-"+ns, "access-unrelated-app"))
 		}
 		Expect(meta.FindStatusCondition(by("default").Status.Conditions, "Ready").Reason).To(Equal("ArgoCDDefaultNotAllowed"))
@@ -237,8 +237,8 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 	It("does not apply the rules to a policy with its own spec.argoCD", func() {
 		p := newPolicy("default", "access-own", visibleApp, hiddenApp)
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p), p)).To(Succeed())
-		p.Spec.ArgoCD.Server = &backflowv1beta1.ArgoCDServer{
-			TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "tok", Key: "token"},
+		p.Spec.ArgoCD.Server = &backflowv1.ArgoCDServer{
+			TokenSecretRef: backflowv1.SecretKeyReference{Name: "tok", Key: "token"},
 		}
 		Expect(k8sClient.Update(ctx, p)).To(Succeed())
 		got := reconcilePolicy(rule("team-b:other"), p)
@@ -246,22 +246,22 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 	})
 
 	Context("proposals of an Application the policy may no longer see", func() {
-		proposalFor := func(policy *backflowv1beta1.BackflowPolicy, app string) *backflowv1beta1.DriftProposal {
-			dp := &backflowv1beta1.DriftProposal{
+		proposalFor := func(policy *backflowv1.BackflowPolicy, app string) *backflowv1.DriftProposal {
+			dp := &backflowv1.DriftProposal{
 				ObjectMeta: metav1.ObjectMeta{Namespace: policy.Namespace, GenerateName: "access-dp-",
 					Labels: map[string]string{labelPolicy: safeLabel(policy.Name)}},
-				Spec: backflowv1beta1.DriftProposalSpec{
-					PolicyRef:      backflowv1beta1.LocalObjectRef{Name: policy.Name},
-					ApplicationRef: backflowv1beta1.ObjectRef{Name: app, Namespace: argoNS},
-					ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
-					Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "https://example.com/r.git", Revision: "abc",
-						Path: "apps/demo", Type: backflowv1beta1.SourceDirectory}},
-					Changes:    []backflowv1beta1.FieldChange{{Path: "/data/K", Op: backflowv1beta1.OpReplace, Desired: `"a"`, Live: `"b"`}},
+				Spec: backflowv1.DriftProposalSpec{
+					PolicyRef:      backflowv1.LocalObjectRef{Name: policy.Name},
+					ApplicationRef: backflowv1.ObjectRef{Name: app, Namespace: argoNS},
+					ResourceRef:    backflowv1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
+					Sources: []backflowv1.ProposalSource{{Position: 1, Role: backflowv1.RoleRender, RepoURL: "https://example.com/r.git", Revision: "abc",
+						Path: "apps/demo", Type: backflowv1.SourceDirectory}},
+					Changes:    []backflowv1.FieldChange{{Path: "/data/K", Op: backflowv1.OpReplace, Desired: `"a"`, Live: `"b"`}},
 					DetectedAt: metav1.Now(),
 				},
 			}
 			create(dp)
-			dp.Status.Phase = backflowv1beta1.PhaseMapping
+			dp.Status.Phase = backflowv1.PhaseMapping
 			Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
 			return dp
 		}
@@ -280,7 +280,7 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(theirs)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(theirs), theirs)).To(Succeed())
-			Expect(theirs.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
+			Expect(theirs.Status.Phase).To(Equal(backflowv1.PhaseSuperseded))
 			Expect(meta.FindStatusCondition(theirs.Status.Conditions, conditionMapped).Reason).To(Equal(reasonAccessRevoked))
 			Expect(theirs.Status.Message).NotTo(ContainSubstring(hiddenProj))
 		})
@@ -292,7 +292,7 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), dp)).To(Succeed())
-			Expect(dp.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
+			Expect(dp.Status.Phase).To(Equal(backflowv1.PhaseSuperseded))
 		})
 
 		It("are all retired when the namespace loses its rule", func() {
@@ -322,7 +322,7 @@ var _ = Describe("The default Argo CD connection's access rules", func() {
 			create(child)
 
 			policy := newPolicy("default", "access-parent-policy", "access-child")
-			dp := &backflowv1beta1.DriftProposal{Spec: backflowv1beta1.DriftProposalSpec{PolicyRef: backflowv1beta1.LocalObjectRef{Name: policy.Name}}}
+			dp := &backflowv1.DriftProposal{Spec: backflowv1.DriftProposalSpec{PolicyRef: backflowv1.LocalObjectRef{Name: policy.Name}}}
 			dp.Namespace = policy.Namespace
 			r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ArgoCD: rule("default:" + allowedProj)}
 

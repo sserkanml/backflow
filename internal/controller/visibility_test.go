@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
@@ -177,13 +177,13 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 			create(app)
 		}
 		create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "vis-token", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-		policy := &backflowv1beta1.BackflowPolicy{
+		policy := &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "vis-policy", Namespace: argoNS},
-			Spec: backflowv1beta1.BackflowPolicySpec{
-				Mode:         backflowv1beta1.ModeReportOnly,
-				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"vis-mine", "vis-theirs-qx17"}},
-				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
-					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "vis-token", Key: "token"},
+			Spec: backflowv1.BackflowPolicySpec{
+				Mode:         backflowv1.ModeReportOnly,
+				Applications: backflowv1.ApplicationSelector{Names: []string{"vis-mine", "vis-theirs-qx17"}},
+				ArgoCD: backflowv1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1.ArgoCDServer{
+					TokenSecretRef: backflowv1.SecretKeyReference{Name: "vis-token", Key: "token"},
 				}},
 			},
 		}
@@ -208,7 +208,7 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 	})
 
 	Context("when Argo CD cannot be reached", func() {
-		var policy *backflowv1beta1.BackflowPolicy
+		var policy *backflowv1.BackflowPolicy
 		down := fmt.Errorf("%w: down", argocd.ErrUnreachable)
 		BeforeEach(func() {
 			for _, n := range []string{"out-confirmed", "out-new-zx42"} {
@@ -219,23 +219,23 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 				create(app)
 			}
 			create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "out-token", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-			policy = &backflowv1beta1.BackflowPolicy{
+			policy = &backflowv1.BackflowPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: "out-policy", Namespace: argoNS},
-				Spec: backflowv1beta1.BackflowPolicySpec{
-					Mode:         backflowv1beta1.ModeReportOnly,
-					Applications: backflowv1beta1.ApplicationSelector{Names: []string{"out-confirmed", "out-new-zx42"}},
-					ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
-						TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "out-token", Key: "token"},
+				Spec: backflowv1.BackflowPolicySpec{
+					Mode:         backflowv1.ModeReportOnly,
+					Applications: backflowv1.ApplicationSelector{Names: []string{"out-confirmed", "out-new-zx42"}},
+					ArgoCD: backflowv1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1.ArgoCDServer{
+						TokenSecretRef: backflowv1.SecretKeyReference{Name: "out-token", Key: "token"},
 					}},
 				},
 			}
 			create(policy)
 		})
-		reconcileWith := func(v *ApplicationVisibility) (*backflowv1beta1.BackflowPolicy, reconcile.Result) {
+		reconcileWith := func(v *ApplicationVisibility) (*backflowv1.BackflowPolicy, reconcile.Result) {
 			r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ArgoCD: &ArgoCDDefaults{}, Visibility: v}
 			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			got := &backflowv1beta1.BackflowPolicy{}
+			got := &backflowv1.BackflowPolicy{}
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), got)).To(Succeed())
 			return got, res
 		}
@@ -272,20 +272,20 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 		})
 
 		It("never retires a proposal for it, and does for a definite refusal", func() {
-			dp := &backflowv1beta1.DriftProposal{
+			dp := &backflowv1.DriftProposal{
 				ObjectMeta: metav1.ObjectMeta{Namespace: argoNS, GenerateName: "out-dp-", Labels: map[string]string{labelPolicy: safeLabel(policy.Name)}},
-				Spec: backflowv1beta1.DriftProposalSpec{
-					PolicyRef:      backflowv1beta1.LocalObjectRef{Name: policy.Name},
-					ApplicationRef: backflowv1beta1.ObjectRef{Name: "out-new-zx42", Namespace: argoNS},
-					ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
-					Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "https://example.com/r.git", Revision: "abc",
-						Path: "apps/demo", Type: backflowv1beta1.SourceDirectory}},
-					Changes:    []backflowv1beta1.FieldChange{{Path: "/data/K", Op: backflowv1beta1.OpReplace, Desired: `"a"`, Live: `"b"`}},
+				Spec: backflowv1.DriftProposalSpec{
+					PolicyRef:      backflowv1.LocalObjectRef{Name: policy.Name},
+					ApplicationRef: backflowv1.ObjectRef{Name: "out-new-zx42", Namespace: argoNS},
+					ResourceRef:    backflowv1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "cm"},
+					Sources: []backflowv1.ProposalSource{{Position: 1, Role: backflowv1.RoleRender, RepoURL: "https://example.com/r.git", Revision: "abc",
+						Path: "apps/demo", Type: backflowv1.SourceDirectory}},
+					Changes:    []backflowv1.FieldChange{{Path: "/data/K", Op: backflowv1.OpReplace, Desired: `"a"`, Live: `"b"`}},
 					DetectedAt: metav1.Now(),
 				},
 			}
 			create(dp)
-			dp.Status.Phase = backflowv1beta1.PhaseMapping
+			dp.Status.Phase = backflowv1.PhaseMapping
 			Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
 
 			f := &fakeGetter{answers: map[string]error{"out-confirmed": down, "out-new-zx42": down}}
@@ -303,12 +303,12 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 	})
 
 	It("is not Ready with the reason SecretForbidden when its token Secret cannot be read", func() {
-		policy := &backflowv1beta1.BackflowPolicy{
+		policy := &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "vis-forbidden-policy", Namespace: argoNS},
-			Spec: backflowv1beta1.BackflowPolicySpec{
-				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"anything"}},
-				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
-					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "locked", Key: "token"},
+			Spec: backflowv1.BackflowPolicySpec{
+				Applications: backflowv1.ApplicationSelector{Names: []string{"anything"}},
+				ArgoCD: backflowv1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1.ArgoCDServer{
+					TokenSecretRef: backflowv1.SecretKeyReference{Name: "locked", Key: "token"},
 				}},
 			},
 		}
@@ -339,17 +339,17 @@ var _ = Describe("A policy with its own Argo CD token", func() {
 		child.SetAnnotations(map[string]string{"argocd.argoproj.io/tracking-id": "vis-parent:argoproj.io/Application:default/vis-child"})
 		create(child)
 		create(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "vis-token3", Namespace: argoNS}, Data: map[string][]byte{"token": []byte("t")}})
-		policy := &backflowv1beta1.BackflowPolicy{
+		policy := &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "vis-parent-policy", Namespace: argoNS},
-			Spec: backflowv1beta1.BackflowPolicySpec{
-				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"vis-child"}},
-				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1beta1.ArgoCDServer{
-					TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "vis-token3", Key: "token"},
+			Spec: backflowv1.BackflowPolicySpec{
+				Applications: backflowv1.ApplicationSelector{Names: []string{"vis-child"}},
+				ArgoCD: backflowv1.ArgoCDSpec{Namespace: argoNS, Server: &backflowv1.ArgoCDServer{
+					TokenSecretRef: backflowv1.SecretKeyReference{Name: "vis-token3", Key: "token"},
 				}},
 			},
 		}
 		create(policy)
-		dp := &backflowv1beta1.DriftProposal{Spec: backflowv1beta1.DriftProposalSpec{PolicyRef: backflowv1beta1.LocalObjectRef{Name: policy.Name}}}
+		dp := &backflowv1.DriftProposal{Spec: backflowv1.DriftProposalSpec{PolicyRef: backflowv1.LocalObjectRef{Name: policy.Name}}}
 		dp.Namespace = argoNS
 
 		f := &fakeGetter{answers: map[string]error{"vis-parent": fmt.Errorf("%w: HTTP 403", argocd.ErrUnauthorized)}}

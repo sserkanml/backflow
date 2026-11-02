@@ -28,7 +28,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 var _ = Describe("DriftProposal Controller", func() {
@@ -44,27 +44,27 @@ var _ = Describe("DriftProposal Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		driftproposal := &backflowv1beta1.DriftProposal{}
+		driftproposal := &backflowv1.DriftProposal{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind DriftProposal")
 			err := k8sClient.Get(ctx, typeNamespacedName, driftproposal)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &backflowv1beta1.DriftProposal{
+				resource := &backflowv1.DriftProposal{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					Spec: backflowv1beta1.DriftProposalSpec{
-						PolicyRef:      backflowv1beta1.LocalObjectRef{Name: "demo"},
-						ApplicationRef: backflowv1beta1.ObjectRef{Name: "demo-app", Namespace: "argocd"},
-						ResourceRef: backflowv1beta1.ResourceRef{
+					Spec: backflowv1.DriftProposalSpec{
+						PolicyRef:      backflowv1.LocalObjectRef{Name: "demo"},
+						ApplicationRef: backflowv1.ObjectRef{Name: "demo-app", Namespace: "argocd"},
+						ResourceRef: backflowv1.ResourceRef{
 							Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: "demo-config",
 						},
-						Sources: []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "https://example.com/repo.git", Revision: "abc123",
-							Path: "apps/demo", Type: backflowv1beta1.SourceDirectory}},
-						Changes: []backflowv1beta1.FieldChange{{
-							Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`,
+						Sources: []backflowv1.ProposalSource{{Position: 1, Role: backflowv1.RoleRender, RepoURL: "https://example.com/repo.git", Revision: "abc123",
+							Path: "apps/demo", Type: backflowv1.SourceDirectory}},
+						Changes: []backflowv1.FieldChange{{
+							Path: "/data/LOG_LEVEL", Op: backflowv1.OpReplace, Desired: `"info"`, Live: `"debug"`,
 						}},
 						DetectedAt: metav1.Now(),
 					},
@@ -74,7 +74,7 @@ var _ = Describe("DriftProposal Controller", func() {
 		})
 
 		AfterEach(func() {
-			resource := &backflowv1beta1.DriftProposal{}
+			resource := &backflowv1.DriftProposal{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -82,7 +82,7 @@ var _ = Describe("DriftProposal Controller", func() {
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("rejects spec updates but accepts status updates", func() {
-			resource := &backflowv1beta1.DriftProposal{}
+			resource := &backflowv1.DriftProposal{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
 
 			resource.Spec.Changes[0].Live = `"trace"`
@@ -92,39 +92,39 @@ var _ = Describe("DriftProposal Controller", func() {
 			Expect(err.Error()).To(ContainSubstring("spec is immutable"))
 
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
-			resource.Status.Phase = backflowv1beta1.PhaseDetected
+			resource.Status.Phase = backflowv1.PhaseDetected
 			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
 		})
 
 		It("reconciles a minimal object without an error and without touching its spec", func() {
 			r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			before := &backflowv1beta1.DriftProposal{}
+			before := &backflowv1.DriftProposal{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, before)).To(Succeed())
 
 			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.IsZero()).To(BeTrue(), "nothing to wait for without a repository reader")
 
-			after := &backflowv1beta1.DriftProposal{}
+			after := &backflowv1.DriftProposal{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, after)).To(Succeed())
 			Expect(after.Spec).To(Equal(before.Spec))
-			Expect(after.Status.Phase).To(Equal(backflowv1beta1.PhaseDetected))
+			Expect(after.Status.Phase).To(Equal(backflowv1.PhaseDetected))
 		})
 
 		It("accepts the fields a partial mapping leaves out in its status", func() {
-			resource := &backflowv1beta1.DriftProposal{}
+			resource := &backflowv1.DriftProposal{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, resource)).To(Succeed())
-			resource.Status.Phase = backflowv1beta1.PhaseMapping
-			resource.Status.Mapping = &backflowv1beta1.Mapping{
-				Strategy: backflowv1beta1.StrategyDirect, Verified: true,
-				Unmapped: []backflowv1beta1.UnmappedField{{
+			resource.Status.Phase = backflowv1.PhaseMapping
+			resource.Status.Mapping = &backflowv1.Mapping{
+				Strategy: backflowv1.StrategyDirect, Verified: true,
+				Unmapped: []backflowv1.UnmappedField{{
 					Path: "/spec/template/spec/containers/2/volumeMounts/1", Reason: "UnsupportedChange",
 					Message: "a removed list element cannot be written to a value file",
 				}},
 			}
 			Expect(k8sClient.Status().Update(ctx, resource)).To(Succeed())
 
-			got := &backflowv1beta1.DriftProposal{}
+			got := &backflowv1.DriftProposal{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
 			Expect(got.Status.Mapping.Unmapped).To(Equal(resource.Status.Mapping.Unmapped))
 
@@ -134,66 +134,66 @@ var _ = Describe("DriftProposal Controller", func() {
 		})
 
 		Context("phase handling", func() {
-			reconcileProposal := func() *backflowv1beta1.DriftProposal {
+			reconcileProposal := func() *backflowv1.DriftProposal {
 				r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				got := &backflowv1beta1.DriftProposal{}
+				got := &backflowv1.DriftProposal{}
 				ExpectWithOffset(1, k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
 				return got
 			}
 			annotate := func(key, value string) {
-				got := &backflowv1beta1.DriftProposal{}
+				got := &backflowv1.DriftProposal{}
 				ExpectWithOffset(1, k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
 				signalProposal(ctx, k8sClient, got, key, value)
 			}
 
 			It("moves an empty phase to Detected and leaves it there", func() {
-				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1beta1.PhaseDetected))
-				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1beta1.PhaseDetected))
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1.PhaseDetected))
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1.PhaseDetected))
 			})
 
 			It("sets Superseded with supersededBy from the annotation", func() {
 				annotate(annotationSupersededBy, "newer")
 				got := reconcileProposal()
-				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
+				Expect(got.Status.Phase).To(Equal(backflowv1.PhaseSuperseded))
 				Expect(got.Status.SupersededBy).To(Equal("newer"))
 			})
 
 			It("sets Reverted with the reason from the annotation", func() {
 				annotate(annotationReverted, "back in sync")
 				got := reconcileProposal()
-				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseReverted))
+				Expect(got.Status.Phase).To(Equal(backflowv1.PhaseReverted))
 				Expect(got.Status.Message).To(Equal("back in sync"))
 			})
 
 			It("keeps Reverted when superseded-by is added afterwards, and the other way round", func() {
 				annotate(annotationReverted, "back in sync")
-				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1beta1.PhaseReverted))
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1.PhaseReverted))
 
 				annotate(annotationSupersededBy, "newer")
 				got := reconcileProposal()
-				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseReverted))
+				Expect(got.Status.Phase).To(Equal(backflowv1.PhaseReverted))
 				Expect(got.Status.SupersededBy).To(BeEmpty())
 				Expect(got.Status.Message).To(Equal("back in sync"))
 			})
 
 			It("keeps Superseded when reverted is added afterwards", func() {
 				annotate(annotationSupersededBy, "newer")
-				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
+				Expect(reconcileProposal().Status.Phase).To(Equal(backflowv1.PhaseSuperseded))
 
 				annotate(annotationReverted, "back in sync")
 				got := reconcileProposal()
-				Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseSuperseded))
+				Expect(got.Status.Phase).To(Equal(backflowv1.PhaseSuperseded))
 				Expect(got.Status.SupersededBy).To(Equal("newer"))
 			})
 
 			It("never changes a terminal phase", func() {
-				for _, phase := range []backflowv1beta1.ProposalPhase{
-					backflowv1beta1.PhaseMerged, backflowv1beta1.PhaseRejected, backflowv1beta1.PhaseReverted,
-					backflowv1beta1.PhaseSuperseded, backflowv1beta1.PhaseFailed,
+				for _, phase := range []backflowv1.ProposalPhase{
+					backflowv1.PhaseMerged, backflowv1.PhaseRejected, backflowv1.PhaseReverted,
+					backflowv1.PhaseSuperseded, backflowv1.PhaseFailed,
 				} {
-					got := &backflowv1beta1.DriftProposal{}
+					got := &backflowv1.DriftProposal{}
 					Expect(k8sClient.Get(ctx, typeNamespacedName, got)).To(Succeed())
 					got.Status.Phase = phase
 					Expect(k8sClient.Status().Update(ctx, got)).To(Succeed())

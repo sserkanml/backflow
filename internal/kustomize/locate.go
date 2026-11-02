@@ -9,7 +9,7 @@ import (
 	"go.yaml.in/yaml/v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
@@ -32,8 +32,8 @@ func (s *Source) WithBuildMetadata(files map[string][]byte) (map[string][]byte, 
 		if !ok {
 			continue
 		}
-		edited, err := mapping.Apply(file, content, 0, []v1beta1.FieldChange{{
-			Path: "/buildMetadata", Op: v1beta1.OpAdd,
+		edited, err := mapping.Apply(file, content, 0, []v1.FieldChange{{
+			Path: "/buildMetadata", Op: v1.OpAdd,
 			Live: `["originAnnotations","transformerAnnotations"]`,
 		}})
 		if err != nil {

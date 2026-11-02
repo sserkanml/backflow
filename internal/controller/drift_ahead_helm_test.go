@@ -9,7 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 )
 
@@ -57,7 +57,7 @@ func with(base map[string]string, changes map[string]string) map[string]string {
 
 const chartYAML = "apiVersion: v2\nname: x\nversion: 0.1.0\n"
 
-func helmApp(path string, helm map[string]any) (*unstructured.Unstructured, backflowv1beta1.ApplicationSummary) {
+func helmApp(path string, helm map[string]any) (*unstructured.Unstructured, backflowv1.ApplicationSummary) {
 	app := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
 		"metadata": map[string]any{"name": "alpha", "namespace": "argocd"},
@@ -69,7 +69,7 @@ func helmApp(path string, helm map[string]any) (*unstructured.Unstructured, back
 			},
 		},
 	}}
-	return app, backflowv1beta1.ApplicationSummary{Name: "alpha", Sources: []backflowv1beta1.SourceSummary{{Position: 1, RepoURL: "https://example.com/r.git", Path: path, Type: backflowv1beta1.SourceType(string(backflowv1beta1.SourceHelm))}}}
+	return app, backflowv1.ApplicationSummary{Name: "alpha", Sources: []backflowv1.SourceSummary{{Position: 1, RepoURL: "https://example.com/r.git", Path: path, Type: backflowv1.SourceType(string(backflowv1.SourceHelm))}}}
 }
 
 func TestChangedUnderPathHelm(t *testing.T) {
@@ -251,7 +251,7 @@ func TestChangedUnderPathHelm(t *testing.T) {
 			r := &DriftReconciler{Git: git}
 			app, summary := helmApp(tt.path, tt.helm)
 			st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
-			policy := &backflowv1beta1.BackflowPolicy{}
+			policy := &backflowv1.BackflowPolicy{}
 
 			changed, checked := r.changedUnderPath(context.Background(), policy, summary, app, st)
 			if checked == tt.unchecked {
@@ -271,7 +271,7 @@ func TestChangedUnderPathHelmWithoutTreeAccess(t *testing.T) {
 	r := &DriftReconciler{Git: &fakeDiffer{paths: []string{"README.md"}}} // cannot open trees
 	app, summary := helmApp("c", map[string]any{})
 	st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
-	if _, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary, app, st); checked {
+	if _, checked := r.changedUnderPath(context.Background(), &backflowv1.BackflowPolicy{}, summary, app, st); checked {
 		t.Error("a GitDiffer that cannot read files answered for a Helm source")
 	}
 }
@@ -286,7 +286,7 @@ func TestChangedUnderPathHelmIsRemembered(t *testing.T) {
 	app, summary := helmApp("c", map[string]any{})
 	st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
 	for range 3 {
-		if n, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary, app, st); !checked || n != 1 {
+		if n, checked := r.changedUnderPath(context.Background(), &backflowv1.BackflowPolicy{}, summary, app, st); !checked || n != 1 {
 			t.Fatalf("n = %d, checked = %v", n, checked)
 		}
 	}
@@ -297,7 +297,7 @@ func TestChangedUnderPathHelmIsRemembered(t *testing.T) {
 	app2, summary2 := helmApp("c", map[string]any{"valueFiles": []any{"values.yaml"}})
 	git.trees[shaSynced]["c/values.yaml"] = &fstest.MapFile{Data: []byte("a: 1\n")}
 	git.trees[shaCompared]["c/values.yaml"] = &fstest.MapFile{Data: []byte("a: 1\n")}
-	r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary2, app2, st)
+	r.changedUnderPath(context.Background(), &backflowv1.BackflowPolicy{}, summary2, app2, st)
 	if git.calls != 2 {
 		t.Errorf("a new value file list did not cause a new look (%d)", git.calls)
 	}
@@ -333,7 +333,7 @@ func TestChangedUnderPathHelmSharedChartPerServiceValues(t *testing.T) {
 			r := &DriftReconciler{Git: git}
 			app, summary := helmApp("helm/shared", map[string]any{"valueFiles": []any{"services/beta/dev.yaml"}})
 			st := aheadState{synced: shaSynced, compared: shaCompared, paused: true}
-			changed, checked := r.changedUnderPath(context.Background(), &backflowv1beta1.BackflowPolicy{}, summary, app, st)
+			changed, checked := r.changedUnderPath(context.Background(), &backflowv1.BackflowPolicy{}, summary, app, st)
 			if !checked || changed != tt.want {
 				t.Errorf("changed = %d, checked = %v, want %d, true", changed, checked, tt.want)
 			}

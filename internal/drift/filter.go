@@ -3,13 +3,13 @@ package drift
 import (
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 // Allowed reports whether a resource of the given group and kind is captured
 // by a policy: it must match Include (when set) and must not match Exclude.
 // Secrets are excluded unless an Include entry names the Secret kind literally.
-func Allowed(group, kind string, include, exclude []v1beta1.KindSelector) bool {
+func Allowed(group, kind string, include, exclude []v1.KindSelector) bool {
 	if len(include) > 0 && !matchesAny(include, group, kind) {
 		return false
 	}
@@ -29,7 +29,7 @@ func Allowed(group, kind string, include, exclude []v1beta1.KindSelector) bool {
 
 // IgnorePointers returns the JSON pointers of all IgnoreRules that apply to
 // the given resource.
-func IgnorePointers(rules []v1beta1.IgnoreRule, group, kind, name string) []string {
+func IgnorePointers(rules []v1.IgnoreRule, group, kind, name string) []string {
 	var out []string
 	for _, r := range rules {
 		if !matchesSelector(r.KindSelector, group, kind) {
@@ -43,7 +43,7 @@ func IgnorePointers(rules []v1beta1.IgnoreRule, group, kind, name string) []stri
 	return out
 }
 
-func matchesAny(sels []v1beta1.KindSelector, group, kind string) bool {
+func matchesAny(sels []v1.KindSelector, group, kind string) bool {
 	for _, s := range sels {
 		if matchesSelector(s, group, kind) {
 			return true
@@ -52,7 +52,7 @@ func matchesAny(sels []v1beta1.KindSelector, group, kind string) bool {
 	return false
 }
 
-func matchesSelector(s v1beta1.KindSelector, group, kind string) bool {
+func matchesSelector(s v1.KindSelector, group, kind string) bool {
 	return wildcardMatch(s.Group, group) && wildcardMatch(s.Kind, kind)
 }
 

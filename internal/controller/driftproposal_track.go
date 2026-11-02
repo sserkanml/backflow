@@ -14,7 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/scm"
@@ -60,8 +60,8 @@ type mrClient struct {
 // clientFor builds the provider client for the proposal's repository. A
 // problem the user can fix (missing policy, ScmConnection, Secret) is
 // returned as a *heldError.
-func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1beta1.DriftProposal) (*mrClient, error) {
-	var policy backflowv1beta1.BackflowPolicy
+func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1.DriftProposal) (*mrClient, error) {
+	var policy backflowv1.BackflowPolicy
 	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyRef.Name}, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &heldError{reason: reasonPolicyNotFound, cause: fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyRef.Name)}
@@ -93,17 +93,17 @@ func (r *DriftProposalReconciler) clientFor(ctx context.Context, dp *backflowv1b
 
 // retiring reports whether a superseded or reverted signal waits to be
 // applied.
-func retiring(dp *backflowv1beta1.DriftProposal) bool {
+func retiring(dp *backflowv1.DriftProposal) bool {
 	sg := dp.Status.Signal()
 	return sg.SupersededBy != "" || sg.Reverted != "" || sg.AccessRevoked
 }
 
 // applyLifecycle sets the phase a superseded or reverted signal asks for.
 // It reports whether one was applied.
-func applyLifecycle(dp *backflowv1beta1.DriftProposal) bool {
+func applyLifecycle(dp *backflowv1.DriftProposal) bool {
 	switch {
 	case dp.Status.Signal().SupersededBy != "":
-		dp.Status.Phase = backflowv1beta1.PhaseSuperseded
+		dp.Status.Phase = backflowv1.PhaseSuperseded
 		dp.Status.SupersededBy = dp.Status.Signal().SupersededBy
 		dp.Status.Message = "A newer drift on the same resource replaced this proposal."
 		leaveProposedIfProposed(dp, reasonSuperseded, "Replaced by the newer proposal "+dp.Status.SupersededBy+".")
@@ -112,14 +112,14 @@ func applyLifecycle(dp *backflowv1beta1.DriftProposal) bool {
 		setAccessRevoked(dp)
 		return true
 	case dp.Status.Signal().Reverted != "":
-		dp.Status.Phase = backflowv1beta1.PhaseReverted
+		dp.Status.Phase = backflowv1.PhaseReverted
 		dp.Status.Message = dp.Status.Signal().Reverted
 		leaveProposedIfProposed(dp, reasonLiveReverted, dp.Status.Message)
 		return true
 	case dp.Status.Signal().LiveRevertedAtRevision != "":
 		// Only reached when there is no open merge request to keep the change
 		// in (a proposal with one is handled by trackProposed): a plain revert.
-		dp.Status.Phase = backflowv1beta1.PhaseReverted
+		dp.Status.Phase = backflowv1.PhaseReverted
 		dp.Status.Message = "The live resource was reset to Git by an Argo CD sync of " + dp.Status.Signal().LiveRevertedAtRevision + "."
 		leaveProposedIfProposed(dp, reasonLiveReverted, dp.Status.Message)
 		return true
@@ -133,9 +133,9 @@ const reasonAccessRevoked = "AccessRevoked"
 
 // setAccessRevoked ends the proposal. The message names nothing about the
 // Application, which the policy may not see.
-func setAccessRevoked(dp *backflowv1beta1.DriftProposal) {
+func setAccessRevoked(dp *backflowv1.DriftProposal) {
 	const msg = "The policy may no longer see this Application, so the proposal was retired."
-	dp.Status.Phase = backflowv1beta1.PhaseSuperseded
+	dp.Status.Phase = backflowv1.PhaseSuperseded
 	dp.Status.Message = msg
 	leaveProposedIfProposed(dp, reasonAccessRevoked, msg)
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
@@ -147,7 +147,7 @@ func setAccessRevoked(dp *backflowv1beta1.DriftProposal) {
 // leaveProposed records in the Proposed condition that the proposal is no longer
 // open: it is written together with the phase, so the conditions, which the
 // console shows first, never say that a merge request is open when it is not.
-func leaveProposed(dp *backflowv1beta1.DriftProposal, reason, message string) {
+func leaveProposed(dp *backflowv1.DriftProposal, reason, message string) {
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 		Type: conditionProposed, Status: metav1.ConditionFalse, Reason: reason,
 		Message: message, ObservedGeneration: dp.Generation,
@@ -157,7 +157,7 @@ func leaveProposed(dp *backflowv1beta1.DriftProposal, reason, message string) {
 // leaveProposedIfProposed does so for a proposal that got as far as being
 // proposed (it has a Proposed condition or a merge request), and names its
 // merge request. A proposal retired before that has nothing to correct.
-func leaveProposedIfProposed(dp *backflowv1beta1.DriftProposal, reason, message string) {
+func leaveProposedIfProposed(dp *backflowv1.DriftProposal, reason, message string) {
 	if ref := dp.Status.GitMergeRequest(); ref != nil {
 		message = strings.TrimSpace(message) + " Merge request: " + ref.URL + "."
 	} else if meta.FindStatusCondition(dp.Status.Conditions, conditionProposed) == nil {
@@ -182,7 +182,7 @@ func closedConditionMessage(url string) string {
 // merge request was merged or closed, the cluster usually drifts back in sync
 // right away, and the drift controller then marks the proposal reverted. The
 // merge request is the truth about what happened.
-func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflowv1.DriftProposal) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	ref := dp.Status.GitMergeRequest()
 
@@ -201,7 +201,7 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 	orig := dp.DeepCopy()
 	switch cur.State {
 	case scm.StateMerged:
-		dp.Status.Phase = backflowv1beta1.PhaseMerged
+		dp.Status.Phase = backflowv1.PhaseMerged
 		dp.Status.EnsureGit().CommitSHA = cur.MergeCommitSHA
 		ref.State = string(scm.StateMerged)
 		dp.Status.Message = mergedMessage(ref.URL)
@@ -213,7 +213,7 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 		metrics.MergeRequest(providerOf(c.access), metrics.MRMerged)
 		return ctrl.Result{}, nil
 	case scm.StateClosed:
-		dp.Status.Phase = backflowv1beta1.PhaseRejected
+		dp.Status.Phase = backflowv1.PhaseRejected
 		ref.State = string(scm.StateClosed)
 		dp.Status.Message = closedMessage(ref.URL)
 		leaveProposed(dp, reasonMergeRequestClosed, closedConditionMessage(ref.URL))
@@ -252,7 +252,7 @@ func (r *DriftProposalReconciler) trackProposed(ctx context.Context, dp *backflo
 const trackingFailurePrefix = "Cannot read the state of merge request"
 
 // openMessage is the message of a proposal whose merge request is open.
-func openMessage(dp *backflowv1beta1.DriftProposal, cur *scm.MergeRequest) string {
+func openMessage(dp *backflowv1.DriftProposal, cur *scm.MergeRequest) string {
 	ref := dp.Status.GitMergeRequest()
 	if rev := dp.Status.Signal().LiveRevertedAtRevision; rev != "" &&
 		meta.IsStatusConditionTrue(dp.Status.Conditions, conditionLiveReverted) {
@@ -271,7 +271,7 @@ func openMessage(dp *backflowv1beta1.DriftProposal, cur *scm.MergeRequest) strin
 // merge request says why the cluster no longer shows the change and that
 // merging makes it permanent. When the change is live again, the condition
 // goes False.
-func (r *DriftProposalReconciler) syncLiveReverted(ctx context.Context, c *mrClient, dp *backflowv1beta1.DriftProposal) error {
+func (r *DriftProposalReconciler) syncLiveReverted(ctx context.Context, c *mrClient, dp *backflowv1.DriftProposal) error {
 	rev := dp.Status.Signal().LiveRevertedAtRevision
 	cond := meta.FindStatusCondition(dp.Status.Conditions, conditionLiveReverted)
 	switch {
@@ -304,7 +304,7 @@ func (r *DriftProposalReconciler) syncLiveReverted(ctx context.Context, c *mrCli
 // again later. The phase does not change: not being able to look is not a
 // verdict. A pending superseded or reverted annotation waits too, because the
 // merge request may have been merged meanwhile.
-func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backflowv1.DriftProposal,
 	cause error, advised time.Duration) (ctrl.Result, error) {
 	orig := dp.DeepCopy()
 	dp.Status.Message = redactText(fmt.Sprintf("%s %s: %v", trackingFailurePrefix, dp.Status.GitMergeRequest().URL, cause))
@@ -324,11 +324,11 @@ func (r *DriftProposalReconciler) trackingFailure(ctx context.Context, dp *backf
 // merge request or a branch to clean up. A recorded branch is enough: the
 // operator may have stopped after pushing it and before recording the merge
 // request.
-func needsCleanup(dp *backflowv1beta1.DriftProposal) bool {
+func needsCleanup(dp *backflowv1.DriftProposal) bool {
 	if dp.Status.GitMergeRequest() == nil && dp.Status.GitBranch() == "" {
 		return false
 	}
-	if dp.Status.Phase != backflowv1beta1.PhaseSuperseded && dp.Status.Phase != backflowv1beta1.PhaseReverted {
+	if dp.Status.Phase != backflowv1.PhaseSuperseded && dp.Status.Phase != backflowv1.PhaseReverted {
 		return false
 	}
 	return !meta.IsStatusConditionTrue(dp.Status.Conditions, conditionCleanedUp)
@@ -340,7 +340,7 @@ func needsCleanup(dp *backflowv1beta1.DriftProposal) bool {
 // may have been opened just before the operator stopped. Every step can be
 // repeated, and progress is kept in the CleanedUp condition, so a failure
 // part-way is picked up again.
-func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1.DriftProposal) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	ref := dp.Status.GitMergeRequest()
 	branch := dp.Status.GitBranch()
@@ -431,7 +431,7 @@ func (r *DriftProposalReconciler) cleanup(ctx context.Context, dp *backflowv1bet
 // closeRetired comments on an open merge request of a retired proposal and
 // closes it. The comment comes first so the reason is on the page when it
 // closes, and it is remembered so a retry of the close does not comment again.
-func (r *DriftProposalReconciler) closeRetired(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) closeRetired(ctx context.Context, dp *backflowv1.DriftProposal,
 	c *mrClient, cur *scm.MergeRequest, keptBranch, why string) error {
 	if prog := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); prog == nil || prog.Reason != reasonCommented {
 		if err := c.provider.CommentOnMergeRequest(ctx, c.project, cur.Number, closingComment(dp, keptBranch, why)); err != nil {
@@ -461,7 +461,7 @@ const branchScanLimit = 50
 // target branch). Each of those commits has exactly one parent. When it does
 // not, why says so and the branch is left alone: someone else may have pushed
 // to it. exists is false when the branch is already gone.
-func (r *DriftProposalReconciler) branchIsOurs(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) branchIsOurs(ctx context.Context, dp *backflowv1.DriftProposal,
 	access *scmAccess, branch string) (exists bool, why string, err error) {
 	url := writeTarget(dp).RepoURL
 	tip, err := r.Writer.BranchTip(ctx, url, branch, access.auth)
@@ -502,7 +502,7 @@ func shortSHA(sha string) string {
 }
 
 // setCleanedUp records progress of the cleanup.
-func (r *DriftProposalReconciler) setCleanedUp(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) setCleanedUp(ctx context.Context, dp *backflowv1.DriftProposal,
 	status metav1.ConditionStatus, reason, message string) error {
 	orig := dp.DeepCopy()
 	meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
@@ -512,7 +512,7 @@ func (r *DriftProposalReconciler) setCleanedUp(ctx context.Context, dp *backflow
 }
 
 // finishCleanup records that nothing is left to do for the merge request.
-func (r *DriftProposalReconciler) finishCleanup(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) finishCleanup(ctx context.Context, dp *backflowv1.DriftProposal,
 	found *scm.MergeRequest, mrState, reason, message string) error {
 	orig := dp.DeepCopy()
 	switch {
@@ -520,7 +520,7 @@ func (r *DriftProposalReconciler) finishCleanup(ctx context.Context, dp *backflo
 		dp.Status.GitMergeRequest().State = mrState
 	case found != nil:
 		// Found by its branch: record it, so the proposal says what it opened.
-		dp.Status.EnsureGit().MergeRequest = &backflowv1beta1.MergeRequestRef{
+		dp.Status.EnsureGit().MergeRequest = &backflowv1.MergeRequestRef{
 			URL: found.URL, Number: found.Number, State: mrState,
 		}
 	}
@@ -532,7 +532,7 @@ func (r *DriftProposalReconciler) finishCleanup(ctx context.Context, dp *backflo
 
 // cleanupPending records why the cleanup could not finish and asks for
 // another attempt. Progress already made (the comment) is kept.
-func (r *DriftProposalReconciler) cleanupPending(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) cleanupPending(ctx context.Context, dp *backflowv1.DriftProposal,
 	cause error, advised time.Duration) (ctrl.Result, error) {
 	reason := reasonCleanupFailed
 	if c := meta.FindStatusCondition(dp.Status.Conditions, conditionCleanedUp); c != nil && c.Reason == reasonCommented {

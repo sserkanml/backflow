@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/actorwebhook"
 )
 
@@ -45,7 +45,7 @@ var _ = Describe("Actor records", func() {
 			"data": map[string]any{"LOG_LEVEL": "debug"},
 		}
 	}
-	changes := []backflowv1beta1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
+	changes := []backflowv1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
 	record := func(mut func(*actorwebhook.Record)) actorwebhook.Record {
 		r := actorwebhook.Record{
 			UID: "uid-actor-1", Resource: "configmaps", Namespace: "demo", Name: "cfg", FieldManager: "kubectl-edit",
@@ -66,11 +66,11 @@ var _ = Describe("Actor records", func() {
 		}
 		created = nil
 	})
-	refine := func(a *ActorRecords, uid string, mgr string) *backflowv1beta1.Actor {
+	refine := func(a *ActorRecords, uid string, mgr string) *backflowv1.Actor {
 		return a.Refine(ctx, live(uid, mgr, t0), changes, actorwebhook.Window{})
 	}
 	// nameOf is the user name of an actor that may be nil (no verified record).
-	nameOf := func(a *backflowv1beta1.Actor) string {
+	nameOf := func(a *backflowv1.Actor) string {
 		if a == nil {
 			return ""
 		}
@@ -129,9 +129,9 @@ var _ = Describe("Actor records", func() {
 	})
 
 	Context("the text of a merge request", func() {
-		dp := func() *backflowv1beta1.DriftProposal {
-			return &backflowv1beta1.DriftProposal{Spec: backflowv1beta1.DriftProposalSpec{
-				Actor: &backflowv1beta1.Actor{Username: "alice", Groups: []string{"devs"}},
+		dp := func() *backflowv1.DriftProposal {
+			return &backflowv1.DriftProposal{Spec: backflowv1.DriftProposalSpec{
+				Actor: &backflowv1.Actor{Username: "alice", Groups: []string{"devs"}},
 			}}
 		}
 		It("leaves the user name out unless usernameInMergeRequest is on", func() {
@@ -245,7 +245,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			"data": map[string]any{"LOG_LEVEL": "debug"},
 		}
 	}
-	changes := []backflowv1beta1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1beta1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
+	changes := []backflowv1.FieldChange{{Path: "/data/LOG_LEVEL", Op: backflowv1.OpReplace, Desired: `"info"`, Live: `"debug"`}}
 	flow := func(recordUsername bool, bodies ...string) *ActorRecords {
 		buf := actorwebhook.NewBuffer(100)
 		h := actorwebhook.NewHandler(actorwebhook.Options{Buffer: buf, RecordUsername: recordUsername, Now: func() time.Time { return now }})
@@ -268,7 +268,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		created = nil
 	})
 	// nameOf is the user name of an actor that may be nil (no verified record).
-	nameOf := func(a *backflowv1beta1.Actor) string {
+	nameOf := func(a *backflowv1.Actor) string {
 		if a == nil {
 			return ""
 		}
@@ -334,7 +334,7 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 		}
 		// The Application was last synced an hour ago; the proposal is made now.
 		sinceSync := actorwebhook.Window{After: now.Add(-time.Hour), Before: now.Add(time.Minute)}
-		replicas := []backflowv1beta1.FieldChange{{Path: "/spec/replicas", Op: backflowv1beta1.OpReplace, Desired: "1", Live: "3"}}
+		replicas := []backflowv1.FieldChange{{Path: "/spec/replicas", Op: backflowv1.OpReplace, Desired: "1", Live: "3"}}
 
 		It("names the user from the scale entry of managedFields, which has no time", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-1"))

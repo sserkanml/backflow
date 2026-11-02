@@ -14,14 +14,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
 const defaultArgoCDURL = "https://argocd-server.argocd.svc"
 
 // secretKey returns one key of a Secret in the given namespace.
-func secretKey(ctx context.Context, c client.Reader, namespace string, ref backflowv1beta1.SecretKeyReference) ([]byte, error) {
+func secretKey(ctx context.Context, c client.Reader, namespace string, ref backflowv1.SecretKeyReference) ([]byte, error) {
 	var secret corev1.Secret
 	if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: ref.Name}, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -43,7 +43,7 @@ func secretKey(ctx context.Context, c client.Reader, namespace string, ref backf
 //
 // A policy without spec.argoCD uses the connection the installer gave the operator
 // (defaults); with spec.argoCD, its own Secrets in its own namespace are read as before.
-func argoCDConfig(ctx context.Context, c client.Reader, policy *backflowv1beta1.BackflowPolicy, defaults *ArgoCDDefaults) (argocd.Config, error) {
+func argoCDConfig(ctx context.Context, c client.Reader, policy *backflowv1.BackflowPolicy, defaults *ArgoCDDefaults) (argocd.Config, error) {
 	spec := policy.Spec.ArgoCD.Server
 	if spec == nil {
 		if !defaults.Configured() {
@@ -77,7 +77,7 @@ func argoCDConfig(ctx context.Context, c client.Reader, policy *backflowv1beta1.
 
 // forgetArgoCDSecrets drops the Secrets kept in memory that hold the Argo CD token of
 // the policy, after Argo CD refused it: it may have been renewed since it was read.
-func forgetArgoCDSecrets(c client.Reader, policy *backflowv1beta1.BackflowPolicy, defaults *ArgoCDDefaults) {
+func forgetArgoCDSecrets(c client.Reader, policy *backflowv1.BackflowPolicy, defaults *ArgoCDDefaults) {
 	forgetSecrets(c, argoSecretNamespace(policy, defaults))
 }
 

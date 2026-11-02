@@ -1,6 +1,6 @@
 package kustomize
 
-import "github.com/sserkanml/backflow/api/v1beta1"
+import "github.com/sserkanml/backflow/api/v1"
 
 // The tiers of places an edit can go, in the order they are tried.
 const (
@@ -45,7 +45,7 @@ type Edit struct {
 	Holder string
 	// Pointer is the JSON pointer of the field in the edited document.
 	Pointer string
-	Op      v1beta1.ChangeOperation
+	Op      v1.ChangeOperation
 	// Desired and Live are the JSON texts of the value in the render and in
 	// the cluster; Live is empty for a removal.
 	Desired, Live string

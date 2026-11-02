@@ -17,7 +17,7 @@ import (
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/drift"
 	"github.com/sserkanml/backflow/internal/mapping"
 	"github.com/sserkanml/backflow/internal/rendermap"
@@ -82,7 +82,7 @@ func runDirectory() ([]caseResult, error) {
 	return out, nil
 }
 
-func mapDirectory(fsys fs.FS, dir string, res mapping.ResourceID, changes []v1beta1.FieldChange) outcome {
+func mapDirectory(fsys fs.FS, dir string, res mapping.ResourceID, changes []v1.FieldChange) outcome {
 	r, err := mapping.Map(fsys, dir, mapping.DirectoryOptions{}, "demo", res, changes)
 	if err != nil {
 		reason := err.Error()

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 // Edit is one change landed in a file.
@@ -37,7 +37,7 @@ type Result struct {
 // ErrNotFound, ErrAmbiguous, ErrCannotApply, ErrUnsupportedFileFormat, ErrInvalidGlob or
 // ErrVerificationFailed when the change cannot be traced back with certainty.
 func Map(fsys fs.FS, appPath string, opts DirectoryOptions, destNamespace string, res ResourceID,
-	changes []v1beta1.FieldChange) (*Result, error) {
+	changes []v1.FieldChange) (*Result, error) {
 	loc, err := Locate(fsys, appPath, opts, destNamespace, res)
 	if err != nil {
 		return nil, err

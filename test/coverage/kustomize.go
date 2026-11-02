@@ -13,7 +13,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/drift"
 	"github.com/sserkanml/backflow/internal/kustomize"
 	"github.com/sserkanml/backflow/internal/kustomize/kbuild"
@@ -188,7 +188,7 @@ func sortedKeysOf(m map[rendermap.ResourceKey]*unstructured.Unstructured) []rend
 }
 
 // mapChanges is the production path of mapping a Kustomize proposal.
-func (l *kustomizeLoaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured, changes []v1beta1.FieldChange, m policySet) (outcome, error) {
+func (l *kustomizeLoaded) mapChanges(ctx context.Context, obj *unstructured.Unstructured, changes []v1.FieldChange, m policySet) (outcome, error) {
 	gv := obj.GroupVersionKind()
 	pol := m.pol
 	pol.Application = l.app.name

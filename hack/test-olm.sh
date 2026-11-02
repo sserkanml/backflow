@@ -188,7 +188,7 @@ grep -q '"scmHosts": \["gitlab.invalid"\]' "$WORK/operator.log" && ok "the opera
 expect "the permissions are get-only on Secrets" \
   "$(kubectl get clusterrole -o json | jq -r '[.items[] | select(.metadata.labels["olm.owner"] == "'"$CSV"'") | .rules[]? | select((.resources // []) | index("secrets")) | .verbs | join(",")] | unique | join(";")')" "get"
 for crd in scmconnections backflowpolicies driftproposals; do
-  expect "$crd.backflow.io stores v1beta1 only" "$(kubectl get crd "$crd.backflow.io" -o jsonpath='{.status.storedVersions}')" '["v1beta1"]'
+  expect "$crd.backflow.io stores v1 only" "$(kubectl get crd "$crd.backflow.io" -o jsonpath='{.status.storedVersions}')" '["v1"]'
 done
 
 # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ kubectl -n "$APP_NS" create secret generic gitlab-token-elsewhere --from-literal
 kubectl create namespace other >/dev/null
 kubectl -n other create secret generic gitlab-token --from-literal=token=not-a-real-token >/dev/null
 kubectl apply -f - >/dev/null <<YAML || die "cannot create the objects"
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata: {name: allowed, namespace: $APP_NS}
 spec:
@@ -207,7 +207,7 @@ spec:
   url: https://gitlab.invalid
   tokenSecretRef: {name: gitlab-token, key: token}
 ---
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata: {name: not-allowed, namespace: $APP_NS}
 spec:
@@ -215,7 +215,7 @@ spec:
   url: https://git.elsewhere.invalid
   tokenSecretRef: {name: gitlab-token, key: token}
 ---
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata: {name: p1, namespace: $APP_NS}
 spec:
@@ -234,7 +234,7 @@ expect "the operator is still running" "$(kubectl -n "$NS" get deploy "$DEPLOY" 
 
 # A Secret in a namespace that BACKFLOW_SECRET_NAMESPACES does not list is not read.
 kubectl apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata: {name: secret-elsewhere, namespace: other}
 spec:

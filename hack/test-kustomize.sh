@@ -933,7 +933,7 @@ k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token"
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata:
   name: $SCM_NAME
@@ -953,7 +953,7 @@ ARGOCD_POLICY_BLOCK="    server:
         key: token"
 if [[ "$ARGOCD_DEFAULT" == "true" ]]; then ARGOCD_POLICY_BLOCK=""; fi
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
