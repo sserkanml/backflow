@@ -38,7 +38,7 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 	changes []backflowv1alpha1.FieldChange, st aheadState) (ready bool, wait time.Duration) {
 	enc, _ := json.Marshal(changes)
 	key := pendingKey{policy: policy.Namespace + "/" + policy.Name, app: app, resource: resource}
-	window := policy.Spec.EffectiveBatchWindow()
+	window := r.stableWindow(policy)
 	now := r.now()
 
 	r.stableMu.Lock()
@@ -63,6 +63,14 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 	return false, max(window-elapsed, time.Second)
 }
 
+// stableWindow is how long a drift must have been seen before it becomes a proposal: the policy's
+// batchWindow, and with the actor webhook at least the time its records need to be written, so that the
+// actor is not resolved while the newest change is still in the webhook's buffer. The observation of
+// the drift is the newest change that can be known: a drift with other changes starts again.
+func (r *DriftReconciler) stableWindow(policy *backflowv1alpha1.BackflowPolicy) time.Duration {
+	return max(policy.Spec.EffectiveBatchWindow(), r.Actors.Hold())
+}
+
 // nextStableCheck says when the policy should be looked at again for the drifts
 // that are waiting to become stable, or 0 when none is. It is derived from what
 // has been seen, not from what the current pass did: the pass that asked for a
@@ -76,7 +84,7 @@ func (r *DriftReconciler) stable(policy *backflowv1alpha1.BackflowPolicy, app, r
 // spin.
 func (r *DriftReconciler) nextStableCheck(policy *backflowv1alpha1.BackflowPolicy) time.Duration {
 	pol := policy.Namespace + "/" + policy.Name
-	window := policy.Spec.EffectiveBatchWindow()
+	window := r.stableWindow(policy)
 	now := r.now()
 	var next time.Duration
 
