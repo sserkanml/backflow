@@ -81,7 +81,8 @@ func TestEnvSetsWhatTheCommandLineDoesNot(t *testing.T) {
 
 func TestFlagsWinOverTheEnvironment(t *testing.T) {
 	o := newFlags()
-	if err := o.fs.Parse([]string{"--argocd-server=https://flag.example.com", "--scm-allowed-hosts=flag.example.com"}); err != nil {
+	args := []string{"--argocd-server=https://flag.example.com", "--scm-allowed-hosts=flag.example.com"}
+	if err := o.fs.Parse(args); err != nil {
 		t.Fatal(err)
 	}
 	err := applyEnv(o.fs, env(map[string]string{
@@ -117,7 +118,8 @@ func TestEnvRepeatableFlagTakesSeveralValues(t *testing.T) {
 	if len(o.access) != 3 {
 		t.Fatalf("access = %v, want three rules", o.access)
 	}
-	if !slices.Contains(o.access[0].PolicyNamespaces, "team-b") || o.access[1].Projects[0] != "*" || o.access[2].PolicyNamespaces[0] != "ops" {
+	if !slices.Contains(o.access[0].PolicyNamespaces, "team-b") || o.access[1].Projects[0] != "*" ||
+		o.access[2].PolicyNamespaces[0] != "ops" {
 		t.Errorf("access = %v", o.access)
 	}
 }
@@ -127,7 +129,8 @@ func TestEnvEmptyIsUnsetAndUnknownVariablesAreIgnored(t *testing.T) {
 	if err := o.fs.Parse(nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyEnv(o.fs, env(map[string]string{"BACKFLOW_ARGOCD_SERVER": "  ", "BACKFLOW_NOT_A_FLAG": "x", "ARGOCD_SERVER": "y"})); err != nil {
+	vars := map[string]string{"BACKFLOW_ARGOCD_SERVER": "  ", "BACKFLOW_NOT_A_FLAG": "x", "ARGOCD_SERVER": "y"}
+	if err := applyEnv(o.fs, env(vars)); err != nil {
 		t.Fatal(err)
 	}
 	if o.server != "" {
@@ -173,7 +176,8 @@ func TestSecretReadNamespaces(t *testing.T) {
 	}
 }
 
-// TestReadmeListsEveryFlag keeps the table of the README (flag, environment variable, Helm value) complete: a flag that the
+// TestReadmeListsEveryFlag keeps the table of the README (flag, environment variable, Helm value) complete: a flag
+// that the
 // operator has and the table does not name fails here.
 func TestReadmeListsEveryFlag(t *testing.T) {
 	data, err := os.ReadFile("../README.md")
@@ -181,7 +185,7 @@ func TestReadmeListsEveryFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	readme := string(data)
-	// The flags of the operator, as main registers them on flag.CommandLine, are found by running a binary that only parses.
+	// The flags of the operator are read out of the source files that register them.
 	for _, name := range operatorFlagNames(t) {
 		if strings.HasPrefix(name, "zap-") || strings.HasPrefix(name, "test.") {
 			continue
@@ -193,7 +197,8 @@ func TestReadmeListsEveryFlag(t *testing.T) {
 	}
 }
 
-// operatorFlagNames reads the names of the flags out of cmd/main.go and cmd/actor.go: every flag.XxxVar(&v, "name", ...).
+// operatorFlagNames reads the names of the flags out of cmd/main.go and cmd/actor.go, where each is registered by
+// flag.XxxVar(&v, "name", ...).
 func operatorFlagNames(t *testing.T) []string {
 	t.Helper()
 	var names []string

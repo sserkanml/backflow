@@ -138,8 +138,9 @@ func main() {
 	flag.Var(&secretNamespaces, "secret-namespaces",
 		"The namespaces whose Secrets the operator reads (ScmConnection tokens and CA bundles, the Argo CD token): comma "+
 			"separated. The operator's own namespace and the namespace of --argocd-token-secret-namespace are always included. "+
-			"Empty: any namespace the RBAC allows. A Secret elsewhere is not read and its object is not Ready (SecretForbidden). "+
-			"For an installation whose RBAC grants get on Secrets everywhere (OLM); the Helm chart does it with RBAC (secretNamespaces).")
+			"Empty: any namespace the RBAC allows. A Secret elsewhere is not read and its object is not Ready "+
+			"(SecretForbidden). For an installation whose RBAC grants get on Secrets everywhere (OLM); the Helm chart "+
+			"does it with RBAC (secretNamespaces).")
 	flag.Var(&argoCD.Access, "argocd-default-access",
 		"Which Applications the policies of which namespaces may match through --argocd-server: "+
 			"<namespace>[,<namespace>...]:<project>[,<project>...] (\"*\" matches any), for example team-a:team-a. "+
