@@ -4,7 +4,7 @@ Backflow can be installed with the Operator Lifecycle Manager through a catalog 
 is not listed on OperatorHub.io or in `community-operators`: you add it to your cluster with a `CatalogSource`, and then
 Backflow appears in **Operators → OperatorHub** (OpenShift) or can be subscribed to with `oc`.
 
-The first version in the catalog is already on the final API (`backflow.io/v1beta1`).
+The first version in the catalog is 1.0.0, already on the final API (`backflow.io/v1`).
 
 | | |
 |---|---|
@@ -156,24 +156,23 @@ and your objects stay (OLM does not delete CRDs, and deleting a CRD deletes its 
 
 ## Coming from the Helm chart
 
-The first version in the catalog is on the final API, and OLM does not migrate objects. From **a Helm release of 0.18 or later**
-(already `v1beta1`): `helm uninstall backflow -n backflow-system` (the CRDs and your objects stay), then subscribe. From **0.17 or
-earlier** (`v1alpha1`):
+The first version in the catalog is 1.0.0, on the final API (`backflow.io/v1`), and OLM does not migrate objects: do it with `manager migrate`
+(the way from either source version is in [docs/upgrade-1.0.md](upgrade-1.0.md)). Start with `helm uninstall backflow -n <namespace>`: the
+CRDs and your `ScmConnection`, `BackflowPolicy` and `DriftProposal` objects stay (Helm never deletes CRDs), and the operator is gone.
 
-1. Uninstall the Helm release: `helm uninstall backflow -n <namespace>`. The CRDs and the `ScmConnection`, `BackflowPolicy` and
-   `DriftProposal` objects stay (Helm never deletes CRDs). The operator is gone, which `migrate` needs.
-2. Convert the manifests in Git, if Argo CD applies your Backflow objects: `manager migrate convert-files` (see
-   [the upgrade guide](upgrade-v1beta1.md#1-convert-the-manifests-in-git-gitops-users)).
-3. Run the migration once, with the container image of the version you subscribe to, and your own kubeconfig. Keep the backup
-   directory:
-   ```bash
-   podman run --rm --user "$(id -u)" -v "$HOME/.kube:/kube:ro" -v "$PWD/backflow-backup:/backup:Z" -e KUBECONFIG=/kube/config \
-     ghcr.io/sserkanml/backflow:<version> migrate --backup-dir /backup
-   ```
-   (`--dry-run` first.) It adds `v1beta1` to the CRDs, rewrites the objects and removes `v1alpha1`. The details, the rollback and
-   what the tool does are in [docs/upgrade-v1beta1.md](upgrade-v1beta1.md).
-4. Subscribe (step 2 above), with the settings you had in the Helm values as `BACKFLOW_*` variables (the table in the README has
-   the Helm value of each).
+* **From a Helm release of 0.18.x** (objects stored as `v1beta1`): subscribe, then run `migrate` (no backup, no stop: it stores each object again as
+  `v1` with an update that changes nothing). Or run it before you subscribe; the order does not matter. Until it has run the operator works and
+  says so in its log and in the metric `backflow_storage_migration_pending`.
+* **From 0.17 or earlier** (`v1alpha1`): `migrate` first, **then** subscribe; the operator of 1.0 refuses to start on `v1alpha1` objects.
+  1. Convert the manifests in Git, if Argo CD applies your Backflow objects: `manager migrate convert-files` (see
+     [the upgrade guide](upgrade-1.0.md#1-convert-the-manifests-in-git-gitops-users)).
+  2. Run the migration once, with the container image of the version you subscribe to, and your own kubeconfig. Keep the backup directory:
+     ```bash
+     podman run --rm --user "$(id -u)" -v "$HOME/.kube:/kube:ro" -v "$PWD/backflow-backup:/backup:Z" -e KUBECONFIG=/kube/config        ghcr.io/sserkanml/backflow:<version> migrate --backup-dir /backup
+     ```
+     (`--dry-run` first.) It adds `v1` to the CRDs, converts the objects and removes `v1alpha1`. The details, the rollback and what the
+     tool does are in [docs/upgrade-1.0.md](upgrade-1.0.md).
+  3. Subscribe, with the settings you had in the Helm values as `BACKFLOW_*` variables (the table in the README has the Helm value of each).
 
 OLM takes over the existing CRDs when the bundle's CRDs are compatible, which the migrated ones are.
 

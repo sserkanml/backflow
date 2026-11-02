@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// A fake opm: init writes the package, render writes a bundle named after what it was given (and fails for an image that is
-// "missing"), validate succeeds. It records what it rendered.
+// A fake opm: init writes the package, render writes a bundle named after what it was given (and fails for an
+// image that is "missing"), validate succeeds. It records what it rendered.
 const fakeOpm = `#!/usr/bin/env bash
 case "$1" in
   init) printf -- '---\nschema: olm.package\nname: backflow\n' ;;
@@ -33,7 +33,8 @@ func catalogRepo(t *testing.T, tags ...string) (dir, opm string, env []string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -43,7 +44,8 @@ func catalogRepo(t *testing.T, tags ...string) (dir, opm string, env []string) {
 		t.Fatal(err)
 	}
 	for path, content := range map[string]string{
-		"hack/olm-catalog.sh": string(script), "bundle/manifests/x.yaml": "x", "docs/olm/icon.svg": "<svg/>", "fake-opm": fakeOpm,
+		"hack/olm-catalog.sh": string(script), "bundle/manifests/x.yaml": "x", "docs/olm/icon.svg": "<svg/>",
+		"fake-opm": fakeOpm,
 	} {
 		full := filepath.Join(dir, path)
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -81,9 +83,11 @@ func TestCatalogHasTheReleasedVersionsFromTheTags(t *testing.T) {
 	}
 	catalog, _ := os.ReadFile(filepath.Join(dir, "catalog/out/backflow/catalog.yaml"))
 	for _, want := range []string{
-		"name: backflow.v1.0.0\nimage: ghcr.io/sserkanml/backflow-bundle:1.0.0", "name: backflow.v1.0.1\nimage: ghcr.io/sserkanml/backflow-bundle:1.0.1",
+		"name: backflow.v1.0.0\nimage: ghcr.io/sserkanml/backflow-bundle:1.0.0",
+		"name: backflow.v1.0.1\nimage: ghcr.io/sserkanml/backflow-bundle:1.0.1",
 		"image: ghcr.io/sserkanml/backflow-bundle:1.0.2",
-		"  - name: backflow.v1.0.0\n  - name: backflow.v1.0.1\n    replaces: backflow.v1.0.0\n  - name: backflow.v1.0.2\n    replaces: backflow.v1.0.1\n",
+		"  - name: backflow.v1.0.0\n  - name: backflow.v1.0.1\n    replaces: backflow.v1.0.0\n" +
+			"  - name: backflow.v1.0.2\n    replaces: backflow.v1.0.1\n",
 	} {
 		if !strings.Contains(string(catalog), want) {
 			t.Errorf("the catalog lacks %q:\n%s", want, catalog)
@@ -102,13 +106,14 @@ func TestCatalogOfTheFirstReleaseIsAloneInItsChannel(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	catalog, _ := os.ReadFile(filepath.Join(dir, "catalog/out/backflow/catalog.yaml"))
-	if !strings.Contains(string(catalog), "entries:\n  - name: backflow.v1.0.0\n") || strings.Contains(string(catalog), "replaces") {
+	got := string(catalog)
+	if !strings.Contains(got, "entries:\n  - name: backflow.v1.0.0\n") || strings.Contains(got, "replaces") {
 		t.Errorf("the catalog:\n%s", catalog)
 	}
 }
 
-// A release whose bundle was not published makes the release that is being made fail: its catalog would upgrade nobody to the new
-// version.
+// A release whose bundle was not published makes the release that is being made fail: its catalog would upgrade
+// nobody to the new version.
 func TestCatalogFailsWhenAReleasedBundleIsMissing(t *testing.T) {
 	dir, opm, env := catalogRepo(t, "v1.0.0", "v1.0.1")
 	// The image of 1.0.0 does not exist in the registry (the fake opm fails for it).
@@ -122,7 +127,8 @@ func TestCatalogRefusesAShallowCloneBecauseItWouldLeaveVersionsOut(t *testing.T)
 	dir, _, env := catalogRepo(t, "v1.0.0")
 	// A clone with depth 1 is shallow.
 	shallow := filepath.Join(t.TempDir(), "shallow")
-	if out, err := exec.Command("git", "clone", "-q", "--depth", "1", "file://"+dir, shallow).CombinedOutput(); err != nil {
+	clone := exec.Command("git", "clone", "-q", "--depth", "1", "file://"+dir, shallow)
+	if out, err := clone.CombinedOutput(); err != nil {
 		t.Skipf("cannot make a shallow clone: %v\n%s", err, out)
 	}
 	for _, f := range []string{"bundle/manifests/x.yaml", "docs/olm/icon.svg", "fake-opm"} {
@@ -142,7 +148,8 @@ func TestCatalogUsesTheListOfATestInsteadOfTheTags(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	catalog, _ := os.ReadFile(filepath.Join(dir, "catalog/out/backflow/catalog.yaml"))
-	if strings.Contains(string(catalog), "backflow-bundle:1.0.0") || !strings.Contains(string(catalog), "image: localhost:5001/b:one") {
+	got := string(catalog)
+	if strings.Contains(got, "backflow-bundle:1.0.0") || !strings.Contains(got, "image: localhost:5001/b:one") {
 		t.Errorf("the catalog:\n%s", catalog)
 	}
 	// Empty is a list too: no earlier version.

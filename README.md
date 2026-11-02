@@ -108,7 +108,7 @@ in the same namespace.
 kubectl -n backflow-system create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
 
 kubectl -n backflow-system apply -f - <<'YAML'
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata:
   name: gitlab
@@ -117,7 +117,7 @@ spec:
   url: https://gitlab.com           # your server for a self-hosted one
   tokenSecretRef: {name: gitlab-token, key: token}
 ---
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: my-apps
@@ -219,7 +219,7 @@ as here; in any other namespace the administrator allows it with `argocd.default
 [Multi-tenancy and access](#multi-tenancy-and-access).)
 
 ```yaml
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: my-apps
@@ -468,11 +468,12 @@ single-tenant cluster. Policies with their own `spec.argoCD.server` keep working
 get the Applications they select; the ones it cannot get disappear from their status
 (`status.argoCD.hiddenApplications` counts them).
 
-### Upgrading to `backflow.io/v1beta1` (breaking)
+### Upgrading to 1.0 (`backflow.io/v1`)
 
-The API is `backflow.io/v1beta1` from this version (`ScmConnection`, `BackflowPolicy`, `DriftProposal`); `v1alpha1` is no
-longer served. Every field name and value that the review in [docs/design/api-v1beta1.md](docs/design/api-v1beta1.md) changed
-is listed there, old to new. Things you will notice:
+The API is `backflow.io/v1` from 1.0 (`ScmConnection`, `BackflowPolicy`, `DriftProposal`). Its schema is the one of `v1beta1`, which 0.18 shipped,
+without a change; `v1beta1` stays served, deprecated, until 2.0 ([compatibility policy](docs/compatibility.md)). `v1alpha1`, the API of 0.17 and
+earlier, is gone. What the fields of `v1beta1` are, old to new from `v1alpha1`, is in
+[docs/design/api-v1beta1.md](docs/design/api-v1beta1.md). Things you will notice when you come from 0.17:
 
 - `spec.argoCDNamespace` and `spec.argoCD` are `spec.argoCD.namespace` and `spec.argoCD.server`; `spec.mergeRequest` is
   `spec.git` (and `spec.git.mergeRequest`); `provider` is `GitLab` or `GitHub`.
@@ -487,17 +488,20 @@ is listed there, old to new. Things you will notice:
 - `ChangeRecord` is `internal.backflow.io/v1alpha1`, not part of the API.
 - Kubernetes **1.30** (OpenShift 4.17) is the minimum: the CRDs use CEL validation and rely on ratcheting of existing objects.
 
-**The operator does not start** while a Backflow CRD still has objects stored as `v1alpha1`, or does not serve `v1beta1`; it says
-so and which command to run. The upgrade is one migration, in order: convert the manifests in Git (`manager migrate
-convert-files`), set the new allow lists, stop the operator, back up and migrate (`manager migrate`, or the chart's
-`migration.enabled` hook Job), then upgrade the chart and verify. **Run the migration before you apply the CRDs of this version**:
-it adds `v1beta1` to the installed CRDs, rewrites the objects (a `DriftProposal` is deleted and created again, with its status,
-`finishedAt` and signals) and removes `v1alpha1` from the CRDs; the API server refuses the new CRDs while objects are stored as
-`v1alpha1`. Everything, including how to check the result and how to roll back from the backup (`manager migrate restore`), is in
-**[docs/upgrade-v1beta1.md](docs/upgrade-v1beta1.md)**.
+Objects stored in an older version are moved to `v1` once with `manager migrate`:
 
-Never edit a Backflow object through `v1alpha1` after the CRD stores `v1beta1`: the write is pruned to the `v1beta1` schema and loses
-fields. On a cluster with no Backflow objects, delete the three CRDs (and `changerecords.backflow.io`) and apply the new ones.
+- **From 0.18.x** (`v1beta1`): each object is stored again as `v1` with an update that changes nothing. This is safe **with the operator running**,
+  needs no backup, and can be done after the upgrade; until then the operator works, logs a warning and sets the metric
+  `backflow_storage_migration_pending`.
+- **From 0.17 and earlier** (`v1alpha1`): the operator must be stopped, a backup is written, and **the migration runs before you apply the CRDs of
+  this version** (it adds `v1` to the installed CRDs itself; the API server refuses the new CRDs while objects are stored as `v1alpha1`).
+  The operator of 1.0 refuses to start on `v1alpha1` objects.
+
+The way, for Helm (with the chart's `migration.enabled` hook Job, or by hand), kustomize and OLM, how to convert the manifests in Git
+(`manager migrate convert-files`), how to check the result and how to roll back is in **[docs/upgrade-1.0.md](docs/upgrade-1.0.md)**.
+
+Never edit a Backflow object through `v1alpha1` after the CRD stores `v1`: the write is pruned to the `v1` schema and loses fields. On a cluster
+with no Backflow objects, delete the CRDs (and `changerecords.backflow.io`) and apply the new ones.
 
 ### Configuration without Helm: environment variables
 
@@ -605,7 +609,7 @@ patches:
 
 ### Upgrading: apply the CRDs first
 
-(The one exception is the upgrade to `v1beta1`: migrate first, see above.)
+(The one exception is an upgrade from 0.17 or earlier: migrate first, see above.)
 
 **Before every `helm upgrade`, apply the CRDs of the version you upgrade to:**
 
@@ -650,6 +654,47 @@ fields, and the operator then runs with a CRD that cannot hold them:
 
 Applying the CRDs afterwards fixes new proposals; a proposal that failed is not
 retried.
+
+## Architecture and security model
+
+**What it is.** One Deployment (the operator, `/manager`) with three controllers and a few helpers, and three custom resources of the
+group `backflow.io` (`v1`): `ScmConnection` (a Git host and the Secret with its token), `BackflowPolicy` (which Argo CD Applications to watch and how to
+propose) and `DriftProposal` (one captured drift and its journey, made by the operator; its spec is an immutable observation). A fourth,
+`ChangeRecord` of `internal.backflow.io`, is private to the optional actor webhook.
+
+**What it does.** For an Application a policy selects, it reads the Application (`status.sync`) from the cluster and, through Argo CD's REST API, the
+manifests Argo CD renders. A difference between the rendered (desired) state and the live one is a drift. It traces each changed field back to the
+file that owns it in Git (plain manifests, Kustomize or Helm values, with several sources), writes the edit to a branch, and **verifies the mapping by
+asking Argo CD to render the edited source again**: only an edit that reproduces the live state exactly becomes a merge request (or a direct
+commit, if the policy says so). Anything else is `Unmapped` and left for a person. The result is a merge request; a person decides.
+
+**What it never does.**
+
+- **It never writes to the cluster.** Argo CD is the only thing that applies manifests. The operator's ClusterRole can read the cluster and write
+  its own resources (`backflow.io`, `internal.backflow.io`), nothing else.
+- **It never guesses a mapping** and never reaches a Git host the installer did not allow.
+- It never lists or watches Secrets: it **gets** the few it needs **by name**, straight from the API server (so the only permission is `get`), and only
+  in the namespace of the object that names them (and, for the Argo CD token of the installation, the one the installer named). `secretNamespaces`
+  narrows even that.
+
+**The trust boundaries.**
+
+| Who | Can | Cannot |
+|---|---|---|
+| The installer (Helm values, flags) | set the Argo CD connection, the allow lists (`scm.allowedHosts`, `argocd.allowedServers`), who may use the default connection (`argocd.defaultAccess`), where Secrets are read | |
+| A tenant (creates `ScmConnection` and `BackflowPolicy` in a namespace) | name a Git host and a token Secret of its namespace, select Applications | name a host or an Argo CD server the installer did not allow (the object is not `Ready`, no request is made, the Secret is not read); read a Secret of another namespace; see an Argo CD project `defaultAccess` does not give its namespace |
+| Argo CD | apply manifests; decide what its token sees | be written to by Backflow |
+| The Git host token | push a branch and open a merge request | do more than the token's scopes |
+| The optional actor webhook | see updates of tracked resources (not Secrets, not dry runs, not system or GitOps users) and record who made them | deny anything (it is observe-only: failure policy `Ignore`, always answers allowed, a one second timeout) |
+
+**Data it keeps.** Proposals hold the changed fields (desired and live values, which may be sensitive: Secrets are excluded by default), the
+mapping and its status. With the actor webhook on, user names and groups go into `ChangeRecord`s for two hours (`actorWebhook.retention`) and, if
+`recordUsername` is on, into the proposals; `usernameInMergeRequest` puts a name into the text of a merge request, which Git keeps for ever (off
+by default). Finished proposals are deleted after 14 days by default. Tokens are never logged, put in a condition, an event, a metric or a commit.
+
+**The pod.** Non-root, a read-only root file system, no capabilities, `seccompProfile: RuntimeDefault` (the Pod Security `restricted` profile); the
+Git cache is an `emptyDir`. The metrics endpoint is served over TLS and protected by token review. A reported vulnerability goes through
+[SECURITY.md](SECURITY.md); what the version number promises is in [docs/compatibility.md](docs/compatibility.md).
 
 ## Metrics and alerts
 
@@ -1295,7 +1340,7 @@ key, with the live value, is appended to the Application's last value file (the
 one with the highest precedence), where it wins over the defaults.
 
 ```yaml
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 spec:
   helm:
@@ -1405,7 +1450,7 @@ edit and the other fields it would change. A policy can accept this for labels
 and annotations:
 
 ```yaml
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 spec:
   helm:
@@ -1521,7 +1566,7 @@ How a proposal is made:
    new file and the edited `kustomization.yaml` are in the same commit.
 
 ```yaml
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 spec:
   kustomize:
@@ -1785,7 +1830,7 @@ back to Git, the whole proposal is `Unmapped`, even though the other fields
 could be proposed. A policy can opt in to proposing what can be proven:
 
 ```yaml
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 spec:
   mapping:
