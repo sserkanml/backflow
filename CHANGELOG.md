@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/sserkanml/backflow/compare/v0.18.0...v0.18.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **chart:** the chart installs only valid CRDs ([8e2fbd1](https://github.com/sserkanml/backflow/commit/8e2fbd1a4b30068e1569c5d21267d325d389bfe8))
+
 ## [0.18.0](https://github.com/sserkanml/backflow/compare/v0.17.0...v0.18.0) (2026-11-02)
 
 
