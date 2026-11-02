@@ -6,7 +6,7 @@ import (
 
 	"github.com/sserkanml/backflow/internal/rendermap"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 const structEnv = `# Production.
@@ -178,7 +178,7 @@ func TestStructuredLimits(t *testing.T) {
 	})
 	t.Run("a Secret is never proposed, structured or not", func(t *testing.T) {
 		out, err := Verify(t.Context(), &structRenderer{}, Input{Resource: rendermap.ResourceKey{Kind: "Secret", Name: "s"},
-			Fields: []rendermap.Field{structuredChange("/data", v1beta1.OpAdd, "", `{"a":"b"}`)}}, rendermap.Options{})
+			Fields: []rendermap.Field{structuredChange("/data", v1.OpAdd, "", `{"a":"b"}`)}}, rendermap.Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonSecretNotVerifiable {
 			t.Fatalf("out = %+v, err = %v", out, err)
 		}

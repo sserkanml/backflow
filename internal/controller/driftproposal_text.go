@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/managedfields"
 	"github.com/sserkanml/backflow/internal/rendermap"
 	"github.com/sserkanml/backflow/internal/scm"
@@ -44,7 +44,7 @@ func singleLine(s string) string {
 }
 
 // resourceLabel is "Kind namespace/name", or "Kind name" for cluster-scoped resources.
-func resourceLabel(r backflowv1beta1.ResourceRef) string {
+func resourceLabel(r backflowv1.ResourceRef) string {
 	if r.Namespace == "" {
 		return fmt.Sprintf("%s %s", r.Kind, r.Name)
 	}
@@ -53,7 +53,7 @@ func resourceLabel(r backflowv1beta1.ResourceRef) string {
 
 // commitSubject is also the merge request title. left are the changes a
 // partial mapping leaves out; the subject says so.
-func commitSubject(dp *backflowv1beta1.DriftProposal, left []leftOutField) string {
+func commitSubject(dp *backflowv1.DriftProposal, left []leftOutField) string {
 	subject := fmt.Sprintf("backflow: sync %s from cluster", resourceLabel(dp.Spec.ResourceRef))
 	if len(left) > 0 {
 		subject += " (partial)"
@@ -63,7 +63,7 @@ func commitSubject(dp *backflowv1beta1.DriftProposal, left []leftOutField) strin
 
 // mappedChanges are the changes of the proposal that the edits make: all of
 // them, except those a partial mapping leaves out.
-func mappedChanges(dp *backflowv1beta1.DriftProposal, left []leftOutField) []backflowv1beta1.FieldChange {
+func mappedChanges(dp *backflowv1.DriftProposal, left []leftOutField) []backflowv1.FieldChange {
 	if len(left) == 0 {
 		return dp.Spec.Changes
 	}
@@ -71,7 +71,7 @@ func mappedChanges(dp *backflowv1beta1.DriftProposal, left []leftOutField) []bac
 	for _, l := range left {
 		skip[l.path] = true
 	}
-	out := make([]backflowv1beta1.FieldChange, 0, len(dp.Spec.Changes))
+	out := make([]backflowv1.FieldChange, 0, len(dp.Spec.Changes))
 	for _, ch := range dp.Spec.Changes {
 		if !skip[ch.Path] {
 			out = append(out, ch)
@@ -83,7 +83,7 @@ func mappedChanges(dp *backflowv1beta1.DriftProposal, left []leftOutField) []bac
 // commitMessage lists the changed paths and names the proposal. The actor is
 // recorded as a trailer: the Kubernetes user has no Git identity, so the
 // commit is authored by the committer.
-func commitMessage(dp *backflowv1beta1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, notes ...string) string {
+func commitMessage(dp *backflowv1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, notes ...string) string {
 	var b strings.Builder
 	b.WriteString(commitSubject(dp, left))
 	b.WriteString("\n\nChanged paths:\n")
@@ -141,7 +141,7 @@ func commitMessage(dp *backflowv1beta1.DriftProposal, left []leftOutField, overr
 // proposal object: it carries both the name and the UID of the proposal. The
 // name alone is not enough, since an earlier proposal for the same drift (the
 // user deleted it to retry) has the same name.
-func hasProposalTrailer(message string, dp *backflowv1beta1.DriftProposal) bool {
+func hasProposalTrailer(message string, dp *backflowv1.DriftProposal) bool {
 	wantName := trailerProposal + ": " + dp.Name
 	wantUID := trailerProposalUID + ": " + string(dp.UID)
 	var name, uid bool
@@ -191,7 +191,7 @@ func fenceFor(text string) string {
 // mergeRequestBody explains the change to the reviewer: what changed, who
 // changed it, the diff, which proposal it belongs to, and what merging or
 // closing means.
-func mergeRequestBody(dp *backflowv1beta1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, diff string, notes ...string) string {
+func mergeRequestBody(dp *backflowv1.DriftProposal, left []leftOutField, overrides []rendermap.AppliedOverride, diff string, notes ...string) string {
 	var b strings.Builder
 	b.WriteString("Backflow found a change made directly in the cluster to a resource managed by Argo CD.\n\n")
 	fmt.Fprintf(&b, "- **Resource:** %s\n", singleLine(resourceLabel(dp.Spec.ResourceRef)))
@@ -249,7 +249,7 @@ func mergeRequestBody(dp *backflowv1beta1.DriftProposal, left []leftOutField, ov
 
 	if len(left) > 0 {
 		b.WriteString("\n**Not included in this merge request**\n\n| Path | Live value | Git value | Reason |\n|---|---|---|---|\n")
-		byPath := make(map[string]backflowv1beta1.FieldChange, len(dp.Spec.Changes))
+		byPath := make(map[string]backflowv1.FieldChange, len(dp.Spec.Changes))
 		for _, ch := range dp.Spec.Changes {
 			byPath[ch.Path] = ch
 		}
@@ -280,7 +280,7 @@ func mergeRequestBody(dp *backflowv1beta1.DriftProposal, left []leftOutField, ov
 // closingComment tells the reviewers why Backflow closes a merge request.
 // keptBranch, when set, names a branch that is left in place and why, because
 // it holds more than the proposal's own commits.
-func closingComment(dp *backflowv1beta1.DriftProposal, keptBranch, why string) string {
+func closingComment(dp *backflowv1.DriftProposal, keptBranch, why string) string {
 	kept := ""
 	if keptBranch != "" {
 		kept = fmt.Sprintf("The branch `%s` was not deleted: %s.\n\n", singleLine(keptBranch), singleLine(why))
@@ -304,9 +304,9 @@ type helmRow struct{ file, key, old, new string }
 // strategy: the value file, the key path, and the value before and after. The
 // old value is the one the change expected in Git, which is the value the key
 // held (candidates are found by that value). Empty for other strategies.
-func helmEditRows(dp *backflowv1beta1.DriftProposal, overrides []rendermap.AppliedOverride) []helmRow {
+func helmEditRows(dp *backflowv1.DriftProposal, overrides []rendermap.AppliedOverride) []helmRow {
 	m := dp.Status.Mapping
-	if m == nil || m.Strategy != backflowv1beta1.StrategyHelmValues {
+	if m == nil || m.Strategy != backflowv1.StrategyHelmValues {
 		return nil
 	}
 	rendered := func(raw string) string {
@@ -349,7 +349,7 @@ func overrideValue(o rendermap.AppliedOverride) string {
 }
 
 // helmVerifiedLine says how a Helm edit was checked and what it changes.
-func helmVerifiedLine(dp *backflowv1beta1.DriftProposal, left []leftOutField) string {
+func helmVerifiedLine(dp *backflowv1.DriftProposal, left []leftOutField) string {
 	changes := mappedChanges(dp, left)
 	paths := make([]string, len(changes))
 	for i, ch := range changes {
@@ -360,15 +360,15 @@ func helmVerifiedLine(dp *backflowv1beta1.DriftProposal, left []leftOutField) st
 }
 
 // collateralResource is "Kind namespace/name" of a resource that also changes.
-func collateralResource(c backflowv1beta1.CollateralChange) string {
-	return resourceLabel(backflowv1beta1.ResourceRef{Kind: c.Kind, Namespace: c.Namespace, Name: c.Name})
+func collateralResource(c backflowv1.CollateralChange) string {
+	return resourceLabel(backflowv1.ResourceRef{Kind: c.Kind, Namespace: c.Namespace, Name: c.Name})
 }
 
 // collateralLines lists, one line each, the changes beyond the drifted fields
 // of a proposal mapped with the HelmValues strategy.
-func collateralLines(dp *backflowv1beta1.DriftProposal) []string {
+func collateralLines(dp *backflowv1.DriftProposal) []string {
 	m := dp.Status.Mapping
-	if m == nil || m.Strategy != backflowv1beta1.StrategyHelmValues {
+	if m == nil || m.Strategy != backflowv1.StrategyHelmValues {
 		return nil
 	}
 	lines := make([]string, 0, len(m.Collateral))
@@ -380,7 +380,7 @@ func collateralLines(dp *backflowv1beta1.DriftProposal) []string {
 
 // sourcesLine describes the sources of a multi-source Application in a line:
 // the chart, and the repository each ref source comes from.
-func sourcesLine(sources []backflowv1beta1.ProposalSource) string {
+func sourcesLine(sources []backflowv1.ProposalSource) string {
 	parts := make([]string, 0, len(sources))
 	for _, s := range sources {
 		rev := s.Revision
@@ -390,7 +390,7 @@ func sourcesLine(sources []backflowv1beta1.ProposalSource) string {
 		switch {
 		case s.Chart != "":
 			parts = append(parts, fmt.Sprintf("chart %s %s from %s", s.Chart, rev, scm.RedactURL(s.RepoURL)))
-		case s.Ref != "" && s.Role == backflowv1beta1.RoleValues:
+		case s.Ref != "" && s.Role == backflowv1.RoleValues:
 			parts = append(parts, fmt.Sprintf("values in %s (`$%s`, at %s), where this merge request is made", scm.RedactURL(s.RepoURL), s.Ref, rev))
 		case s.Ref != "":
 			parts = append(parts, fmt.Sprintf("`$%s` from %s at %s", s.Ref, scm.RedactURL(s.RepoURL), rev))
@@ -403,7 +403,7 @@ func sourcesLine(sources []backflowv1beta1.ProposalSource) string {
 
 // changedWith is "<manager> (<operation>) at <time>", from the managedFields of the live
 // object (the latest writer); empty when no manager is known.
-func changedWith(managers []backflowv1beta1.ManagerWrite) string {
+func changedWith(managers []backflowv1.ManagerWrite) string {
 	if len(managers) == 0 || singleLine(managers[0].Manager) == "" {
 		return ""
 	}
@@ -419,7 +419,7 @@ func changedWith(managers []backflowv1beta1.ManagerWrite) string {
 }
 
 // otherManagers lists the other managers that wrote drifted fields.
-func otherManagers(managers []backflowv1beta1.ManagerWrite) string {
+func otherManagers(managers []backflowv1.ManagerWrite) string {
 	if len(managers) < 2 {
 		return ""
 	}
@@ -434,7 +434,7 @@ func otherManagers(managers []backflowv1beta1.ManagerWrite) string {
 
 // controllerNote warns the reviewer when a controller, not a person, made the change: Git may
 // then not be the place to follow it (an autoscaler changes the replicas on purpose).
-func controllerNote(managers []backflowv1beta1.ManagerWrite) string {
+func controllerNote(managers []backflowv1.ManagerWrite) string {
 	if len(managers) == 0 || managedfields.Classify(managers[0].Manager) != managedfields.Controller {
 		return ""
 	}

@@ -125,7 +125,7 @@ set_token() {
 apply_scm() {
   local name="$1" url="$2" secret="$3" provider="${4:-GitLab}"
   k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata:
   name: $name
@@ -207,7 +207,7 @@ pass "fresh namespace created"
 # ---------------------------------------------------------------------------
 step "CRD validation"
 expect_rejected "Unsupported provider (bitbucket)" "provider" <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata: {name: bad-provider, namespace: $NS}
 spec:
@@ -217,7 +217,7 @@ spec:
 EOF
 
 expect_rejected "Non-http(s) URL" "url" <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: ScmConnection
 metadata: {name: bad-url, namespace: $NS}
 spec:
@@ -227,7 +227,7 @@ spec:
 EOF
 
 expect_rejected "Invalid mode (AutoMerge)" "mode" <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata: {name: bad-mode, namespace: $NS}
 spec:
@@ -236,7 +236,7 @@ spec:
 EOF
 
 expect_rejected "Empty changes list" "changes" <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: DriftProposal
 metadata: {name: bad-drift, namespace: $NS}
 spec:
@@ -251,7 +251,7 @@ EOF
 # ---------------------------------------------------------------------------
 step "Defaults (BackflowPolicy)"
 k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata: {name: defaults, namespace: $NS}
 spec:

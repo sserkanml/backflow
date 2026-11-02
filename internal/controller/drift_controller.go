@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/actorwebhook"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/drift"
@@ -118,7 +118,7 @@ func (r *DriftReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 func (r *DriftReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var policy backflowv1beta1.BackflowPolicy
+	var policy backflowv1.BackflowPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.forgetPolicy(req.Namespace + "/" + req.Name)
@@ -144,7 +144,7 @@ func (r *DriftReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{RequeueAfter: driftResyncInterval}, nil
 	}
 
-	var proposals backflowv1beta1.DriftProposalList
+	var proposals backflowv1.DriftProposalList
 	if err := r.List(ctx, &proposals, client.InNamespace(policy.Namespace),
 		client.MatchingLabels{labelPolicy: safeLabel(policy.Name)}); err != nil {
 		return ctrl.Result{}, err
@@ -172,7 +172,7 @@ func (r *DriftReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if _, found := credentialedRepoURL(&resolved.apps[i]); found {
 			// Not tracked; nothing of it is read or stored.
 			log.V(1).Info("The Application is not tracked by the policy", "application", resolved.apps[i].GetName(),
-				"reason", backflowv1beta1.UntrackedCredentialsInRepoURL)
+				"reason", backflowv1.UntrackedCredentialsInRepoURL)
 			continue
 		}
 		summary := summarizeApplication(&resolved.apps[i])
@@ -238,7 +238,7 @@ func appResources(app *unstructured.Unstructured) (res []appResource, known bool
 // everything again. They are dropped once the policy has been not Ready for
 // longer than twice its batch window. It asks to be called again then, so a
 // policy that stays not Ready is cleared without waiting for an event.
-func (r *DriftReconciler) notReady(policy *backflowv1beta1.BackflowPolicy, ready *metav1.Condition) ctrl.Result {
+func (r *DriftReconciler) notReady(policy *backflowv1.BackflowPolicy, ready *metav1.Condition) ctrl.Result {
 	pol := policy.Namespace + "/" + policy.Name
 	if ready == nil {
 		r.forgetPolicy(pol) // never resolved: nothing was kept
@@ -255,11 +255,11 @@ func (r *DriftReconciler) notReady(policy *backflowv1beta1.BackflowPolicy, ready
 
 // appRun is what one reconcile of an Application works with.
 type appRun struct {
-	policy  *backflowv1beta1.BackflowPolicy
-	summary backflowv1beta1.ApplicationSummary
+	policy  *backflowv1.BackflowPolicy
+	summary backflowv1.ApplicationSummary
 	app     *unstructured.Unstructured
 	argo    ManagedResourcesGetter
-	all     []backflowv1beta1.DriftProposal
+	all     []backflowv1.DriftProposal
 
 	st aheadState
 	// paused is true while the whole Application is held back (see detectionPaused).
@@ -267,7 +267,7 @@ type appRun struct {
 	outOfSync  map[string]bool
 	candidates []appResource
 
-	drifting map[string][]backflowv1beta1.FieldChange
+	drifting map[string][]backflowv1.FieldChange
 	// deleted marks OutOfSync resources that exist only in Git: they were
 	// removed from the cluster, which is not a revert.
 	deleted map[string]appResource
@@ -275,8 +275,8 @@ type appRun struct {
 	apiOK bool
 }
 
-func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
-	argo ManagedResourcesGetter, summary backflowv1beta1.ApplicationSummary, all []backflowv1beta1.DriftProposal) error {
+func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *backflowv1.BackflowPolicy,
+	argo ManagedResourcesGetter, summary backflowv1.ApplicationSummary, all []backflowv1.DriftProposal) error {
 	log := logf.FromContext(ctx).WithValues("application", summary.Name)
 
 	app := &unstructured.Unstructured{}
@@ -303,7 +303,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 	}
 
 	run := &appRun{policy: policy, summary: summary, app: app, argo: argo, all: all, st: gitAhead(app),
-		drifting: map[string][]backflowv1beta1.FieldChange{}, deleted: map[string]appResource{}, apiOK: true}
+		drifting: map[string][]backflowv1.FieldChange{}, deleted: map[string]appResource{}, apiOK: true}
 	run.outOfSync, run.candidates = splitResources(policy, resources)
 
 	// While Git is ahead of the last sync, an OutOfSync resource may differ
@@ -348,7 +348,7 @@ func (r *DriftReconciler) reconcileApplication(ctx context.Context, policy *back
 
 // splitResources returns the hashes of the OutOfSync resources, and those of
 // them the policy allows to be proposed.
-func splitResources(policy *backflowv1beta1.BackflowPolicy, resources []appResource) (outOfSync map[string]bool, candidates []appResource) {
+func splitResources(policy *backflowv1.BackflowPolicy, resources []appResource) (outOfSync map[string]bool, candidates []appResource) {
 	outOfSync = map[string]bool{}
 	for _, res := range resources {
 		if res.Status != syncOutOfSync {
@@ -363,7 +363,7 @@ func splitResources(policy *backflowv1beta1.BackflowPolicy, resources []appResou
 }
 
 // hasOpenProposal reports whether an Application has a proposal in flight.
-func hasOpenProposal(all []backflowv1beta1.DriftProposal, application string) bool {
+func hasOpenProposal(all []backflowv1.DriftProposal, application string) bool {
 	for i := range all {
 		if all[i].Labels[labelApplication] == safeLabel(application) && isOpen(&all[i]) {
 			return true
@@ -474,7 +474,7 @@ func (r *DriftReconciler) retireProposals(ctx context.Context, run *appRun) erro
 		default:
 			continue
 		}
-		if err := r.signal(ctx, p, func(sg *backflowv1beta1.Signals) { sg.Reverted = msg }); err != nil {
+		if err := r.signal(ctx, p, func(sg *backflowv1.Signals) { sg.Reverted = msg }); err != nil {
 			return err
 		}
 		log.Info("Proposal reverted", "proposal", p.Name)
@@ -484,8 +484,8 @@ func (r *DriftReconciler) retireProposals(ctx context.Context, run *appRun) erro
 
 // reportDeleted says once per revision that the resource of an open proposal
 // was deleted from the cluster.
-func (r *DriftReconciler) reportDeleted(policy *backflowv1beta1.BackflowPolicy, summary backflowv1beta1.ApplicationSummary,
-	res appResource, p *backflowv1beta1.DriftProposal, revision string) {
+func (r *DriftReconciler) reportDeleted(policy *backflowv1.BackflowPolicy, summary backflowv1.ApplicationSummary,
+	res appResource, p *backflowv1.DriftProposal, revision string) {
 	if r.reportOnce(policy, summary.Name, "resourceDeleted", res.hash(), revision) {
 		r.event(policy, corev1.EventTypeWarning, "ResourceDeleted",
 			fmt.Sprintf("%s %s in application %s was deleted from the cluster; proposal %s is left untouched",
@@ -499,8 +499,8 @@ func (r *DriftReconciler) reportDeleted(policy *backflowv1beta1.BackflowPolicy, 
 // sources, which cannot be mapped to one place in Git. For the latter,
 // something that would be proposed is said once per revision, and the proposals
 // the Application has are left alone.
-func (r *DriftReconciler) trackedResources(policy *backflowv1beta1.BackflowPolicy,
-	summary backflowv1beta1.ApplicationSummary, app *unstructured.Unstructured) (resources []appResource, ok bool) {
+func (r *DriftReconciler) trackedResources(policy *backflowv1.BackflowPolicy,
+	summary backflowv1.ApplicationSummary, app *unstructured.Unstructured) (resources []appResource, ok bool) {
 	resources, known := appResources(app)
 	if !known {
 		return nil, false
@@ -527,17 +527,17 @@ func (r *DriftReconciler) trackedResources(policy *backflowv1beta1.BackflowPolic
 // ensureProposal makes sure exactly one open proposal with these changes
 // exists for the resource, superseding open proposals with other changes.
 // The spec of an existing proposal is never modified.
-func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
-	summary backflowv1beta1.ApplicationSummary, res appResource,
-	changes []backflowv1beta1.FieldChange, all []backflowv1beta1.DriftProposal, paused bool, st aheadState,
-	sources []backflowv1beta1.ProposalSource, live map[string]any) error {
+func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1.BackflowPolicy,
+	summary backflowv1.ApplicationSummary, res appResource,
+	changes []backflowv1.FieldChange, all []backflowv1.DriftProposal, paused bool, st aheadState,
+	sources []backflowv1.ProposalSource, live map[string]any) error {
 	log := logf.FromContext(ctx)
 
 	// A drift with more changes than a proposal holds keeps the first MaxChanges and is created
 	// Unmapped (TooManyChanges): nothing is proposed to Git for part of a drift.
-	truncated := len(changes) > backflowv1beta1.MaxChanges
+	truncated := len(changes) > backflowv1.MaxChanges
 	if truncated {
-		changes = changes[:backflowv1beta1.MaxChanges]
+		changes = changes[:backflowv1.MaxChanges]
 	}
 
 	srcType, ok := proposalSourceType(summary.First().Type)
@@ -559,7 +559,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 
 	rh := res.hash()
 	names := make(map[string]bool, len(all))
-	var open []*backflowv1beta1.DriftProposal
+	var open []*backflowv1.DriftProposal
 	for i := range all {
 		p := &all[i]
 		names[p.Name] = true
@@ -568,7 +568,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		}
 	}
 
-	var current *backflowv1beta1.DriftProposal
+	var current *backflowv1.DriftProposal
 	for _, p := range open {
 		if reflect.DeepEqual(p.Spec.Changes, changes) {
 			current = p
@@ -606,12 +606,12 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		actor := r.Actors.Refine(ctx, live, changes, actorwebhook.Window{After: st.syncedAt, Before: r.now()})
 		if len(sources) == 0 {
 			first := summary.First()
-			sources = []backflowv1beta1.ProposalSource{{
-				Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: first.RepoURL, Revision: revision,
+			sources = []backflowv1.ProposalSource{{
+				Position: 1, Role: backflowv1.RoleRender, RepoURL: first.RepoURL, Revision: revision,
 				TargetRevision: first.TargetRevision, Path: first.Path, Chart: first.Chart, Type: srcType,
 			}}
 		}
-		dp := &backflowv1beta1.DriftProposal{
+		dp := &backflowv1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      proposalName(policy.Spec.ApplicationNamespace(), summary.Name, res, changes, attempt),
 				Namespace: policy.Namespace,
@@ -621,10 +621,10 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 					labelResource:    rh,
 				},
 			},
-			Spec: backflowv1beta1.DriftProposalSpec{
-				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: policy.Name},
-				ApplicationRef: backflowv1beta1.ObjectRef{Name: summary.Name, Namespace: policy.Spec.ApplicationNamespace()},
-				ResourceRef: backflowv1beta1.ResourceRef{
+			Spec: backflowv1.DriftProposalSpec{
+				PolicyRef:      backflowv1.LocalObjectRef{Name: policy.Name},
+				ApplicationRef: backflowv1.ObjectRef{Name: summary.Name, Namespace: policy.Spec.ApplicationNamespace()},
+				ResourceRef: backflowv1.ResourceRef{
 					Group: res.Group, Version: res.Version, Kind: res.Kind, Namespace: res.Namespace, Name: res.Name,
 				},
 				Sources:    sources,
@@ -651,7 +651,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 	// The change is live again, so a proposal that was waiting in its merge
 	// request after a reset is no longer reset.
 	if current.Status.Signal().LiveRevertedAtRevision != "" {
-		if err := r.signal(ctx, current, func(sg *backflowv1beta1.Signals) { sg.LiveRevertedAtRevision = "" }); err != nil {
+		if err := r.signal(ctx, current, func(sg *backflowv1.Signals) { sg.LiveRevertedAtRevision = "" }); err != nil {
 			return err
 		}
 	}
@@ -660,7 +660,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 		if p.Name == current.Name {
 			continue
 		}
-		if err := r.signal(ctx, p, func(sg *backflowv1beta1.Signals) { sg.SupersededBy = current.Name }); err != nil {
+		if err := r.signal(ctx, p, func(sg *backflowv1.Signals) { sg.SupersededBy = current.Name }); err != nil {
 			return err
 		}
 		log.Info("Proposal superseded", "proposal", p.Name, "supersededBy", current.Name)
@@ -672,7 +672,7 @@ func (r *DriftReconciler) ensureProposal(ctx context.Context, policy *backflowv1
 // turns it into a phase. It is written to status.signals with a merge patch of that object only,
 // so it does not overwrite what the proposal controller writes, and, being status, cannot be
 // edited by the users of the proposal.
-func (r *DriftReconciler) signal(ctx context.Context, p *backflowv1beta1.DriftProposal, set func(*backflowv1beta1.Signals)) error {
+func (r *DriftReconciler) signal(ctx context.Context, p *backflowv1.DriftProposal, set func(*backflowv1.Signals)) error {
 	orig := p.DeepCopy()
 	set(p.Status.EnsureSignals())
 	return r.Status().Patch(ctx, p, client.MergeFrom(orig))
@@ -694,8 +694,8 @@ func (r *DriftReconciler) signal(ctx context.Context, p *backflowv1beta1.DriftPr
 //
 // Reverted and Superseded by a newer drift never block: the drift went away or
 // was handled, and when it comes back it is a new event.
-func blockingProposal(all []backflowv1beta1.DriftProposal, application, resourceHash string,
-	changes []backflowv1beta1.FieldChange, revision string) *backflowv1beta1.DriftProposal {
+func blockingProposal(all []backflowv1.DriftProposal, application, resourceHash string,
+	changes []backflowv1.FieldChange, revision string) *backflowv1.DriftProposal {
 	for i := range all {
 		p := &all[i]
 		if p.Labels[labelApplication] != safeLabel(application) || p.Labels[labelResource] != resourceHash ||
@@ -704,9 +704,9 @@ func blockingProposal(all []backflowv1beta1.DriftProposal, application, resource
 			continue
 		}
 		switch p.Status.Phase {
-		case backflowv1beta1.PhaseRejected, backflowv1beta1.PhaseFailed, backflowv1beta1.PhaseMerged:
+		case backflowv1.PhaseRejected, backflowv1.PhaseFailed, backflowv1.PhaseMerged:
 			return p
-		case backflowv1beta1.PhaseSuperseded:
+		case backflowv1.PhaseSuperseded:
 			if p.Status.SupersededBy == "" && p.Status.Signal().SupersededBy == "" {
 				return p // replaced because the source changed in Git
 			}
@@ -718,9 +718,9 @@ func blockingProposal(all []backflowv1beta1.DriftProposal, application, resource
 // noteBlocked leaves a blocked drift alone. A Rejected one is reported once
 // per proposal, because the cluster still differs from Git and only the
 // user can resolve that.
-func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
-	summary backflowv1beta1.ApplicationSummary, blocker *backflowv1beta1.DriftProposal) error {
-	if blocker.Status.Phase == backflowv1beta1.PhaseMerged {
+func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1.BackflowPolicy,
+	summary backflowv1.ApplicationSummary, blocker *backflowv1.DriftProposal) error {
+	if blocker.Status.Phase == backflowv1.PhaseMerged {
 		// Expected and short-lived, so only a log line, no Event.
 		logf.FromContext(ctx).V(1).Info("Change already merged; waiting for Argo CD to see the commit",
 			"proposal", blocker.Name, "revision", blocker.Spec.First().Revision)
@@ -728,11 +728,11 @@ func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1bet
 	}
 	logf.FromContext(ctx).V(1).Info("Not proposing the same drift again",
 		"proposal", blocker.Name, "phase", blocker.Status.Phase)
-	if blocker.Status.Phase != backflowv1beta1.PhaseRejected || blocker.Status.Signal().RejectionReported {
+	if blocker.Status.Phase != backflowv1.PhaseRejected || blocker.Status.Signal().RejectionReported {
 		return nil
 	}
 	// Mark first: a missed Event is better than one on every cycle.
-	if err := r.signal(ctx, blocker, func(sg *backflowv1beta1.Signals) { sg.RejectionReported = true }); err != nil {
+	if err := r.signal(ctx, blocker, func(sg *backflowv1.Signals) { sg.RejectionReported = true }); err != nil {
 		return err
 	}
 	where := ""
@@ -748,8 +748,8 @@ func (r *DriftReconciler) noteBlocked(ctx context.Context, policy *backflowv1bet
 
 // hasOpenMergeRequest reports whether a proposal's change waits in an open
 // merge request.
-func hasOpenMergeRequest(p *backflowv1beta1.DriftProposal) bool {
-	return p.Status.Phase == backflowv1beta1.PhaseProposed && p.Status.GitMergeRequest() != nil
+func hasOpenMergeRequest(p *backflowv1.DriftProposal) bool {
+	return p.Status.Phase == backflowv1.PhaseProposed && p.Status.GitMergeRequest() != nil
 }
 
 // syncedRevision is the revision Argo CD compared the Application with.
@@ -790,8 +790,8 @@ func (c *managedResourcesCache) get(ctx context.Context, argo ManagedResourcesGe
 // live ones, so Git did not simply adopt the change. A reset in place, at the
 // same revision, is an ordinary revert.
 func (r *DriftReconciler) resetBySync(ctx context.Context, argo ManagedResourcesGetter,
-	policy *backflowv1beta1.BackflowPolicy, summary backflowv1beta1.ApplicationSummary,
-	app *unstructured.Unstructured, p *backflowv1beta1.DriftProposal, managed *managedResourcesCache) (bool, error) {
+	policy *backflowv1.BackflowPolicy, summary backflowv1.ApplicationSummary,
+	app *unstructured.Unstructured, p *backflowv1.DriftProposal, managed *managedResourcesCache) (bool, error) {
 	rev := syncedRevision(app)
 	if rev == "" || rev == p.Spec.First().Revision {
 		return false, nil
@@ -811,7 +811,7 @@ func (r *DriftReconciler) resetBySync(ctx context.Context, argo ManagedResources
 	if !atDesired {
 		return false, nil
 	}
-	if err := r.signal(ctx, p, func(sg *backflowv1beta1.Signals) { sg.LiveRevertedAtRevision = rev }); err != nil {
+	if err := r.signal(ctx, p, func(sg *backflowv1.Signals) { sg.LiveRevertedAtRevision = rev }); err != nil {
 		return false, err
 	}
 	logf.FromContext(ctx).Info("Live change reset by a sync; it waits in its merge request",
@@ -819,7 +819,7 @@ func (r *DriftReconciler) resetBySync(ctx context.Context, argo ManagedResources
 	return true, nil
 }
 
-func (r *DriftReconciler) event(policy *backflowv1beta1.BackflowPolicy, eventType, reason, msg string) {
+func (r *DriftReconciler) event(policy *backflowv1.BackflowPolicy, eventType, reason, msg string) {
 	if r.Recorder != nil {
 		r.Recorder.Eventf(policy, nil, eventType, reason, "DriftDetection", "%s", msg)
 	}
@@ -838,7 +838,7 @@ func argoReason(err error) string {
 }
 
 // argoClient builds the Argo CD client from spec.argoCD and its Secrets.
-func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) (ManagedResourcesGetter, error) {
+func (r *DriftReconciler) argoClient(ctx context.Context, policy *backflowv1.BackflowPolicy) (ManagedResourcesGetter, error) {
 	cfg, err := argoCDConfig(ctx, r, policy, r.ArgoCD)
 	if err != nil {
 		return nil, err
@@ -894,9 +894,9 @@ func (r *DriftReconciler) forgetWhere(pol string, drop func(app string) bool) {
 }
 
 // proposalSourceType maps the source type Argo CD reports to the API enum.
-func proposalSourceType(s backflowv1beta1.SourceType) (backflowv1beta1.SourceType, bool) {
+func proposalSourceType(s backflowv1.SourceType) (backflowv1.SourceType, bool) {
 	switch s {
-	case backflowv1beta1.SourceDirectory, backflowv1beta1.SourceKustomize, backflowv1beta1.SourceHelm:
+	case backflowv1.SourceDirectory, backflowv1.SourceKustomize, backflowv1.SourceHelm:
 		return s, true
 	}
 	return "", false
@@ -904,7 +904,7 @@ func proposalSourceType(s backflowv1beta1.SourceType) (backflowv1beta1.SourceTyp
 
 // isOpen reports whether a proposal is in flight and has no pending
 // superseded/reverted signal that its controller has yet to act on.
-func isOpen(p *backflowv1beta1.DriftProposal) bool {
+func isOpen(p *backflowv1.DriftProposal) bool {
 	if sg := p.Status.Signal(); sg.SupersededBy != "" || sg.Reverted != "" {
 		return false
 	}
@@ -913,10 +913,10 @@ func isOpen(p *backflowv1beta1.DriftProposal) bool {
 
 // isOpenPhase reports whether a proposal is still in flight. A proposal
 // without a phase was just created and counts as open.
-func isOpenPhase(p backflowv1beta1.ProposalPhase) bool {
+func isOpenPhase(p backflowv1.ProposalPhase) bool {
 	switch p {
-	case "", backflowv1beta1.PhaseDetected, backflowv1beta1.PhaseMapping,
-		backflowv1beta1.PhaseProposed, backflowv1beta1.PhaseUnmapped:
+	case "", backflowv1.PhaseDetected, backflowv1.PhaseMapping,
+		backflowv1.PhaseProposed, backflowv1.PhaseUnmapped:
 		return true
 	}
 	return false
@@ -941,7 +941,7 @@ func safeLabel(s string) string {
 // at most 63 characters. The hash covers the resource identity and the
 // changes. A non-zero attempt appends a counter, used when an older proposal
 // with identical changes already exists but is closed.
-func proposalName(argoNamespace, app string, res appResource, changes []backflowv1beta1.FieldChange, attempt int) string {
+func proposalName(argoNamespace, app string, res appResource, changes []backflowv1.FieldChange, attempt int) string {
 	raw, _ := json.Marshal(changes)
 	sum := sha256.Sum256(append([]byte(argoNamespace+"/"+app+"|"+res.hash()+"|"), raw...))
 	tail := "-" + hex.EncodeToString(sum[:])[:8]
@@ -977,7 +977,7 @@ func dnsSafe(s string) string {
 // policiesForApplication enqueues every policy that reads Applications from
 // the namespace of the changed Application.
 func policiesForApplication(ctx context.Context, c client.Reader, obj client.Object) []reconcile.Request {
-	var list backflowv1beta1.BackflowPolicyList
+	var list backflowv1.BackflowPolicyList
 	if err := c.List(ctx, &list); err != nil {
 		return nil
 	}
@@ -1053,7 +1053,7 @@ func applicationSyncChanged() predicate.Predicate {
 // policyDriftTrigger fires on generation changes and when Ready changes.
 func policyDriftTrigger() predicate.Predicate {
 	ready := func(o client.Object) bool {
-		p, ok := o.(*backflowv1beta1.BackflowPolicy)
+		p, ok := o.(*backflowv1.BackflowPolicy)
 		return ok && meta.IsStatusConditionTrue(p.Status.Conditions, "Ready")
 	}
 	return predicate.Funcs{
@@ -1066,7 +1066,7 @@ func policyDriftTrigger() predicate.Predicate {
 // SetupWithManager sets up the controller with the Manager.
 func (r *DriftReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&backflowv1beta1.BackflowPolicy{}, builder.WithPredicates(policyDriftTrigger())).
+		For(&backflowv1.BackflowPolicy{}, builder.WithPredicates(policyDriftTrigger())).
 		Named("drift")
 
 	// Only watch Applications when Argo CD is installed; otherwise the

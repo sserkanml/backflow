@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/jsonedit"
 )
 
@@ -88,7 +88,7 @@ func jsonMap(raw []byte) (map[string]any, error) {
 }
 
 // applyJSON applies changes to one resource of a JSON file, in place.
-func applyJSON(file string, original []byte, document int, changes []v1beta1.FieldChange) ([]byte, error) {
+func applyJSON(file string, original []byte, document int, changes []v1.FieldChange) ([]byte, error) {
 	docs, err := jsonDocuments(original)
 	if err != nil {
 		return nil, cannot("%s: %v", file, err)
@@ -104,11 +104,11 @@ func applyJSON(file string, original []byte, document int, changes []v1beta1.Fie
 		}
 		ops[i] = jsonedit.Op{Pointer: prefix + ch.Path, Value: ch.Live}
 		switch ch.Op {
-		case v1beta1.OpAdd:
+		case v1.OpAdd:
 			ops[i].Kind = jsonedit.Add
-		case v1beta1.OpRemove:
+		case v1.OpRemove:
 			ops[i].Kind = jsonedit.Remove
-		case v1beta1.OpReplace:
+		case v1.OpReplace:
 			ops[i].Kind = jsonedit.Replace
 		default:
 			return nil, cannot("change %d: unknown operation %q", i, ch.Op)
@@ -127,7 +127,7 @@ func applyJSON(file string, original []byte, document int, changes []v1beta1.Fie
 
 // verifyJSON is Verify for a JSON file: the other resources of the file are
 // unchanged and the edited resource differs from the original by the changes.
-func verifyJSON(original, edited []byte, document int, changes []v1beta1.FieldChange) error {
+func verifyJSON(original, edited []byte, document int, changes []v1.FieldChange) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, fmt.Sprintf(format, args...))
 	}

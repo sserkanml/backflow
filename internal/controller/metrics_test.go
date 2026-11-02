@@ -9,28 +9,28 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/metrics"
 	"github.com/sserkanml/backflow/internal/metrics/metricstest"
 )
 
 func TestProposalCountsByPolicyAndPhase(t *testing.T) {
-	proposal := func(name, policy string, phase backflowv1beta1.ProposalPhase) *backflowv1beta1.DriftProposal {
-		return &backflowv1beta1.DriftProposal{
+	proposal := func(name, policy string, phase backflowv1.ProposalPhase) *backflowv1.DriftProposal {
+		return &backflowv1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: name},
-			Spec:       backflowv1beta1.DriftProposalSpec{PolicyRef: backflowv1beta1.LocalObjectRef{Name: policy}},
-			Status:     backflowv1beta1.DriftProposalStatus{Phase: phase},
+			Spec:       backflowv1.DriftProposalSpec{PolicyRef: backflowv1.LocalObjectRef{Name: policy}},
+			Status:     backflowv1.DriftProposalStatus{Phase: phase},
 		}
 	}
 	sch := runtime.NewScheme()
-	if err := backflowv1beta1.AddToScheme(sch); err != nil {
+	if err := backflowv1.AddToScheme(sch); err != nil {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(sch).WithObjects(
-		proposal("a", "p", backflowv1beta1.PhaseUnmapped),
-		proposal("b", "p", backflowv1beta1.PhaseUnmapped),
+		proposal("a", "p", backflowv1.PhaseUnmapped),
+		proposal("b", "p", backflowv1.PhaseUnmapped),
 		proposal("c", "p", ""),
-		proposal("d", "q", backflowv1beta1.PhaseProposed),
+		proposal("d", "q", backflowv1.PhaseProposed),
 	).Build()
 	got := map[string]int{}
 	for _, p := range ProposalCounts(c)() {
@@ -67,7 +67,7 @@ func TestProviderOf(t *testing.T) {
 	if got := providerOf(nil); got != "" {
 		t.Errorf("nil access = %q", got)
 	}
-	conn := &backflowv1beta1.ScmConnection{Spec: backflowv1beta1.ScmConnectionSpec{Provider: backflowv1beta1.ScmProviderGitHub}}
+	conn := &backflowv1.ScmConnection{Spec: backflowv1.ScmConnectionSpec{Provider: backflowv1.ScmProviderGitHub}}
 	if got := providerOf(&scmAccess{conn: conn}); got != "github" {
 		t.Errorf("provider = %q", got)
 	}

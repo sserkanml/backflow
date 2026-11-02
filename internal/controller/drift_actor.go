@@ -8,7 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/managedfields"
 )
 
@@ -25,7 +25,7 @@ const changedByNone = "none"
 // wrote the drifted fields, the latest first (spec.managers), and how the latest is to be counted
 // (interactive, controller, unknown or, without any, none: the label of the metric). It returns
 // no managers when nothing can be told, and never an error: a proposal does not wait for it.
-func managersOf(ctx context.Context, live map[string]any, changes []backflowv1beta1.FieldChange) ([]backflowv1beta1.ManagerWrite, string) {
+func managersOf(ctx context.Context, live map[string]any, changes []backflowv1.FieldChange) ([]backflowv1.ManagerWrite, string) {
 	pointers := make([]string, 0, len(changes))
 	for _, c := range changes {
 		pointers = append(pointers, c.Path)
@@ -38,15 +38,15 @@ func managersOf(ctx context.Context, live map[string]any, changes []backflowv1be
 	if attr == nil {
 		return nil, changedByNone
 	}
-	managers := []backflowv1beta1.ManagerWrite{writeOf(attr.Latest)}
+	managers := []backflowv1.ManagerWrite{writeOf(attr.Latest)}
 	for _, o := range attr.Others[:min(len(attr.Others), maxActorOthers)] {
 		managers = append(managers, writeOf(o))
 	}
 	return managers, string(managedfields.Classify(attr.Latest.Manager))
 }
 
-func writeOf(o managedfields.Owner) backflowv1beta1.ManagerWrite {
-	return backflowv1beta1.ManagerWrite{
+func writeOf(o managedfields.Owner) backflowv1.ManagerWrite {
+	return backflowv1.ManagerWrite{
 		Manager: o.Manager, Operation: operationOf(o.Operation), Time: timeOf(o.Time), Fields: capped(o.Paths, maxActorFields),
 	}
 }
@@ -60,9 +60,9 @@ func timeOf(t time.Time) *metav1.Time {
 }
 
 // operationOf keeps the two operations the API accepts; anything else is left out.
-func operationOf(op string) backflowv1beta1.ManagedFieldsOperation {
+func operationOf(op string) backflowv1.ManagedFieldsOperation {
 	if op == managedfields.OperationUpdate || op == managedfields.OperationApply {
-		return backflowv1beta1.ManagedFieldsOperation(op)
+		return backflowv1.ManagedFieldsOperation(op)
 	}
 	return ""
 }

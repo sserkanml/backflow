@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
 const configMapYAML = `# Demo configuration
@@ -68,14 +68,14 @@ data:
   café: x
 `
 
-func replace(path, live string) v1beta1.FieldChange {
-	return v1beta1.FieldChange{Path: path, Op: v1beta1.OpReplace, Live: live}
+func replace(path, live string) v1.FieldChange {
+	return v1.FieldChange{Path: path, Op: v1.OpReplace, Live: live}
 }
-func add(path, live string) v1beta1.FieldChange {
-	return v1beta1.FieldChange{Path: path, Op: v1beta1.OpAdd, Live: live}
+func add(path, live string) v1.FieldChange {
+	return v1.FieldChange{Path: path, Op: v1.OpAdd, Live: live}
 }
-func remove(path string) v1beta1.FieldChange {
-	return v1beta1.FieldChange{Path: path, Op: v1beta1.OpRemove}
+func remove(path string) v1.FieldChange {
+	return v1.FieldChange{Path: path, Op: v1.OpRemove}
 }
 
 // swap returns s with the first occurrence of from replaced by to, failing
@@ -94,14 +94,14 @@ func TestApply(t *testing.T) {
 		file    string
 		doc     int
 		input   string
-		changes []v1beta1.FieldChange
+		changes []v1.FieldChange
 		want    func(t *testing.T) string
 	}
 	tests := []tc{
 		{
 			name: "replace a plain string, comments and other lines untouched",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/data/LOG_LEVEL", `"debug"`)},
+			changes: []v1.FieldChange{replace("/data/LOG_LEVEL", `"debug"`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "  LOG_LEVEL: info\n", "  LOG_LEVEL: debug\n")
 			},
@@ -109,7 +109,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a quoted string stays quoted, its trailing comment stays",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/data/FEATURE", `"off"`)},
+			changes: []v1.FieldChange{replace("/data/FEATURE", `"off"`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, `  FEATURE: "on" # quoted on purpose`, `  FEATURE: "off" # quoted on purpose`)
 			},
@@ -117,7 +117,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a number stays a number",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/data/TIMEOUT", `45`)},
+			changes: []v1.FieldChange{replace("/data/TIMEOUT", `45`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "  TIMEOUT: 30\n", "  TIMEOUT: 45\n")
 			},
@@ -125,7 +125,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a number becoming a string is quoted",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/data/TIMEOUT", `"45"`)},
+			changes: []v1.FieldChange{replace("/data/TIMEOUT", `"45"`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "  TIMEOUT: 30\n", "  TIMEOUT: \"45\"\n")
 			},
@@ -133,7 +133,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a string that looks like a bool is quoted",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/data/LOG_LEVEL", `"true"`)},
+			changes: []v1.FieldChange{replace("/data/LOG_LEVEL", `"true"`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "  LOG_LEVEL: info\n", "  LOG_LEVEL: \"true\"\n")
 			},
@@ -141,7 +141,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a key with / is addressed by its escaped pointer",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/metadata/labels/app.kubernetes.io~1name", `"other"`)},
+			changes: []v1.FieldChange{replace("/metadata/labels/app.kubernetes.io~1name", `"other"`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "    app.kubernetes.io/name: demo\n", "    app.kubernetes.io/name: other\n")
 			},
@@ -149,31 +149,31 @@ func TestApply(t *testing.T) {
 		{
 			name: "add a key after the last entry",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{add("/data/NEW_KEY", `"x"`)},
+			changes: []v1.FieldChange{add("/data/NEW_KEY", `"x"`)},
 			want:    func(t *testing.T) string { return configMapYAML + "  NEW_KEY: x\n" },
 		},
 		{
 			name: "replace of a field the file does not have is applied as an add",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/data/DEFAULTED", `"x"`)},
+			changes: []v1.FieldChange{replace("/data/DEFAULTED", `"x"`)},
 			want:    func(t *testing.T) string { return configMapYAML + "  DEFAULTED: x\n" },
 		},
 		{
 			name: "replace below a missing parent creates the parents",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{replace("/spec/strategy/type", `"Recreate"`)},
+			changes: []v1.FieldChange{replace("/spec/strategy/type", `"Recreate"`)},
 			want:    func(t *testing.T) string { return configMapYAML + "spec:\n  strategy:\n    type: Recreate\n" },
 		},
 		{
 			name: "add a key containing ~",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{add("/data/a~0b", `"x"`)},
+			changes: []v1.FieldChange{add("/data/a~0b", `"x"`)},
 			want:    func(t *testing.T) string { return configMapYAML + "  a~b: x\n" },
 		},
 		{
 			name: "add creates missing intermediate maps",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{add("/metadata/annotations/example.com~1owner", `"me"`)},
+			changes: []v1.FieldChange{add("/metadata/annotations/example.com~1owner", `"me"`)},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "    app.kubernetes.io/name: demo\n",
 					"    app.kubernetes.io/name: demo\n  annotations:\n    example.com/owner: me\n")
@@ -182,13 +182,13 @@ func TestApply(t *testing.T) {
 		{
 			name: "add a nested map several levels deep",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{add("/data/a/b/c", `1`)},
+			changes: []v1.FieldChange{add("/data/a/b/c", `1`)},
 			want:    func(t *testing.T) string { return configMapYAML + "  a:\n    b:\n      c: 1\n" },
 		},
 		{
 			name: "remove a key; the comment above its neighbour stays",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{remove("/data/FEATURE")},
+			changes: []v1.FieldChange{remove("/data/FEATURE")},
 			want: func(t *testing.T) string {
 				return swap(t, configMapYAML, "  FEATURE: \"on\" # quoted on purpose\n", "")
 			},
@@ -196,7 +196,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "several changes in one go",
 			file: "cm.yaml", input: configMapYAML,
-			changes: []v1beta1.FieldChange{
+			changes: []v1.FieldChange{
 				add("/data/NEW_KEY", `"x"`), remove("/data/FEATURE"), replace("/data/LOG_LEVEL", `"debug"`),
 			},
 			want: func(t *testing.T) string {
@@ -208,7 +208,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "replica change in the second document of a multi-document file",
 			file: "all.yaml", doc: 1, input: multiDocYAML,
-			changes: []v1beta1.FieldChange{replace("/spec/replicas", `3`)},
+			changes: []v1.FieldChange{replace("/spec/replicas", `3`)},
 			want: func(t *testing.T) string {
 				return swap(t, multiDocYAML, "  replicas: 1 # keep small\n", "  replicas: 3 # keep small\n")
 			},
@@ -216,7 +216,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "container image inside a list",
 			file: "all.yaml", doc: 1, input: multiDocYAML,
-			changes: []v1beta1.FieldChange{
+			changes: []v1.FieldChange{
 				replace("/spec/template/spec/containers/0/image", `"nginx:2.0"`),
 				replace("/spec/template/spec/containers/1/image", `"busybox:1"`),
 			},
@@ -228,7 +228,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a whole array replaced with one of a different length",
 			file: "all.yaml", doc: 1, input: multiDocYAML,
-			changes: []v1beta1.FieldChange{replace("/spec/template/spec/containers/0/args", `["a","b","c"]`)},
+			changes: []v1.FieldChange{replace("/spec/template/spec/containers/0/args", `["a","b","c"]`)},
 			want: func(t *testing.T) string {
 				return swap(t, multiDocYAML, "          args: [\"a\", \"b\"]\n",
 					"          args:\n            - a\n            - b\n            - c\n")
@@ -237,7 +237,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a list item replaced as a whole keeps the comments after the list",
 			file: "all.yaml", doc: 1, input: multiDocYAML,
-			changes: []v1beta1.FieldChange{replace("/spec/template/spec/containers/1", `{"name":"side","image":"busybox:2"}`)},
+			changes: []v1.FieldChange{replace("/spec/template/spec/containers/1", `{"name":"side","image":"busybox:2"}`)},
 			want: func(t *testing.T) string {
 				return swap(t, multiDocYAML, "        - name: side\n          image: busybox\n",
 					"        - name: side\n          image: busybox:2\n")
@@ -246,7 +246,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "add into an empty flow map",
 			file: "edge.yaml", input: edgeYAML,
-			changes: []v1beta1.FieldChange{add("/metadata/annotations/team", `"x"`)},
+			changes: []v1.FieldChange{add("/metadata/annotations/team", `"x"`)},
 			want: func(t *testing.T) string {
 				return swap(t, edgeYAML, "  annotations: {}\n", "  annotations:\n    team: x\n")
 			},
@@ -254,7 +254,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "replace inside a flow map keeps the flow style",
 			file: "edge.yaml", input: edgeYAML,
-			changes: []v1beta1.FieldChange{replace("/metadata/labels/a", `"z"`)},
+			changes: []v1.FieldChange{replace("/metadata/labels/a", `"z"`)},
 			want: func(t *testing.T) string {
 				return swap(t, edgeYAML, "  labels: {a: b, c: d}\n", "  labels: {a: z, c: d}\n")
 			},
@@ -262,7 +262,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "remove from a flow map",
 			file: "edge.yaml", input: edgeYAML,
-			changes: []v1beta1.FieldChange{remove("/metadata/labels/a")},
+			changes: []v1.FieldChange{remove("/metadata/labels/a")},
 			want: func(t *testing.T) string {
 				return swap(t, edgeYAML, "  labels: {a: b, c: d}\n", "  labels: {c: d}\n")
 			},
@@ -270,7 +270,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "add below a null value turns it into a map",
 			file: "edge.yaml", input: edgeYAML,
-			changes: []v1beta1.FieldChange{add("/data/empty/sub", `"v"`)},
+			changes: []v1.FieldChange{add("/data/empty/sub", `"v"`)},
 			want: func(t *testing.T) string {
 				return swap(t, edgeYAML, "  empty:\n", "  empty:\n    sub: v\n")
 			},
@@ -278,7 +278,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "non-ASCII keys",
 			file: "edge.yaml", input: edgeYAML,
-			changes: []v1beta1.FieldChange{replace("/data/café", `"y"`)},
+			changes: []v1.FieldChange{replace("/data/café", `"y"`)},
 			want: func(t *testing.T) string {
 				return swap(t, edgeYAML, "  café: x\n", "  café: y\n")
 			},
@@ -286,7 +286,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "a file without a final newline stays without one",
 			file: "cm.yaml", input: strings.TrimSuffix(configMapYAML, "\n"),
-			changes: []v1beta1.FieldChange{replace("/data/TIMEOUT", `45`)},
+			changes: []v1.FieldChange{replace("/data/TIMEOUT", `45`)},
 			want: func(t *testing.T) string {
 				return strings.TrimSuffix(swap(t, configMapYAML, "  TIMEOUT: 30\n", "  TIMEOUT: 45\n"), "\n")
 			},
@@ -294,7 +294,7 @@ func TestApply(t *testing.T) {
 		{
 			name: "CRLF line endings are kept",
 			file: "cm.yaml", input: strings.ReplaceAll(configMapYAML, "\n", "\r\n"),
-			changes: []v1beta1.FieldChange{replace("/data/LOG_LEVEL", `"debug"`), add("/data/NEW_KEY", `"x"`)},
+			changes: []v1.FieldChange{replace("/data/LOG_LEVEL", `"debug"`), add("/data/NEW_KEY", `"x"`)},
 			want: func(t *testing.T) string {
 				s := swap(t, configMapYAML, "  LOG_LEVEL: info\n", "  LOG_LEVEL: debug\n") + "  NEW_KEY: x\n"
 				return strings.ReplaceAll(s, "\n", "\r\n")
@@ -340,49 +340,49 @@ data:
 func TestApplyBlockScalars(t *testing.T) {
 	tests := []struct {
 		name    string
-		changes []v1beta1.FieldChange
+		changes []v1.FieldChange
 		from    string
 		to      string
 	}{
 		{
 			name:    "replace a script that ends with a comment-looking line",
-			changes: []v1beta1.FieldChange{replace("/data/start.sh", `"#!/bin/sh\necho bye\n# a comment line that is script text\n"`)},
+			changes: []v1.FieldChange{replace("/data/start.sh", `"#!/bin/sh\necho bye\n# a comment line that is script text\n"`)},
 			from:    "    echo hello\n    # a comment line that is script text\n",
 			to:      "    echo bye\n    # a comment line that is script text\n",
 		},
 		{
 			name:    "replace the last entry, a script that ends with a comment-looking line",
-			changes: []v1beta1.FieldChange{replace("/data/last.sh", `"echo done\n# the final line is script text too\n"`)},
+			changes: []v1.FieldChange{replace("/data/last.sh", `"echo done\n# the final line is script text too\n"`)},
 			from:    "    echo last\n",
 			to:      "    echo done\n",
 		},
 		{
 			name:    "keep chomping: trailing blank lines are part of the value",
-			changes: []v1beta1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
+			changes: []v1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
 			from:    "    kept\n\n  clip:",
 			to:      "    changed\n\n  clip:",
 		},
 		{
 			name:    "clip chomping: the blank line after the value is not part of it and stays",
-			changes: []v1beta1.FieldChange{replace("/data/clip", `"other\n"`)},
+			changes: []v1.FieldChange{replace("/data/clip", `"other\n"`)},
 			from:    "    clipped\n\n  folded:",
 			to:      "    other\n\n  folded:",
 		},
 		{
 			name:    "a folded scalar is replaced as a whole",
-			changes: []v1beta1.FieldChange{replace("/data/folded", `"new"`)},
+			changes: []v1.FieldChange{replace("/data/folded", `"new"`)},
 			from:    "  folded: >-\n    folded\n    text\n",
 			to:      "  folded: new\n",
 		},
 		{
 			name:    "an entry added after a script that ends with a comment-looking line comes after all of it",
-			changes: []v1beta1.FieldChange{add("/data/new", `"x"`)},
+			changes: []v1.FieldChange{add("/data/new", `"x"`)},
 			from:    "    # the final line is script text too\n",
 			to:      "    # the final line is script text too\n  new: x\n",
 		},
 		{
 			name:    "an entry removed next to a script leaves the script alone",
-			changes: []v1beta1.FieldChange{remove("/data/folded")},
+			changes: []v1.FieldChange{remove("/data/folded")},
 			from:    "  folded: >-\n    folded\n    text\n",
 			to:      "",
 		},
@@ -401,7 +401,7 @@ func TestApplyBlockScalars(t *testing.T) {
 	}
 
 	t.Run("editing another entry never touches the scripts", func(t *testing.T) {
-		got, err := Apply("cm.yaml", []byte(blockScalarsYAML), 0, []v1beta1.FieldChange{replace("/metadata/name", `"renamed"`)})
+		got, err := Apply("cm.yaml", []byte(blockScalarsYAML), 0, []v1.FieldChange{replace("/metadata/name", `"renamed"`)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -413,7 +413,7 @@ func TestApplyBlockScalars(t *testing.T) {
 
 func TestApplyKeepChompingAtTheEndOfTheFile(t *testing.T) {
 	in := "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: k\ndata:\n  keep: |+\n    kept\n\n\n"
-	got, err := Apply("cm.yaml", []byte(in), 0, []v1beta1.FieldChange{add("/data/new", `"x"`)})
+	got, err := Apply("cm.yaml", []byte(in), 0, []v1.FieldChange{add("/data/new", `"x"`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,7 +424,7 @@ func TestApplyKeepChompingAtTheEndOfTheFile(t *testing.T) {
 }
 
 func TestApplyKeepsOtherDocumentsAndLinesByteForByte(t *testing.T) {
-	got, err := Apply("all.yaml", []byte(multiDocYAML), 1, []v1beta1.FieldChange{
+	got, err := Apply("all.yaml", []byte(multiDocYAML), 1, []v1.FieldChange{
 		replace("/spec/replicas", `3`),
 		replace("/spec/template/spec/containers", `[{"name":"demo","image":"nginx:2.0"},{"name":"side","image":"busybox"},{"name":"new","image":"x"}]`),
 	})
@@ -460,7 +460,7 @@ func TestApplyErrors(t *testing.T) {
 		name    string
 		file    string
 		doc     int
-		change  v1beta1.FieldChange
+		change  v1.FieldChange
 		wantErr error
 	}{
 		{"replace below a scalar", "cm.yaml", 0, replace("/data/LOG_LEVEL/x", `"x"`), ErrCannotApply},
@@ -475,18 +475,18 @@ func TestApplyErrors(t *testing.T) {
 		{"empty pointer", "cm.yaml", 0, replace("", `"x"`), ErrCannotApply},
 		{"invalid JSON value", "cm.yaml", 0, replace("/data/LOG_LEVEL", `{oops`), ErrCannotApply},
 		{"trailing data after the value", "cm.yaml", 0, replace("/data/LOG_LEVEL", `"a" "b"`), ErrCannotApply},
-		{"unknown operation", "cm.yaml", 0, v1beta1.FieldChange{Path: "/data/LOG_LEVEL", Op: "Move"}, ErrCannotApply},
+		{"unknown operation", "cm.yaml", 0, v1.FieldChange{Path: "/data/LOG_LEVEL", Op: "Move"}, ErrCannotApply},
 		{"document out of range", "cm.yaml", 5, replace("/data/LOG_LEVEL", `"x"`), ErrCannotApply},
 		{"Jsonnet cannot be edited", "cm.jsonnet", 0, replace("/data/LOG_LEVEL", `"x"`), ErrUnsupportedFileFormat},
 		{"a JSON file with two objects", "two.json", 0, replace("/a", `1`), ErrCannotApply},
-		{"unknown operation in a JSON file", "cm.json", 0, v1beta1.FieldChange{Path: "/data/LOG_LEVEL", Op: "Move"}, ErrCannotApply},
+		{"unknown operation in a JSON file", "cm.json", 0, v1.FieldChange{Path: "/data/LOG_LEVEL", Op: "Move"}, ErrCannotApply},
 		{"a JSON document out of range", "cm.json", 3, replace("/data/LOG_LEVEL", `"x"`), ErrCannotApply},
 		{"a duplicate key in a JSON file", "dup.json", 0, replace("/data/a", `"x"`), ErrAmbiguous},
 	}
 	inputs := map[string]string{"cm.yaml": configMapYAML, "cm.json": `{"data": {"LOG_LEVEL": "info"}}`, "cm.jsonnet": `{}`, "two.json": `{"a": 1} {"b": 2}`, "dup.json": `{"data": {"a": 1, "a": 2}}`, "all.yaml": multiDocYAML}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Apply(tt.file, []byte(inputs[tt.file]), tt.doc, []v1beta1.FieldChange{tt.change})
+			_, err := Apply(tt.file, []byte(inputs[tt.file]), tt.doc, []v1.FieldChange{tt.change})
 			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("err = %v, want %v", err, tt.wantErr)
 			}
@@ -498,14 +498,14 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 	tests := []struct {
 		name    string
 		input   string
-		changes []v1beta1.FieldChange
+		changes []v1.FieldChange
 		want    string
 	}{
 		{
 			name: "keep chomping is read after a tag",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  keep: !!str |+\n    kept\n\n  other: x\n",
-			changes: []v1beta1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
+			changes: []v1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  keep: |+\n    changed\n\n  other: x\n",
 		},
@@ -513,7 +513,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 			name: "keep chomping is read after an anchor",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  keep: &a |+\n    kept\n\n  other: x\n",
-			changes: []v1beta1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
+			changes: []v1.FieldChange{replace("/data/keep", `"changed\n\n"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  keep: &a |+\n    changed\n\n  other: x\n",
 		},
@@ -521,7 +521,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 			name: "keep chomping is read after a tag and an anchor, with a comment",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n",
-			changes: []v1beta1.FieldChange{add("/data/new", `"y"`)},
+			changes: []v1.FieldChange{add("/data/new", `"y"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  keep: !!str &a |+ # trailing\n    kept\n\n  other: x\n  new: \"y\"\n",
 		},
@@ -529,7 +529,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 			name: "a comment indented more than the key but less than the content is not content",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |\n      echo hi\n    # not part of the script\n  other: x\n",
-			changes: []v1beta1.FieldChange{replace("/data/script", `"echo bye\n"`)},
+			changes: []v1.FieldChange{replace("/data/script", `"echo bye\n"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |\n    echo bye\n    # not part of the script\n  other: x\n",
 		},
@@ -537,7 +537,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 			name: "the same with keep chomping: blank lines before the comment are the value's",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |+\n      echo hi\n\n    # not part of the script\n  other: x\n",
-			changes: []v1beta1.FieldChange{replace("/data/script", `"echo bye\n\n"`)},
+			changes: []v1.FieldChange{replace("/data/script", `"echo bye\n\n"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |+\n    echo bye\n\n    # not part of the script\n  other: x\n",
 		},
@@ -545,7 +545,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 			name: "a comment line that is as deep as the content is content",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |\n      echo hi\n      # part of the script\n  other: x\n",
-			changes: []v1beta1.FieldChange{replace("/data/script", `"echo bye\n"`)},
+			changes: []v1.FieldChange{replace("/data/script", `"echo bye\n"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |\n    echo bye\n  other: x\n",
 		},
@@ -553,7 +553,7 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 			name: "an explicit indentation indicator sets the depth of the content",
 			input: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n",
-			changes: []v1beta1.FieldChange{add("/data/new", `"y"`)},
+			changes: []v1.FieldChange{add("/data/new", `"y"`)},
 			want: "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: c\ndata:\n" +
 				"  script: |4\n      echo hi\n    # indented exactly 4: content\n  other: x\n  new: \"y\"\n",
 		},
@@ -574,8 +574,8 @@ func TestApplyBlockScalarHeaderAndComments(t *testing.T) {
 func TestApplyQuotesStringsYAML11ReadsAsOtherTypes(t *testing.T) {
 	// Helm, Argo CD and kubectl parse YAML 1.1: these plain scalars would not stay strings.
 	for _, s := range []string{"yes", "No", "ON", "off", "y", "N", "true", "null", "~", "1", "1.20", "0777", "1_000", "1:30", "0x1F", ".5", "-3", "1e3", ""} {
-		out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1beta1.FieldChange{
-			{Path: "/data/k", Op: v1beta1.OpAdd, Live: strconv.Quote(s)},
+		out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1.FieldChange{
+			{Path: "/data/k", Op: v1.OpAdd, Live: strconv.Quote(s)},
 		})
 		if err != nil {
 			t.Fatalf("%q: %v", s, err)
@@ -589,14 +589,14 @@ func TestApplyQuotesStringsYAML11ReadsAsOtherTypes(t *testing.T) {
 		}
 	}
 	for _, s := range []string{"plain", "nope", "yesterday", "v1", "a:b", "1a"} {
-		out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1beta1.FieldChange{
-			{Path: "/data/k", Op: v1beta1.OpAdd, Live: strconv.Quote(s)},
+		out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1.FieldChange{
+			{Path: "/data/k", Op: v1.OpAdd, Live: strconv.Quote(s)},
 		})
 		if err != nil || !strings.HasSuffix(string(out), "  k: "+s+"\n") {
 			t.Errorf("%q must stay plain: %q, %v", s, out, err)
 		}
 	}
-	out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1beta1.FieldChange{{Path: "/data/no", Op: v1beta1.OpAdd, Live: `"x"`}})
+	out, err := Apply("c.yaml", []byte("data:\n  a: b\n"), 0, []v1.FieldChange{{Path: "/data/no", Op: v1.OpAdd, Live: `"x"`}})
 	if err != nil || !strings.HasSuffix(string(out), "  \"no\": x\n") {
 		t.Errorf("a key that reads as a boolean is quoted: %q, %v", out, err)
 	}

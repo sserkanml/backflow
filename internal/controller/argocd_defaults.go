@@ -10,7 +10,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/allowlist"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/scm"
@@ -102,7 +102,7 @@ func (d *ArgoCDDefaults) checkServer(url string) error {
 	if url == "" {
 		url = defaultArgoCDURL
 	}
-	return &checkError{reason: backflowv1beta1.ReasonServerNotAllowed, msg: fmt.Sprintf(
+	return &checkError{reason: backflowv1.ReasonServerNotAllowed, msg: fmt.Sprintf(
 		"the Argo CD server %s is not in the operator's list of allowed servers (--argocd-allowed-servers, chart value argocd.allowedServers); no request is made", scm.RedactURL(url))}
 }
 
@@ -111,12 +111,12 @@ func (d *ArgoCDDefaults) Configured() bool {
 	return d != nil && d.Server != "" && d.TokenSecretNamespace != "" && d.TokenSecretName != ""
 }
 
-func (d *ArgoCDDefaults) tokenRef() backflowv1beta1.SecretKeyReference {
+func (d *ArgoCDDefaults) tokenRef() backflowv1.SecretKeyReference {
 	key := d.TokenSecretKey
 	if key == "" {
 		key = DefaultArgoCDTokenKey
 	}
-	return backflowv1beta1.SecretKeyReference{Name: d.TokenSecretName, Key: key}
+	return backflowv1.SecretKeyReference{Name: d.TokenSecretName, Key: key}
 }
 
 func (d *ArgoCDDefaults) caBundle() ([]byte, error) {
@@ -133,7 +133,7 @@ func (d *ArgoCDDefaults) caBundle() ([]byte, error) {
 
 // secretNamespace is where the token of a policy is read: its own namespace when it
 // has spec.argoCD, else the namespace the installer named.
-func argoSecretNamespace(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaults) string {
+func argoSecretNamespace(policy *backflowv1.BackflowPolicy, d *ArgoCDDefaults) string {
 	if policy.Spec.ArgoCD.Server == nil && d.Configured() {
 		return d.TokenSecretNamespace
 	}
@@ -142,39 +142,39 @@ func argoSecretNamespace(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaul
 
 // argoCDSource says which connection a policy uses: its own, the operator's default,
 // or none (ok false), in which case drift detection is off for it.
-func argoCDSource(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaults) (backflowv1beta1.ArgoCDSource, bool) {
+func argoCDSource(policy *backflowv1.BackflowPolicy, d *ArgoCDDefaults) (backflowv1.ArgoCDSource, bool) {
 	switch {
 	case policy.Spec.ArgoCD.Server != nil:
-		return backflowv1beta1.ArgoCDSourcePolicy, true
+		return backflowv1.ArgoCDSourcePolicy, true
 	case d.Configured():
-		return backflowv1beta1.ArgoCDSourceOperatorDefault, true
+		return backflowv1.ArgoCDSourceOperatorDefault, true
 	}
 	return "", false
 }
 
 // argoCDStatus is status.argoCD of a policy.
-func argoCDStatus(policy *backflowv1beta1.BackflowPolicy, d *ArgoCDDefaults) *backflowv1beta1.ArgoCDStatus {
+func argoCDStatus(policy *backflowv1.BackflowPolicy, d *ArgoCDDefaults) *backflowv1.ArgoCDStatus {
 	source, ok := argoCDSource(policy, d)
 	if !ok {
 		return nil
 	}
-	if source == backflowv1beta1.ArgoCDSourcePolicy {
+	if source == backflowv1.ArgoCDSourcePolicy {
 		url := policy.Spec.ArgoCD.Server.URL
 		if url == "" {
 			url = defaultArgoCDURL
 		}
-		return &backflowv1beta1.ArgoCDStatus{Source: source, URL: url}
+		return &backflowv1.ArgoCDStatus{Source: source, URL: url}
 	}
-	return &backflowv1beta1.ArgoCDStatus{Source: source, URL: d.Server}
+	return &backflowv1.ArgoCDStatus{Source: source, URL: d.Server}
 }
 
 // describeArgoCD is the sentence that goes into a condition message: which
 // connection, never a token.
-func describeArgoCD(st *backflowv1beta1.ArgoCDStatus) string {
+func describeArgoCD(st *backflowv1.ArgoCDStatus) string {
 	if st == nil {
 		return ""
 	}
-	if st.Source == backflowv1beta1.ArgoCDSourceOperatorDefault {
+	if st.Source == backflowv1.ArgoCDSourceOperatorDefault {
 		return fmt.Sprintf("Argo CD API: operator default (%s)", st.URL)
 	}
 	return fmt.Sprintf("Argo CD API: from the policy (%s)", st.URL)

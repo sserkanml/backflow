@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 const (
@@ -97,18 +97,18 @@ func upgraded(t *testing.T, before ...func(*cluster)) *cluster {
 	return cl
 }
 
-func (cl *cluster) proposal(name string) *backflowv1beta1.DriftProposal {
+func (cl *cluster) proposal(name string) *backflowv1.DriftProposal {
 	cl.t.Helper()
-	p := &backflowv1beta1.DriftProposal{}
+	p := &backflowv1.DriftProposal{}
 	if err := cl.typ.Get(context.Background(), types.NamespacedName{Namespace: "team-a", Name: name}, p); err != nil {
 		cl.t.Fatal(err)
 	}
 	return p
 }
 
-func (cl *cluster) policy(name string) *backflowv1beta1.BackflowPolicy {
+func (cl *cluster) policy(name string) *backflowv1.BackflowPolicy {
 	cl.t.Helper()
-	p := &backflowv1beta1.BackflowPolicy{}
+	p := &backflowv1.BackflowPolicy{}
 	if err := cl.typ.Get(context.Background(), types.NamespacedName{Namespace: "team-a", Name: name}, p); err != nil {
 		cl.t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestMigrateConvertsInPlace(t *testing.T) {
 
 	// The proposal is created again as v1beta1; the ChangeRecords are gone and not backed up.
 	dp := cl.proposal("dp-1")
-	if dp.Spec.PolicyRef.Name != "p1" || dp.Status.Phase != backflowv1beta1.PhaseProposed || dp.Annotations[AnnotationMigrated] != OldVersion {
+	if dp.Spec.PolicyRef.Name != "p1" || dp.Status.Phase != backflowv1.PhaseProposed || dp.Annotations[AnnotationMigrated] != OldVersion {
 		t.Errorf("the proposal = %+v / %+v / %v", dp.Spec, dp.Status, dp.Annotations)
 	}
 	if len(rep.Proposals) != 0 || !strings.Contains(out, "team-a/dp-1 (phase Proposed): migrated") {
@@ -230,11 +230,11 @@ func checkConvertedPolicy(t *testing.T, cl *cluster, uid any) {
 func checkConvertedConnection(t *testing.T, cl *cluster) {
 	t.Helper()
 	// The connection.
-	c := &backflowv1beta1.ScmConnection{}
+	c := &backflowv1.ScmConnection{}
 	if err := cl.typ.Get(context.Background(), types.NamespacedName{Namespace: "team-a", Name: "gitlab"}, c); err != nil {
 		t.Fatal(err)
 	}
-	if c.Spec.Provider != backflowv1beta1.ScmProviderGitLab || len(c.Spec.Hosts) != 1 || c.Spec.TokenSecretRef.Key != "token" ||
+	if c.Spec.Provider != backflowv1.ScmProviderGitLab || len(c.Spec.Hosts) != 1 || c.Spec.TokenSecretRef.Key != "token" ||
 		c.Status.AuthenticatedAs != "bot" || len(c.Status.Conditions) != 1 {
 		t.Errorf("connection = %+v / %+v", c.Spec, c.Status)
 	}
@@ -486,11 +486,11 @@ func TestMigrateSkipsObjectsMadeThroughV1beta1(t *testing.T) {
 	if got := cl.versions("backflowpolicies.backflow.io"); len(got) != 2 {
 		t.Fatalf("versions = %v: with a policy left, v1alpha1 stays (unserved)", got)
 	}
-	made := &backflowv1beta1.BackflowPolicy{
+	made := &backflowv1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "fresh"},
-		Spec: backflowv1beta1.BackflowPolicySpec{
-			Applications: backflowv1beta1.ApplicationSelector{Names: []string{"x"}},
-			ArgoCD:       backflowv1beta1.ArgoCDSpec{Namespace: "argocd"},
+		Spec: backflowv1.BackflowPolicySpec{
+			Applications: backflowv1.ApplicationSelector{Names: []string{"x"}},
+			ArgoCD:       backflowv1.ArgoCDSpec{Namespace: "argocd"},
 		},
 	}
 	if err := cl.typ.Create(context.Background(), made); err != nil {
@@ -555,7 +555,7 @@ func TestMigrateAddsV1beta1AndRemovesV1alpha1(t *testing.T) {
 	cl.setServed(false)
 
 	// Delete it: nothing is left, and the next run removes v1alpha1.
-	if err := cl.typ.Delete(context.Background(), &backflowv1beta1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p3"}}); err != nil {
+	if err := cl.typ.Delete(context.Background(), &backflowv1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p3"}}); err != nil {
 		t.Fatal(err)
 	}
 	rep, out, err = cl.run(Options{BackupDir: dir})

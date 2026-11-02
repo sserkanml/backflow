@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )
 
@@ -14,7 +14,7 @@ import (
 type Description struct {
 	// Strategy is KustomizePatch when the edits are a setting, a patch value
 	// or a new patch, and Direct when they are the fields of a resource file.
-	Strategy v1beta1.MappingStrategy
+	Strategy v1.MappingStrategy
 	// Tiers are the tiers of the edits, without duplicates, in order.
 	Tiers []int
 	// Edited lists "file: key" of every edit; for an inline patch the key
@@ -34,14 +34,14 @@ type Description struct {
 
 // Describe describes the edits of an outcome.
 func Describe(out *rendermap.Outcome) Description {
-	d := Description{Strategy: v1beta1.StrategyDirect}
+	d := Description{Strategy: v1.StrategyDirect}
 	for _, a := range out.Applied {
 		e, ok := a.Candidate.Meta.(*Edit)
 		if !ok {
 			continue
 		}
 		if e.Kind != KindResource {
-			d.Strategy = v1beta1.StrategyKustomizePatch
+			d.Strategy = v1.StrategyKustomizePatch
 		}
 		if !slices.Contains(d.Tiers, e.Tier) {
 			d.Tiers = append(d.Tiers, e.Tier)

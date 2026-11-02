@@ -63,7 +63,7 @@ ScmConnection itself verifies it at once.
    kubectl -n {{ .Release.Namespace }} create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
 
    kubectl -n {{ .Release.Namespace }} apply -f - <<YAML
-   apiVersion: backflow.io/v1beta1
+   apiVersion: backflow.io/v1
    kind: ScmConnection
    metadata:
      name: gitlab
@@ -76,7 +76,7 @@ ScmConnection itself verifies it at once.
 3. A policy that says which Applications to watch. Start with mode ReportOnly.
 
    kubectl -n {{ .Release.Namespace }} apply -f - <<YAML
-   apiVersion: backflow.io/v1beta1
+   apiVersion: backflow.io/v1
    kind: BackflowPolicy
    metadata:
      name: my-apps

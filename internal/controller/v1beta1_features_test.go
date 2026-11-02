@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 )
 
@@ -78,11 +78,11 @@ func TestArgoCDServerAllowed(t *testing.T) {
 func TestArgoCDConfigNeverReadsTheSecretsOfAServerThatIsNotAllowed(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = backflowv1beta1.AddToScheme(scheme)
-	policy := &backflowv1beta1.BackflowPolicy{
+	_ = backflowv1.AddToScheme(scheme)
+	policy := &backflowv1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p"},
-		Spec: backflowv1beta1.BackflowPolicySpec{ArgoCD: backflowv1beta1.ArgoCDSpec{Server: &backflowv1beta1.ArgoCDServer{
-			URL: "http://169.254.169.254", TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "tok", Key: "token"},
+		Spec: backflowv1.BackflowPolicySpec{ArgoCD: backflowv1.ArgoCDSpec{Server: &backflowv1.ArgoCDServer{
+			URL: "http://169.254.169.254", TokenSecretRef: backflowv1.SecretKeyReference{Name: "tok", Key: "token"},
 		}}},
 	}
 	secrets := &secretReadCounter{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(
@@ -92,7 +92,7 @@ func TestArgoCDConfigNeverReadsTheSecretsOfAServerThatIsNotAllowed(t *testing.T)
 	allowOnly(t, []string{"https://argocd.example.com"}, nil)
 	_, err := argoCDConfig(context.Background(), secrets, policy, &ArgoCDDefaults{})
 	var check *checkError
-	if !errors.As(err, &check) || check.reason != backflowv1beta1.ReasonServerNotAllowed {
+	if !errors.As(err, &check) || check.reason != backflowv1.ReasonServerNotAllowed {
 		t.Fatalf("err = %v, want ServerNotAllowed", err)
 	}
 	if secrets.gets != 0 {
@@ -122,11 +122,11 @@ func (c *secretReadCounter) Get(ctx context.Context, key client.ObjectKey, obj c
 func TestScmAccessNeverReadsTheTokenOfAHostThatIsNotAllowed(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = backflowv1beta1.AddToScheme(scheme)
-	conn := &backflowv1beta1.ScmConnection{
+	_ = backflowv1.AddToScheme(scheme)
+	conn := &backflowv1.ScmConnection{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "evil"},
-		Spec: backflowv1beta1.ScmConnectionSpec{Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://evil.example.net",
-			TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "tok", Key: "token"}},
+		Spec: backflowv1.ScmConnectionSpec{Provider: backflowv1.ScmProviderGitLab, URL: "https://evil.example.net",
+			TokenSecretRef: backflowv1.SecretKeyReference{Name: "tok", Key: "token"}},
 	}
 	secrets := &secretReadCounter{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(conn,
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "tok"}, Data: map[string][]byte{"token": []byte("t")}},
@@ -180,10 +180,10 @@ var _ = Describe("The allowlists, with the API server", func() {
 		DeferCleanup(func() {
 			_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "allow-token", Namespace: ns}})
 		})
-		conn := &backflowv1beta1.ScmConnection{
+		conn := &backflowv1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: "allow-scm", Namespace: ns},
-			Spec: backflowv1beta1.ScmConnectionSpec{Provider: backflowv1beta1.ScmProviderGitLab, URL: server.URL,
-				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "allow-token", Key: "token"}},
+			Spec: backflowv1.ScmConnectionSpec{Provider: backflowv1.ScmProviderGitLab, URL: server.URL,
+				TokenSecretRef: backflowv1.SecretKeyReference{Name: "allow-token", Key: "token"}},
 		}
 		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, conn) })
@@ -199,7 +199,7 @@ var _ = Describe("The allowlists, with the API server", func() {
 		ready := reconcileConn()
 		Expect(ready).NotTo(BeNil())
 		Expect(ready.Status).To(Equal(metav1.ConditionFalse))
-		Expect(ready.Reason).To(Equal(backflowv1beta1.ReasonHostNotAllowed))
+		Expect(ready.Reason).To(Equal(backflowv1.ReasonHostNotAllowed))
 		Expect(ready.Message).To(ContainSubstring("--scm-allowed-hosts"))
 		Expect(ready.ObservedGeneration).To(Equal(conn.Generation))
 		Expect(hits.Load()).To(BeZero(), "no request is made to a host that is not allowed")
@@ -214,13 +214,13 @@ var _ = Describe("The allowlists, with the API server", func() {
 	})
 
 	It("keeps a BackflowPolicy that names a server that is not allowed from being Ready", func() {
-		policy := &backflowv1beta1.BackflowPolicy{
+		policy := &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "allow-policy", Namespace: ns},
-			Spec: backflowv1beta1.BackflowPolicySpec{
-				Applications: backflowv1beta1.ApplicationSelector{Names: []string{"allow-app"}},
-				Mode:         backflowv1beta1.ModeReportOnly,
-				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
-					URL: "https://argocd.not-allowed.example", TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "none", Key: "token"},
+			Spec: backflowv1.BackflowPolicySpec{
+				Applications: backflowv1.ApplicationSelector{Names: []string{"allow-app"}},
+				Mode:         backflowv1.ModeReportOnly,
+				ArgoCD: backflowv1.ArgoCDSpec{Namespace: ns, Server: &backflowv1.ArgoCDServer{
+					URL: "https://argocd.not-allowed.example", TokenSecretRef: backflowv1.SecretKeyReference{Name: "none", Key: "token"},
 				}},
 			},
 		}
@@ -237,7 +237,7 @@ var _ = Describe("The allowlists, with the API server", func() {
 		allowOnly(GinkgoT(), []string{"https://argocd"}, nil)
 		c := ready()
 		Expect(c.Status).To(Equal(metav1.ConditionFalse))
-		Expect(c.Reason).To(Equal(backflowv1beta1.ReasonServerNotAllowed))
+		Expect(c.Reason).To(Equal(backflowv1.ReasonServerNotAllowed))
 		Expect(c.Message).To(ContainSubstring("--argocd-allowed-servers"))
 		Expect(c.Message).To(ContainSubstring("no request is made"))
 		Expect(policy.Status.Applications).To(BeEmpty())
@@ -245,12 +245,12 @@ var _ = Describe("The allowlists, with the API server", func() {
 		By("the operator's own server needs no entry in the list")
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		r.ArgoCD = &ArgoCDDefaults{Server: "https://argocd.not-allowed.example"}
-		Expect(ready().Reason).NotTo(Equal(backflowv1beta1.ReasonServerNotAllowed))
+		Expect(ready().Reason).NotTo(Equal(backflowv1.ReasonServerNotAllowed))
 
 		By("and a server in the list is allowed")
 		r.ArgoCD = &ArgoCDDefaults{}
 		allowOnly(GinkgoT(), []string{"https://argocd.not-allowed.example"}, nil)
-		Expect(ready().Reason).NotTo(Equal(backflowv1beta1.ReasonServerNotAllowed))
+		Expect(ready().Reason).NotTo(Equal(backflowv1.ReasonServerNotAllowed))
 	})
 })
 
@@ -270,13 +270,13 @@ var _ = Describe("A policy that selects more Applications than its status lists"
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, app) })
 		}
-		policy := &backflowv1beta1.BackflowPolicy{
+		policy := &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "cap-policy", Namespace: ns},
-			Spec: backflowv1beta1.BackflowPolicySpec{
-				Applications: backflowv1beta1.ApplicationSelector{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"cap-test": "yes"}}},
-				Mode:         backflowv1beta1.ModeReportOnly,
-				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns, Server: &backflowv1beta1.ArgoCDServer{
-					URL: "https://argocd.test", TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "none", Key: "token"},
+			Spec: backflowv1.BackflowPolicySpec{
+				Applications: backflowv1.ApplicationSelector{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"cap-test": "yes"}}},
+				Mode:         backflowv1.ModeReportOnly,
+				ArgoCD: backflowv1.ArgoCDSpec{Namespace: ns, Server: &backflowv1.ArgoCDServer{
+					URL: "https://argocd.test", TokenSecretRef: backflowv1.SecretKeyReference{Name: "none", Key: "token"},
 				}},
 			},
 		}
@@ -307,16 +307,16 @@ var _ = Describe("assignActor", func() {
 
 	It("can be set to false from Go, and is true when it is left out", func() {
 		for name, assign := range map[string]*bool{"assign-off": new(false), "assign-on": new(true), "assign-unset": nil} {
-			policy := &backflowv1beta1.BackflowPolicy{
+			policy := &backflowv1.BackflowPolicy{
 				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-				Spec: backflowv1beta1.BackflowPolicySpec{
-					Applications: backflowv1beta1.ApplicationSelector{Names: []string{"x"}},
-					Git:          backflowv1beta1.GitOptions{MergeRequest: backflowv1beta1.MergeRequestOptions{AssignActor: assign}},
+				Spec: backflowv1.BackflowPolicySpec{
+					Applications: backflowv1.ApplicationSelector{Names: []string{"x"}},
+					Git:          backflowv1.GitOptions{MergeRequest: backflowv1.MergeRequestOptions{AssignActor: assign}},
 				},
 			}
 			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, policy) })
-			got := &backflowv1beta1.BackflowPolicy{}
+			got := &backflowv1.BackflowPolicy{}
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), got)).To(Succeed())
 			Expect(got.Spec.Git.MergeRequest.AssignActor).NotTo(BeNil(), name)
 			Expect(got.Spec.AssignsActor()).To(Equal(assign == nil || *assign), name)
@@ -332,9 +332,9 @@ var _ = Describe("The retention of finished proposals", func() {
 	var now time.Time
 
 	newPolicy := func(name string, retention *time.Duration) {
-		policy := &backflowv1beta1.BackflowPolicy{
+		policy := &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec:       backflowv1beta1.BackflowPolicySpec{Applications: backflowv1beta1.ApplicationSelector{Names: []string{"x"}}},
+			Spec:       backflowv1.BackflowPolicySpec{Applications: backflowv1.ApplicationSelector{Names: []string{"x"}}},
 		}
 		if retention != nil {
 			policy.Spec.Retention.FinishedProposals = &metav1.Duration{Duration: *retention}
@@ -343,15 +343,15 @@ var _ = Describe("The retention of finished proposals", func() {
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, policy) })
 	}
 	// proposal creates a proposal of the policy in a phase that was reached finishedAgo before now.
-	proposal := func(name, policy string, phase backflowv1beta1.ProposalPhase, finishedAgo time.Duration) *backflowv1beta1.DriftProposal {
-		dp := &backflowv1beta1.DriftProposal{
+	proposal := func(name, policy string, phase backflowv1.ProposalPhase, finishedAgo time.Duration) *backflowv1.DriftProposal {
+		dp := &backflowv1.DriftProposal{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec: backflowv1beta1.DriftProposalSpec{
-				PolicyRef:      backflowv1beta1.LocalObjectRef{Name: policy},
-				ApplicationRef: backflowv1beta1.ObjectRef{Name: "x", Namespace: "argocd"},
-				ResourceRef:    backflowv1beta1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: name},
-				Sources:        []backflowv1beta1.ProposalSource{{Position: 1, Role: backflowv1beta1.RoleRender, RepoURL: "https://gitlab.com/x/y.git", Revision: "abc", Type: backflowv1beta1.SourceDirectory}},
-				Changes:        []backflowv1beta1.FieldChange{{Path: "/data/a", Op: backflowv1beta1.OpReplace, Desired: `"1"`, Live: `"2"`}},
+			Spec: backflowv1.DriftProposalSpec{
+				PolicyRef:      backflowv1.LocalObjectRef{Name: policy},
+				ApplicationRef: backflowv1.ObjectRef{Name: "x", Namespace: "argocd"},
+				ResourceRef:    backflowv1.ResourceRef{Version: "v1", Kind: "ConfigMap", Namespace: "demo", Name: name},
+				Sources:        []backflowv1.ProposalSource{{Position: 1, Role: backflowv1.RoleRender, RepoURL: "https://gitlab.com/x/y.git", Revision: "abc", Type: backflowv1.SourceDirectory}},
+				Changes:        []backflowv1.FieldChange{{Path: "/data/a", Op: backflowv1.OpReplace, Desired: `"1"`, Live: `"2"`}},
 				DetectedAt:     metav1.NewTime(start),
 			},
 		}
@@ -365,11 +365,11 @@ var _ = Describe("The retention of finished proposals", func() {
 		ExpectWithOffset(1, k8sClient.Status().Update(ctx, dp)).To(Succeed())
 		return dp
 	}
-	reconcileDP := func(dp *backflowv1beta1.DriftProposal) (reconcile.Result, bool) {
+	reconcileDP := func(dp *backflowv1.DriftProposal) (reconcile.Result, bool) {
 		r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Now: func() time.Time { return now }}
 		res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(dp)})
 		ExpectWithOffset(1, err).NotTo(HaveOccurred())
-		err = k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), &backflowv1beta1.DriftProposal{})
+		err = k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), &backflowv1.DriftProposal{})
 		if apierrors.IsNotFound(err) {
 			return res, false
 		}
@@ -381,9 +381,9 @@ var _ = Describe("The retention of finished proposals", func() {
 	It("deletes a finished proposal after the retention, and keeps it until then", func() {
 		retention := 2 * time.Hour
 		newPolicy("ret-short", &retention)
-		for _, phase := range []backflowv1beta1.ProposalPhase{
-			backflowv1beta1.PhaseMerged, backflowv1beta1.PhaseRejected, backflowv1beta1.PhaseReverted,
-			backflowv1beta1.PhaseSuperseded, backflowv1beta1.PhaseFailed,
+		for _, phase := range []backflowv1.ProposalPhase{
+			backflowv1.PhaseMerged, backflowv1.PhaseRejected, backflowv1.PhaseReverted,
+			backflowv1.PhaseSuperseded, backflowv1.PhaseFailed,
 		} {
 			name := "ret-" + strings.ToLower(string(phase))
 			young := proposal(name+"-young", "ret-short", phase, time.Hour)
@@ -400,8 +400,8 @@ var _ = Describe("The retention of finished proposals", func() {
 	It("never deletes a proposal that is open, or Unmapped, however old", func() {
 		retention := time.Hour
 		newPolicy("ret-open", &retention)
-		for _, phase := range []backflowv1beta1.ProposalPhase{
-			backflowv1beta1.PhaseDetected, backflowv1beta1.PhaseMapping, backflowv1beta1.PhaseProposed, backflowv1beta1.PhaseUnmapped,
+		for _, phase := range []backflowv1.ProposalPhase{
+			backflowv1.PhaseDetected, backflowv1.PhaseMapping, backflowv1.PhaseProposed, backflowv1.PhaseUnmapped,
 		} {
 			dp := proposal("ret-open-"+strings.ToLower(string(phase)), "ret-open", phase, 1000*time.Hour)
 			now = start.Add(1000 * time.Hour)
@@ -413,7 +413,7 @@ var _ = Describe("The retention of finished proposals", func() {
 	It("keeps finished proposals for ever with 0s", func() {
 		zero := time.Duration(0)
 		newPolicy("ret-forever", &zero)
-		dp := proposal("ret-forever-merged", "ret-forever", backflowv1beta1.PhaseMerged, 100000*time.Hour)
+		dp := proposal("ret-forever-merged", "ret-forever", backflowv1.PhaseMerged, 100000*time.Hour)
 		res, exists := reconcileDP(dp)
 		Expect(exists).To(BeTrue())
 		Expect(res.IsZero()).To(BeTrue(), "nothing to wait for")
@@ -421,22 +421,22 @@ var _ = Describe("The retention of finished proposals", func() {
 
 	It("keeps them 14 days when the policy does not say", func() {
 		newPolicy("ret-default", nil)
-		got := &backflowv1beta1.BackflowPolicy{}
+		got := &backflowv1.BackflowPolicy{}
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "ret-default"}, got)).To(Succeed())
 		Expect(got.Spec.Retention.FinishedProposals.Duration).To(Equal(14*24*time.Hour), "the API server fills in the default")
-		_, exists := reconcileDP(proposal("ret-default-13d", "ret-default", backflowv1beta1.PhaseMerged, 13*24*time.Hour))
+		_, exists := reconcileDP(proposal("ret-default-13d", "ret-default", backflowv1.PhaseMerged, 13*24*time.Hour))
 		Expect(exists).To(BeTrue())
-		_, exists = reconcileDP(proposal("ret-default-15d", "ret-default", backflowv1beta1.PhaseMerged, 15*24*time.Hour))
+		_, exists = reconcileDP(proposal("ret-default-15d", "ret-default", backflowv1.PhaseMerged, 15*24*time.Hour))
 		Expect(exists).To(BeFalse())
 	})
 
 	It("counts from the moment the proposal finished, which is recorded when it does", func() {
 		newPolicy("ret-stamp", new(time.Hour))
-		dp := proposal("ret-stamp-dp", "ret-stamp", backflowv1beta1.PhaseProposed, -1)
+		dp := proposal("ret-stamp-dp", "ret-stamp", backflowv1.PhaseProposed, -1)
 		r := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Now: func() time.Time { return now }}
 		// The proposal controller's own status write stamps finishedAt when the phase is a final one.
 		orig := dp.DeepCopy()
-		dp.Status.Phase = backflowv1beta1.PhaseRejected
+		dp.Status.Phase = backflowv1.PhaseRejected
 		Expect(r.patchStatus(ctx, dp, orig)).To(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dp), dp)).To(Succeed())
 		Expect(dp.Status.FinishedAt).NotTo(BeNil())
@@ -450,7 +450,7 @@ var _ = Describe("The retention of finished proposals", func() {
 
 	It("counts from its last change for a proposal that finished before the field existed", func() {
 		newPolicy("ret-legacy", new(time.Hour))
-		dp := proposal("ret-legacy-dp", "ret-legacy", backflowv1beta1.PhaseMerged, -1)
+		dp := proposal("ret-legacy-dp", "ret-legacy", backflowv1.PhaseMerged, -1)
 		Expect(dp.Status.FinishedAt).To(BeNil())
 		now = start.Add(30 * time.Minute)
 		_, exists := reconcileDP(dp)
@@ -460,7 +460,7 @@ var _ = Describe("The retention of finished proposals", func() {
 	})
 
 	It("leaves a proposal whose policy is gone to the owner reference", func() {
-		dp := proposal("ret-orphan", "ret-no-such-policy", backflowv1beta1.PhaseMerged, 1000*time.Hour)
+		dp := proposal("ret-orphan", "ret-no-such-policy", backflowv1.PhaseMerged, 1000*time.Hour)
 		_, exists := reconcileDP(dp)
 		Expect(exists).To(BeTrue())
 	})

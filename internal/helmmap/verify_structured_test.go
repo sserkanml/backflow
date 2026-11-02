@@ -7,11 +7,11 @@ import (
 
 	"github.com/sserkanml/backflow/internal/rendermap"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
-func structuredChange(path string, op v1beta1.ChangeOperation, desired, live string) rendermap.Field {
-	return rendermap.Field{Change: v1beta1.FieldChange{Path: path, Op: op, Desired: desired, Live: live}, Found: &rendermap.Found{}}
+func structuredChange(path string, op v1.ChangeOperation, desired, live string) rendermap.Field {
+	return rendermap.Field{Change: v1.FieldChange{Path: path, Op: op, Desired: desired, Live: live}, Found: &rendermap.Found{}}
 }
 
 func TestVerifyStructuredBaseline(t *testing.T) {
@@ -19,7 +19,7 @@ func TestVerifyStructuredBaseline(t *testing.T) {
 	rend := &demoRenderer{src: env.src}
 	t.Run("the render must have what the proposal says is in Git", func(t *testing.T) {
 		out, err := Verify(context.Background(), rend, env.input(keyConfig,
-			structuredChange("/data/NEW", v1beta1.OpRemove, `"x"`, "")), rendermap.Options{})
+			structuredChange("/data/NEW", v1.OpRemove, `"x"`, "")), rendermap.Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonRenderMismatch ||
 			!strings.Contains(out.Unmapped.Message, "the proposal expects /data/NEW") {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
@@ -27,21 +27,21 @@ func TestVerifyStructuredBaseline(t *testing.T) {
 	})
 	t.Run("an Add of a field the render already has is a mismatch", func(t *testing.T) {
 		out, err := Verify(context.Background(), rend, env.input(keyConfig,
-			structuredChange("/data/LOG_LEVEL", v1beta1.OpAdd, "", `"x"`)), rendermap.Options{})
+			structuredChange("/data/LOG_LEVEL", v1.OpAdd, "", `"x"`)), rendermap.Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonRenderMismatch {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
 	})
 	t.Run("a structured field below which a leaf changes on every render is nondeterministic", func(t *testing.T) {
 		out, err := Verify(context.Background(), &demoRenderer{src: env.src, random: true}, env.input(keyConfig,
-			structuredChange("/data", v1beta1.OpReplace, `{"RANDOM":"r1"}`, `{"RANDOM":"x"}`)), rendermap.Options{})
+			structuredChange("/data", v1.OpReplace, `{"RANDOM":"r1"}`, `{"RANDOM":"x"}`)), rendermap.Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNondeterministicField {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}
 	})
 	t.Run("without candidates a structured field has no verified key", func(t *testing.T) {
 		out, err := Verify(context.Background(), rend, env.input(keyConfig,
-			structuredChange("/data/NEW", v1beta1.OpAdd, "", `"x"`)), rendermap.Options{})
+			structuredChange("/data/NEW", v1.OpAdd, "", `"x"`)), rendermap.Options{})
 		if err != nil || out.Mapped() || out.Unmapped.Reason != rendermap.ReasonNoVerifiedCandidate {
 			t.Fatalf("out = %+v, err = %v", out.Unmapped, err)
 		}

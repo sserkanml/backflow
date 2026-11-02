@@ -34,7 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/metrics"
@@ -113,10 +113,10 @@ func (r *DriftProposalReconciler) trackEvery() time.Duration {
 
 // isTerminalPhase reports whether a proposal has reached an end state that
 // must never change again.
-func isTerminalPhase(p backflowv1beta1.ProposalPhase) bool {
+func isTerminalPhase(p backflowv1.ProposalPhase) bool {
 	switch p {
-	case backflowv1beta1.PhaseMerged, backflowv1beta1.PhaseRejected, backflowv1beta1.PhaseReverted,
-		backflowv1beta1.PhaseSuperseded, backflowv1beta1.PhaseFailed:
+	case backflowv1.PhaseMerged, backflowv1.PhaseRejected, backflowv1.PhaseReverted,
+		backflowv1.PhaseSuperseded, backflowv1.PhaseFailed:
 		return true
 	}
 	return false
@@ -125,14 +125,14 @@ func isTerminalPhase(p backflowv1beta1.ProposalPhase) bool {
 func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var dp backflowv1beta1.DriftProposal
+	var dp backflowv1.DriftProposal
 	if err := r.Get(ctx, req.NamespacedName, &dp); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if isTerminalPhase(dp.Status.Phase) {
 		return r.reconcileFinished(ctx, &dp)
 	}
-	if r.Writer != nil && dp.Status.Phase == backflowv1beta1.PhaseProposed && dp.Status.GitMergeRequest() != nil {
+	if r.Writer != nil && dp.Status.Phase == backflowv1.PhaseProposed && dp.Status.GitMergeRequest() != nil {
 		return r.trackProposed(ctx, &dp)
 	}
 
@@ -162,28 +162,28 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if dp.Status.Phase == "" {
-		dp.Status.Phase = backflowv1beta1.PhaseDetected
+		dp.Status.Phase = backflowv1.PhaseDetected
 		dp.Status.Message = "Drift detected between Git and the cluster."
 	}
-	if dp.Status.Phase == backflowv1beta1.PhaseDetected && r.Repos != nil {
-		dp.Status.Phase = backflowv1beta1.PhaseMapping
+	if dp.Status.Phase == backflowv1.PhaseDetected && r.Repos != nil {
+		dp.Status.Phase = backflowv1.PhaseMapping
 		dp.Status.Message = "Mapping the drift to the file in Git that defines the resource."
 	}
 	if err := r.patchStatus(ctx, &dp, orig); err != nil {
 		return ctrl.Result{}, err
 	}
-	if dp.Status.Phase != backflowv1beta1.PhaseDetected && orig.Status.Phase != dp.Status.Phase {
+	if dp.Status.Phase != backflowv1.PhaseDetected && orig.Status.Phase != dp.Status.Phase {
 		log.Info("Proposal phase set", "proposal", dp.Name, "phase", dp.Status.Phase)
 	}
 
-	if r.Repos == nil || dp.Status.Phase != backflowv1beta1.PhaseMapping {
+	if r.Repos == nil || dp.Status.Phase != backflowv1.PhaseMapping {
 		return ctrl.Result{}, nil
 	}
 	if !mappingSettled(&dp) {
 		res, err := r.mapProposal(ctx, &dp)
 		// Recording the mapping does not change the generation, so go on to
 		// propose in this pass.
-		if err != nil || !res.IsZero() || dp.Status.Phase != backflowv1beta1.PhaseMapping ||
+		if err != nil || !res.IsZero() || dp.Status.Phase != backflowv1.PhaseMapping ||
 			!meta.IsStatusConditionTrue(dp.Status.Conditions, conditionMapped) {
 			return res, err
 		}
@@ -201,7 +201,7 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // reconcileFinished is a pass over a proposal that reached a final phase: the cleanup of its branch and merge request
 // when one is left, then the retention.
-func (r *DriftProposalReconciler) reconcileFinished(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) reconcileFinished(ctx context.Context, dp *backflowv1.DriftProposal) (ctrl.Result, error) {
 	if r.Writer != nil && needsCleanup(dp) {
 		return r.cleanup(ctx, dp)
 	}
@@ -209,13 +209,13 @@ func (r *DriftProposalReconciler) reconcileFinished(ctx context.Context, dp *bac
 }
 
 // unmapTruncated leaves a proposal of a drift with more changes than a proposal holds Unmapped.
-func (r *DriftProposalReconciler) unmapTruncated(ctx context.Context, dp *backflowv1beta1.DriftProposal) error {
-	if dp.Status.Phase == backflowv1beta1.PhaseUnmapped {
+func (r *DriftProposalReconciler) unmapTruncated(ctx context.Context, dp *backflowv1.DriftProposal) error {
+	if dp.Status.Phase == backflowv1.PhaseUnmapped {
 		return nil
 	}
-	return r.unmappedWith(ctx, dp, backflowv1beta1.ReasonTooManyChanges, fmt.Sprintf(
+	return r.unmappedWith(ctx, dp, backflowv1.ReasonTooManyChanges, fmt.Sprintf(
 		"The drift has more than %d field changes. Only the first %d are listed, and nothing is proposed to Git for part of a drift.",
-		backflowv1beta1.MaxChanges, backflowv1beta1.MaxChanges), nil)
+		backflowv1.MaxChanges, backflowv1.MaxChanges), nil)
 }
 
 // maxRetentionCheck is the longest a finished proposal waits to be looked at again for its retention.
@@ -226,7 +226,7 @@ const maxRetentionCheck = 12 * time.Hour
 // be looked at again when it will. Proposals that are open, or Unmapped, never reach here. A
 // proposal whose policy is gone is deleted with it by its owner reference. Deleting a proposal
 // does not touch its merge request.
-func (r *DriftProposalReconciler) retain(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
+func (r *DriftProposalReconciler) retain(ctx context.Context, dp *backflowv1.DriftProposal) (ctrl.Result, error) {
 	policy, err := r.policyOf(ctx, dp)
 	if err != nil {
 		if _, held := errors.AsType[*heldError](err); held {
@@ -257,7 +257,7 @@ func (r *DriftProposalReconciler) retain(ctx context.Context, dp *backflowv1beta
 
 // finishedTime is when a proposal finished: status.finishedAt, else the latest time one of its
 // conditions changed, else when it was created.
-func finishedTime(dp *backflowv1beta1.DriftProposal) time.Time {
+func finishedTime(dp *backflowv1.DriftProposal) time.Time {
 	if dp.Status.FinishedAt != nil {
 		return dp.Status.FinishedAt.Time
 	}
@@ -272,7 +272,7 @@ func finishedTime(dp *backflowv1beta1.DriftProposal) time.Time {
 
 // patchStatus writes the status changes made to dp since orig. It is a no-op
 // when nothing changed.
-func (r *DriftProposalReconciler) patchStatus(ctx context.Context, dp, orig *backflowv1beta1.DriftProposal) error {
+func (r *DriftProposalReconciler) patchStatus(ctx context.Context, dp, orig *backflowv1.DriftProposal) error {
 	if dp.Status.Phase.Finished() && dp.Status.FinishedAt == nil {
 		// The retention of finished proposals counts from here.
 		finished := metav1.NewTime(r.now())
@@ -290,8 +290,8 @@ func (r *DriftProposalReconciler) patchStatus(ctx context.Context, dp, orig *bac
 func signalsChanged() predicate.Predicate {
 	return predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			oldDP, ok1 := e.ObjectOld.(*backflowv1beta1.DriftProposal)
-			newDP, ok2 := e.ObjectNew.(*backflowv1beta1.DriftProposal)
+			oldDP, ok1 := e.ObjectOld.(*backflowv1.DriftProposal)
+			newDP, ok2 := e.ObjectNew.(*backflowv1.DriftProposal)
 			return ok1 && ok2 && oldDP.Status.Signal() != newDP.Status.Signal()
 		},
 	}
@@ -300,15 +300,15 @@ func signalsChanged() predicate.Predicate {
 // SetupWithManager sets up the controller with the Manager.
 func (r *DriftProposalReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&backflowv1beta1.DriftProposal{},
+		For(&backflowv1.DriftProposal{},
 			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, signalsChanged()))).
 		// A held proposal goes on by itself once what holds it is changed: the
 		// ScmConnection is fixed, or the policy leaves ReportOnly mode. Secrets
 		// are not watched: a held proposal retries with a growing delay, which
 		// picks up a fixed token Secret.
 		// The policy's status names the ScmConnection that matches a repository.
-		Watches(&backflowv1beta1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.policyProposals)).
-		Watches(&backflowv1beta1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals),
+		Watches(&backflowv1.BackflowPolicy{}, handler.EnqueueRequestsFromMapFunc(r.policyProposals)).
+		Watches(&backflowv1.ScmConnection{}, handler.EnqueueRequestsFromMapFunc(r.heldProposals),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("driftproposal").
 		Complete(r)
@@ -321,7 +321,7 @@ func ProposalCounts(c client.Reader) func() []metrics.ProposalCount {
 	return func() []metrics.ProposalCount {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		var list backflowv1beta1.DriftProposalList
+		var list backflowv1.DriftProposalList
 		if err := c.List(ctx, &list); err != nil {
 			return nil
 		}

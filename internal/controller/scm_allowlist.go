@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/allowlist"
 	"github.com/sserkanml/backflow/internal/scm"
 )
@@ -29,11 +29,11 @@ func scmHostAllowed(rawURL string) bool {
 
 // checkScmHost returns a HostNotAllowed error for a connection whose spec.url names a host the
 // installer did not allow. No request is made to such a host, and its token Secret is not read.
-func checkScmHost(conn *backflowv1beta1.ScmConnection) error {
+func checkScmHost(conn *backflowv1.ScmConnection) error {
 	if scmHostAllowed(conn.Spec.URL) {
 		return nil
 	}
-	return &checkError{reason: backflowv1beta1.ReasonHostNotAllowed, msg: fmt.Sprintf(
+	return &checkError{reason: backflowv1.ReasonHostNotAllowed, msg: fmt.Sprintf(
 		"the host of %s is not in the operator's list of allowed Git hosts (--scm-allowed-hosts, chart value scm.allowedHosts); no request is made",
 		scm.RedactURL(conn.Spec.URL))}
 }

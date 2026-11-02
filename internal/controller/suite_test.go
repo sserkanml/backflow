@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	records "github.com/sserkanml/backflow/api/records/v1alpha1"
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -60,7 +60,7 @@ var _ = BeforeSuite(func() {
 	ctx, cancel = context.WithCancel(context.TODO())
 
 	var err error
-	err = backflowv1beta1.AddToScheme(scheme.Scheme)
+	err = backflowv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	err = records.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())

@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/helmmap"
 	"github.com/sserkanml/backflow/internal/kustomize"
 )
@@ -75,7 +75,7 @@ func (c *mappingMemos) get(uid types.UID) (mappingMemo, bool) {
 // mappingFingerprint covers what a mapping depends on that is not a file of
 // the repository: the source of the Application and the policy options that
 // steer the mapping.
-func mappingFingerprint(app *unstructured.Unstructured, policy *backflowv1beta1.BackflowPolicy) string {
+func mappingFingerprint(app *unstructured.Unstructured, policy *backflowv1.BackflowPolicy) string {
 	source, _, _ := unstructured.NestedMap(app.Object, "spec", "source")
 	delete(source, "targetRevision")
 	sources, _, _ := unstructured.NestedSlice(app.Object, "spec", "sources")
@@ -95,7 +95,7 @@ const (
 // mapForHead returns the mapping of a proposal for the head of the target
 // branch: the one made earlier when nothing it depends on changed, a new one
 // otherwise. The log says which, and why.
-func (r *DriftProposalReconciler) mapForHead(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) mapForHead(ctx context.Context, dp *backflowv1.DriftProposal,
 	access *scmAccess, head string) (*mappedChange, error) {
 	log := logf.FromContext(ctx)
 	why, reusable := r.reusableMapping(ctx, dp, access, head)
@@ -109,7 +109,7 @@ func (r *DriftProposalReconciler) mapForHead(ctx context.Context, dp *backflowv1
 
 // reusableMapping returns the kept mapping when it is still valid at head, or
 // the reason it cannot be used.
-func (r *DriftProposalReconciler) reusableMapping(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) reusableMapping(ctx context.Context, dp *backflowv1.DriftProposal,
 	access *scmAccess, head string) (string, *mappedChange) {
 	memo, ok := r.memos.get(dp.UID)
 	if !ok || memo.revision != writeTarget(dp).Revision {
@@ -151,10 +151,10 @@ func (r *DriftProposalReconciler) reusableMapping(ctx context.Context, dp *backf
 // depends on. known is false when that cannot be told. A Helm source depends on
 // the files its render reads (helmmap.RelevantFiles at either revision); a
 // Directory source on everything below its directory.
-func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backflowv1.DriftProposal,
 	app *unstructured.Unstructured, access *scmAccess, from, to string, paths []string) (changed string, known bool) {
 	switch dp.Spec.First().Type {
-	case backflowv1beta1.SourceDirectory:
+	case backflowv1.SourceDirectory:
 		dir := strings.Trim(strings.TrimPrefix(strings.TrimSpace(dp.Spec.First().Path), "./"), "/")
 		if dir == "." {
 			dir = ""
@@ -165,7 +165,7 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 			}
 		}
 		return "", true
-	case backflowv1beta1.SourceHelm:
+	case backflowv1.SourceHelm:
 		if dp.Spec.MultiSource() {
 			return r.changedRelevantMulti(ctx, dp, app, access, from, to, paths)
 		}
@@ -192,7 +192,7 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 			}
 		}
 		return "", true
-	case backflowv1beta1.SourceKustomize:
+	case backflowv1.SourceKustomize:
 		for _, sha := range []string{from, to} {
 			tree, err := r.Repos.Open(ctx, writeTarget(dp).RepoURL, sha, access.auth)
 			if err != nil {
@@ -221,7 +221,7 @@ func (r *DriftProposalReconciler) changedRelevant(ctx context.Context, dp *backf
 // mapping depends on the value files of the ref source that receives the edits,
 // at either revision. The chart is not looked at: a new version of it is a change
 // of the Application, which the fingerprint of the mapping covers.
-func (r *DriftProposalReconciler) changedRelevantMulti(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) changedRelevantMulti(ctx context.Context, dp *backflowv1.DriftProposal,
 	app *unstructured.Unstructured, access *scmAccess, from, to string, paths []string) (changed string, known bool) {
 	ms, _ := helmMultiSource(app)
 	if ms == nil || ms.Render >= len(dp.Spec.Sources) {

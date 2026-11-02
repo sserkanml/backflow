@@ -34,7 +34,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // conflictingClient makes every status update fail with a conflict, as when the
@@ -48,7 +48,7 @@ func (c conflictingClient) Status() client.SubResourceWriter {
 type conflictingStatus struct{ client.SubResourceWriter }
 
 func (conflictingStatus) Update(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
-	return errors.NewConflict(backflowv1beta1.GroupVersion.WithResource("backflowpolicies").GroupResource(), obj.GetName(),
+	return errors.NewConflict(backflowv1.GroupVersion.WithResource("backflowpolicies").GroupResource(), obj.GetName(),
 		stderrors.New("the object has been modified"))
 }
 
@@ -65,21 +65,21 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		backflowpolicy := &backflowv1beta1.BackflowPolicy{}
+		backflowpolicy := &backflowv1.BackflowPolicy{}
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind BackflowPolicy")
 			err := k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &backflowv1beta1.BackflowPolicy{
+				resource := &backflowv1.BackflowPolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					Spec: backflowv1beta1.BackflowPolicySpec{
-						ArgoCD:       backflowv1beta1.ArgoCDSpec{Namespace: "argocd"},
-						Applications: backflowv1beta1.ApplicationSelector{Names: []string{"demo-app"}},
-						Mode:         backflowv1beta1.ModeReportOnly,
+					Spec: backflowv1.BackflowPolicySpec{
+						ArgoCD:       backflowv1.ArgoCDSpec{Namespace: "argocd"},
+						Applications: backflowv1.ApplicationSelector{Names: []string{"demo-app"}},
+						Mode:         backflowv1.ModeReportOnly,
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -87,7 +87,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 		})
 
 		AfterEach(func() {
-			resource := &backflowv1beta1.BackflowPolicy{}
+			resource := &backflowv1.BackflowPolicy{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -119,7 +119,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.PartialAllowed()).To(BeFalse(), "off by default")
 
-			backflowpolicy.Spec.Mapping = &backflowv1beta1.MappingOptions{}
+			backflowpolicy.Spec.Mapping = &backflowv1.MappingOptions{}
 			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.Mapping).NotTo(BeNil())
@@ -135,7 +135,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.OverridesAllowed()).To(BeTrue(), "on without a helm block")
 
-			backflowpolicy.Spec.Helm = &backflowv1beta1.HelmOptions{}
+			backflowpolicy.Spec.Helm = &backflowv1.HelmOptions{}
 			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.Helm.AllowValueOverrides).NotTo(BeNil(), "the API server fills in the default")
@@ -154,7 +154,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(backflowpolicy.Spec.KustomizeEditsBases()).To(BeFalse(), "off without a kustomize block")
 			Expect(backflowpolicy.Spec.KustomizeAddsPatches()).To(BeTrue(), "on without a kustomize block")
 
-			backflowpolicy.Spec.Kustomize = &backflowv1beta1.KustomizeOptions{}
+			backflowpolicy.Spec.Kustomize = &backflowv1.KustomizeOptions{}
 			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.Kustomize.AllowNewPatches).NotTo(BeNil(), "the API server fills in the default")
@@ -162,7 +162,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 			Expect(backflowpolicy.Spec.KustomizeAddsPatches()).To(BeTrue())
 
 			off := false
-			backflowpolicy.Spec.Kustomize = &backflowv1beta1.KustomizeOptions{AllowBaseEdits: true, AllowNewPatches: &off}
+			backflowpolicy.Spec.Kustomize = &backflowv1.KustomizeOptions{AllowBaseEdits: true, AllowNewPatches: &off}
 			Expect(k8sClient.Update(ctx, backflowpolicy)).To(Succeed())
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
 			Expect(backflowpolicy.Spec.KustomizeEditsBases()).To(BeTrue())
@@ -178,7 +178,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 
 		It("is refused by the API server when it selects Applications neither by name nor by selector", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, backflowpolicy)).To(Succeed())
-			backflowpolicy.Spec.Applications = backflowv1beta1.ApplicationSelector{}
+			backflowpolicy.Spec.Applications = backflowv1.ApplicationSelector{}
 			err := k8sClient.Update(ctx, backflowpolicy)
 			Expect(errors.IsInvalid(err)).To(BeTrue(), "%v", err)
 			Expect(err.Error()).To(ContainSubstring("set names, selector, or both"))
@@ -187,7 +187,7 @@ var _ = Describe("BackflowPolicy Controller", func() {
 		It("still puts an empty selection into status, for an object the API server did not validate", func() {
 			controllerReconciler := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			policy := backflowpolicy.DeepCopy()
-			policy.Spec.Applications = backflowv1beta1.ApplicationSelector{}
+			policy.Spec.Applications = backflowv1.ApplicationSelector{}
 			_, err := controllerReconciler.resolver().selectApplications(ctx, policy)
 			var check *checkError
 			Expect(stderrors.As(err, &check)).To(BeTrue())
@@ -198,14 +198,14 @@ var _ = Describe("BackflowPolicy Controller", func() {
 })
 
 func TestPolicyOlder(t *testing.T) {
-	at := func(sec int64, ns, name string) *backflowv1beta1.BackflowPolicy {
-		return &backflowv1beta1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{
+	at := func(sec int64, ns, name string) *backflowv1.BackflowPolicy {
+		return &backflowv1.BackflowPolicy{ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns, Name: name, CreationTimestamp: metav1.NewTime(time.Unix(sec, 0)),
 		}}
 	}
 	tests := []struct {
 		name string
-		a, b *backflowv1beta1.BackflowPolicy
+		a, b *backflowv1.BackflowPolicy
 		want bool
 	}{
 		{"earlier timestamp wins over name", at(1, "x", "z"), at(2, "x", "a"), true},
@@ -230,30 +230,30 @@ var _ = Describe("BackflowPolicy application conflicts", func() {
 	)
 	var (
 		ctx      = context.Background()
-		created  []*backflowv1beta1.BackflowPolicy
+		created  []*backflowv1.BackflowPolicy
 		apps     []*unstructured.Unstructured
-		reconcil = func(p *backflowv1beta1.BackflowPolicy) *backflowv1beta1.BackflowPolicy {
+		reconcil = func(p *backflowv1.BackflowPolicy) *backflowv1.BackflowPolicy {
 			r := &BackflowPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(p)})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			got := &backflowv1beta1.BackflowPolicy{}
+			got := &backflowv1.BackflowPolicy{}
 			ExpectWithOffset(1, k8sClient.Get(ctx, client.ObjectKeyFromObject(p), got)).To(Succeed())
 			return got
 		}
-		newPolicy = func(ns, name string, appNames ...string) *backflowv1beta1.BackflowPolicy {
-			p := &backflowv1beta1.BackflowPolicy{
+		newPolicy = func(ns, name string, appNames ...string) *backflowv1.BackflowPolicy {
+			p := &backflowv1.BackflowPolicy{
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-				Spec: backflowv1beta1.BackflowPolicySpec{
-					ArgoCD:       backflowv1beta1.ArgoCDSpec{Namespace: argoNS},
-					Applications: backflowv1beta1.ApplicationSelector{Names: appNames},
-					Mode:         backflowv1beta1.ModeReportOnly,
+				Spec: backflowv1.BackflowPolicySpec{
+					ArgoCD:       backflowv1.ArgoCDSpec{Namespace: argoNS},
+					Applications: backflowv1.ApplicationSelector{Names: appNames},
+					Mode:         backflowv1.ModeReportOnly,
 				},
 			}
 			ExpectWithOffset(1, k8sClient.Create(ctx, p)).To(Succeed())
 			created = append(created, p)
 			return p
 		}
-		ready = func(p *backflowv1beta1.BackflowPolicy) *metav1.Condition {
+		ready = func(p *backflowv1.BackflowPolicy) *metav1.Condition {
 			return meta.FindStatusCondition(p.Status.Conditions, "Ready")
 		}
 	)

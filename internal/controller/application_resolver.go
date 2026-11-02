@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // appResolver decides which Argo CD Applications a policy may see. The policy controller shows
@@ -30,7 +30,7 @@ type appResolver struct {
 // the Argo CD projects the administrator allowed for its namespace
 // (--argocd-default-access); a policy with its own spec.argoCD sees the ones its
 // own token can get from Argo CD.
-func (r appResolver) resolve(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) (resolution, error) {
+func (r appResolver) resolve(ctx context.Context, policy *backflowv1.BackflowPolicy) (resolution, error) {
 	if srv := policy.Spec.ArgoCD.Server; srv != nil {
 		// Before anything is asked of the server: one the installer did not allow is never contacted.
 		if err := r.ArgoCD.checkServer(srv.URL); err != nil {
@@ -92,7 +92,7 @@ func visibilityError(err error) error {
 // selectApplications lists Applications in the Argo CD namespace that match
 // the policy, whether it may see them or not. When both names and selector are
 // set, an Application must match both. Spec problems are returned as *checkError.
-func (r appResolver) selectApplications(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) ([]unstructured.Unstructured, error) {
+func (r appResolver) selectApplications(ctx context.Context, policy *backflowv1.BackflowPolicy) ([]unstructured.Unstructured, error) {
 	sel := policy.Spec.Applications
 	if len(sel.Names) == 0 && sel.Selector == nil {
 		return nil, &checkError{reason: "InvalidSpec", msg: "spec.applications needs at least one of names or selector"}

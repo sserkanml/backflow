@@ -15,7 +15,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/mapping"
 )
 
@@ -86,7 +86,7 @@ type Field struct {
 	Index int
 	// Change is a Replace of a scalar: Desired is the value the render gives,
 	// Live the value in the cluster.
-	Change v1beta1.FieldChange
+	Change v1.FieldChange
 	// Found is the result of the source's Find for Desired.
 	Found *Found
 	// Fragments is the result of the source's FindFragments for Desired and Live, when both are
@@ -452,7 +452,7 @@ func isScalar(x any) bool {
 func parseField(f Field) (parsedField, error) {
 	p := parsedField{Field: f}
 	switch f.Change.Op {
-	case v1beta1.OpReplace, v1beta1.OpAdd, v1beta1.OpRemove:
+	case v1.OpReplace, v1.OpAdd, v1.OpRemove:
 	default:
 		return p, fmt.Errorf("%s of %s is not a change of a value", f.Change.Op, f.Change.Path)
 	}
@@ -467,8 +467,8 @@ func parseField(f Field) (parsedField, error) {
 		has     *bool
 	}
 	for _, sd := range []side{
-		{f.Change.Desired, f.Change.Op != v1beta1.OpAdd, &p.desired, &p.desiredV, &p.hasDesired},
-		{f.Change.Live, f.Change.Op != v1beta1.OpRemove, &p.live, &p.liveV, &p.hasLive},
+		{f.Change.Desired, f.Change.Op != v1.OpAdd, &p.desired, &p.desiredV, &p.hasDesired},
+		{f.Change.Live, f.Change.Op != v1.OpRemove, &p.live, &p.liveV, &p.hasLive},
 	} {
 		if !sd.present {
 			*sd.dst = absentJSON
@@ -484,7 +484,7 @@ func parseField(f Field) (parsedField, error) {
 		b, _ := json.Marshal(x)
 		*sd.dst, *sd.val, *sd.has = string(b), x, true
 	}
-	if f.Change.Op == v1beta1.OpReplace && isScalar(p.desiredV) && isScalar(p.liveV) {
+	if f.Change.Op == v1.OpReplace && isScalar(p.desiredV) && isScalar(p.liveV) {
 		p.newValue = RenderValue(p.liveV)
 		return p, nil
 	}

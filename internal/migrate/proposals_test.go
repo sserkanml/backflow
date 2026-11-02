@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // A proposal of each kind of end, with the state the operator of the last release left in them.
@@ -228,7 +228,7 @@ func TestMigrateDriftProposalsRoundTripsEveryStatusField(t *testing.T) {
 func checkOpenProposal(t *testing.T, cl *cluster, policyUID any) {
 	t.Helper()
 	open := cl.proposal("dp-open")
-	if open.Status.Phase != backflowv1beta1.PhaseProposed || open.Status.Message != "The merge request is open." {
+	if open.Status.Phase != backflowv1.PhaseProposed || open.Status.Message != "The merge request is open." {
 		t.Errorf("phase/message: %q %q", open.Status.Phase, open.Status.Message)
 	}
 	g := open.Status.Git
@@ -238,7 +238,7 @@ func checkOpenProposal(t *testing.T, cl *cluster, policyUID any) {
 		t.Errorf("git = %+v", g)
 	}
 	m := open.Status.Mapping
-	if m == nil || m.Strategy != backflowv1beta1.StrategyHelmValues || !m.Verified || len(m.Edits) != 2 ||
+	if m == nil || m.Strategy != backflowv1.StrategyHelmValues || !m.Verified || len(m.Edits) != 2 ||
 		m.Edits[0].RepoURL != "https://gitlab.example.com/x/values.git" || m.Edits[1].Location != "labels.x" || len(m.Collateral) != 1 ||
 		len(m.Unmapped) != 1 || m.Diff != "--- a\n+++ b\n" {
 		t.Errorf("mapping = %+v", m)
@@ -253,12 +253,12 @@ func checkOpenProposal(t *testing.T, cl *cluster, policyUID any) {
 	checkOpenProposalSpec(t, open, policyUID)
 }
 
-func checkOpenProposalSpec(t *testing.T, open *backflowv1beta1.DriftProposal, policyUID any) {
+func checkOpenProposalSpec(t *testing.T, open *backflowv1.DriftProposal, policyUID any) {
 	t.Helper()
 	// The spec.
 	if open.Spec.PolicyRef.Name != "p1" || open.Spec.ApplicationRef.Name != "a" || open.Spec.ResourceRef.Kind != "Deployment" ||
-		len(open.Spec.Sources) != 2 || open.Spec.Sources[1].Role != backflowv1beta1.RoleValues || len(open.Spec.Changes) != 3 ||
-		open.Spec.Actor == nil || open.Spec.Actor.Username != "alice" || open.Spec.Actor.Kind != backflowv1beta1.ActorPerson ||
+		len(open.Spec.Sources) != 2 || open.Spec.Sources[1].Role != backflowv1.RoleValues || len(open.Spec.Changes) != 3 ||
+		open.Spec.Actor == nil || open.Spec.Actor.Username != "alice" || open.Spec.Actor.Kind != backflowv1.ActorPerson ||
 		len(open.Spec.Managers) != 3 || open.Spec.Managers[0].Manager != "kubectl-edit" {
 		t.Errorf("spec = %+v", open.Spec)
 	}
@@ -285,7 +285,7 @@ func checkEndedProposals(t *testing.T, cl *cluster) {
 		t.Errorf("merged = %+v", merged.Status)
 	}
 	unmapped := cl.proposal("dp-unmapped")
-	if unmapped.Status.Phase != backflowv1beta1.PhaseUnmapped || unmapped.Status.FinishedAt != nil ||
+	if unmapped.Status.Phase != backflowv1.PhaseUnmapped || unmapped.Status.FinishedAt != nil ||
 		(unmapped.Status.Mapping != nil && unmapped.Status.Mapping.Strategy != "") {
 		t.Errorf("unmapped = %+v", unmapped.Status)
 	}
@@ -408,7 +408,7 @@ func TestMigrateDriftProposalsACrashBetweenDeleteAndCreate(t *testing.T) {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
 	open := cl.proposal("dp-open")
-	if open.Status.Git == nil || open.Status.Git.MergeRequest == nil || open.Status.Git.MergeRequest.Number != 7 || open.Status.Phase != backflowv1beta1.PhaseProposed ||
+	if open.Status.Git == nil || open.Status.Git.MergeRequest == nil || open.Status.Git.MergeRequest.Number != 7 || open.Status.Phase != backflowv1.PhaseProposed ||
 		open.Spec.PolicyRef.Name != "p1" || len(open.OwnerReferences) != 1 {
 		t.Errorf("the proposal after the second run: %+v / %+v", open.Spec, open.Status)
 	}
@@ -451,7 +451,7 @@ func TestMigrateDriftProposalsACrashBetweenCreateAndStatus(t *testing.T) {
 		t.Fatalf("report %+v\n%s", rep, out)
 	}
 	merged := cl.proposal("dp-merged")
-	if merged.Status.Phase != backflowv1beta1.PhaseMerged || merged.Status.Git == nil || merged.Status.Git.CommitSHA != "0123456789abcdef" ||
+	if merged.Status.Phase != backflowv1.PhaseMerged || merged.Status.Git == nil || merged.Status.Git.CommitSHA != "0123456789abcdef" ||
 		merged.Status.FinishedAt == nil || merged.UID != bare.UID {
 		t.Errorf("the status was not restored on the object that was there: %+v", merged.Status)
 	}
@@ -471,7 +471,7 @@ func TestMigrateDriftProposalsACrashBeforeTheDelete(t *testing.T) {
 		t.Fatalf("the proposal must be untouched: %+v\n%s", rep, out)
 	}
 	rep, out, err = cl.run(Options{BackupDir: dir})
-	if err != nil || rep.Failed != 0 || !rep.Complete() || cl.proposal("dp-rejected").Status.Phase != backflowv1beta1.PhaseRejected {
+	if err != nil || rep.Failed != 0 || !rep.Complete() || cl.proposal("dp-rejected").Status.Phase != backflowv1.PhaseRejected {
 		t.Fatalf("%v %+v\n%s", err, rep, out)
 	}
 }
@@ -594,7 +594,7 @@ func TestMigrateDriftProposalsWaitsForTheOldOneToGo(t *testing.T) {
 	if err != nil || rep.Failed != 0 || !rep.Complete() || !cl.proposalExists("dp-rejected") {
 		t.Fatalf("%v %+v\n%s", err, rep, out)
 	}
-	if cl.proposal("dp-rejected").Status.Phase != backflowv1beta1.PhaseRejected {
+	if cl.proposal("dp-rejected").Status.Phase != backflowv1.PhaseRejected {
 		t.Error("the status was not restored")
 	}
 }

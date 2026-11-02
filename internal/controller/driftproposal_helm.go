@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/appvalues"
 	"github.com/sserkanml/backflow/internal/argocd"
 	"github.com/sserkanml/backflow/internal/helmmap"
@@ -36,7 +36,7 @@ const (
 
 // mappedChange is a verified mapping onto one or more files.
 type mappedChange struct {
-	strategy backflowv1beta1.MappingStrategy
+	strategy backflowv1.MappingStrategy
 	results  []mapping.Result
 	// collateral are the changes beyond the drifted fields that the policy
 	// allowed (HelmValues only).
@@ -74,24 +74,24 @@ const (
 )
 
 // unmappedStatus is the left-out fields as the status records them.
-func (m *mappedChange) unmappedStatus() []backflowv1beta1.UnmappedField {
+func (m *mappedChange) unmappedStatus() []backflowv1.UnmappedField {
 	if len(m.leftOut) == 0 {
 		return nil
 	}
-	out := make([]backflowv1beta1.UnmappedField, 0, min(len(m.leftOut), maxUnmappedRecorded))
+	out := make([]backflowv1.UnmappedField, 0, min(len(m.leftOut), maxUnmappedRecorded))
 	for _, l := range m.leftOut[:min(len(m.leftOut), maxUnmappedRecorded)] {
 		msg := l.message
 		if r := []rune(msg); len(r) > maxUnmappedMessage {
 			msg = string(r[:maxUnmappedMessage-3]) + "..."
 		}
-		out = append(out, backflowv1beta1.UnmappedField{Path: l.path, Reason: l.reason, Message: msg})
+		out = append(out, backflowv1.UnmappedField{Path: l.path, Reason: l.reason, Message: msg})
 	}
 	return out
 }
 
 // mappedPaths are the JSON pointers of the changes the edits make, in the order
 // of the proposal.
-func (m *mappedChange) mappedPaths(dp *backflowv1beta1.DriftProposal) []string {
+func (m *mappedChange) mappedPaths(dp *backflowv1.DriftProposal) []string {
 	seen := map[int]bool{}
 	for _, e := range m.edits() {
 		seen[int(e.ChangeIndex)] = true
@@ -107,7 +107,7 @@ func (m *mappedChange) mappedPaths(dp *backflowv1beta1.DriftProposal) []string {
 
 // partialMessage is the message of a partial mapping: what is mapped and what
 // is not, and why.
-func (m *mappedChange) partialMessage(dp *backflowv1beta1.DriftProposal) string {
+func (m *mappedChange) partialMessage(dp *backflowv1.DriftProposal) string {
 	mapped := m.mappedPaths(dp)
 	parts := make([]string, len(m.leftOut))
 	for i, l := range m.leftOut {
@@ -125,7 +125,7 @@ const (
 )
 
 // collateralStatus is the collateral as the status records it.
-func (m *mappedChange) collateralStatus() []backflowv1beta1.CollateralChange {
+func (m *mappedChange) collateralStatus() []backflowv1.CollateralChange {
 	if len(m.collateral) == 0 {
 		return nil
 	}
@@ -135,9 +135,9 @@ func (m *mappedChange) collateralStatus() []backflowv1beta1.CollateralChange {
 		}
 		return v
 	}
-	out := make([]backflowv1beta1.CollateralChange, 0, min(len(m.collateral), maxCollateralRecorded))
+	out := make([]backflowv1.CollateralChange, 0, min(len(m.collateral), maxCollateralRecorded))
 	for _, c := range m.collateral[:min(len(m.collateral), maxCollateralRecorded)] {
-		out = append(out, backflowv1beta1.CollateralChange{
+		out = append(out, backflowv1.CollateralChange{
 			Group: c.Resource.Group, Kind: c.Resource.Kind, Namespace: c.Resource.Namespace, Name: c.Resource.Name,
 			Path: c.Pointer, Current: short(c.Current), New: short(c.After),
 		})
@@ -186,22 +186,22 @@ func boundedEditValue(v string) string {
 	return `"(too long to keep here: see status.mapping.diff)"`
 }
 
-func (m *mappedChange) edits() []backflowv1beta1.SourceEdit {
-	var out []backflowv1beta1.SourceEdit
+func (m *mappedChange) edits() []backflowv1.SourceEdit {
+	var out []backflowv1.SourceEdit
 	for _, r := range m.results {
 		for _, e := range r.Edits {
 			loc := e.Location
-			if m.strategy == backflowv1beta1.StrategyHelmValues {
+			if m.strategy == backflowv1.StrategyHelmValues {
 				loc = rendermap.KeyPathFromPointer(e.Location).String()
 			}
-			out = append(out, backflowv1beta1.SourceEdit{File: e.File, Location: loc, Value: boundedEditValue(e.Value), ChangeIndex: int32(e.ChangeIndex)}) //nolint:gosec // an index into spec.changes
+			out = append(out, backflowv1.SourceEdit{File: e.File, Location: loc, Value: boundedEditValue(e.Value), ChangeIndex: int32(e.ChangeIndex)}) //nolint:gosec // an index into spec.changes
 		}
 	}
 	return out
 }
 
 // message is the status message of a mapped proposal.
-func (m *mappedChange) message(dp *backflowv1beta1.DriftProposal) string {
+func (m *mappedChange) message(dp *backflowv1.DriftProposal) string {
 	if m.partial() {
 		return m.partialMessage(dp)
 	}
@@ -209,7 +209,7 @@ func (m *mappedChange) message(dp *backflowv1beta1.DriftProposal) string {
 	if m.repoURL != "" {
 		files += " of " + scm.RedactURL(m.repoURL)
 	}
-	if m.strategy == backflowv1beta1.StrategyHelmValues {
+	if m.strategy == backflowv1.StrategyHelmValues {
 		msg := fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD and changes exactly the drifted fields.", files)
 		if len(m.collateral) > 0 {
 			msg = fmt.Sprintf("Mapped to %s; the edit is verified by rendering through Argo CD. Besides the drifted fields it changes %d label or annotation field(s) the policy allows.",
@@ -247,7 +247,7 @@ func (m *mappedChange) overrideSummary() string {
 
 // application reads the Argo CD Application of a proposal. A missing
 // Application, or one whose CRD is not installed, is apierrors.IsNotFound.
-func (r *DriftProposalReconciler) application(ctx context.Context, dp *backflowv1beta1.DriftProposal) (*unstructured.Unstructured, error) {
+func (r *DriftProposalReconciler) application(ctx context.Context, dp *backflowv1.DriftProposal) (*unstructured.Unstructured, error) {
 	app := &unstructured.Unstructured{}
 	app.SetGroupVersionKind(applicationGVK)
 	key := types.NamespacedName{Namespace: dp.Spec.ApplicationRef.Namespace, Name: dp.Spec.ApplicationRef.Name}
@@ -313,7 +313,7 @@ func helmAppOf(app *unstructured.Unstructured) rendermap.App {
 
 // renderer returns the proposal's policy's renderer: it talks to Argo CD with
 // the policy's URL, token and TLS settings, the same as the drift controller.
-func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) (rendermap.Renderer, error) {
+func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflowv1.BackflowPolicy) (rendermap.Renderer, error) {
 	if _, ok := argoCDSource(policy, r.ArgoCD); !ok {
 		return nil, &heldError{reason: reasonArgoCDNotConfigured, cause: fmt.Errorf("BackflowPolicy %q has no spec.argoCD and the operator has no default Argo CD connection", policy.Name)}
 	}
@@ -335,8 +335,8 @@ func (r *DriftProposalReconciler) renderer(ctx context.Context, policy *backflow
 }
 
 // policyOf reads the proposal's policy.
-func (r *DriftProposalReconciler) policyOf(ctx context.Context, dp *backflowv1beta1.DriftProposal) (*backflowv1beta1.BackflowPolicy, error) {
-	var policy backflowv1beta1.BackflowPolicy
+func (r *DriftProposalReconciler) policyOf(ctx context.Context, dp *backflowv1.DriftProposal) (*backflowv1.BackflowPolicy, error) {
+	var policy backflowv1.BackflowPolicy
 	if err := r.Get(ctx, types.NamespacedName{Namespace: dp.Namespace, Name: dp.Spec.PolicyRef.Name}, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &heldError{reason: reasonPolicyNotFound, cause: fmt.Errorf("BackflowPolicy %q not found", dp.Spec.PolicyRef.Name)}
@@ -348,7 +348,7 @@ func (r *DriftProposalReconciler) policyOf(ctx context.Context, dp *backflowv1be
 
 // allowedCollateral is what the policy allows an edit to change beyond the
 // drifted fields (spec.helm.allowCollateralChanges).
-func allowedCollateral(policy *backflowv1beta1.BackflowPolicy) []string {
+func allowedCollateral(policy *backflowv1.BackflowPolicy) []string {
 	if policy.Spec.Helm == nil {
 		return nil
 	}
@@ -400,7 +400,7 @@ func helmSourceProblem(app *unstructured.Unstructured) error {
 //   - *verdictError: the change cannot be traced back with certainty;
 //   - *heldError: Argo CD or the policy cannot be used right now;
 //   - other errors: the repository could not be read.
-func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1beta1.DriftProposal,
+func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1.DriftProposal,
 	app *unstructured.Unstructured, tree fs.FS, sha string) (*mappedChange, error) {
 	if err := helmSourceProblem(app); err != nil {
 		return nil, err
@@ -461,7 +461,7 @@ func (r *DriftProposalReconciler) mapHelm(ctx context.Context, dp *backflowv1bet
 		opts := helmmap.ApplicationOptions(appvalues.SingleSource, fields, unmappedPaths(out), helm)
 		return nil, applicationVerdict(out, opts)
 	}
-	change := &mappedChange{strategy: backflowv1beta1.StrategyHelmValues, results: out.Results, collateral: out.Collateral, overrides: out.Overrides, renders: out.Renders}
+	change := &mappedChange{strategy: backflowv1.StrategyHelmValues, results: out.Results, collateral: out.Collateral, overrides: out.Overrides, renders: out.Renders}
 	for _, l := range out.LeftOut {
 		change.leftOut = append(change.leftOut, leftOutField{path: l.Pointer, reason: l.Reason, message: l.Detail})
 	}

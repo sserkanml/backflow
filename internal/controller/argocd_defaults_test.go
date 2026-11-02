@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/argocd"
 )
 
@@ -42,10 +42,10 @@ func secretNamed(namespace, name, key, value string) *corev1.Secret {
 	}
 }
 
-func policyIn(own *backflowv1beta1.ArgoCDServer) *backflowv1beta1.BackflowPolicy {
-	return &backflowv1beta1.BackflowPolicy{
+func policyIn(own *backflowv1.ArgoCDServer) *backflowv1.BackflowPolicy {
+	return &backflowv1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "p"},
-		Spec:       backflowv1beta1.BackflowPolicySpec{ArgoCD: backflowv1beta1.ArgoCDSpec{Server: own}},
+		Spec:       backflowv1.BackflowPolicySpec{ArgoCD: backflowv1.ArgoCDSpec{Server: own}},
 	}
 }
 
@@ -75,7 +75,7 @@ func TestPolicyWithoutArgoCDUsesTheOperatorDefault(t *testing.T) {
 		t.Error("--argocd-insecure-skip-tls-verify is not passed on")
 	}
 	source, ok := argoCDSource(policy, operatorDefault())
-	if !ok || source != backflowv1beta1.ArgoCDSourceOperatorDefault {
+	if !ok || source != backflowv1.ArgoCDSourceOperatorDefault {
 		t.Errorf("source = %q, %v", source, ok)
 	}
 }
@@ -86,10 +86,10 @@ func TestPolicyWithOwnSettingsIsUnchanged(t *testing.T) {
 		secretNamed("team-a", "own-token", "token", "own"),
 		secretNamed("team-a", "own-ca", "ca.crt", testCA),
 	).Build()
-	own := &backflowv1beta1.ArgoCDServer{
+	own := &backflowv1.ArgoCDServer{
 		URL:            "https://argocd.example",
-		TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "own-token", Key: "token"},
-		CASecretRef:    &backflowv1beta1.SecretKeyReference{Name: "own-ca", Key: "ca.crt"},
+		TokenSecretRef: backflowv1.SecretKeyReference{Name: "own-token", Key: "token"},
+		CASecretRef:    &backflowv1.SecretKeyReference{Name: "own-ca", Key: "ca.crt"},
 	}
 	policy := policyIn(own)
 
@@ -100,7 +100,7 @@ func TestPolicyWithOwnSettingsIsUnchanged(t *testing.T) {
 	if cfg.URL != "https://argocd.example" || cfg.Token != "own" || string(cfg.CACert) != testCA {
 		t.Errorf("config = %+v", cfg)
 	}
-	if source, _ := argoCDSource(policy, operatorDefault()); source != backflowv1beta1.ArgoCDSourcePolicy {
+	if source, _ := argoCDSource(policy, operatorDefault()); source != backflowv1.ArgoCDSourcePolicy {
 		t.Errorf("source = %q", source)
 	}
 	// And the default does not need to exist for it.
@@ -115,8 +115,8 @@ func TestAPolicyCannotPointToAnotherNamespace(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(
 		secretNamed("kube-system", "stolen", "token", "secret-of-another-namespace"),
 	).Build()
-	own := &backflowv1beta1.ArgoCDServer{
-		TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "stolen", Key: "token"},
+	own := &backflowv1.ArgoCDServer{
+		TokenSecretRef: backflowv1.SecretKeyReference{Name: "stolen", Key: "token"},
 	}
 	_, err := argoCDConfig(context.Background(), c, policyIn(own), operatorDefault())
 	if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -152,14 +152,14 @@ func TestDefaultErrorsNameTheSecretNeverTheToken(t *testing.T) {
 func TestStatusAndMessageSaySourceNotToken(t *testing.T) {
 	d := operatorDefault()
 	st := argoCDStatus(policyIn(nil), d)
-	if st.Source != backflowv1beta1.ArgoCDSourceOperatorDefault || st.URL != d.Server {
+	if st.Source != backflowv1.ArgoCDSourceOperatorDefault || st.URL != d.Server {
 		t.Errorf("status = %+v", st)
 	}
 	if got := describeArgoCD(st); got != "Argo CD API: operator default (https://openshift-gitops-server.openshift-gitops.svc)" {
 		t.Errorf("message = %q", got)
 	}
-	own := argoCDStatus(policyIn(&backflowv1beta1.ArgoCDServer{}), d)
-	if own.Source != backflowv1beta1.ArgoCDSourcePolicy || own.URL != defaultArgoCDURL {
+	own := argoCDStatus(policyIn(&backflowv1.ArgoCDServer{}), d)
+	if own.Source != backflowv1.ArgoCDSourcePolicy || own.URL != defaultArgoCDURL {
 		t.Errorf("own = %+v", own)
 	}
 }
@@ -348,10 +348,10 @@ func TestDriftDetectionRetriesOnceWithTheRenewedToken(t *testing.T) {
 	}
 	policy := policyIn(nil)
 	run := &appRun{
-		policy: policy, summary: backflowv1beta1.ApplicationSummary{Name: "app"},
+		policy: policy, summary: backflowv1.ApplicationSummary{Name: "app"},
 		argo:       renewalArgo{accepts: "new-token", token: "old-token", calls: &calls},
 		candidates: []appResource{{Kind: "ConfigMap", Name: "c", Namespace: "demo", Status: syncOutOfSync}},
-		drifting:   map[string][]backflowv1beta1.FieldChange{}, deleted: map[string]appResource{}, apiOK: true,
+		drifting:   map[string][]backflowv1.FieldChange{}, deleted: map[string]appResource{}, apiOK: true,
 	}
 	if err := r.detectDrift(ctx, run); err != nil {
 		t.Fatal(err)
@@ -408,21 +408,21 @@ func TestTrustedCAIsUsedByConnectionsWithoutTheirOwn(t *testing.T) {
 	if err := os.WriteFile(path, []byte(testCA), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	connection := func(name string, ca *backflowv1beta1.SecretKeyReference) *backflowv1beta1.ScmConnection {
-		return &backflowv1beta1.ScmConnection{
+	connection := func(name string, ca *backflowv1.SecretKeyReference) *backflowv1.ScmConnection {
+		return &backflowv1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: name},
-			Spec: backflowv1beta1.ScmConnectionSpec{
-				Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://gitlab.example.com", CASecretRef: ca,
-				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "tok", Key: "token"},
+			Spec: backflowv1.ScmConnectionSpec{
+				Provider: backflowv1.ScmProviderGitLab, URL: "https://gitlab.example.com", CASecretRef: ca,
+				TokenSecretRef: backflowv1.SecretKeyReference{Name: "tok", Key: "token"},
 			},
 		}
 	}
-	own := &backflowv1beta1.SecretKeyReference{Name: "own-ca", Key: "ca.crt"}
+	own := &backflowv1.SecretKeyReference{Name: "own-ca", Key: "ca.crt"}
 	sch := runtime.NewScheme()
 	if err := corev1.AddToScheme(sch); err != nil {
 		t.Fatal(err)
 	}
-	if err := backflowv1beta1.AddToScheme(sch); err != nil {
+	if err := backflowv1.AddToScheme(sch); err != nil {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(sch).WithObjects(

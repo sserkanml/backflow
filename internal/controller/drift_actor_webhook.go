@@ -8,7 +8,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	recordsapi "github.com/sserkanml/backflow/api/records/v1alpha1"
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/actorwebhook"
 	"github.com/sserkanml/backflow/internal/managedfields"
 	"github.com/sserkanml/backflow/internal/metrics"
@@ -54,8 +54,8 @@ func (a *ActorRecords) Hold() time.Duration {
 // never waits for more than one cached list: a proposal does not depend on the webhook.
 // The record is believed only if the managedFields of the live object agree with it, so a
 // review nobody made, or one that names someone else, does not set a name.
-func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes []backflowv1beta1.FieldChange,
-	window actorwebhook.Window) *backflowv1beta1.Actor {
+func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes []backflowv1.FieldChange,
+	window actorwebhook.Window) *backflowv1.Actor {
 	if a == nil || a.Reader == nil {
 		return nil
 	}
@@ -94,8 +94,8 @@ func (a *ActorRecords) Refine(ctx context.Context, live map[string]any, changes 
 	if verdict.Result != metrics.ActorMatched {
 		return nil
 	}
-	return &backflowv1beta1.Actor{
-		Kind: backflowv1beta1.ActorKind(verdict.Record.Kind), Username: verdict.Record.Username, Groups: verdict.Record.Groups,
+	return &backflowv1.Actor{
+		Kind: backflowv1.ActorKind(verdict.Record.Kind), Username: verdict.Record.Username, Groups: verdict.Record.Groups,
 	}
 }
 
@@ -118,7 +118,7 @@ func liveUID(live map[string]any) string {
 
 // forText is the proposal as the text of a merge request and a commit sees it: without the
 // user name unless usernameInMergeRequest is on. The proposal itself keeps it.
-func (r *DriftProposalReconciler) forText(dp *backflowv1beta1.DriftProposal) *backflowv1beta1.DriftProposal {
+func (r *DriftProposalReconciler) forText(dp *backflowv1.DriftProposal) *backflowv1.DriftProposal {
 	if r.UsernameInMergeRequest || dp.Spec.Actor == nil || (dp.Spec.Actor.Username == "" && len(dp.Spec.Actor.Groups) == 0) {
 		return dp
 	}

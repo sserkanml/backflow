@@ -15,7 +15,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/helmmap"
 )
@@ -131,8 +131,8 @@ func lstatFS(fsys fs.FS, name string) (fs.FileInfo, error) {
 // a Helm repository has no files to count; its version is a change of the
 // Application (chartChange). Each repository is read with the ScmConnection
 // matched to its own host.
-func (r *DriftReconciler) lookAtMultiSource(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
-	summary backflowv1beta1.ApplicationSummary, app *unstructured.Unstructured, ms *multiSource) (aheadCheck, error) {
+func (r *DriftReconciler) lookAtMultiSource(ctx context.Context, policy *backflowv1.BackflowPolicy,
+	summary backflowv1.ApplicationSummary, app *unstructured.Unstructured, ms *multiSource) (aheadCheck, error) {
 	sources := specSources(app)
 	compared := statusStrings(app, fieldStatus, "sync", "revisions")
 	synced := statusStrings(app, fieldStatus, fieldOperationState, fieldSyncResult, "revisions")

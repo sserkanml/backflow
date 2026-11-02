@@ -9,7 +9,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/drift"
 )
 
@@ -24,13 +24,13 @@ import (
 // path or at the first missing parent. That is accepted when the edited
 // document holds exactly the live value at the proposal's path and the Add
 // contains nothing else.
-func Verify(original, edited []byte, document int, changes []v1beta1.FieldChange) error {
+func Verify(original, edited []byte, document int, changes []v1.FieldChange) error {
 	return VerifyFile("", original, edited, document, changes)
 }
 
 // VerifyFile is Verify for the file with the given name: a file Argo CD reads as
 // JSON is compared as JSON.
-func VerifyFile(file string, original, edited []byte, document int, changes []v1beta1.FieldChange) error {
+func VerifyFile(file string, original, edited []byte, document int, changes []v1.FieldChange) error {
 	if isJSONFile(file) {
 		return verifyJSON(original, edited, document, changes)
 	}
@@ -64,7 +64,7 @@ func VerifyFile(file string, original, edited []byte, document int, changes []v1
 
 // verifyMaps checks that the edited resource differs from the original by the
 // changes and nothing else.
-func verifyMaps(o, e map[string]any, changes []v1beta1.FieldChange) error {
+func verifyMaps(o, e map[string]any, changes []v1.FieldChange) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrVerificationFailed, fmt.Sprintf(format, args...))
 	}
@@ -84,10 +84,10 @@ func deepEqual(a, b any) bool { return reflect.DeepEqual(a, b) }
 // acceptDefaulted pairs each proposal Replace on a path that is absent in the
 // original with the Add in got that created it, checks the value, and returns
 // the proposal changes and the edit's changes that are left to compare.
-func acceptDefaulted(orig, edited map[string]any, got, want []v1beta1.FieldChange) (restWant, restGot []v1beta1.FieldChange, err error) {
+func acceptDefaulted(orig, edited map[string]any, got, want []v1.FieldChange) (restWant, restGot []v1.FieldChange, err error) {
 	claimed := map[int][]string{} // index in got -> proposal paths it covers
 	for _, c := range want {
-		if c.Op != v1beta1.OpReplace {
+		if c.Op != v1.OpReplace {
 			restWant = append(restWant, c)
 			continue
 		}
@@ -102,7 +102,7 @@ func acceptDefaulted(orig, edited map[string]any, got, want []v1beta1.FieldChang
 		}
 		idx := -1
 		for i, g := range got {
-			if g.Op == v1beta1.OpAdd && (g.Path == c.Path || strings.HasPrefix(c.Path, g.Path+"/")) {
+			if g.Op == v1.OpAdd && (g.Path == c.Path || strings.HasPrefix(c.Path, g.Path+"/")) {
 				idx = i
 				break
 			}
@@ -208,14 +208,14 @@ func documentMap(text string, seg segment) (map[string]any, error) {
 	return m, nil
 }
 
-func normalize(c []v1beta1.FieldChange) []v1beta1.FieldChange {
+func normalize(c []v1.FieldChange) []v1.FieldChange {
 	if len(c) == 0 {
 		return nil
 	}
 	return c
 }
 
-func summarize(c []v1beta1.FieldChange) string {
+func summarize(c []v1.FieldChange) string {
 	if len(c) == 0 {
 		return "nothing"
 	}

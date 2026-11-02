@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // accessAll matches any namespace or any project in an AccessRule.
@@ -146,7 +146,7 @@ func defaultNotAllowedMessage(ns string) string {
 // mayManage reports whether the proposal's policy may see the Application. For a
 // policy that uses the operator's default connection it is the rule of its namespace;
 // for a policy with its own token it is what that token can get from Argo CD.
-func (r *DriftProposalReconciler) mayManage(ctx context.Context, policy *backflowv1beta1.BackflowPolicy,
+func (r *DriftProposalReconciler) mayManage(ctx context.Context, policy *backflowv1.BackflowPolicy,
 	app *unstructured.Unstructured) (bool, error) {
 	if usesDefaultAccess(policy.Spec.ArgoCD.Server != nil, r.ArgoCD) {
 		return r.ArgoCD.ProjectAllowed(policy.Namespace, applicationProject(app)), nil
@@ -167,7 +167,7 @@ var errVisibilityUnknown = errors.New("could not ask Argo CD whether the policy'
 
 // accessRevoked reports whether the proposal's Application is one its policy may not
 // see. It reads the policy and the Application from the cache; it calls no Argo CD.
-func (r *DriftProposalReconciler) accessRevoked(ctx context.Context, dp *backflowv1beta1.DriftProposal) bool {
+func (r *DriftProposalReconciler) accessRevoked(ctx context.Context, dp *backflowv1.DriftProposal) bool {
 	policy, err := r.policyOf(ctx, dp)
 	if err != nil || !usesDefaultAccess(policy.Spec.ArgoCD.Server != nil, r.ArgoCD) {
 		return false
@@ -191,11 +191,11 @@ func (r *DriftProposalReconciler) accessRevoked(ctx context.Context, dp *backflo
 // proposal of an Application the policy may no longer see is retired, and a held
 // one goes on.
 func (r *DriftProposalReconciler) policyProposals(ctx context.Context, obj client.Object) []reconcile.Request {
-	policy, ok := obj.(*backflowv1beta1.BackflowPolicy)
+	policy, ok := obj.(*backflowv1.BackflowPolicy)
 	if !ok {
 		return nil
 	}
-	var list backflowv1beta1.DriftProposalList
+	var list backflowv1.DriftProposalList
 	if err := r.List(ctx, &list, client.InNamespace(policy.Namespace)); err != nil {
 		return nil
 	}
@@ -211,7 +211,7 @@ func (r *DriftProposalReconciler) policyProposals(ctx context.Context, obj clien
 
 // retireIfRevoked ends the proposal when its policy may not see its Application (see
 // accessRevoked). done is true when it did, and the proposal needs nothing more.
-func (r *DriftProposalReconciler) retireIfRevoked(ctx context.Context, dp, orig *backflowv1beta1.DriftProposal) (done bool, res ctrl.Result, err error) {
+func (r *DriftProposalReconciler) retireIfRevoked(ctx context.Context, dp, orig *backflowv1.DriftProposal) (done bool, res ctrl.Result, err error) {
 	if !r.accessRevoked(ctx, dp) {
 		return false, ctrl.Result{}, nil
 	}

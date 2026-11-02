@@ -279,7 +279,7 @@ TOKEN=""
 apply_policy() {
   local ignore="${1:-}"
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
@@ -343,7 +343,7 @@ expect_diff_line() {
 # creates a Directory proposal of the policy by hand, like the drift controller would.
 create_proposal() {
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: DriftProposal
 metadata:
   name: $1

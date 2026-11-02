@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	backflowv1beta1 "github.com/sserkanml/backflow/api/v1beta1"
+	backflowv1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/gitrepo"
 	"github.com/sserkanml/backflow/internal/scratch"
 )
@@ -41,8 +41,8 @@ var _ = Describe("ScratchSweeper", func() {
 	const ns = "default"
 	var (
 		ctx    = context.Background()
-		policy *backflowv1beta1.BackflowPolicy
-		conn   *backflowv1beta1.ScmConnection
+		policy *backflowv1.BackflowPolicy
+		conn   *backflowv1.ScmConnection
 	)
 
 	// createApp creates an Argo CD Application with these sources, removed after the spec.
@@ -61,19 +61,19 @@ var _ = Describe("ScratchSweeper", func() {
 		Expect(k8sClient.Create(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "sweep-token", Namespace: ns}, StringData: map[string]string{"token": "tok"},
 		})).To(Succeed())
-		conn = &backflowv1beta1.ScmConnection{
+		conn = &backflowv1.ScmConnection{
 			ObjectMeta: metav1.ObjectMeta{Name: "sweep-scm", Namespace: ns},
-			Spec: backflowv1beta1.ScmConnectionSpec{
-				Provider: backflowv1beta1.ScmProviderGitLab, URL: "https://git.test",
-				TokenSecretRef: backflowv1beta1.SecretKeyReference{Name: "sweep-token", Key: "token"},
+			Spec: backflowv1.ScmConnectionSpec{
+				Provider: backflowv1.ScmProviderGitLab, URL: "https://git.test",
+				TokenSecretRef: backflowv1.SecretKeyReference{Name: "sweep-token", Key: "token"},
 			},
 		}
 		Expect(k8sClient.Create(ctx, conn)).To(Succeed())
-		policy = &backflowv1beta1.BackflowPolicy{
+		policy = &backflowv1.BackflowPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "sweep-policy", Namespace: ns},
-			Spec: backflowv1beta1.BackflowPolicySpec{
-				ArgoCD: backflowv1beta1.ArgoCDSpec{Namespace: ns}, Applications: backflowv1beta1.ApplicationSelector{Names: []string{"sweep-app"}},
-				Mode: backflowv1beta1.ModeMergeRequest,
+			Spec: backflowv1.BackflowPolicySpec{
+				ArgoCD: backflowv1.ArgoCDSpec{Namespace: ns}, Applications: backflowv1.ApplicationSelector{Names: []string{"sweep-app"}},
+				Mode: backflowv1.ModeMergeRequest,
 			},
 		}
 		Expect(k8sClient.Create(ctx, policy)).To(Succeed())
@@ -118,15 +118,15 @@ var _ = Describe("ScratchSweeper", func() {
 		names = append(names, "sweep-zzz-last")
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 		// More than 100 Applications cannot be named, so the policy selects them by label.
-		policy.Spec.Applications = backflowv1beta1.ApplicationSelector{
+		policy.Spec.Applications = backflowv1.ApplicationSelector{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"sweep-test": "yes"}},
 		}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 
 		// What the policy controller writes: a status that stops at 100.
-		listed := make([]backflowv1beta1.ApplicationSummary, 100)
+		listed := make([]backflowv1.ApplicationSummary, 100)
 		for i := range listed {
-			listed[i] = backflowv1beta1.ApplicationSummary{Name: names[i]}
+			listed[i] = backflowv1.ApplicationSummary{Name: names[i]}
 		}
 		policy.Status.Applications, policy.Status.ApplicationCount, policy.Status.ApplicationsTruncated = listed, 103, true
 		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
@@ -142,7 +142,7 @@ var _ = Describe("ScratchSweeper", func() {
 
 	It("leaves a policy that does not allow scratch branches alone", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
-		policy.Spec.Mapping = &backflowv1beta1.MappingOptions{ScratchBranches: backflowv1beta1.ScratchBranchesNever}
+		policy.Spec.Mapping = &backflowv1.MappingOptions{ScratchBranches: backflowv1.ScratchBranchesNever}
 		Expect(k8sClient.Update(ctx, policy)).To(Succeed())
 		git := &sweepGit{}
 		(&ScratchSweeper{Client: k8sClient, Git: git}).Sweep(ctx)

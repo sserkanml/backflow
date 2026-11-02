@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1beta1"
+	"github.com/sserkanml/backflow/api/v1"
 )
 
-func change(path string, op v1beta1.ChangeOperation, desired, live string) v1beta1.FieldChange {
-	return v1beta1.FieldChange{Path: path, Op: op, Desired: desired, Live: live}
+func change(path string, op v1.ChangeOperation, desired, live string) v1.FieldChange {
+	return v1.FieldChange{Path: path, Op: op, Desired: desired, Live: live}
 }
 
 func TestVerify(t *testing.T) {
-	logLevel := change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `"debug"`)
+	logLevel := change("/data/LOG_LEVEL", v1.OpReplace, `"info"`, `"debug"`)
 	edited := strings.Replace(configMapYAML, "LOG_LEVEL: info", "LOG_LEVEL: debug", 1)
 
 	tests := []struct {
@@ -21,36 +21,36 @@ func TestVerify(t *testing.T) {
 		orig    string
 		edited  string
 		doc     int
-		changes []v1beta1.FieldChange
+		changes []v1.FieldChange
 		wantErr bool
 	}{
-		{"the edit is exactly the proposal", configMapYAML, edited, 0, []v1beta1.FieldChange{logLevel}, false},
+		{"the edit is exactly the proposal", configMapYAML, edited, 0, []v1.FieldChange{logLevel}, false},
 		{"nothing expected and nothing changed", configMapYAML, configMapYAML, 0, nil, false},
-		{"the edit does less than the proposal", configMapYAML, configMapYAML, 0, []v1beta1.FieldChange{logLevel}, true},
+		{"the edit does less than the proposal", configMapYAML, configMapYAML, 0, []v1.FieldChange{logLevel}, true},
 		{
 			"the edit does more than the proposal",
 			configMapYAML, strings.Replace(edited, "TIMEOUT: 30", "TIMEOUT: 31", 1), 0,
-			[]v1beta1.FieldChange{logLevel}, true,
+			[]v1.FieldChange{logLevel}, true,
 		},
 		{
 			"the edit writes another value",
 			configMapYAML, strings.Replace(configMapYAML, "LOG_LEVEL: info", "LOG_LEVEL: trace", 1), 0,
-			[]v1beta1.FieldChange{logLevel}, true,
+			[]v1.FieldChange{logLevel}, true,
 		},
 		{
 			"a replace of a field the file does not have, added with the live value",
 			configMapYAML, configMapYAML + "  EXTRA: x\n", 0,
-			[]v1beta1.FieldChange{change("/data/EXTRA", v1beta1.OpReplace, `"y"`, `"x"`)}, false,
+			[]v1.FieldChange{change("/data/EXTRA", v1.OpReplace, `"y"`, `"x"`)}, false,
 		},
 		{
 			"a replace of a field the file does not have, added with another value",
 			configMapYAML, configMapYAML + "  EXTRA: z\n", 0,
-			[]v1beta1.FieldChange{change("/data/EXTRA", v1beta1.OpReplace, `"y"`, `"x"`)}, true,
+			[]v1.FieldChange{change("/data/EXTRA", v1.OpReplace, `"y"`, `"x"`)}, true,
 		},
 		{"an add", configMapYAML, configMapYAML + "  EXTRA: x\n", 0,
-			[]v1beta1.FieldChange{change("/data/EXTRA", v1beta1.OpAdd, "", `"x"`)}, false},
+			[]v1.FieldChange{change("/data/EXTRA", v1.OpAdd, "", `"x"`)}, false},
 		{"a remove", configMapYAML, strings.Replace(configMapYAML, "  TIMEOUT: 30\n", "", 1), 0,
-			[]v1beta1.FieldChange{change("/data/TIMEOUT", v1beta1.OpRemove, `30`, "")}, false},
+			[]v1.FieldChange{change("/data/TIMEOUT", v1.OpRemove, `30`, "")}, false},
 		{"a number written as a string is a change", configMapYAML, strings.Replace(configMapYAML, "TIMEOUT: 30", `TIMEOUT: "30"`, 1), 0,
 			nil, true},
 		{
@@ -62,7 +62,7 @@ func TestVerify(t *testing.T) {
 			"a document was added",
 			multiDocYAML, multiDocYAML + "---\nkind: x\n", 1, nil, true,
 		},
-		{"the edited document is not valid YAML", configMapYAML, "kind: [oops\n", 0, []v1beta1.FieldChange{logLevel}, true},
+		{"the edited document is not valid YAML", configMapYAML, "kind: [oops\n", 0, []v1.FieldChange{logLevel}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,14 +75,14 @@ func TestVerify(t *testing.T) {
 }
 
 func TestApplyThenVerify(t *testing.T) {
-	changes := []v1beta1.FieldChange{
-		change("/data/FEATURE", v1beta1.OpReplace, `"on"`, `"off"`),
-		change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `"debug"`),
-		change("/data/NEW", v1beta1.OpAdd, "", `"x"`),
-		change("/data/TIMEOUT", v1beta1.OpRemove, `30`, ""),
+	changes := []v1.FieldChange{
+		change("/data/FEATURE", v1.OpReplace, `"on"`, `"off"`),
+		change("/data/LOG_LEVEL", v1.OpReplace, `"info"`, `"debug"`),
+		change("/data/NEW", v1.OpAdd, "", `"x"`),
+		change("/data/TIMEOUT", v1.OpRemove, `30`, ""),
 		// Diff reports a whole missing map as one Add at the first missing key.
-		change("/metadata/annotations", v1beta1.OpAdd, "", `{"example.com/owner":"me"}`),
-		change("/metadata/labels/app.kubernetes.io~1name", v1beta1.OpReplace, `"demo"`, `"other"`),
+		change("/metadata/annotations", v1.OpAdd, "", `{"example.com/owner":"me"}`),
+		change("/metadata/labels/app.kubernetes.io~1name", v1.OpReplace, `"demo"`, `"other"`),
 	}
 	// Diff orders by path; the proposal's changes come in that order.
 	got, err := Apply("cm.yaml", []byte(configMapYAML), 0, changes)
@@ -101,34 +101,34 @@ func TestFallbackEditsVerify(t *testing.T) {
 		name    string
 		input   string
 		doc     int
-		changes []v1beta1.FieldChange
+		changes []v1.FieldChange
 	}{
 		{
 			"remove the first key of a list item",
 			multiDocYAML, 1,
-			[]v1beta1.FieldChange{change("/spec/template/spec/containers/0/name", v1beta1.OpRemove, `"demo"`, "")},
+			[]v1.FieldChange{change("/spec/template/spec/containers/0/name", v1.OpRemove, `"demo"`, "")},
 		},
 		{
 			"remove from a flow map",
 			edgeYAML, 0,
-			[]v1beta1.FieldChange{change("/metadata/labels/a", v1beta1.OpRemove, `"b"`, "")},
+			[]v1.FieldChange{change("/metadata/labels/a", v1.OpRemove, `"b"`, "")},
 		},
 		{
 			"replace a whole list",
 			multiDocYAML, 1,
-			[]v1beta1.FieldChange{change("/spec/template/spec/containers", v1beta1.OpReplace,
+			[]v1.FieldChange{change("/spec/template/spec/containers", v1.OpReplace,
 				`[{"args":["a","b"],"image":"nginx:1.0","name":"demo"},{"image":"busybox","name":"side"}]`,
 				`[{"image":"x","name":"demo"}]`)},
 		},
 		{
 			"replace a map by a scalar",
 			configMapYAML, 0,
-			[]v1beta1.FieldChange{change("/metadata/labels", v1beta1.OpReplace, `{"app.kubernetes.io/name":"demo"}`, `"none"`)},
+			[]v1.FieldChange{change("/metadata/labels", v1.OpReplace, `{"app.kubernetes.io/name":"demo"}`, `"none"`)},
 		},
 		{
 			"replace a scalar by a map",
 			configMapYAML, 0,
-			[]v1beta1.FieldChange{change("/data/LOG_LEVEL", v1beta1.OpReplace, `"info"`, `{"a":1,"b":[1,2]}`)},
+			[]v1.FieldChange{change("/data/LOG_LEVEL", v1.OpReplace, `"info"`, `{"a":1,"b":[1,2]}`)},
 		},
 	}
 	for _, tt := range tests {
@@ -147,45 +147,45 @@ func TestFallbackEditsVerify(t *testing.T) {
 func TestVerifyDefaultedFieldsStayStrict(t *testing.T) {
 	deploy := multiDocYAML
 	withLimit := strings.Replace(deploy, "  replicas: 1 # keep small\n", "  replicas: 1 # keep small\n  revisionHistoryLimit: 5\n", 1)
-	defaulted := change("/spec/revisionHistoryLimit", v1beta1.OpReplace, `10`, `5`)
+	defaulted := change("/spec/revisionHistoryLimit", v1.OpReplace, `10`, `5`)
 	// Verify compares whole documents; index 1 is the Deployment.
 	tests := []struct {
 		name    string
 		edited  string
-		changes []v1beta1.FieldChange
+		changes []v1.FieldChange
 		wantErr bool
 	}{
-		{"the field is added with the live value", withLimit, []v1beta1.FieldChange{defaulted}, false},
-		{"the edit does not add the field", deploy, []v1beta1.FieldChange{defaulted}, true},
+		{"the field is added with the live value", withLimit, []v1.FieldChange{defaulted}, false},
+		{"the edit does not add the field", deploy, []v1.FieldChange{defaulted}, true},
 		{
 			"the field is added with another value",
 			strings.Replace(withLimit, "revisionHistoryLimit: 5", "revisionHistoryLimit: 6", 1),
-			[]v1beta1.FieldChange{defaulted}, true,
+			[]v1.FieldChange{defaulted}, true,
 		},
 		{
 			"the edit also adds something else",
 			strings.Replace(withLimit, "revisionHistoryLimit: 5\n", "revisionHistoryLimit: 5\n  paused: true\n", 1),
-			[]v1beta1.FieldChange{defaulted}, true,
+			[]v1.FieldChange{defaulted}, true,
 		},
 		{
 			"the edit also changes a present field",
 			strings.Replace(withLimit, "replicas: 1", "replicas: 2", 1),
-			[]v1beta1.FieldChange{defaulted}, true,
+			[]v1.FieldChange{defaulted}, true,
 		},
 		{
 			"a missing parent holding more than the proposal asked for",
 			strings.Replace(deploy, "  replicas: 1 # keep small\n", "  replicas: 1 # keep small\n  strategy:\n    type: Recreate\n    rollingUpdate:\n      maxSurge: 2\n", 1),
-			[]v1beta1.FieldChange{change("/spec/strategy/type", v1beta1.OpReplace, `"RollingUpdate"`, `"Recreate"`)}, true,
+			[]v1.FieldChange{change("/spec/strategy/type", v1.OpReplace, `"RollingUpdate"`, `"Recreate"`)}, true,
 		},
 		{
 			"a missing parent holding exactly what the proposal asked for",
 			strings.Replace(deploy, "  replicas: 1 # keep small\n", "  replicas: 1 # keep small\n  strategy:\n    type: Recreate\n", 1),
-			[]v1beta1.FieldChange{change("/spec/strategy/type", v1beta1.OpReplace, `"RollingUpdate"`, `"Recreate"`)}, false,
+			[]v1.FieldChange{change("/spec/strategy/type", v1.OpReplace, `"RollingUpdate"`, `"Recreate"`)}, false,
 		},
 		{
 			"a defaulted object value",
 			strings.Replace(deploy, "  replicas: 1 # keep small\n", "  replicas: 1 # keep small\n  selectorX:\n    a: 1\n", 1),
-			[]v1beta1.FieldChange{change("/spec/selectorX", v1beta1.OpReplace, `{"a":0}`, `{"a":1}`)}, false,
+			[]v1.FieldChange{change("/spec/selectorX", v1.OpReplace, `{"a":0}`, `{"a":1}`)}, false,
 		},
 	}
 	for _, tt := range tests {

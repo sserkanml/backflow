@@ -386,7 +386,7 @@ chmod 600 "$WORKDIR/argo-token"
 ARGO_TOKEN=""
 # ReportOnly: the diagnosis happens while mapping, and nothing may be proposed anyway.
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1beta1
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
