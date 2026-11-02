@@ -64,8 +64,8 @@ bundle: manifests kustomize operator-sdk ## Generate bundle/ (the CSV, the CRDs,
 	"$(KUSTOMIZE)" build "$$tmp/config/manifests" | "$(OPERATOR_SDK)" generate bundle -q --overwrite \
 		--version $(BUNDLE_VERSION) --package backflow --channels $(OLM_CHANNEL) --default-channel $(OLM_CHANNEL) \
 		--kustomize-dir "$$tmp/config/manifests"
-	@# relatedImages: the operator image, which is the only one
-	sed -i.bak 's#image: controller:latest#image: $(OPERATOR_IMAGE)#' bundle/manifests/backflow.clusterserviceversion.yaml && rm -f bundle/manifests/*.bak
+	@# relatedImages: the operator image, which is the only one (RELATED_IMAGE_BACKFLOW of config/manager)
+	sed -i.bak 's#controller:latest#$(OPERATOR_IMAGE)#' bundle/manifests/backflow.clusterserviceversion.yaml && rm -f bundle/manifests/*.bak
 	sed -i.bak 's#containerImage: .*#containerImage: $(OPERATOR_IMAGE)#' bundle/manifests/backflow.clusterserviceversion.yaml && rm -f bundle/manifests/*.bak
 	"$(OPERATOR_SDK)" bundle validate ./bundle
 

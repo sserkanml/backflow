@@ -51,6 +51,10 @@ spec:
         env:
         - name: BACKFLOW_SCM_ALLOWED_HOSTS
           value: gitlab.com,github.com
+        # operator-sdk lists the images in RELATED_IMAGE_* variables as the relatedImages of the CSV (make bundle puts the
+        # operator image here); the operator does not read it.
+        - name: RELATED_IMAGE_BACKFLOW
+          value: controller:latest
         ports:
         - containerPort: 8081
           name: health

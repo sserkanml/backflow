@@ -264,7 +264,4 @@ spec:
   provider:
     name: sserkanml
     url: https://github.com/sserkanml
-  relatedImages:
-  - image: controller:latest
-    name: backflow
   version: 0.0.0
