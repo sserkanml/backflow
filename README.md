@@ -450,41 +450,17 @@ is listed there, old to new. Things you will notice:
 - `ChangeRecord` is `internal.backflow.io/v1alpha1`, not part of the API.
 - Kubernetes **1.30** (OpenShift 4.17) is the minimum: the CRDs use CEL validation and rely on ratcheting of existing objects.
 
-**The operator does not start** while a Backflow CRD still has objects stored as `v1alpha1`, or does not serve
-`v1beta1`; it says so and which command to run. `backflow migrate` (a subcommand of the operator's binary: `/manager migrate`) rewrites your objects:
+**The operator does not start** while a Backflow CRD still has objects stored as `v1alpha1`, or does not serve `v1beta1`; it says
+so and which command to run. The upgrade is one migration, in order: convert the manifests in Git (`manager migrate
+convert-files`), set the new allow lists, stop the operator, back up and migrate (`manager migrate`, or the chart's
+`migration.enabled` hook Job), then upgrade the chart and verify. **Run the migration before you apply the CRDs of this version**:
+it adds `v1beta1` to the installed CRDs, rewrites the objects (a `DriftProposal` is deleted and created again, with its status,
+`finishedAt` and signals) and removes `v1alpha1` from the CRDs; the API server refuses the new CRDs while objects are stored as
+`v1alpha1`. Everything, including how to check the result and how to roll back from the backup (`manager migrate restore`), is in
+**[docs/upgrade-v1beta1.md](docs/upgrade-v1beta1.md)**.
 
-```bash
-kubectl -n backflow-system scale deployment <operator> --replicas=0     # it refuses to run while the operator runs
-kubectl apply --server-side --force-conflicts -f <the CRDs of this release>
-manager migrate --dry-run                                               # what would change; changes nothing
-manager migrate --backup-dir ./backflow-backup --serve-v1alpha1
-```
-
-It writes a backup of every object that is still `v1alpha1` (one YAML file each, never overwritten) before it changes
-anything, converts `ScmConnection` and `BackflowPolicy` in place (keeping their uid and, where it still applies, their status),
-deletes the `ChangeRecord`s (not backed up: they hold user names, for two hours at most) and sets `storedVersions` of a CRD to
-`[v1beta1]` when every object of it is rewritten. A second run does only what is left. The exit status is 0 when everything is
-done and 1 when an error stopped it or an object could not be migrated.
-
-A `DriftProposal` cannot be changed in place (its spec is immutable), so each one is deleted and **created again** with the same
-name, namespace, labels and annotations (not the five that held state), an owner reference to its policy (the same uid), and the
-status it had: phase, conditions, mapping, `status.git` (branch, commit, merge request, push counters), message and
-`finishedAt`. The five lifecycle annotations (`backflow.io/superseded-by`, `reverted`, `live-reverted`, `access-revoked`,
-`rejection-reported`) become `status.signals`. The new object has a new `creationTimestamp`; the old one is in the annotation
-`migrate.backflow.io/created`, and `status.finishedAt` is the last change of a condition (else the old creation time), so the
-14 day retention of a finished proposal does not start again. **A finished proposal that is older than 14 days is deleted
-by the operator as soon as it starts**; `--skip-finished` backs finished proposals up and deletes them instead of migrating them.
-The merge requests on the Git host are not touched. Before a proposal is deleted, the API server is asked (a dry run) whether it
-would accept the new one; a proposal it would refuse is left as it is, and the object that was tried is written to
-`<backup-dir>/rejected/`. A file `<backup-dir>/DriftProposal/<ns>.<name>.done` says that a proposal is complete: if the tool
-stops after the delete or before the status is written, the next run creates the proposal from its backup, or gives the created
-one its status.
-
-`--serve-v1alpha1` serves `v1alpha1` in the CRDs while the tool runs and takes it out again; without it the CRDs must serve it.
-If the API server refuses a `ScmConnection` or `BackflowPolicy`, the tool writes the `v1beta1` object it tried to
-`<backup-dir>/rejected/`; correct that file and apply it with `kubectl replace -f`. **Never edit such an object through
-`v1alpha1`**: once the CRD stores `v1beta1`, a write through `v1alpha1` is pruned to the `v1beta1` schema and loses its
-`v1alpha1` fields. On a cluster with no Backflow objects, delete the three CRDs (and `changerecords.backflow.io`) and apply the new ones.
+Never edit a Backflow object through `v1alpha1` after the CRD stores `v1beta1`: the write is pruned to the `v1beta1` schema and loses
+fields. On a cluster with no Backflow objects, delete the three CRDs (and `changerecords.backflow.io`) and apply the new ones.
 
 ### Allowed servers and hosts
 
@@ -503,6 +479,8 @@ An object that names something else is not `Ready` (`ServerNotAllowed` for a pol
 message names the flag, **no request is made** and the token Secret is not read. A proposal of such a connection is held.
 
 ### Upgrading: apply the CRDs first
+
+(The one exception is the upgrade to `v1beta1`: migrate first, see above.)
 
 **Before every `helm upgrade`, apply the CRDs of the version you upgrade to:**
 
