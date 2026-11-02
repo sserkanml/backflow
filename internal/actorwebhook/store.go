@@ -85,9 +85,9 @@ func (f *Flusher) Start(ctx context.Context) error {
 
 // Flush writes what the buffer holds.
 func (f *Flusher) Flush(ctx context.Context) {
-	records := f.Buffer.Drain()
+	drained := f.Buffer.Drain()
 	written := 0
-	for _, r := range records {
+	for _, r := range drained {
 		if err := f.write(ctx, r); err != nil {
 			logf.FromContext(ctx).V(1).Info("Cannot write a change record; it is kept for the next flush", "error", err.Error())
 			f.Buffer.Add(r)

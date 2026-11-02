@@ -130,10 +130,7 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if isTerminalPhase(dp.Status.Phase) {
-		if r.Writer != nil && needsCleanup(&dp) {
-			return r.cleanup(ctx, &dp)
-		}
-		return r.retain(ctx, &dp)
+		return r.reconcileFinished(ctx, &dp)
 	}
 	if r.Writer != nil && dp.Status.Phase == backflowv1beta1.PhaseProposed && dp.Status.GitMergeRequest() != nil {
 		return r.trackProposed(ctx, &dp)
@@ -161,12 +158,7 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// A drift with more changes than a proposal holds lists the first ones only: part of a drift is
 	// never proposed to Git. It waits Unmapped for a person.
 	if dp.Spec.Truncated {
-		if dp.Status.Phase == backflowv1beta1.PhaseUnmapped {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, r.unmappedWith(ctx, &dp, backflowv1beta1.ReasonTooManyChanges, fmt.Sprintf(
-			"The drift has more than %d field changes. Only the first %d are listed, and nothing is proposed to Git for part of a drift.",
-			backflowv1beta1.MaxChanges, backflowv1beta1.MaxChanges), nil)
+		return ctrl.Result{}, r.unmapTruncated(ctx, &dp)
 	}
 
 	if dp.Status.Phase == "" {
@@ -205,6 +197,25 @@ func (r *DriftProposalReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.cleanup(ctx, &dp)
 	}
 	return res, err
+}
+
+// reconcileFinished is a pass over a proposal that reached a final phase: the cleanup of its branch and merge request
+// when one is left, then the retention.
+func (r *DriftProposalReconciler) reconcileFinished(ctx context.Context, dp *backflowv1beta1.DriftProposal) (ctrl.Result, error) {
+	if r.Writer != nil && needsCleanup(dp) {
+		return r.cleanup(ctx, dp)
+	}
+	return r.retain(ctx, dp)
+}
+
+// unmapTruncated leaves a proposal of a drift with more changes than a proposal holds Unmapped.
+func (r *DriftProposalReconciler) unmapTruncated(ctx context.Context, dp *backflowv1beta1.DriftProposal) error {
+	if dp.Status.Phase == backflowv1beta1.PhaseUnmapped {
+		return nil
+	}
+	return r.unmappedWith(ctx, dp, backflowv1beta1.ReasonTooManyChanges, fmt.Sprintf(
+		"The drift has more than %d field changes. Only the first %d are listed, and nothing is proposed to Git for part of a drift.",
+		backflowv1beta1.MaxChanges, backflowv1beta1.MaxChanges), nil)
 }
 
 // maxRetentionCheck is the longest a finished proposal waits to be looked at again for its retention.

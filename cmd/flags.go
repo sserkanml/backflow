@@ -19,7 +19,7 @@ type stringList struct{ values []string }
 func (l *stringList) String() string { return strings.Join(l.values, ",") }
 
 func (l *stringList) Set(v string) error {
-	for _, item := range strings.Split(v, ",") {
+	for item := range strings.SplitSeq(v, ",") {
 		if item = strings.TrimSpace(item); item != "" {
 			l.values = append(l.values, item)
 		}
@@ -27,6 +27,7 @@ func (l *stringList) Set(v string) error {
 	return nil
 }
 
+//nolint:lll // a kubebuilder marker is one line
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,resourceNames=scmconnections.backflow.io;backflowpolicies.backflow.io;driftproposals.backflow.io,verbs=get
 
 // checkCRDs reads the Backflow CRDs with a client of its own (the manager is not built yet) and

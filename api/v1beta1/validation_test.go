@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,9 +292,7 @@ func TestBackflowPolicyDefaults(t *testing.T) {
 
 func change(op string, extra obj) obj {
 	c := obj{"path": "/spec/replicas", "op": op}
-	for k, v := range extra {
-		c[k] = v
-	}
+	maps.Copy(c, extra)
 	return c
 }
 
