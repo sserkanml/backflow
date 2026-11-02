@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -2291,6 +2293,74 @@ var _ = Describe("Drift detection", func() {
 			Expect([]int{p, rep}).To(Equal([]int{0, 0}))
 			Expect(c).To(Equal(1), "the policy is still in use")
 		})
+	})
+
+	Context("a drift with more changes than a proposal holds", func() {
+		bigState := func(value string, keys int) map[string]any {
+			data := map[string]any{}
+			for i := range keys {
+				data[fmt.Sprintf("K%03d", i)] = value
+			}
+			return map[string]any{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]any{"name": "demo-config", "resourceVersion": value},
+				"data":     data,
+			}
+		}
+
+		It("is created with the first 256 changes, truncated, and the proposal controller leaves it Unmapped", func() {
+			argo.items[0].PredictedLiveState, argo.items[0].NormalizedLiveState = bigState("a", 300), bigState("b", 300)
+			reconcileDrift()
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			dp := proposals()[0]
+			Expect(dp.Spec.Truncated).To(BeTrue())
+			Expect(dp.Spec.Changes).To(HaveLen(backflowv1beta1.MaxChanges))
+
+			reconciler := &DriftProposalReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Repos: &fakeRepos{}}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&dp)})
+			Expect(err).NotTo(HaveOccurred())
+			got := proposals()[0]
+			Expect(got.Status.Phase).To(Equal(backflowv1beta1.PhaseUnmapped))
+			mapped := meta.FindStatusCondition(got.Status.Conditions, conditionMapped)
+			Expect(mapped).NotTo(BeNil())
+			Expect(mapped.Status).To(Equal(metav1.ConditionFalse))
+			Expect(mapped.Reason).To(Equal(backflowv1beta1.ReasonTooManyChanges))
+			Expect(got.Status.Mapping.Edits).To(BeEmpty(), "nothing is proposed for part of a drift")
+			Expect(isOpen(&got)).To(BeTrue(), "Unmapped stays open, for a person")
+
+			By("the same drift is not proposed again")
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+		})
+
+		It("exactly 256 changes is a proposal like any other", func() {
+			argo.items[0].PredictedLiveState, argo.items[0].NormalizedLiveState = bigState("a", 256), bigState("b", 256)
+			reconcileDrift()
+			settle()
+			reconcileDrift()
+			Expect(proposals()).To(HaveLen(1))
+			Expect(proposals()[0].Spec.Truncated).To(BeFalse())
+			Expect(proposals()[0].Spec.Changes).To(HaveLen(256))
+		})
+	})
+
+	It("watches an Application that the capped status.applications of the policy does not list", func() {
+		// The policy controller lists at most 100 Applications in the status. The drift controller does
+		// not read that list: it resolves the Applications itself.
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+		listed := make([]backflowv1beta1.ApplicationSummary, 100)
+		for i := range listed {
+			listed[i] = backflowv1beta1.ApplicationSummary{Name: fmt.Sprintf("other-%03d", i)}
+		}
+		policy.Status.Applications, policy.Status.ApplicationCount, policy.Status.ApplicationsTruncated = listed, 101, true
+		Expect(k8sClient.Status().Update(ctx, policy)).To(Succeed())
+
+		reconcileOnce()
+		Expect(proposals()).To(HaveLen(1), "drift-app is not in status.applications, and is watched")
+		Expect(proposals()[0].Spec.ApplicationRef.Name).To(Equal("drift-app"))
 	})
 
 	It("reports an unsupported source type once per revision", func() {

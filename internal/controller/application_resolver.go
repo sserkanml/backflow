@@ -31,6 +31,12 @@ type appResolver struct {
 // (--argocd-default-access); a policy with its own spec.argoCD sees the ones its
 // own token can get from Argo CD.
 func (r appResolver) resolve(ctx context.Context, policy *backflowv1beta1.BackflowPolicy) (resolution, error) {
+	if srv := policy.Spec.ArgoCD.Server; srv != nil {
+		// Before anything is asked of the server: one the installer did not allow is never contacted.
+		if err := r.ArgoCD.checkServer(srv.URL); err != nil {
+			return resolution{}, err
+		}
+	}
 	if usesDefaultAccess(policy.Spec.ArgoCD.Server != nil, r.ArgoCD) && !r.ArgoCD.NamespaceAllowed(policy.Namespace) {
 		return resolution{}, &checkError{reason: reasonArgoCDDefaultNotAllowed, msg: defaultNotAllowedMessage(policy.Namespace)}
 	}
