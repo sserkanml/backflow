@@ -65,6 +65,16 @@ else
   done
 fi
 
+# opm pulls the bundle images with containers/image, which refuses to run without a signature policy file (a machine without
+# podman or skopeo has none). Pulling a bundle by its tag is what the release does, so an accept-all policy is made when there is none.
+if [[ ! -f /etc/containers/policy.json && ! -f "${XDG_CONFIG_HOME:-$HOME/.config}/containers/policy.json" ]]; then
+  policy_dir="$(mktemp -d)"
+  trap 'rm -rf "$policy_dir"' EXIT
+  mkdir -p "$policy_dir/containers"
+  printf '{"default":[{"type":"insecureAcceptAnything"}]}\n' >"$policy_dir/containers/policy.json"
+  export XDG_CONFIG_HOME="$policy_dir"
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT/backflow"
 file="$OUT/backflow/catalog.yaml"

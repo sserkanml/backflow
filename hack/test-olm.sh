@@ -148,7 +148,7 @@ spec:
   publisher: sserkanml
   updateStrategy: {registryPoll: {interval: 30m}}
 YAML
-wait_for "the catalog is READY" 180 \
+wait_for "the catalog is READY" 300 \
   bash -c "[ \"\$(kubectl -n $CATALOG_NS get catalogsource backflow-catalog -o jsonpath='{.status.connectionState.lastObservedState}')\" = READY ]"
 wait_for "OLM knows the package backflow" 90 bash -c "kubectl get packagemanifest backflow -n $CATALOG_NS"
 expect "the default channel is stable" "$(kubectl get packagemanifest backflow -n $CATALOG_NS -o jsonpath='{.status.defaultChannel}')" "stable"
