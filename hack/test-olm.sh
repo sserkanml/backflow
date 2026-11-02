@@ -11,7 +11,9 @@
 #      (an allowed Git host is accepted, another is HostNotAllowed)
 #   5. an ScmConnection and a BackflowPolicy are made and reconciled
 #   6. operator-sdk scorecard on the bundle (SCORECARD=false to skip)
-#   7. the uninstall: Subscription and ClusterServiceVersion deleted, the operator gone, the CRDs and the objects kept
+#   7. an upgrade through the channel: a second bundle, a catalog in which it replaces the first (the CatalogSource gets the new image),
+#      the InstallPlan, the new ClusterServiceVersion succeeds, the old one is replaced, the objects still work
+#   8. the uninstall: Subscription and ClusterServiceVersion deleted, the operator gone, the CRDs and the objects kept
 #
 #   ./hack/test-olm.sh
 #
@@ -256,6 +258,51 @@ if [[ "$SCORECARD" == "true" ]]; then
   fi
   jq -r '.items[].status.results[] | "\(.state)\t\(.name)\t\(.log // "" | gsub("\n"; " ") | .[0:300])"' "$WORK/scorecard.json" 2>/dev/null | sed 's/^/   | /'
 fi
+
+# ---------------------------------------------------------------------------
+step "upgrade through the channel"
+# A second version is published: its bundle, and a catalog (a new image of the same CatalogSource) in which it replaces the first,
+# which is rendered from the registry where its bundle image is. The Subscription (Automatic) gets an InstallPlan.
+NEXT="${VERSION%.*}.$((${VERSION##*.} + 1))"
+NEXT_CSV="backflow.v$NEXT"
+BUNDLE_NEXT="$REGISTRY/backflow-olm-bundle:$NEXT"
+CATALOG_NEXT="$REGISTRY/backflow-olm-catalog:$NEXT"
+BEFORE_REASON="$(reason scmconnections.backflow.io allowed)"
+make -C "$ROOT" bundle BUNDLE_VERSION="$NEXT" OPERATOR_IMAGE="$OPERATOR_IMG" BUNDLE_IMG="$BUNDLE_NEXT" >"$WORK/bundle2.log" 2>&1 \
+  || { cat "$WORK/bundle2.log"; die "make bundle of the next version failed"; }
+make -C "$ROOT" bundle-build BUNDLE_IMG="$BUNDLE_NEXT" >"$WORK/bundle-build2.log" 2>&1 || { cat "$WORK/bundle-build2.log"; die "bundle image failed"; }
+make -C "$ROOT" catalog BUNDLE_VERSION="$NEXT" BUNDLE_IMG="$BUNDLE_NEXT" CATALOG_IMG="$CATALOG_NEXT" \
+  PREVIOUS_BUNDLES="$VERSION=$BUNDLE_IMG" OPM_RENDER_FLAGS=--use-http >"$WORK/catalog2.log" 2>&1 || { cat "$WORK/catalog2.log"; die "make catalog failed"; }
+make -C "$ROOT" catalog-build CATALOG_IMG="$CATALOG_NEXT" >"$WORK/catalog-build2.log" 2>&1 || { cat "$WORK/catalog-build2.log"; die "catalog image failed"; }
+for img in "$BUNDLE_NEXT" "$CATALOG_NEXT"; do docker push -q "$img" >/dev/null || die "cannot push $img"; done
+expect "the catalog has both versions, the second replacing the first" \
+  "$(awk '/^schema: olm.channel/{c=1} c' "$ROOT/catalog/out/backflow/catalog.yaml" | grep -E 'name: backflow.v|replaces' | tr -d ' ' | tr '\n' ' ')" \
+  "name:stable name:backflow.v$VERSION name:backflow.v$NEXT replaces:backflow.v$VERSION "
+kubectl -n "$CATALOG_NS" patch catalogsource backflow-catalog --type merge -p "{\"spec\":{\"image\":\"$CATALOG_NEXT\"}}" >/dev/null \
+  || die "cannot update the CatalogSource"
+wait_for "an InstallPlan for $NEXT_CSV" 240 \
+  bash -c "kubectl -n $NS get installplan -o json | jq -e '[.items[] | select(.spec.clusterServiceVersionNames | index(\"$NEXT_CSV\"))] | length > 0'"
+wait_for "the ClusterServiceVersion $NEXT_CSV succeeded" 300 \
+  bash -c "[ \"\$(kubectl -n $NS get csv $NEXT_CSV -o jsonpath='{.status.phase}')\" = Succeeded ]" \
+  || { kubectl -n "$NS" get csv 2>&1 | sed 's/^/   | /'; }
+wait_for "the first ClusterServiceVersion is gone (replaced)" 120 bash -c "! kubectl -n $NS get csv $CSV"
+expect "the Subscription is at the new version" "$(kubectl -n "$NS" get subscription backflow -o jsonpath='{.status.installedCSV}')" "$NEXT_CSV"
+wait_for "the operator is Ready after the upgrade" 120 bash -c "[ \"\$(kubectl -n $NS get deploy $DEPLOY -o jsonpath='{.status.readyReplicas}')\" = 1 ]"
+expect "the objects still work: the ScmConnection is judged as before" "$(reason scmconnections.backflow.io allowed)" "$BEFORE_REASON"
+expect "and so is the other host" "$(reason scmconnections.backflow.io not-allowed)" "HostNotAllowed"
+kubectl -n "$APP_NS" annotate scmconnections.backflow.io allowed upgrade-check="$NEXT" --overwrite >/dev/null
+kubectl apply -f - >/dev/null <<YAML
+apiVersion: backflow.io/v1
+kind: BackflowPolicy
+metadata: {name: after-upgrade, namespace: $APP_NS}
+spec:
+  argoCD: {namespace: argocd}
+  applications: {names: [web]}
+YAML
+wait_for "a policy made after the upgrade is reconciled by the new operator" 90 \
+  bash -c "[ -n \"\$(kubectl -n $APP_NS get backflowpolicies.backflow.io after-upgrade -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].reason}')\" ]"
+VERSION="$NEXT"
+CSV="$NEXT_CSV"
 
 # ---------------------------------------------------------------------------
 step "uninstall"
