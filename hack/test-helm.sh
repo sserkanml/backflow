@@ -27,7 +27,7 @@
 #   g. TIMEOUT exists only in the chart's own values.yaml: the merge request adds
 #      config.timeout to values-dev.yaml (an override of the chart default; only
 #      that line is added, the body and the commit name the default). With
-#      spec.helm.addOverrides: false it stays Unmapped (chart defaults, as before).
+#      spec.helm.allowValueOverrides: false it stays Unmapped (chart defaults, as before).
 #      FEATURE is set by a helm parameter of the Application: Unmapped (SetByApplication),
 #      the status says which parameter and where its Application is defined in Git.
 #   h. A Deployment: scaling demo-helm is mapped to replicaCount and stays an
@@ -536,7 +536,7 @@ require_drift() {
 # proposals_of <app> <resource name or *>: one line per DriftProposal of the policy:
 #   <name>|<phase>|<path>:<op>:<desired>><live>;...
 proposals_of() {
-  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.application.name}|{.spec.resource.name}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.applicationRef.name}|{.spec.resourceRef.name}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v a="$1" -v r="$2" '$3 == a && ($4 == r || r == "*") { print $1 "|" $2 "|" $5 }'
 }
 # proposal_with <app> <resource> <phase regex> <changes substring>: names, one per line.
@@ -557,7 +557,7 @@ branch_of() {
   uid="$(dp_field "$1" .metadata.uid | cut -c1-8)"
   branch="$(printf 'backflow/%s-%s' "$1" "$uid")"
   printf '%s: uid8=%s -> %s (status.branch=%s)\n' "$1" "${uid:-<empty>}" "$branch" \
-    "$(dp_field "$1" .status.branch)" >>"$WORKDIR/branches"
+    "$(dp_field "$1" .status.git.branch)" >>"$WORKDIR/branches"
   printf '%s' "$branch"
 }
 
@@ -950,7 +950,7 @@ else
       --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify
       --argocd-default-access="$NS:*")
   fi
-  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
+  "$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
     ${default_flags[@]+"${default_flags[@]}"} >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
@@ -975,44 +975,46 @@ k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token"
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: $SCM_NAME
   namespace: $NS
 spec:
-  provider: $SCM
+  provider: $SCM_LABEL
   url: $SCM_URL
   tokenSecretRef:
     name: $SCM-token
     key: token
 YAML
-ARGOCD_POLICY_BLOCK="  argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token"
+ARGOCD_POLICY_BLOCK="    server:
+      url: $ARGOCD_URL
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token"
 if [[ "$ARGOCD_DEFAULT" == "true" ]]; then ARGOCD_POLICY_BLOCK=""; fi
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
+  argoCD:
+    namespace: $ARGOCD_NS
+$ARGOCD_POLICY_BLOCK
   mode: MergeRequest
   batchWindow: $WINDOW
   applications:
     selector:
       matchLabels:
         env: helm-test
-$ARGOCD_POLICY_BLOCK
-  mergeRequest:
+  git:
     branchPrefix: backflow/
-    labels: ["$LABEL"]
-    assignActor: false
+    mergeRequest:
+      labels: ["$LABEL"]
+      assignActor: false
 YAML
 wait_for "ScmConnection is Ready (token accepted by $SCM_HOST)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
@@ -1020,7 +1022,7 @@ if [[ "$ARGOCD_DEFAULT" == "true" ]]; then WANT_SOURCE="OperatorDefault"; else W
 expect_eq "status.argoCD.source (where the Argo CD connection comes from)" "$WANT_SOURCE" "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.argoCD.source}')"
 policy_matched() {
   local n
-  n="$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.applications[*]}{.name}={.scmConnection}{"\n"}{end}' | grep -c "=$SCM_NAME\$" || true)"
+  n="$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.applications[*]}{.name}={.sources[0].scmConnectionName}{"\n"}{end}' | grep -c "=$SCM_NAME\$" || true)"
   [[ "$n" == "3" ]]
 }
 wait_for "policy tracks the three Applications and matched their repository to the ScmConnection" policy_matched
@@ -1083,7 +1085,7 @@ if [[ -n "$P_A" ]]; then
   if [[ "$merged" == "true" ]]; then pass "merged !$IID_A through the API"; else fail "could not merge !$IID_A"; fi
   MERGE_A="$(gl GET "$(project_path "/merge_requests/$IID_A")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
   wait_for "proposal is Merged" phase_is "$P_A" Merged
-  expect_eq "status.commitSHA is the merge commit" "$MERGE_A" "$(dp_field "$P_A" .status.commitSHA)"
+  expect_eq "status.commitSHA is the merge commit" "$MERGE_A" "$(dp_field "$P_A" .status.git.commitSHA)"
   BEFORE_A="$(proposal_count "$DEMO_APP")"
   wait_for "$DEMO_APP is Synced at the merge commit" app_synced_at "$DEMO_APP" "$MERGE_A"
   expect_eq "live REGION is unchanged by the sync" "$NEW_REGION" "$(live_cm "$DEMO_NS" "$CM" REGION)"
@@ -1143,7 +1145,7 @@ P_C="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_LEVEL\"" | head -n 1)"
 if [[ -n "$P_C" ]]; then
   expect_unmapped "$P_C" ValueAffectsOtherFields "config.logLevel" "would reproduce /data/LOG_LEVEL" "/data/LOG_LEVEL_UP"
   expect_eq "strategy" "Unmapped" "$(dp_field "$P_C" .status.mapping.strategy)"
-  expect_eq "no merge request" "" "$(dp_field "$P_C" .status.mergeRequest.url)"
+  expect_eq "no merge request" "" "$(dp_field "$P_C" .status.git.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
 reset_cluster "$DEMO_APP"
@@ -1263,11 +1265,11 @@ if [[ -n "$P_G1" ]]; then
   close_and_reset "$IID_G1" "$P_G1"
 fi
 
-echo "  g1b. with spec.helm.addOverrides: false the same kind of drift stays Unmapped (chart defaults)..."
-if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"helm":{"addOverrides":false}}}' >/dev/null; then
+echo "  g1b. with spec.helm.allowValueOverrides: false the same kind of drift stays Unmapped (chart defaults)..."
+if k -n "$NS" patch bfp "$POLICY" --type merge -p '{"spec":{"helm":{"allowValueOverrides":false}}}' >/dev/null; then
   pass "the policy does not add overrides"
 else
-  fail "could not set spec.helm.addOverrides"
+  fail "could not set spec.helm.allowValueOverrides"
 fi
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
 # Another value: the closed proposal above blocks the same change at this revision.
@@ -1298,8 +1300,8 @@ remember_proposals
 P_G2="$(proposal_with "$DEMO_APP" "$CM" Unmapped "\"$NEW_FEATURE\"" | head -n 1)"
 if [[ -n "$P_G2" ]]; then
   expect_unmapped "$P_G2" SetByApplication "Set by spec.source.helm.parameters[name=config.feature] of Application $ARGOCD_NS/$DEMO_APP" "no merge request is made"
-  expect_eq "application option path" "/spec/source/helm/parameters/0/value" "$(dp_field "$P_G2" .status.mapping.application.optionPath)"
-  expect_eq "suggested value" "\"$NEW_FEATURE\"" "$(dp_field "$P_G2" .status.mapping.application.suggested)"
+  expect_eq "application option path" "/spec/source/helm/parameters/0/value" "$(dp_field "$P_G2" .status.mapping.applicationOption.optionPath)"
+  expect_eq "suggested value" "\"$NEW_FEATURE\"" "$(dp_field "$P_G2" .status.mapping.applicationOption.suggested)"
 fi
 reset_cluster "$DEMO_APP"
 

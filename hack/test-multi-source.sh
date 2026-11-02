@@ -485,7 +485,7 @@ no_scratch_branches() { [[ -z "$(scratch_branches)" ]]; }
 # proposals_of <app> <resource name or *>: one line per DriftProposal of the policy:
 #   <name>|<phase>|<path>:<op>:<desired>><live>;...
 proposals_of() {
-  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.application.name}|{.spec.resource.name}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.applicationRef.name}|{.spec.resourceRef.name}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v a="$1" -v r="$2" '$3 == a && ($4 == r || r == "*") { print $1 "|" $2 "|" $5 }'
 }
 # proposal_with <app> <resource> <phase regex> <changes substring>: names, one per line.
@@ -506,7 +506,7 @@ branch_of() {
   uid="$(dp_field "$1" .metadata.uid | cut -c1-8)"
   branch="$(printf 'backflow/%s-%s' "$1" "$uid")"
   printf '%s: uid8=%s -> %s (status.branch=%s)\n' "$1" "${uid:-<empty>}" "$branch" \
-    "$(dp_field "$1" .status.branch)" >>"$WORKDIR/branches"
+    "$(dp_field "$1" .status.git.branch)" >>"$WORKDIR/branches"
   printf '%s' "$branch"
 }
 
@@ -886,7 +886,7 @@ else
       --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify
       --argocd-default-access="$NS:*")
   fi
-  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" --render-budget=10m \
+  "$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" --render-budget=10m \
     ${default_flags[@]+"${default_flags[@]}"} >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
@@ -911,13 +911,13 @@ k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token"
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: $SCM_NAME
   namespace: $NS
 spec:
-  provider: $SCM
+  provider: $SCM_LABEL
   url: $SCM_URL
   tokenSecretRef:
     name: $SCM-token
@@ -926,32 +926,34 @@ YAML
 # apply_policy <mode>: the policy of the test. scratchBranches stays at its
 # default, Auto: allowed in MergeRequest mode, not in ReportOnly.
 apply_policy() {
-  local ARGOCD_POLICY_BLOCK="  argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token"
+  local ARGOCD_POLICY_BLOCK="    server:
+      url: $ARGOCD_URL
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token"
   if [[ "$ARGOCD_DEFAULT" == "true" ]]; then ARGOCD_POLICY_BLOCK=""; fi
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
+  argoCD:
+    namespace: $ARGOCD_NS
+$ARGOCD_POLICY_BLOCK
   mode: $1
   batchWindow: $WINDOW
   applications:
     selector:
       matchLabels:
         backflow.io/demo: multi
-$ARGOCD_POLICY_BLOCK
-  mergeRequest:
+  git:
     branchPrefix: backflow/
-    labels: ["$LABEL"]
-    assignActor: false
+    mergeRequest:
+      labels: ["$LABEL"]
+      assignActor: false
 YAML
 }
 apply_policy MergeRequest
@@ -962,7 +964,7 @@ expect_eq "status.argoCD.source (where the Argo CD connection comes from)" "$WAN
 policy_matched() {
   # The ref source has its own ScmConnection, and the chart (a registry) none.
   local out
-  out="$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.applications[*].sources[*]}{.position}={.ref}={.scmConnection}{"\n"}{end}')"
+  out="$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.applications[*].sources[*]}{.position}={.ref}={.scmConnectionName}{"\n"}{end}')"
   [[ "$out" == *"2=values=$SCM_NAME"* && "$out" == *"1=="* ]]
 }
 wait_for "policy lists the sources of $APP and matched the repository of \$values to the ScmConnection" policy_matched
@@ -978,7 +980,7 @@ expect_mapping_multi() {
   expect_eq "mapping verified" "true" "$(dp_field "$1" .status.mapping.verified)"
   expect_eq "edited files" "$2" "$(dp_field "$1" '.status.mapping.edits[*].file')"
   expect_eq "edited keys" "$3" "$(dp_field "$1" '.status.mapping.edits[*].location')"
-  expect_contains "repository written to (status.mapping.repoURL)" "$SCM_HOST/$SCM_PROJECT" "$(dp_field "$1" .status.mapping.repoURL)"
+  expect_contains "repository written to (status.mapping.repoURL)" "$SCM_HOST/$SCM_PROJECT" "$(dp_field "$1" .status.mapping.edits[0].repoURL)"
 }
 
 # expect_comments_kept <branch> <file>: every comment line of main's file is still there.
@@ -1047,7 +1049,7 @@ if [[ -n "$P_A" ]]; then
   if [[ "$merged" == "true" ]]; then pass "merged !$IID_A through the API"; else fail "could not merge !$IID_A"; fi
   MERGE_A="$(gl GET "$(project_path "/merge_requests/$IID_A")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
   wait_for "proposal is Merged" phase_is "$P_A" Merged
-  expect_eq "status.commitSHA is the merge commit" "$MERGE_A" "$(dp_field "$P_A" .status.commitSHA)"
+  expect_eq "status.commitSHA is the merge commit" "$MERGE_A" "$(dp_field "$P_A" .status.git.commitSHA)"
   BEFORE_A="$(proposal_count "$APP")"
   wait_for "$APP is Synced at the merge commit" app_synced_at "$MERGE_A"
   expect_eq "live replicas are unchanged by the sync" "$NEW_REPLICAS" "$(live_replicas)"

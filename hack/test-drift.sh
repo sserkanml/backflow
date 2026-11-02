@@ -232,7 +232,7 @@ trap cleanup EXIT
 # proposals <resource name>: one line per DriftProposal of the policy:
 #   <name>|<phase>|<resource name>|<supersededBy>|<path>:<op>:<desired>><live>;...
 proposals() {
-  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resource.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.resourceRef.name}|{.status.supersededBy}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v r="$1" '$3 == r'
 }
 
@@ -353,7 +353,7 @@ else
   make manifests install >/dev/null
   make build >/dev/null
   mkdir -p "$LOG_DIR"
-  "$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
+  "$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
     curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -380,23 +380,24 @@ TOKEN=""
 apply_policy() {
   local ignore="${1:-}"
   k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
   mode: ReportOnly
   batchWindow: ${WINDOW:-5s}
   applications:
     names: ["$APP"]
   argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token
+    namespace: $ARGOCD_NS
+    server:
+      url: $ARGOCD_URL
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token
 $ignore
 YAML
 }
@@ -419,19 +420,19 @@ if [[ -n "$P1" ]]; then
   expect_eq "label resource" "$(resource_hash "" ConfigMap "$DEMO_NS" demo-config)" \
     "$(dp_field "$P1" '.metadata.labels.backflow\.io/resource')"
   expect_eq "owner" "$POLICY" "$(dp_field "$P1" '.metadata.ownerReferences[0].name')"
-  expect_eq "spec.policyName" "$POLICY" "$(dp_field "$P1" .spec.policyName)"
-  expect_eq "spec.application.name" "$APP" "$(dp_field "$P1" .spec.application.name)"
-  expect_eq "spec.application.namespace" "$ARGOCD_NS" "$(dp_field "$P1" .spec.application.namespace)"
-  expect_eq "spec.resource.kind" "ConfigMap" "$(dp_field "$P1" .spec.resource.kind)"
-  expect_eq "spec.resource.version" "v1" "$(dp_field "$P1" .spec.resource.version)"
-  expect_eq "spec.resource.namespace" "$DEMO_NS" "$(dp_field "$P1" .spec.resource.namespace)"
-  expect_eq "spec.resource.name" "demo-config" "$(dp_field "$P1" .spec.resource.name)"
-  expect_eq "spec.source.repoURL" "$APP_REPO" "$(dp_field "$P1" .spec.source.repoURL)"
-  expect_eq "spec.source.path" "$APP_PATH" "$(dp_field "$P1" .spec.source.path)"
-  expect_eq "spec.source.targetRevision" "$APP_TARGET" "$(dp_field "$P1" .spec.source.targetRevision)"
-  expect_eq "spec.source.type" "Directory" "$(dp_field "$P1" .spec.source.type)"
+  expect_eq "spec.policyName" "$POLICY" "$(dp_field "$P1" .spec.policyRef.name)"
+  expect_eq "spec.application.name" "$APP" "$(dp_field "$P1" .spec.applicationRef.name)"
+  expect_eq "spec.application.namespace" "$ARGOCD_NS" "$(dp_field "$P1" .spec.applicationRef.namespace)"
+  expect_eq "spec.resource.kind" "ConfigMap" "$(dp_field "$P1" .spec.resourceRef.kind)"
+  expect_eq "spec.resource.version" "v1" "$(dp_field "$P1" .spec.resourceRef.version)"
+  expect_eq "spec.resource.namespace" "$DEMO_NS" "$(dp_field "$P1" .spec.resourceRef.namespace)"
+  expect_eq "spec.resource.name" "demo-config" "$(dp_field "$P1" .spec.resourceRef.name)"
+  expect_eq "spec.source.repoURL" "$APP_REPO" "$(dp_field "$P1" .spec.sources[0].repoURL)"
+  expect_eq "spec.source.path" "$APP_PATH" "$(dp_field "$P1" .spec.sources[0].path)"
+  expect_eq "spec.source.targetRevision" "$APP_TARGET" "$(dp_field "$P1" .spec.sources[0].targetRevision)"
+  expect_eq "spec.source.type" "Directory" "$(dp_field "$P1" .spec.sources[0].type)"
   expect_eq "spec.source.revision" "$(k -n "$ARGOCD_NS" get application "$APP" -o jsonpath='{.status.sync.revision}')" \
-    "$(dp_field "$P1" .spec.source.revision)"
+    "$(dp_field "$P1" .spec.sources[0].revision)"
   expect_eq "spec.changes count" "1" "$(k -n "$NS" get driftproposal "$P1" -o jsonpath='{.spec.changes[*].path}' | wc -w | tr -d ' ')"
   expect_eq "spec.actor" "" "$(dp_field "$P1" .spec.actor.username)"
   expect_nonempty "spec.detectedAt" "$(dp_field "$P1" .spec.detectedAt)"
@@ -472,8 +473,8 @@ wait_for "proposal Detected for demo replicas 1 -> 3" \
   has_proposal demo "$DETECTED" "/spec/replicas:Replace:$ORIG_REPLICAS>3;"
 P5="$(proposal_with demo "$DETECTED" '/spec/replicas' | head -n 1)"
 if [[ -n "$P5" ]]; then
-  expect_eq "spec.resource.kind" "Deployment" "$(dp_field "$P5" .spec.resource.kind)"
-  expect_eq "spec.resource.group" "apps" "$(dp_field "$P5" .spec.resource.group)"
+  expect_eq "spec.resource.kind" "Deployment" "$(dp_field "$P5" .spec.resourceRef.kind)"
+  expect_eq "spec.resource.group" "apps" "$(dp_field "$P5" .spec.resourceRef.group)"
 fi
 set_replicas "$ORIG_REPLICAS"
 wait_for "replica proposal is Reverted" has_proposal demo Reverted "/spec/replicas:Replace:$ORIG_REPLICAS>3;"

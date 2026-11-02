@@ -16,7 +16,7 @@
 #      edit the base. The merge request adds a new Backflow patch to the overlay
 #      (backflow-patches/deployment-demo-kustomize.yaml), creates the file and lists
 #      it in kustomization.yaml, in one commit; the base is untouched.
-#   d. With spec.kustomize.editBases: true, and no other Application building the
+#   d. With spec.kustomize.allowBaseEdits: true, and no other Application building the
 #      base, the base's deployment.yaml is edited (strategy Direct); the body warns
 #      that the file is outside the Application's path.
 #   e. The data of the hashed generator (kust-flags-<hash>) is Unmapped
@@ -502,7 +502,7 @@ require_drift() {
 # proposals_of <app> <resource name or *>: one line per DriftProposal of the policy:
 #   <name>|<phase>|<path>:<op>:<desired>><live>;...
 proposals_of() {
-  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.application.name}|{.spec.resource.name}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -l "backflow.io/policy=$POLICY" -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.applicationRef.name}|{.spec.resourceRef.name}|{range .spec.changes[*]}{.path}:{.op}:{.desired}>{.live};{end}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v a="$1" -v r="$2" '$3 == a && ($4 == r || r == "*") { print $1 "|" $2 "|" $5 }'
 }
 # proposal_with <app> <resource> <phase regex> <changes substring>: names, one per line.
@@ -523,7 +523,7 @@ branch_of() {
   uid="$(dp_field "$1" .metadata.uid | cut -c1-8)"
   branch="$(printf 'backflow/%s-%s' "$1" "$uid")"
   printf '%s: uid8=%s -> %s (status.branch=%s)\n' "$1" "${uid:-<empty>}" "$branch" \
-    "$(dp_field "$1" .status.branch)" >>"$WORKDIR/branches"
+    "$(dp_field "$1" .status.git.branch)" >>"$WORKDIR/branches"
   printf '%s' "$branch"
 }
 
@@ -908,7 +908,7 @@ else
       --argocd-token-secret-name="$LOCAL_USER_SECRET" --argocd-insecure-skip-tls-verify
       --argocd-default-access="$NS:*")
   fi
-  "$ROOT/bin/manager" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
+  "$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s --merge-request-poll-interval="$POLL" \
     ${default_flags[@]+"${default_flags[@]}"} >"$LOG_FILE" 2>&1 &
   MANAGER_PID=$!
   for _ in $(seq 1 60); do
@@ -933,33 +933,35 @@ k -n "$NS" create secret generic "$SCM-token" --from-file=token="$WORKDIR/token"
 rm -f "$WORKDIR/token"
 
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: $SCM_NAME
   namespace: $NS
 spec:
-  provider: $SCM
+  provider: $SCM_LABEL
   url: $SCM_URL
   tokenSecretRef:
     name: $SCM-token
     key: token
 YAML
-ARGOCD_POLICY_BLOCK="  argoCD:
-    url: $ARGOCD_URL
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token"
+ARGOCD_POLICY_BLOCK="    server:
+      url: $ARGOCD_URL
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token"
 if [[ "$ARGOCD_DEFAULT" == "true" ]]; then ARGOCD_POLICY_BLOCK=""; fi
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
+  argoCD:
+    namespace: $ARGOCD_NS
+$ARGOCD_POLICY_BLOCK
   mode: MergeRequest
   batchWindow: $WINDOW
   applications:
@@ -967,13 +969,13 @@ spec:
       matchLabels:
         backflow.io/demo: kustomize
   kustomize:
-    editBases: false
-    addPatches: true
-$ARGOCD_POLICY_BLOCK
-  mergeRequest:
+    allowBaseEdits: false
+    allowNewPatches: true
+  git:
     branchPrefix: backflow/
-    labels: ["$LABEL"]
-    assignActor: false
+    mergeRequest:
+      labels: ["$LABEL"]
+      assignActor: false
 YAML
 wait_for "ScmConnection is Ready (token accepted by $SCM_HOST)" k -n "$NS" wait "scm/$SCM_NAME" --for=condition=Ready --timeout=1s
 wait_for "policy is Ready" k -n "$NS" wait "bfp/$POLICY" --for=condition=Ready --timeout=1s
@@ -981,14 +983,14 @@ if [[ "$ARGOCD_DEFAULT" == "true" ]]; then WANT_SOURCE="OperatorDefault"; else W
 expect_eq "status.argoCD.source (where the Argo CD connection comes from)" "$WANT_SOURCE" "$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.argoCD.source}')"
 policy_matched() {
   local n
-  n="$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.applications[*]}{.name}={.scmConnection}{"\n"}{end}' | grep -c "=$SCM_NAME\$" || true)"
+  n="$(k -n "$NS" get bfp "$POLICY" -o jsonpath='{range .status.applications[*]}{.name}={.sources[0].scmConnectionName}{"\n"}{end}' | grep -c "=$SCM_NAME\$" || true)"
   [[ "$n" == "1" ]]
 }
 wait_for "policy tracks $DEMO_APP and matched its repository to the ScmConnection" policy_matched
 
-# set_kustomize <editBases> <addPatches>: spec.kustomize of the policy.
+# set_kustomize <allowBaseEdits> <allowNewPatches>: spec.kustomize of the policy.
 set_kustomize() {
-  k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"kustomize\":{\"editBases\":$1,\"addPatches\":$2}}}" >/dev/null
+  k -n "$NS" patch bfp "$POLICY" --type merge -p "{\"spec\":{\"kustomize\":{\"allowBaseEdits\":$1,\"allowNewPatches\":$2}}}" >/dev/null
 }
 live_image() { k -n "$DEMO_NS" get deployment "$DEPLOY" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 image_is() { [[ "$(live_image)" == "$1" ]]; }
@@ -1053,7 +1055,7 @@ if [[ -n "$P_A" ]]; then
   merge_mr "$IID_A"
   MERGE_A="$(gl GET "$(project_path "/merge_requests/$IID_A")" | jx 'd.get("merge_commit_sha") or d.get("squash_commit_sha") or d["sha"]')"
   wait_for "proposal is Merged" phase_is "$P_A" Merged
-  expect_eq "status.commitSHA is the merge commit" "$MERGE_A" "$(dp_field "$P_A" .status.commitSHA)"
+  expect_eq "status.commitSHA is the merge commit" "$MERGE_A" "$(dp_field "$P_A" .status.git.commitSHA)"
   BEFORE_A="$(proposal_count "$DEMO_APP")"
   wait_for "$DEMO_APP is Synced at the merge commit" app_synced_at "$DEMO_APP" "$MERGE_A"
   expect_eq "live image is unchanged by the sync" "$NEW_IMAGE" "$(live_image)"
@@ -1131,7 +1133,7 @@ fi
 
 # ---------------------------------------------------------------------------
 if section_wanted d; then
-step "d. With editBases on, a base no other Application builds is edited directly"
+step "d. With allowBaseEdits on, a base no other Application builds is edited directly"
 GIT_GREETING="$(live_env GREETING)"
 NEW_GREETING="howdy"
 require_drift d "$GIT_GREETING" "$(live_env GREETING)" "$NEW_GREETING"
@@ -1172,7 +1174,7 @@ P_E="$(proposal_with "$DEMO_APP" "$FLAGS" Unmapped "\"$NEW_FEATURE\"" | head -n 
 if [[ -n "$P_E" ]]; then
   expect_unmapped "$P_E" ValueAffectsOtherFields "name hash" "disableNameSuffixHash"
   expect_eq "strategy" "Unmapped" "$(dp_field "$P_E" .status.mapping.strategy)"
-  expect_eq "no merge request" "" "$(dp_field "$P_E" .status.mergeRequest.url)"
+  expect_eq "no merge request" "" "$(dp_field "$P_E" .status.git.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
 reset_cluster "$DEMO_APP"
@@ -1198,7 +1200,7 @@ remember_proposals
 P_F="$(proposal_with "$DEMO_APP" "$DEPLOY" Unmapped "\"$OVERRIDE_TO\"" | head -n 1)"
 if [[ -n "$P_F" ]]; then
   expect_unmapped "$P_F" SetByApplication "Set by spec.source.kustomize.images[nginxinc/nginx-unprivileged] of Application $ARGOCD_NS/$DEMO_APP"
-  expect_eq "no merge request" "" "$(dp_field "$P_F" .status.mergeRequest.url)"
+  expect_eq "no merge request" "" "$(dp_field "$P_F" .status.git.mergeRequest.url)"
   expect_eq "open merge requests" "$OPEN_AT_START" "$(open_mrs)"
 fi
 k -n "$ARGOCD_NS" patch application "$DEMO_APP" --type json -p '[{"op":"remove","path":"/spec/source/kustomize"}]' >/dev/null

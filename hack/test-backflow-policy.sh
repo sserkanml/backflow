@@ -8,7 +8,7 @@
 #   - is Ready in ReportOnly mode even without an ScmConnection
 #   - becomes Resolved by itself when a matching ScmConnection appears
 #   - records repo, path, revisions, source type and resource count
-#   - reports NoApplicationsMatched and InvalidSpec
+#   - reports NoApplicationsMatched; the API server refuses a policy with neither names nor selector
 #   - follows label changes on the Argo CD Application
 #   - lets only the oldest policy manage an Application: a second policy that
 #     selects it reports ApplicationConflict, and recovers when the first goes
@@ -128,13 +128,14 @@ expect_nonempty() {
 apply_policy() {
   local name="$1" applications="$2" mode="${3:-MergeRequest}"
   k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $name
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
+  argoCD:
+    namespace: $ARGOCD_NS
   mode: $mode
   applications: $applications
 EOF
@@ -188,7 +189,7 @@ make build >/dev/null
 mkdir -p "$LOG_DIR"
 # The policies below have no spec.argoCD: they use the operator's default connection, which only
 # the namespaces of --argocd-default-access may. This script is about matching, not about access.
-"$ROOT/bin/manager" --scm-recheck-interval=10s --argocd-default-access="$NS:*" >"$LOG_FILE" 2>&1 &
+"$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="${ARGOCD_URL:-https://argocd-server.argocd.svc}" --scm-recheck-interval=10s --argocd-default-access="$NS:*" >"$LOG_FILE" 2>&1 &
 MANAGER_PID=$!
 for _ in $(seq 1 60); do
   curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -213,7 +214,7 @@ pass "fresh namespace created"
 step "Without an ScmConnection"
 apply_policy by-label '{selector: {matchLabels: {env: test}}}'
 expect_reason by-label MissingScmConnection "$WAIT_TIMEOUT" "MergeRequest mode needs a connection"
-expect_field by-label '.status.matchedApplications[0]' "$APP" "matchedApplications[0]"
+expect_field by-label '.status.applications[0].name' "$APP" "matchedApplications[0]"
 
 # One policy per Application: swap by-label for report-only, then back.
 k -n "$NS" delete bfp by-label >/dev/null
@@ -227,13 +228,13 @@ expect_reason by-label MissingScmConnection "$WAIT_TIMEOUT" "by-label is back wi
 step "ScmConnection appears (watch on ScmConnection)"
 k -n "$NS" create secret generic scm-token --from-literal=token=dummy >/dev/null
 k apply -f - >/dev/null <<EOF
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: test-scm
   namespace: $NS
 spec:
-  provider: $SCM
+  provider: $SCM_LABEL
   url: https://$REPO_HOST
   tokenSecretRef:
     name: scm-token
@@ -244,11 +245,11 @@ expect_reason by-label Resolved "$WATCH_TIMEOUT" "Policy fixed itself without be
 # ---------------------------------------------------------------------------
 step "Application details in status"
 expect_field by-label '.status.applications[0].name' "$APP" "name"
-expect_field by-label '.status.applications[0].repoURL' "$REPO_URL" "repoURL"
-expect_field by-label '.status.applications[0].path' "$APP_PATH" "path"
-expect_field by-label '.status.applications[0].scmConnection' "test-scm" "scmConnection"
-expect_field by-label '.status.applications[0].sourceType' "Directory" "sourceType"
-expect_nonempty by-label '.status.applications[0].syncedRevision' "syncedRevision"
+expect_field by-label '.status.applications[0].sources[0].repoURL' "$REPO_URL" "repoURL"
+expect_field by-label '.status.applications[0].sources[0].path' "$APP_PATH" "path"
+expect_field by-label '.status.applications[0].sources[0].scmConnectionName' "test-scm" "scmConnection"
+expect_field by-label '.status.applications[0].sources[0].type' "Directory" "sourceType"
+expect_nonempty by-label '.status.applications[0].sources[0].syncedRevision' "syncedRevision"
 expect_nonempty by-label '.status.applications[0].managedResources' "managedResources"
 expect_field by-label '.status.observedGeneration' "1" "observedGeneration"
 
@@ -274,8 +275,14 @@ step "Policies that cannot resolve"
 apply_policy no-match '{names: ["does-not-exist"]}'
 expect_reason no-match NoApplicationsMatched "$WAIT_TIMEOUT" "Unknown Application name"
 
-apply_policy empty-selector '{}'
-expect_reason empty-selector InvalidSpec "$WAIT_TIMEOUT" "Neither names nor selector"
+# The API server refuses a policy that selects Applications neither by name nor by label.
+if out="$(apply_policy empty-selector '{}' 2>&1)"; then
+  fail "A policy with neither names nor selector was accepted"
+elif grep -q "set names, selector, or both" <<<"$out"; then
+  pass "A policy with neither names nor selector is refused by the API server"
+else
+  fail "A policy with neither names nor selector was refused for another reason: $out"
+fi
 
 # ---------------------------------------------------------------------------
 step "Application label changes (watch on Argo CD Applications)"

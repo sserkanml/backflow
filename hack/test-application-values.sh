@@ -182,13 +182,13 @@ set_cm() { k -n "$1" patch configmap "$CM" --type merge -p "{\"data\":{\"$2\":\"
 dp_field() { k -n "$NS" get driftproposal "$1" -o jsonpath="{$2}" 2>/dev/null; }
 # proposal_for <app> <phase>: the name of a proposal of the Application in the phase.
 proposal_for() {
-  k -n "$NS" get driftproposals -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.application.name}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.applicationRef.name}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v a="$1" -v p="$2" '$3 == a && $2 == p { print $1 }' | head -n 1
 }
 has_proposal() { [[ -n "$(proposal_for "$1" "$2")" ]]; }
 # newest_proposal <app>: the Unmapped proposal of the Application that was made last.
 newest_proposal() {
-  k -n "$NS" get driftproposals --sort-by=.metadata.creationTimestamp -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.application.name}{"\n"}{end}' 2>/dev/null |
+  k -n "$NS" get driftproposals --sort-by=.metadata.creationTimestamp -o jsonpath='{range .items[*]}{.metadata.name}|{.status.phase}|{.spec.applicationRef.name}{"\n"}{end}' 2>/dev/null |
     awk -F'|' -v a="$1" '$3 == a && $2 == "Unmapped" { last = $1 } END { print last }'
 }
 # proposal_events <proposal> <reason>: the text of the Events about the proposal.
@@ -201,12 +201,12 @@ for e in json.load(sys.stdin)["items"]:
     if obj.get("name") == want and e.get("reason") == reason:
         print(e.get("note") or e.get("message") or "")' "$1" "$2"
 }
-app_block() { dp_field "$1" ".status.mapping.application$2"; }
+app_block() { dp_field "$1" ".status.mapping.applicationOption$2"; }
 
 expect_nothing_written() {
   local dp="$1"
-  expect_empty "merge request of $dp" "$(dp_field "$dp" .status.mergeRequest.url)"
-  expect_eq "strategy of $dp" "Unmapped" "$(dp_field "$dp" .status.mapping.strategy)"
+  expect_empty "merge request of $dp" "$(dp_field "$dp" .status.git.mergeRequest.url)"
+  expect_eq "strategy of $dp (none when not mapped)" "" "$(dp_field "$dp" .status.mapping.strategy)"
   expect_empty "edits of $dp" "$(dp_field "$dp" '.status.mapping.edits[*].file')"
   expect_eq "branches of the parent repository" "main" "$(repo_branches)"
 }
@@ -368,7 +368,7 @@ done
 make manifests install >/dev/null
 make build >/dev/null
 mkdir -p "$LOG_DIR"
-"$ROOT/bin/manager" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
+"$ROOT/bin/manager" --scm-allowed-hosts="${SCM_HOST:-gitlab.com}" --scm-allowed-hosts=gitlab.com --scm-allowed-hosts=github.com --scm-allowed-hosts=gitlab.example.com --argocd-allowed-servers="https://localhost:$PF_PORT" --scm-recheck-interval=10s >"$LOG_FILE" 2>&1 &
 MANAGER_PID=$!
 for _ in $(seq 1 60); do
   curl -fs -o /dev/null http://localhost:8081/readyz 2>/dev/null && break
@@ -386,13 +386,12 @@ chmod 600 "$WORKDIR/argo-token"
 ARGO_TOKEN=""
 # ReportOnly: the diagnosis happens while mapping, and nothing may be proposed anyway.
 k apply -f - >/dev/null <<YAML
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: $POLICY
   namespace: $NS
 spec:
-  argoCDNamespace: $ARGOCD_NS
   mode: ReportOnly
   batchWindow: $WINDOW
   applications:
@@ -400,11 +399,13 @@ spec:
       matchLabels:
         backflow.io/demo: appvalues
   argoCD:
-    url: https://localhost:$PF_PORT
-    insecureSkipTLSVerify: true
-    tokenSecretRef:
-      name: argocd-token
-      key: token
+    namespace: $ARGOCD_NS
+    server:
+      url: https://localhost:$PF_PORT
+      insecureSkipTLSVerify: true
+      tokenSecretRef:
+        name: argocd-token
+        key: token
 YAML
 # The policy is Ready once an Application matches it: av-child does not exist
 # until the parent has synced, so Ready is waited for below.
@@ -435,7 +436,7 @@ test_outofsync() { [[ "$(app_field "$1" '{.status.sync.status}')" == "OutOfSync"
 newer_proposal() { local n; n="$(newest_proposal "$CHILD")"; [[ -n "$n" && "$n" != "${1:-}" ]]; }
 feature_is() { [[ "$(live_cm "$1" FEATURE)" == "$2" ]]; }
 wait_for "$CHILD renders FEATURE=beta" feature_is av-child beta
-tracked() { k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.matchedApplications[*]}' | tr ' ' '\n' | grep -qx "$1"; }
+tracked() { k -n "$NS" get bfp "$POLICY" -o jsonpath='{.status.applications[*].name}' | tr ' ' '\n' | grep -qx "$1"; }
 wait_for "the policy tracks $CHILD" tracked "$CHILD"
 
 # ---------------------------------------------------------------------------
@@ -450,7 +451,7 @@ wait_for "proposal is Unmapped (FEATURE $LIVE_FEATURE -> $NEW_FEATURE)" has_prop
 P_A="$(proposal_for "$CHILD" Unmapped)"
 if [[ -n "$P_A" ]]; then
   expect_eq "Mapped reason" "SetByApplication" "$(dp_field "$P_A" '.status.conditions[?(@.type=="Mapped")].reason')"
-  expect_eq "child Application" "$ARGOCD_NS/$CHILD" "$(app_block "$P_A" .application)"
+  expect_eq "child Application" "$ARGOCD_NS/$CHILD" "$(app_block "$P_A" .applicationRef.namespace)/$(app_block "$P_A" .applicationRef.name)"
   expect_eq "option" "spec.source.helm.parameters[name=config.feature]" "$(app_block "$P_A" .option)"
   expect_eq "option path" "/spec/source/helm/parameters/0/value" "$(app_block "$P_A" .optionPath)"
   expect_eq "current value" '"beta"' "$(app_block "$P_A" .current)"
