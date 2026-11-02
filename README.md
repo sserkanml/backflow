@@ -478,6 +478,23 @@ allowed, in the chart values and not in the objects:
 An object that names something else is not `Ready` (`ServerNotAllowed` for a policy, `HostNotAllowed` for a connection), the
 message names the flag, **no request is made** and the token Secret is not read. A proposal of such a connection is held.
 
+**With kustomize** (`config/default`, `make deploy`) there is no chart value: the lists are arguments of the manager. The manifests
+set none, so **no Git host and no extra Argo CD server is allowed** until you add them; a `ScmConnection` is `HostNotAllowed`
+and a policy that names a server is `ServerNotAllowed` (the policy's own `spec.argoCD.server` needs the server in
+`--argocd-allowed-servers`, the operator's default connection `--argocd-server` is always allowed). Add them with a patch in your
+overlay, once for each entry, as `config/e2e` does for the server of the samples:
+
+```yaml
+# kustomization.yaml of your overlay
+resources:
+- github.com/sserkanml/backflow/config/default?ref=v0.18.0
+patches:
+- target: {kind: Deployment}
+  patch: |-
+    - {op: add, path: /spec/template/spec/containers/0/args/-, value: "--scm-allowed-hosts=gitlab.example.com,gitlab.com"}
+    - {op: add, path: /spec/template/spec/containers/0/args/-, value: "--argocd-allowed-servers=https://argocd.example.com"}
+```
+
 ### Upgrading: apply the CRDs first
 
 (The one exception is the upgrade to `v1beta1`: migrate first, see above.)
