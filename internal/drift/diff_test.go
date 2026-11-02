@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 type obj = map[string]any

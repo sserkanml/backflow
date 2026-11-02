@@ -80,7 +80,17 @@ spec:
     assignActor: false
   batchWindow: 30s
 ---
-apiVersion: backflow.io/v1beta1
+# Made for 0.18: only its apiVersion changes.
+apiVersion: backflow.io/v1beta1   # the version of 0.18
+kind: BackflowPolicy
+metadata:
+  name: beta
+  namespace: team-a
+spec:
+  argoCD: {namespace: argocd}
+  applications: {names: [x,   y]}
+---
+apiVersion: backflow.io/v1
 kind: BackflowPolicy
 metadata:
   name: already
@@ -105,7 +115,7 @@ func docs(t *testing.T, text string) []string {
 
 func TestConvertManifestKeepsWhatItDoesNotConvertByteForByte(t *testing.T) {
 	out, converted, manual := ConvertManifest([]byte(teamManifests))
-	if len(manual) != 0 || len(converted) != 2 {
+	if len(manual) != 0 || len(converted) != 3 {
 		t.Fatalf("converted %v, manual %v", converted, manual)
 	}
 	before, after := docs(t, teamManifests), docs(t, string(out))
@@ -113,7 +123,7 @@ func TestConvertManifestKeepsWhatItDoesNotConvertByteForByte(t *testing.T) {
 		t.Fatalf("%d documents became %d", len(before), len(after))
 	}
 	for i, d := range before {
-		isOld := strings.Contains(d, "backflow.io/v1alpha1")
+		isOld := strings.Contains(d, "backflow.io/v1alpha1") || strings.Contains(d, "backflow.io/v1beta1")
 		if !isOld && d != after[i] {
 			t.Errorf("document %d was not converted and changed:\n--- before\n%s--- after\n%s", i, d, after[i])
 		}
@@ -121,7 +131,7 @@ func TestConvertManifestKeepsWhatItDoesNotConvertByteForByte(t *testing.T) {
 			t.Errorf("document %d was not converted", i)
 		}
 	}
-	if strings.Contains(string(out), "backflow.io/v1alpha1") {
+	if strings.Contains(string(out), "backflow.io/v1alpha1") || strings.Contains(string(out), "backflow.io/v1beta1") {
 		t.Errorf("v1alpha1 is still there:\n%s", out)
 	}
 	// The separators and the lead comment of the file survive.
@@ -181,7 +191,8 @@ batchWindow: 30s`)
 	if byName["gitlab"][keyAPIVersion] != newAPIVersion || byName["web"][keyAPIVersion] != newAPIVersion {
 		t.Error("apiVersion")
 	}
-	if byName["already"][keyAPIVersion] != newAPIVersion || byName["backflow-objects"][keyAPIVersion] != "argoproj.io/v1alpha1" {
+	if byName["beta"][keyAPIVersion] != newAPIVersion || byName["already"][keyAPIVersion] != newAPIVersion ||
+		byName["backflow-objects"][keyAPIVersion] != "argoproj.io/v1alpha1" {
 		t.Error("another document was touched")
 	}
 }
@@ -234,7 +245,7 @@ spec:
 	// An object the conversion rejects (an unknown provider) is not guessed at.
 	bad := strings.Replace(teamManifests, "provider: gitlab", "provider: bitbucket", 1)
 	_, converted, manual = ConvertManifest([]byte(bad))
-	if len(converted) != 1 || len(manual) != 1 || !strings.Contains(manual[0], "bitbucket") {
+	if len(converted) != 2 || len(manual) != 1 || !strings.Contains(manual[0], "bitbucket") {
 		t.Errorf("bad provider: converted %v, manual %v", converted, manual)
 	}
 }
@@ -339,5 +350,19 @@ func TestConvertFilesMainExitCodes(t *testing.T) {
 	}
 	if code := ConvertFilesMain([]string{"--nope"}, &out, &errOut); code != ExitError {
 		t.Errorf("a bad flag: exit %d", code)
+	}
+}
+
+func TestConvertManifestOfV1beta1ChangesOnlyTheAPIVersion(t *testing.T) {
+	const text = "# 0.18\napiVersion: \"backflow.io/v1beta1\"   # quoted, with a comment\nkind: ScmConnection\nmetadata:   {name: gl, namespace: team-a}\nspec:\n" +
+		"  provider:    GitLab\n  url: https://gitlab.example.com\n  tokenSecretRef: {name: t, key: token}\n"
+	out, converted, manual := ConvertManifest([]byte(text))
+	want := strings.Replace(text, "backflow.io/v1beta1", "backflow.io/v1", 1)
+	if string(out) != want || len(converted) != 1 || len(manual) != 0 {
+		t.Errorf("converted %v manual %v\n--- got\n%s--- want\n%s", converted, manual, out, want)
+	}
+	// And a second pass leaves it.
+	if again, converted, _ := ConvertManifest(out); string(again) != string(out) || len(converted) != 0 {
+		t.Error("a v1 manifest was changed")
 	}
 }

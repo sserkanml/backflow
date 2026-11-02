@@ -8,8 +8,8 @@
 #      status, Merged, Unmapped, Superseded with its annotation), their status through the status subresource
 #   3. applying the CRDs of this version is refused while objects are stored as v1alpha1
 #   4. manager migrate --dry-run changes nothing
-#   5. the migration, and every object reads as v1beta1 with its status; storedVersions is [v1beta1] and
-#      v1alpha1 is gone from the CRDs
+#   5. the migration, and every object reads as v1 with its status; storedVersions is [v1], v1alpha1 is gone from the CRDs
+#      and v1beta1 is still served
 #   6. the migration again changes nothing
 #   7. the operator of this version runs for 60 seconds and does not rewrite or drop the git status of the
 #      migrated proposals
@@ -93,13 +93,19 @@ for tool in $tools; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is needed"
 done
 
-# The migration is from a release with backflow.io/v1alpha1 (0.17.0 and earlier). Later releases are v1beta1 already, so
-# there is nothing to migrate in them; the path from 0.18.x to the next API comes with that API.
+# The release the upgrade starts from decides the path: 0.17.0 and earlier have backflow.io/v1alpha1 (objects are converted, the
+# operator stopped), 0.18.1 has v1beta1 (objects are stored again as v1, the operator keeps running; hack/test-migration-v1beta1.sh).
+# 0.18.0 cannot be installed from its chart (its CRDs have no group).
 CHART_FOR_CHECK="oci://ghcr.io/sserkanml/charts/backflow"
 helm show crds "$CHART_FOR_CHECK" --version "$FROM_VERSION" >"$WORK/from-crds.yaml" 2>"$WORK/from-crds.err" \
   || die "cannot read the CRDs of chart $FROM_VERSION: $(head -c 200 "$WORK/from-crds.err")"
-if grep -q "^    name: v1beta1" "$WORK/from-crds.yaml" || ! grep -q "^    name: v1alpha1" "$WORK/from-crds.yaml"; then
-  die "FROM_VERSION=$FROM_VERSION is not a v1alpha1 release: its CRDs have v1beta1 (or no v1alpha1). Use 0.17.0 or earlier"
+if grep -q "^    name: v1$" "$WORK/from-crds.yaml"; then
+  die "FROM_VERSION=$FROM_VERSION has backflow.io/v1 already: there is nothing to migrate in it"
+elif grep -q "^    name: v1beta1$" "$WORK/from-crds.yaml"; then
+  rm -rf "$WORK"
+  exec "$ROOT/hack/test-migration-v1beta1.sh"
+elif ! grep -q "^    name: v1alpha1$" "$WORK/from-crds.yaml"; then
+  die "FROM_VERSION=$FROM_VERSION has neither v1alpha1 nor v1beta1 in its CRDs"
 fi
 
 if [[ ! -x "$BIN" ]]; then
@@ -270,10 +276,10 @@ step "migrate --dry-run"
 expect "the dry run exits 0" "$?" "0"
 sed 's/^/   | /' "$WORK/dry-run.log" | head -40
 grep -q "DRY RUN" "$WORK/dry-run.log" && ok "it says it is a dry run" || bad "no DRY RUN line"
-for want in "DriftProposal team-a/dp-open (phase Proposed): would be deleted and created again as v1beta1" \
+for want in "DriftProposal team-a/dp-open (phase Proposed): would be deleted and created again as v1" \
   "DriftProposal team-a/dp-merged (phase Merged)" "BackflowPolicy team-a/p1: would be converted" \
   "ScmConnection team-a/gitlab: would be converted" "spec.policyName -> spec.policyRef.name" \
-  "the CRD would get v1beta1"; do
+  "the CRD would get v1"; do
   grep -qF "$want" "$WORK/dry-run.log" && ok "it says: $want" || bad "the dry run does not say: $want"
 done
 expect "the dry run changed no object" "$(snapshot)" "$SNAP0"
@@ -336,8 +342,8 @@ EOF
 fi
 
 for crd in $CRDS; do
-  expect "$crd: storedVersions is [v1beta1]" "$(kubectl get crd "$crd" -o json | jq -c '.status.storedVersions')" '["v1beta1"]'
-  expect "$crd: only v1beta1 is in the CRD" "$(kubectl get crd "$crd" -o json | jq -c '[.spec.versions[].name]')" '["v1beta1"]'
+  expect "$crd: storedVersions is [v1]" "$(kubectl get crd "$crd" -o json | jq -c '.status.storedVersions')" '["v1"]'
+  expect "$crd: v1 and v1beta1 are in the CRD, v1alpha1 is gone" "$(kubectl get crd "$crd" -o json | jq -c '[.spec.versions[].name]')" '["v1","v1beta1"]'
 done
 expect "the CRD of the internal ChangeRecords exists" "$(kubectl get crd changerecords.internal.backflow.io -o name 2>/dev/null)" \
   "customresourcedefinition.apiextensions.k8s.io/changerecords.internal.backflow.io"
@@ -350,8 +356,10 @@ grep -q "apiVersion: backflow.io/v1alpha1" "$BACKUP/DriftProposal/$NS.dp-open.ya
 
 for kind in scmconnections backflowpolicies driftproposals; do
   versions="$(kubectl get "$kind.backflow.io" -A -o json | jq -r '[.items[].apiVersion] | unique | join(",")')"
-  expect "every $kind reads as v1beta1" "$versions" "backflow.io/v1beta1"
+  expect "every $kind reads as v1" "$versions" "backflow.io/v1"
 done
+
+kubectl get scmconnections.v1beta1.backflow.io gitlab -n "$NS" >/dev/null 2>&1 && ok "v1beta1 is still served (deprecated)" || bad "v1beta1 is not served"
 
 # jq1 <proposal> <filter>: a value of a migrated proposal.
 jq1() { kubectl -n "$NS" get driftproposals.backflow.io "$1" -o json | jq -c "$2"; }
@@ -377,7 +385,7 @@ for p in $PROPOSALS; do
     "$(jq1 "$p" '.metadata.annotations["migrate.backflow.io/created"]')" "$(orig "$p" .metadata.creationTimestamp)"
   expect "$p: marked as migrated" "$(jq1 "$p" '.metadata.annotations["migrate.backflow.io/migrated-from"]')" '"v1alpha1"'
   expect "$p: owned by the policy, with its uid" "$(jq1 "$p" '.metadata.ownerReferences[0] | {apiVersion, kind, name, uid}')" \
-    "{\"apiVersion\":\"backflow.io/v1beta1\",\"kind\":\"BackflowPolicy\",\"name\":\"p1\",\"uid\":\"$POLICY_UID\"}"
+    "{\"apiVersion\":\"backflow.io/v1\",\"kind\":\"BackflowPolicy\",\"name\":\"p1\",\"uid\":\"$POLICY_UID\"}"
   expect "$p: labels" "$(jq1 "$p" .metadata.labels)" "$(orig "$p" .metadata.labels)"
   expect "$p: the actor is split" "$(jq1 "$p" '[.spec.actor, .spec.managers[0].manager]')" '[{"kind":"Person","username":"alice"},"kubectl-edit"]'
   expect "$p: no controller annotation is left" "$(jq1 "$p" '[.metadata.annotations | keys[] | select(startswith("backflow.io/"))] | length')" "0"
@@ -497,7 +505,7 @@ grep -q "backflow.io/v1alpha1" "$GITOPS/backflow.yaml" && bad "backflow.yaml sti
 grep -q "# The GitLab of the company." "$GITOPS/backflow.yaml" && grep -q "# not the cluster-local one" "$GITOPS/backflow.yaml" \
   && ok "the comments are kept" || bad "a comment was lost"
 if kubectl apply --dry-run=server -f "$GITOPS/backflow.yaml" >"$WORK/apply-converted.log" 2>&1; then
-  ok "the API server accepts the converted manifests as v1beta1"
+  ok "the API server accepts the converted manifests as v1"
 else
   bad "the API server refuses the converted manifests: $(head -c 400 "$WORK/apply-converted.log")"
 fi

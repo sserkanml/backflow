@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 func decode(t *testing.T, s string) map[string]any {

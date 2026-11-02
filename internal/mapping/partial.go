@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"regexp"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // LeftOut is a change a partial mapping does not make.

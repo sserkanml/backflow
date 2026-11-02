@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -147,22 +148,22 @@ func TestMigrateConvertsInPlace(t *testing.T) {
 	// The CRDs.
 	for name := range crdFiles {
 		if got := cl.storedVersions(name); len(got) != 1 || got[0] != NewVersion {
-			t.Errorf("%s: storedVersions = %v, want [v1beta1]", name, got)
+			t.Errorf("%s: storedVersions = %v, want [v1]", name, got)
 		}
 	}
 	if len(rep.Finalized) != 3 {
 		t.Errorf("finalized = %v", rep.Finalized)
 	}
 	for name := range crdFiles {
-		if got := cl.versions(name); len(got) != 1 || got[0] != NewVersion {
-			t.Errorf("%s: versions = %v, want only %s: the tool adds %s while it works and removes it after", name, got, NewVersion, OldVersion)
+		if got := cl.versions(name); !slices.Equal(got, []string{NewVersion, BetaVersion}) {
+			t.Errorf("%s: versions = %v, want [v1 v1beta1]: the tool adds v1, keeps v1beta1 (served until 2.0) and removes %s", name, got, OldVersion)
 		}
 	}
 	if !cl.crdExists("changerecords.internal.backflow.io") {
 		t.Error("the CRD of the ChangeRecords of this release was not created")
 	}
 
-	// The proposal is created again as v1beta1; the ChangeRecords are gone and not backed up.
+	// The proposal is created again as v1; the ChangeRecords are gone and not backed up.
 	dp := cl.proposal("dp-1")
 	if dp.Spec.PolicyRef.Name != "p1" || dp.Status.Phase != backflowv1.PhaseProposed || dp.Annotations[AnnotationMigrated] != OldVersion {
 		t.Errorf("the proposal = %+v / %+v / %v", dp.Spec, dp.Status, dp.Annotations)
@@ -313,13 +314,13 @@ func TestMigrateAfterAPartialFailureDoesOnlyWhatIsLeft(t *testing.T) {
 
 	// The person corrects the v1beta1 object the tool wrote for them, and replaces the object with it: a write through
 	// v1alpha1 would drop the v1alpha1 fields.
-	rejected := filepath.Join(dir, RejectedDir, "BackflowPolicy", "team-a.p3.v1beta1.yaml")
+	rejected := filepath.Join(dir, RejectedDir, "BackflowPolicy", "team-a.p3.v1.yaml")
 	data, err := os.ReadFile(rejected)
 	if err != nil || !strings.Contains(out, "kubectl replace -f "+rejected) || !strings.Contains(out, "do NOT edit the object itself") {
 		t.Fatalf("no object to correct: %v\n%s", err, out)
 	}
 	fixedObj := parse(t, strings.Replace(string(data), "url: argocd.example.com", "url: https://argocd.example.com", 1))
-	if fixedObj["apiVersion"] != "backflow.io/v1beta1" {
+	if fixedObj["apiVersion"] != "backflow.io/v1" {
 		t.Fatalf("the object to correct is %v", fixedObj["apiVersion"])
 	}
 	if err := cl.c.Update(context.Background(), asUnstructured(fixedObj)); err != nil {
@@ -334,7 +335,7 @@ func TestMigrateAfterAPartialFailureDoesOnlyWhatIsLeft(t *testing.T) {
 		t.Errorf("second run: converted %d, failed %d, skipped %d, want 0, 0, 3\n%s", rep.Converted, rep.Failed, rep.Skipped, out)
 	}
 	if got := cl.storedVersions("backflowpolicies.backflow.io"); len(got) != 1 || got[0] != NewVersion {
-		t.Errorf("storedVersions of policies = %v, want [v1beta1]", got)
+		t.Errorf("storedVersions of policies = %v, want [v1]", got)
 	}
 	if p3 := cl.policy("p3"); p3.Spec.ArgoCD.Server == nil || p3.Spec.ArgoCD.Server.URL != "https://argocd.example.com" ||
 		p3.Spec.ArgoCD.Namespace != "openshift-gitops" || *p3.Spec.Git.MergeRequest.AssignActor {
@@ -400,8 +401,8 @@ func TestMigrateDryRunChangesNothing(t *testing.T) {
 	}
 	t.Log("\n" + out)
 	for _, want := range []string{"DRY RUN", "BackflowPolicy team-a/p1: would be converted", "spec.argoCDNamespace -> spec.argoCD.namespace",
-		"spec.mergeRequest.assignActor (false)", "ScmConnection team-a/gitlab: would be converted", "2 object(s) would be deleted", "would be set to [v1beta1]",
-		"would be backed up", "DriftProposal team-a/dp-1 (phase Proposed): would be deleted and created again as v1beta1",
+		"spec.mergeRequest.assignActor (false)", "ScmConnection team-a/gitlab: would be converted", "2 object(s) would be deleted", "would be set to [v1]",
+		"would be backed up", "DriftProposal team-a/dp-1 (phase Proposed): would be deleted and created again as v1",
 		"spec.policyName -> spec.policyRef.name"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the dry run does not say %q", want)
@@ -483,8 +484,8 @@ func TestMigrateSkipsObjectsMadeThroughV1beta1(t *testing.T) {
 	if _, out, err := cl.run(Options{BackupDir: dir}); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if got := cl.versions("backflowpolicies.backflow.io"); len(got) != 2 {
-		t.Fatalf("versions = %v: with a policy left, v1alpha1 stays (unserved)", got)
+	if got := cl.versions("backflowpolicies.backflow.io"); len(got) != 3 {
+		t.Fatalf("versions = %v: with a policy left, v1alpha1 stays (unserved) next to v1 and v1beta1", got)
 	}
 	made := &backflowv1.BackflowPolicy{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "fresh"},
@@ -518,7 +519,7 @@ func TestMigrateAddsV1beta1AndRemovesV1alpha1(t *testing.T) {
 	const policies = "backflowpolicies.backflow.io"
 
 	// A dry run leaves the CRDs alone and reads through the v1alpha1 endpoint that is there.
-	if _, out, err := cl.run(Options{DryRun: true}); err != nil || !strings.Contains(out, "the CRD would get v1beta1") {
+	if _, out, err := cl.run(Options{DryRun: true}); err != nil || !strings.Contains(out, "the CRD would get v1") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if got := cl.versions(policies); len(got) != 1 || got[0] != OldVersion {
@@ -562,7 +563,7 @@ func TestMigrateAddsV1beta1AndRemovesV1alpha1(t *testing.T) {
 	if err != nil || rep.Failed != 0 {
 		t.Fatalf("%v %+v\n%s", err, rep, out)
 	}
-	if got := cl.versions(policies); len(got) != 1 || got[0] != NewVersion {
+	if got := cl.versions(policies); !slices.Equal(got, []string{NewVersion, BetaVersion}) {
 		t.Errorf("versions = %v", got)
 	}
 	if got := cl.storedVersions(policies); len(got) != 1 || got[0] != NewVersion {

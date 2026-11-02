@@ -3,7 +3,7 @@ package drift
 import (
 	"strings"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // Allowed reports whether a resource of the given group and kind is captured

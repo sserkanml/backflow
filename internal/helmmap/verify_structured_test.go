@@ -7,7 +7,7 @@ import (
 
 	"github.com/sserkanml/backflow/internal/rendermap"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 func structuredChange(path string, op v1.ChangeOperation, desired, live string) rendermap.Field {

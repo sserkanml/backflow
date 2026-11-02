@@ -21,19 +21,21 @@ const (
 	ExitError = 1 // an error, or an object that could not be migrated: run again after looking at the output
 )
 
-const usage = `usage: backflow migrate --backup-dir DIR [flags]
+const usage = `usage: backflow migrate [--backup-dir DIR] [flags]
 
-Run it with the CRDs of the last release still installed, before the upgrade: it adds v1beta1 to them, rewrites the objects,
-and removes v1alpha1 from them when every object is done. (The other subcommand, convert-files, rewrites manifests in Git.)
+Moves the Backflow objects to backflow.io/v1 and sets storedVersions of the CRDs to [v1]. Run it BEFORE you apply the CRDs of
+this release: it adds v1 to the CRDs that are installed itself. Two cases, which a cluster can also have together:
 
-Rewrites the ScmConnections, BackflowPolicies and DriftProposals of backflow.io/v1alpha1 to v1beta1, and sets storedVersions of
-their CRDs to [v1beta1] when every object is done. Run it with the operator stopped. It refuses to run while the operator is running.
+* Objects stored as v1beta1 (the release 0.18): v1 has the same schema, so each is stored again as v1 with an update that changes
+  nothing. This is safe with the operator running, needs no backup, and is the whole migration. (v1beta1 stays served until 2.0.)
+* Objects stored as v1alpha1 (the release 0.17 and earlier): ScmConnections and BackflowPolicies are rewritten in place as v1,
+  DriftProposals deleted and created again with their status (their spec is immutable); ChangeRecords are deleted and not backed
+  up. Before anything is changed a backup of every object is written to DIR (one YAML file per object, never overwritten;
+  required in this case), DIR/DriftProposal/*.done says which proposals are complete, so a run that was interrupted is finished by
+  the next one. The operator must be stopped (--stop-operator does it) and v1alpha1 is removed from the CRDs when none is left.
 
-Before anything is changed a backup of every object that is still v1alpha1 is written to DIR (one YAML file per object, never
-overwritten). ScmConnections and BackflowPolicies are rewritten in place. A DriftProposal cannot be (its spec is immutable): it is
-deleted and created again with the same name, then given its status; DIR/DriftProposal/*.done says which are complete, so a run that
-was interrupted is finished by the next one, from the backup. ChangeRecords are deleted and not backed up.
-A second run converts what is left. Exit status: 0 everything is done, 1 an error or an object that could not be migrated.
+A second run does only what is left. Exit status: 0 everything is done, 1 an error or an object that could not be migrated.
+The other subcommands: convert-files rewrites manifests in Git; restore creates the objects of a backup again (a rollback).
 
 flags:
 `
@@ -116,8 +118,11 @@ func Summarize(out io.Writer, opt Options, rep *Report) int {
 	if opt.DryRun {
 		verb, n = "would be converted", rep.Planned
 	}
-	_, _ = fmt.Fprintf(out, "\nsummary: %d object(s) %s, %d already v1beta1, %d failed, %d ChangeRecord(s) dropped",
+	_, _ = fmt.Fprintf(out, "\nsummary: %d object(s) %s, %d already v1, %d failed, %d ChangeRecord(s) dropped",
 		n, verb, rep.Skipped, rep.Failed, rep.ChangeRecordsDropped)
+	if rep.Restored > 0 {
+		_, _ = fmt.Fprintf(out, ", %d object(s) stored again from v1beta1 as v1", rep.Restored)
+	}
 	if rep.ProposalsDropped > 0 {
 		_, _ = fmt.Fprintf(out, ", %d finished DriftProposal(s) dropped (--skip-finished)", rep.ProposalsDropped)
 	}

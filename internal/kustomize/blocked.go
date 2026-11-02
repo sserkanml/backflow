@@ -8,7 +8,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 	"github.com/sserkanml/backflow/internal/appvalues"
 	"github.com/sserkanml/backflow/internal/rendermap"
 )

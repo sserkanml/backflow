@@ -145,6 +145,16 @@ func (cl *cluster) proposalExists(name string) bool {
 type fault struct {
 	client.Client
 	create, status, del func(client.Object) error
+	patch               func(o interface{ GetName() string }) error
+}
+
+func (f *fault) Patch(ctx context.Context, o client.Object, p client.Patch, opts ...client.PatchOption) error {
+	if f.patch != nil {
+		if err := f.patch(o); err != nil {
+			return err
+		}
+	}
+	return f.Client.Patch(ctx, o, p, opts...)
 }
 
 func (f *fault) Create(ctx context.Context, o client.Object, opts ...client.CreateOption) error {
@@ -271,7 +281,7 @@ func checkOpenProposalSpec(t *testing.T, open *backflowv1.DriftProposal, policyU
 	}
 
 	// The owner reference is the policy's, with the uid it had before.
-	if len(open.OwnerReferences) != 1 || string(open.OwnerReferences[0].UID) != policyUID || open.OwnerReferences[0].APIVersion != "backflow.io/v1beta1" ||
+	if len(open.OwnerReferences) != 1 || string(open.OwnerReferences[0].UID) != policyUID || open.OwnerReferences[0].APIVersion != "backflow.io/v1" ||
 		open.OwnerReferences[0].Name != "p1" || open.OwnerReferences[0].Kind != "BackflowPolicy" {
 		t.Errorf("ownerReferences = %+v, want the policy %v", open.OwnerReferences, policyUID)
 	}
@@ -495,7 +505,7 @@ func TestMigrateDriftProposalsWhatTheAPIServerWouldRefuseIsNotDeleted(t *testing
 	if !cl.exists(NewVersion, "DriftProposal", "team-a", "dp-long") {
 		t.Fatal("the proposal was deleted although the new one would be refused")
 	}
-	if _, err := os.Stat(filepath.Join(dir, RejectedDir, "DriftProposal", "team-a.dp-long.v1beta1.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, RejectedDir, "DriftProposal", "team-a.dp-long.v1.yaml")); err != nil {
 		t.Errorf("no file with what was tried: %v", err)
 	}
 	if got := cl.storedVersions("driftproposals.backflow.io"); len(got) != 2 {
@@ -620,7 +630,7 @@ func TestMigrateDriftProposalsDryRunChangesNothingAndSaysWhatItWould(t *testing.
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	for _, want := range []string{"DriftProposal team-a/dp-open (phase Proposed): would be deleted and created again as v1beta1",
+	for _, want := range []string{"DriftProposal team-a/dp-open (phase Proposed): would be deleted and created again as v1",
 		"status.mergeRequest -> status.git.mergeRequest", "DriftProposal team-a/dp-merged (phase Merged): would be deleted, not migrated (--skip-finished)",
 		"metadata.annotations[backflow.io/live-reverted] -> status.signals.liveRevertedAtRevision", "storedVersions of driftproposals.backflow.io would be set"} {
 		if !strings.Contains(out, want) {

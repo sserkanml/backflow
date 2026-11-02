@@ -5,7 +5,7 @@ import (
 
 	"github.com/sserkanml/backflow/internal/rendermap"
 
-	"github.com/sserkanml/backflow/api/v1"
+	v1 "github.com/sserkanml/backflow/api/v1"
 )
 
 // ScalarOf decodes a change's JSON value when it is a string, a number or a

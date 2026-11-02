@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// The annotations that carried controller state in v1alpha1. In v1beta1 they are status.signals.
+// The annotations that carried controller state in v1alpha1. In v1 they are status.signals.
 const (
 	annSupersededBy      = "backflow.io/superseded-by"
 	annReverted          = "backflow.io/reverted"
@@ -20,7 +20,7 @@ const (
 // object has a new one.
 const AnnotationCreated = "migrate.backflow.io/created"
 
-// maxChanges is how many changes a v1beta1 proposal holds.
+// maxChanges is how many changes a v1 proposal holds.
 const maxChanges = 256
 
 const phaseUnmapped = "Unmapped"
@@ -37,7 +37,7 @@ func FinishedPhase(phase string) bool {
 // openPhase is a proposal that is still being worked on, whose spec and status must not lose information.
 func openPhase(phase string) bool { return phase != phaseUnmapped && !FinishedPhase(phase) }
 
-// maxLengths are the bounds v1beta1 put on strings of the status, which v1alpha1 did not have. A value longer than
+// maxLengths are the bounds v1 put on strings of the status, which v1alpha1 did not have. A value longer than
 // its bound is cut, with a note, because the API server would refuse the whole status for it.
 var maxLengths = map[string]int{
 	"message": 2048, keySupersededBy: 253, "branch": 255, "commitSHA": 64, keyURL: 2048, "state": 64,
@@ -55,7 +55,7 @@ func clip(m obj, path string, n *notes) obj {
 		}
 		if r := []rune(s); len(r) > limit {
 			m[k] = string(r[:limit])
-			n.add("%s.%s: cut to %d characters (v1beta1 has a bound)", path, k, limit)
+			n.add("%s.%s: cut to %d characters (v1 has a bound)", path, k, limit)
 		}
 	}
 	return m
@@ -65,7 +65,7 @@ func clip(m obj, path string, n *notes) obj {
 // the status to write to it after. policyUID, when not empty, is the uid of the policy that owns the proposal now.
 //
 // app is the Argo CD Application of the proposal (spec.application), or nil when it is not known. v1alpha1 stored the chart
-// name of a chart from a Helm repository in source.path; v1beta1 has a field for it, and the Application is what says which
+// name of a chart from a Helm repository in source.path; v1 has a field for it, and the Application is what says which
 // of the two the value is.
 func ConvertDriftProposal(old obj, policyUID string, app obj) (*Result, error) {
 	n := &notes{}
@@ -180,13 +180,13 @@ func proposalSpec(spec obj, phase string, app obj, n *notes) (obj, int, error) {
 	kept, total := len(changes), len(changes)
 	if kept > maxChanges {
 		if openPhase(phase) {
-			return nil, 0, bad("spec.changes has %d entries and the proposal is open (phase %q): v1beta1 holds %d. "+
+			return nil, 0, bad("spec.changes has %d entries and the proposal is open (phase %q): v1 holds %d. "+
 				"Close or reject its merge request and delete the proposal, or run again with --skip-finished once it is finished",
 				kept, phase, maxChanges)
 		}
 		changes, kept = changes[:maxChanges], maxChanges
 		out["truncated"] = true
-		n.add("spec.changes: the first %d of %d are kept and spec.truncated is true (v1beta1 holds %d)", maxChanges, total, maxChanges)
+		n.add("spec.changes: the first %d of %d are kept and spec.truncated is true (v1 holds %d)", maxChanges, total, maxChanges)
 	}
 	out["changes"] = changes
 
@@ -387,7 +387,7 @@ func finishedAt(meta, st obj) time.Time {
 	return latest
 }
 
-// proposalConditions keeps the conditions. v1beta1 keys the list by type; a type that is listed twice keeps its last entry.
+// proposalConditions keeps the conditions. v1 keys the list by type; a type that is listed twice keeps its last entry.
 func proposalConditions(v any, n *notes) []any {
 	list, _ := asList(v)
 	var out []any

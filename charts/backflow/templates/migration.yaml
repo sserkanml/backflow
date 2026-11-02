@@ -45,7 +45,7 @@ rules:
     verbs: [get, update, patch]
   - apiGroups: [backflow.io]
     resources: [scmconnections, backflowpolicies, driftproposals, changerecords]
-    verbs: [get, list, create, update, delete]
+    verbs: [get, list, create, update, patch, delete]
   - apiGroups: [backflow.io]
     resources: [scmconnections/status, backflowpolicies/status, driftproposals/status]
     verbs: [get, update, patch]

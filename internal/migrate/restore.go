@@ -142,8 +142,8 @@ func (r *runner) restoreOne(ctx context.Context, kind ObjectKind, o obj, rep *Re
 // restoreUsage is the help of `migrate restore`.
 const restoreUsage = `usage: backflow migrate restore --backup-dir DIR
 
-Creates the objects of a backup again, as backflow.io/v1alpha1, for a rollback to the release before v1beta1. The CRDs of that
-release must be installed (helm show crds ... --version <old> | kubectl apply -f -; delete the v1beta1 CRDs first) and the
+Creates the objects of a backup again, as backflow.io/v1alpha1, for a rollback to the release before v1. The CRDs of that
+release must be installed (helm show crds ... --version <old> | kubectl apply -f -; delete the v1 CRDs first) and the
 operator of the release you roll back from must be stopped. An object that exists is left alone.
 
 flags:

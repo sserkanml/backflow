@@ -92,7 +92,7 @@ func TestConvertDriftProposalSpec(t *testing.T) {
 	if fmt.Sprint(norm(t, in)) != fmt.Sprint(before) {
 		t.Error("the conversion changed the object it was given")
 	}
-	if res.Object["apiVersion"] != "backflow.io/v1beta1" || res.Object["kind"] != "DriftProposal" {
+	if res.Object["apiVersion"] != "backflow.io/v1" || res.Object["kind"] != "DriftProposal" {
 		t.Errorf("apiVersion/kind = %v %v", res.Object["apiVersion"], res.Object["kind"])
 	}
 	same(t, "metadata", res.Object["metadata"], `
@@ -103,7 +103,7 @@ annotations:
   note: keep me
   migrate.backflow.io/migrated-from: v1alpha1
   migrate.backflow.io/created: "2026-11-01T08:00:00Z"
-ownerReferences: [{apiVersion: backflow.io/v1beta1, kind: BackflowPolicy, name: p1, uid: new-uid, controller: true}]
+ownerReferences: [{apiVersion: backflow.io/v1, kind: BackflowPolicy, name: p1, uid: new-uid, controller: true}]
 `)
 	same(t, "spec", res.Object["spec"], `
 policyRef: {name: p1}
@@ -549,11 +549,11 @@ spec:
 `
 	res := convertProposal(t, text, "live")
 	same(t, "owners", res.Object["metadata"].(obj)["ownerReferences"], `
-- {apiVersion: backflow.io/v1beta1, kind: BackflowPolicy, name: p1, uid: live}
+- {apiVersion: backflow.io/v1, kind: BackflowPolicy, name: p1, uid: live}
 - {apiVersion: v1, kind: ConfigMap, name: other, uid: keep}`)
 	// Without a uid to put in, the old one is kept and only the apiVersion changes.
 	res = convertProposal(t, text, "")
-	if refs := res.Object["metadata"].(obj)["ownerReferences"].([]any); refs[0].(obj)["uid"] != "old" || refs[0].(obj)["apiVersion"] != "backflow.io/v1beta1" {
+	if refs := res.Object["metadata"].(obj)["ownerReferences"].([]any); refs[0].(obj)["uid"] != "old" || refs[0].(obj)["apiVersion"] != "backflow.io/v1" {
 		t.Errorf("owners = %v", refs)
 	}
 }

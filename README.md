@@ -526,6 +526,7 @@ parse stops the operator at start-up and names the variable.
 | `--merge-request-poll-interval` | `BACKFLOW_MERGE_REQUEST_POLL_INTERVAL` | `mergeRequestPollInterval` | default `2m` |
 | `--scm-recheck-interval` | `BACKFLOW_SCM_RECHECK_INTERVAL` | `scmRecheckInterval` | default `5m` |
 | `--secret-cache-ttl` | `BACKFLOW_SECRET_CACHE_TTL` | `secretCacheTTL` | default `30s` |
+| `--storage-check-interval` | `BACKFLOW_STORAGE_CHECK_INTERVAL` | | how often the operator checks that `manager migrate` has stored every object as `v1`; default `5m` |
 | `--render-budget` | `BACKFLOW_RENDER_BUDGET` | `renderBudget` | default `2m` |
 | `--unpack-file-dependencies` | `BACKFLOW_UNPACK_FILE_DEPENDENCIES` | `unpackFileDependencies` | default `true` |
 | `--repo-cache-dir` | `BACKFLOW_REPO_CACHE_DIR` | `repoCache.*` | |

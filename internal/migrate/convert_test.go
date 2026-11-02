@@ -57,7 +57,7 @@ func mustConvert(t *testing.T, kind ObjectKind, text string) *Result {
 	if !reflect.DeepEqual(norm(t, in), before) {
 		t.Error("the conversion changed the object it was given")
 	}
-	if res.Object["apiVersion"] != "backflow.io/v1beta1" || res.Object["kind"] != string(kind) {
+	if res.Object["apiVersion"] != "backflow.io/v1" || res.Object["kind"] != string(kind) {
 		t.Errorf("apiVersion/kind = %v %v", res.Object["apiVersion"], res.Object["kind"])
 	}
 	return res
@@ -458,9 +458,9 @@ func TestMigrated(t *testing.T) {
 	}{
 		{"nothing says so", `{name: a}`, false},
 		{"marked by the tool", `{name: a, annotations: {migrate.backflow.io/migrated-from: v1alpha1}}`, true},
-		{"made through v1beta1", `{name: a, managedFields: [{apiVersion: backflow.io/v1beta1, manager: kubectl}]}`, true},
+		{"made through v1beta1", `{name: a, managedFields: [{apiVersion: backflow.io/v1, manager: kubectl}]}`, true},
 		{"made through v1alpha1", `{name: a, managedFields: [{apiVersion: backflow.io/v1alpha1, manager: kubectl}]}`, false},
-		{"both", `{name: a, managedFields: [{apiVersion: backflow.io/v1alpha1}, {apiVersion: backflow.io/v1beta1}]}`, false},
+		{"both", `{name: a, managedFields: [{apiVersion: backflow.io/v1alpha1}, {apiVersion: backflow.io/v1}]}`, false},
 		{"no managedFields", `{name: a, managedFields: []}`, false},
 	}
 	for _, tt := range tests {
