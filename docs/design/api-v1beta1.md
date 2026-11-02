@@ -873,5 +873,31 @@ What `internal/migrate` does, and where it differs from the sketch in section 5.
   their `sources`, `applicationCount`, `argoCD`, and `excludedApplications`/`excludedReason` as `hiddenApplications`). If the API
   server refuses it, it is dropped and the operator rebuilds it. `spec.retention` is not set, so the API default (14 days) applies
   to a migrated policy.
-- **DriftProposal** is part 2b: backed up and listed; `storedVersions` of its CRD stays until none is left; exit status 2.
-- **Exit status:** 0 done, 1 an error or an object that failed, 2 everything this version can do is done and proposals are left.
+- **DriftProposal** is part 2b (below).
+- **Exit status:** 0 done, 1 an error or an object that failed.
+
+## Implementation notes (stage 2b: `backflow migrate`, DriftProposals)
+
+- **Order for a proposal:** backup (all objects, before anything changes) -> a server-side dry-run create of the new object
+  (`generateName`, so the name does not collide) -> delete with a uid precondition and wait until the object is gone (a finalizer
+  keeps it; the tool says so after `DeleteTimeout`, two minutes, and the next run deletes it again) -> create -> status through
+  the status subresource -> `<backup-dir>/DriftProposal/<ns>.<name>.done`. The dry run is what keeps the tool from deleting a
+  proposal that v1beta1 would refuse (a path over 1024 characters, for one). Nothing is owned by a proposal, so there is nothing
+  for the garbage collector to remove; the delete is a background one.
+- **What tells an interrupted proposal from a finished one** is the `.done` file, not the cluster: a backup without it and an
+  object that is gone means the tool stopped after the delete, so it is created from the backup; an object that carries the
+  migration annotation but has no `.done` gets its status written again (it overwrites, so doing it twice is harmless). It is
+  only looked at while `storedVersions` of the CRD still has `v1alpha1`: after that, the backups of a directory are history. A
+  `.done` file written for a dropped proposal (`--skip-finished`) keeps a second run from bringing it back.
+- **`finishedAt`** is the latest `lastTransitionTime` of the conditions, else the old `creationTimestamp`; only the phases
+  `Merged`, `Rejected`, `Reverted`, `Superseded`, `Failed` get one. This is what the operator derives for a proposal that finished
+  before the field existed, except that the creation time of the *new* object never counts.
+- **Strings the status holds that v1beta1 bounds** (`message` 2048, `diff`, edit values 16384, ...) are cut, with a note in the
+  dry run, because the API server would refuse the whole status for one of them. The spec is never cut: an immutable
+  observation is kept as it is, or the proposal is not migrated.
+- **More than 256 changes** (v1alpha1 had no bound): a finished or `Unmapped` proposal keeps the first 256 with `spec.truncated`,
+  and the edits of the dropped changes go; an open one is refused (cutting it would change what its merge request is about).
+- **`source` and `sources`** become `spec.sources`. A single `source` becomes `sources[0]` with position 1 and role Render. For a
+  chart from a Helm repository v1alpha1 stored the chart name in `path`; the tool cannot tell it from a path in a Git
+  repository without guessing, so it stays in `path`.
+- **A proposal whose policy is gone** is not touched (the garbage collector would have removed it already).
