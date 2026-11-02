@@ -1,6 +1,6 @@
 # API review for v1beta1 and the migration plan
 
-Status: **proposal, nothing implemented.** This note changes no code. It is the review that has to happen
+Status: **decided, being implemented in stages** (see [Decisions](#decisions)). It is the review that had to happen
 once, before `backflow.io/v1beta1` exists: after that, field names and meanings are a contract.
 
 Scope: `ScmConnection`, `BackflowPolicy`, `DriftProposal`, `ChangeRecord`, all `backflow.io/v1alpha1`
@@ -11,10 +11,32 @@ controllers where a claim depends on behaviour. Claims that I could not confirm 
 Reference: the Kubernetes
 [API conventions](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md).
 
-Contents: [1 Findings](#1-the-ten-findings-that-matter-most) ·
+Contents: [Decisions](#decisions) · [1 Findings](#1-the-ten-findings-that-matter-most) ·
 [2 Cross-cutting](#2-cross-cutting-findings) · [3 Audit by kind](#3-audit-by-kind) ·
 [4 Proposed v1beta1](#4-proposed-v1beta1) · [5 Migration](#5-migration) ·
 [6 What v1beta1 promises](#6-what-v1beta1-promises) · [7 Open decisions](#7-open-decisions-and-what-was-not-verified)
+
+## Decisions
+
+Taken by the maintainer after the review; they override the recommendations below where they differ. The
+sections after this one keep the original analysis, with its numbering, as the reason for each.
+
+| # | Decision | Detail that follows from it |
+|---|---|---|
+| 1 | **Take every proposed rename and move now**, one breaking change before 1.0 | tables in [4.1](#41-old-to-new-per-kind) are the target |
+| 2 | **Migration: option (b)**, a one-shot `backflow migrate`, no conversion webhook | stage 2; the operator **refuses to start** while `v1alpha1` is in `status.storedVersions` of a Backflow CRD (stage 1) |
+| 3 | **`ChangeRecord` moves to `internal.backflow.io/v1alpha1`** | Go package `api/records/v1alpha1`; the old CRD `changerecords.backflow.io` is deleted by the user (and by the tool); records are not migrated |
+| 4 | **More than 256 changes**: the proposal is created `Unmapped`, reason `TooManyChanges`, with the first 256 changes and `spec.truncated: true` | `spec.changes` has `maxItems: 256`; `Mapped=False/TooManyChanges`; the proposal controller never maps a truncated proposal |
+| 5 | **Finished proposals are deleted after 14 days** (`spec.retention.finishedProposals`, default `336h`); open and `Unmapped` proposals never | finished = `Merged`, `Rejected`, `Reverted`, `Superseded`, `Failed`; the age counts from the new `status.finishedAt`; `0s` keeps them for ever (replaces D4 below) |
+| 6 | **Minimum Kubernetes 1.30 (OpenShift 4.17)** | CRD validation ratcheting (beta in 1.30) lets objects that predate a rule stay valid until they change; the CEL used is limited to `size`, `has`, `matches`, `duration` and comparison, all available since 1.29, so the URL library is **not** needed and the Kubernetes version check in the chart (`kubeVersion: >=1.30.0-0`) is the one requirement |
+| 7 | **SSRF allowlists, installer-set, checked by the controllers** | `--argocd-allowed-servers` / chart `argocd.allowedServers`, `--scm-allowed-hosts` / chart `scm.allowedHosts`. The operator's own default Argo CD server is always allowed. Not allowed: `Ready=False`, reason `ServerNotAllowed` (policy) or `HostNotAllowed` (connection), **no request is made**. Not in the CRD. Empty list: nothing but the default is allowed; the chart defaults `scm.allowedHosts` to `gitlab.com`, `github.com` |
+| 8 | **Controller state leaves the annotations** (superseded, reverted, live-reverted, access revoked, rejection reported) | `status.signals` of the proposal. Three controllers produce these facts (policy, drift, proposal), and the repository rule is that one controller owns a status, so the facts live in one **disjoint sub-object written only by the drift and policy controllers with a merge patch of that object**; the proposal controller reads it and writes every other status field. Users cannot write status (the subresource) |
+| 9 | **The drift controller's working set does not depend on the bounded `status.applications`** | the controller resolves the allowed Applications itself (the same resolution the policy controller uses); the status shows `applicationCount` and `applicationsTruncated` |
+| 10 | **`assignActor` is a `*bool`** (default `true`) | |
+| 11 | **Deleting a policy keeps today's behaviour**: its proposals are deleted by the owner reference; merge requests that are open on the Git host **stay open and are no longer tracked** | documented in the field docs and the upgrade guide (stage 3) |
+
+Additions the decisions imply, all in v1beta1: `spec.truncated` and `status.finishedAt` on `DriftProposal`,
+`status.signals`, `status.applicationCount` and `status.applicationsTruncated` on `BackflowPolicy`.
 
 ---
 
@@ -152,7 +174,7 @@ structural today. Keep, and state them in the field docs.
 | `spec.mergeRequest` | holds `branchPrefix`, `targetBranch` (also used by `DirectCommit`) and the MR-only `labels`, `reviewers`, `assignActor` | split into `spec.git.{branchPrefix, targetBranch}` and `spec.git.mergeRequest.{labels, reviewers, assignActor}` |
 | `…labels`, `reviewers` | unbounded strings | validate: `maxItems: 16`, `+listType=set`, `maxLength: 128` |
 | `…assignActor` | plain bool with default true (finding 7) | `*bool` |
-| *(none)* | no way to bound the number of finished proposals (finding 10) | add `spec.retention.finishedProposals` (duration, default `0` = keep, as today; recommended value in the docs 720h) |
+| *(none)* | no way to bound the number of finished proposals (finding 10) | add `spec.retention.finishedProposals` (duration, default `336h`; `0s` keeps for ever) |
 | `status.observedGeneration` | present | keep |
 | `status.conditions` | `Ready`; reasons only in Go (`Resolved`, `NoApplicationsMatched`, `ApplicationConflict`, `MissingScmConnection`, `ApplicationVisibilityUnknown`, `ArgoCDDefaultNotAllowed`, …) | add markers; publish the list |
 | `status.matchedApplications` | the names again, already in `applications[].name` | remove |
@@ -392,7 +414,7 @@ spec:
         - alice
       assignActor: true
   retention:
-    finishedProposals: 720h
+    finishedProposals: 336h
 status:
   observedGeneration: 3
   openProposals: 1
@@ -779,8 +801,8 @@ Once published:
 | D1 | How many renames. The table in 4.1 lists them all; the cheap-to-skip ones are `allow*` on `helm`/`kustomize`, `policyRef/applicationRef/resourceRef`, and `spec.git` | take them: the tool recreates proposals anyway, and a rename is free only once |
 | D2 | `ChangeRecord` group name (`internal.backflow.io`) | take it |
 | D3 | `status.phase` stays | keep |
-| D4 | `retention.finishedProposals` default | keep-forever now; revisit at v1 |
-| D5 | Above 256 `changes` | the proposal becomes `Unmapped` with reason `TooManyChanges`, not truncated: truncating a proposal changes what Git receives |
+| D4 | `retention.finishedProposals` default | **decided: 336h** (14 days), see Decisions |
+| D5 | Above 256 `changes` | **decided**: `Unmapped`, `TooManyChanges`, first 256 kept, `spec.truncated: true`; nothing is proposed to Git for it |
 | D6 | Whether `migrate` also converts GitOps manifests | yes, as a diff; it is the part users feel |
 
 **Not verified** (to check before implementing, none changes the shape above):
