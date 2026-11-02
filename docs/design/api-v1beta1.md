@@ -850,3 +850,28 @@ Where the implementation made a choice the analysis above left open, or differs 
   when the phase becomes a final one; a proposal that finished before the field existed is counted from its last condition
   change, the first time it is looked at.
 - **Kubernetes 1.30** is the chart's `kubeVersion`. The CEL used needs only `size`, `has`, `matches` and `duration`.
+
+## Implementation notes (stage 2a: `backflow migrate`, part 1)
+
+What `internal/migrate` does, and where it differs from the sketch in section 5.3:
+
+- **One command, no separate `backup`/`apply`.** `manager migrate --backup-dir DIR` lists, backs up, converts and finalizes in one
+  run; `--dry-run` prints the plan (every renamed or moved field of every object) and changes nothing, not even the CRDs.
+- **Reading v1alpha1.** The objects can only be read as v1alpha1 through a CRD that serves it. The CRDs of the release do not
+  (a v1alpha1 that is served and written would store old-shaped data under the v1beta1 label), so `--serve-v1alpha1` serves it
+  for the length of the run and takes it out again (also after a failure). A write through v1alpha1 after the storage version changed
+  is pruned to the v1beta1 schema and loses fields; the tool therefore never writes through v1alpha1, and tells the user not to.
+- **What is "already done".** An object carries the annotation `migrate.backflow.io/migrated-from: v1alpha1` once rewritten, or has
+  only `managedFields` entries of apiVersion `v1beta1` (made through v1beta1). Through the v1alpha1 endpoint nothing else tells the
+  two apart. Objects of a CRD whose `storedVersions` is already `[v1beta1]` are not looked at.
+- **The operator check** looks for a Deployment labelled `app.kubernetes.io/name=backflow` with replicas (or pods left), and for
+  a held leader election Lease (`7e904218.io`). An operator that runs outside the cluster without leader election cannot be seen.
+- **A refused object** (the v1beta1 schema is stricter than v1alpha1: patterns, bounds, `maxItems`) stays as it is, the other
+  objects go on, `storedVersions` of that CRD is not changed, and the v1beta1 object the tool tried is written to
+  `<backup-dir>/rejected/<Kind>/<ns>.<name>.v1beta1.yaml` to correct and `kubectl replace`.
+- **Status** is converted where it still applies (conditions, `authenticatedAs`, `lastCheckTime`; for a policy the applications with
+  their `sources`, `applicationCount`, `argoCD`, and `excludedApplications`/`excludedReason` as `hiddenApplications`). If the API
+  server refuses it, it is dropped and the operator rebuilds it. `spec.retention` is not set, so the API default (14 days) applies
+  to a migrated policy.
+- **DriftProposal** is part 2b: backed up and listed; `storedVersions` of its CRD stays until none is left; exit status 2.
+- **Exit status:** 0 done, 1 an error or an object that failed, 2 everything this version can do is done and proposals are left.

@@ -451,9 +451,25 @@ is listed there, old to new. Things you will notice:
 - Kubernetes **1.30** (OpenShift 4.17) is the minimum: the CRDs use CEL validation and rely on ratcheting of existing objects.
 
 **The operator does not start** while a Backflow CRD still has objects stored as `v1alpha1`, or does not serve
-`v1beta1`; it says so and which command to run. `backflow migrate` (backup, rewriting the objects and the open
-proposals, finishing the CRDs) is not part of this change yet. On a cluster with no Backflow objects, delete the three CRDs
-(and `changerecords.backflow.io`) and apply the new ones.
+`v1beta1`; it says so and which command to run. `backflow migrate` (a subcommand of the operator's binary: `/manager migrate`) rewrites your objects:
+
+```bash
+kubectl -n backflow-system scale deployment <operator> --replicas=0     # it refuses to run while the operator runs
+kubectl apply --server-side --force-conflicts -f <the CRDs of this release>
+manager migrate --dry-run                                               # what would change; changes nothing
+manager migrate --backup-dir ./backflow-backup --serve-v1alpha1
+```
+
+It writes a backup of every object that is still `v1alpha1` (one YAML file each, never overwritten) before it changes
+anything, converts `ScmConnection` and `BackflowPolicy` in place (keeping their uid and, where it still applies, their status),
+deletes the `ChangeRecord`s (not backed up: they hold user names, for two hours at most) and sets `storedVersions` of a CRD to
+`[v1beta1]` when every object of it is rewritten. A second run does only what is left. **`DriftProposal`s are not converted by this
+version**: they are backed up and listed, `storedVersions` of their CRD is not changed, the exit status is 2 and the operator
+does not start yet. `--serve-v1alpha1` serves `v1alpha1` in the CRDs while the tool runs and takes it out again; without it
+the CRDs must serve it. If the API server refuses an object, the tool writes the `v1beta1` object it tried to
+`<backup-dir>/rejected/`; correct that file and apply it with `kubectl replace -f`. **Never edit such an object through
+`v1alpha1`**: once the CRD stores `v1beta1`, a write through `v1alpha1` is pruned to the `v1beta1` schema and loses its
+`v1alpha1` fields. On a cluster with no Backflow objects, delete the three CRDs (and `changerecords.backflow.io`) and apply the new ones.
 
 ### Allowed servers and hosts
 
