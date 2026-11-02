@@ -36,7 +36,10 @@ contract), the Git branch names and the text of the merge requests, and the imag
 
 ### Releases that are supported
 
-The latest minor release of 1.x gets fixes. Security fixes also go to the previous minor release for three months after a new one.
+Backflow has a single maintainer, so **only the latest minor release of 1.x gets fixes**, security fixes included. There are no backports to an
+earlier minor release: a fix is a patch release of the latest minor release, and to get it you upgrade to it. That upgrade is safe by rule 1
+above (no breaking change in 1.x). A report of a security problem is acknowledged within five business days, fixed as soon as reasonably
+possible, and disclosed in coordination with the reporter within 90 days at most (see [SECURITY.md](../SECURITY.md)).
 
 ## Support matrix
 

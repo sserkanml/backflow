@@ -7,14 +7,18 @@ Please **do not open a public issue** for a security problem. Report it privatel
 (Security → Report a vulnerability). Say which version you ran, what you did, what happened and what you expected; a manifest or a
 log (without tokens) helps more than a description.
 
-You get an answer within **five working days**, and a plan (a fix, or why it is not one) within **thirty days**. A fix is released as a
-patch release, with an advisory that credits you if you want it. Please give us a reasonable time before you say anything in public; we
-ask for 90 days at most, and will tell you if we need less.
+Backflow has a single maintainer. A report is **acknowledged within five business days**. The fix comes **as soon as reasonably
+possible**; there is no fixed deadline, and you are told where it stands when you ask. It is released as a patch release of the latest
+minor release, with an advisory that credits you if you want it.
+
+Disclosure is coordinated: please say nothing in public until a fix is released. If there is none **90 days** after your report, you are free to
+publish what you found; we ask you to tell us first, and we will say if we need a little more time for a fix that is nearly done.
 
 ## Supported versions
 
-The latest minor release of 1.x gets security fixes; the previous minor release gets them for three months after a new one
-(see [docs/compatibility.md](docs/compatibility.md)). Versions before 1.0 are not supported.
+**Only the latest minor release of 1.x gets fixes.** There are no backports to an earlier minor release: to get a fix, upgrade to the latest
+minor release (a minor release of 1.x does not break `v1`; see [docs/compatibility.md](docs/compatibility.md)). Versions before 1.0 are not
+supported.
 
 ## What counts
 
