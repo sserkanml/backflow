@@ -53,19 +53,23 @@ type BackflowPolicySpec struct {
 	// Where the Argo CD Applications are and how to reach the Argo CD API.
 	// +kubebuilder:default={}
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Argo CD"
 	ArgoCD ArgoCDSpec `json:"argoCD,omitzero"`
 
 	// Applications this policy applies to.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Applications"
 	Applications ApplicationSelector `json:"applications"`
 
 	// What to do with detected drift.
 	// +kubebuilder:default=MergeRequest
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Mode",xDescriptors="urn:alm:descriptor:com.tectonic.ui:select:MergeRequest,urn:alm:descriptor:com.tectonic.ui:select:DirectCommit,urn:alm:descriptor:com.tectonic.ui:select:ReportOnly"
 	Mode BackflowMode `json:"mode,omitempty"`
 
 	// Resource kinds to capture. Empty means every kind the Application manages.
 	// +kubebuilder:validation:MaxItems=64
 	// +listType=atomic
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Include"
 	Include []KindSelector `json:"include,omitempty"`
 
 	// Resource kinds never captured. Evaluated after Include.
@@ -73,6 +77,7 @@ type BackflowPolicySpec struct {
 	// +kubebuilder:validation:MaxItems=64
 	// +listType=atomic
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Exclude"
 	Exclude []KindSelector `json:"exclude,omitempty"`
 
 	// Fields to ignore when computing drift, in addition to built-in noise
@@ -99,6 +104,7 @@ type BackflowPolicySpec struct {
 	// and reviewers.
 	// +kubebuilder:default={}
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Git"
 	Git GitOptions `json:"git,omitzero"`
 
 	// A drift becomes a proposal only after it has stayed the same, at the
@@ -114,11 +120,13 @@ type BackflowPolicySpec struct {
 	// +kubebuilder:validation:Format=duration
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s') && duration(self) <= duration('24h')",message="batchWindow must be between 0s and 24h"
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Batch window"
 	BatchWindow *metav1.Duration `json:"batchWindow,omitempty"`
 
 	// How long Backflow keeps what is finished.
 	// +kubebuilder:default={}
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Retention"
 	Retention RetentionOptions `json:"retention,omitzero"`
 }
 
@@ -520,6 +528,7 @@ type BackflowPolicyStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions",xDescriptors="urn:alm:descriptor:io.kubernetes.conditions"
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// Details of the matched Applications, at most 100. The policy covers all of them even when
 	// the list is cut: see applicationCount.
@@ -529,12 +538,14 @@ type BackflowPolicyStatus struct {
 	Applications []ApplicationSummary `json:"applications,omitempty"`
 	// How many Applications the policy covers.
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Applications"
 	ApplicationCount int32 `json:"applicationCount,omitempty"`
 	// True when applications lists fewer Applications than applicationCount.
 	// +optional
 	ApplicationsTruncated bool `json:"applicationsTruncated,omitempty"`
 	// DriftProposals not yet merged, rejected or reverted.
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Open proposals"
 	OpenProposals int32 `json:"openProposals,omitempty"`
 	// Which Argo CD connection the policy uses. Unset while there is none.
 	// +optional

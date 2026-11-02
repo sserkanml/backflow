@@ -46,6 +46,11 @@ spec:
           - --repo-cache-dir=/var/cache/backflow
         image: controller:latest
         name: manager
+        # The defaults of an installation without Helm; a Subscription (spec.config.env) or a flag overrides them.
+        # Same as the chart: a self-hosted GitLab or GitHub has to be added.
+        env:
+        - name: BACKFLOW_SCM_ALLOWED_HOSTS
+          value: gitlab.com,github.com
         ports:
         - containerPort: 8081
           name: health

@@ -41,6 +41,7 @@ const (
 // ScmConnectionSpec defines the desired state of ScmConnection
 type ScmConnectionSpec struct {
 	// Provider type.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Provider",xDescriptors="urn:alm:descriptor:com.tectonic.ui:select:GitLab"
 	Provider ScmProvider `json:"provider"`
 
 	// Base URL of the provider, e.g. https://gitlab.example.com or https://github.com. Its host
@@ -48,6 +49,7 @@ type ScmConnectionSpec struct {
 	// the connection is not Ready (HostNotAllowed) and no request is made.
 	// +kubebuilder:validation:MaxLength=2048
 	// +kubebuilder:validation:Pattern=`^https?://[^\s/]+(/\S*)?$`
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="URL"
 	URL string `json:"url"`
 
 	// Repository hosts this connection is used for. A repository URL from an
@@ -58,14 +60,17 @@ type ScmConnectionSpec struct {
 	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`
 	// +listType=set
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Hosts"
 	Hosts []string `json:"hosts,omitempty"`
 
 	// Secret key, in this namespace, holding an API token with permission to push branches and
 	// open merge requests (GitLab: api + write_repository; GitHub: contents + pull_requests).
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Token Secret"
 	TokenSecretRef SecretKeyReference `json:"tokenSecretRef"`
 
 	// Optional Secret key, in this namespace, holding a PEM CA bundle for self-hosted providers.
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="CA Secret"
 	CASecretRef *SecretKeyReference `json:"caSecretRef,omitempty"`
 
 	// Identity used as Git committer. The Kubernetes user who made the change
@@ -93,16 +98,19 @@ type ScmConnectionStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions",xDescriptors="urn:alm:descriptor:io.kubernetes.conditions"
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// The hosts the connection is used for: spec.hosts, or the host of spec.url.
 	// +kubebuilder:validation:MaxItems=16
 	// +listType=set
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Hosts"
 	Hosts []string `json:"hosts,omitempty"`
 
 	// Account the token authenticated as.
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Authenticated as"
 	AuthenticatedAs string `json:"authenticatedAs,omitempty"`
 
 	// Last time the token was verified.

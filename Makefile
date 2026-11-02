@@ -333,3 +333,5 @@ coverage: kustomize ## Measure Helm and Kustomize mapping coverage (needs the he
 .PHONY: coverage-update
 coverage-update: kustomize ## Accept the current mapping coverage as the golden file.
 	KUSTOMIZE_BIN="$(abspath $(KUSTOMIZE))" go test -tags coverage ./test/coverage/ -run TestCoverage -count=1 -v -timeout 45m -args -update
+
+include hack/olm.mk
