@@ -822,3 +822,31 @@ Once published:
   cap of 100 is a judgement, to be set from one).
 - Secret values in `spec.changes` are masked by `internal/argocd/mask.go` before they reach a proposal; I read
   that this runs on the manifest response, not that every code path that builds `changes` goes through it.
+
+---
+
+## Implementation notes (stage 1)
+
+Where the implementation made a choice the analysis above left open, or differs from it:
+
+- **`status.signals`** is a sub-object of the proposal status that only the drift and policy controllers write (a merge
+  patch of that object), and the proposal controller reads. It holds `supersededBy`, `reverted`, `liveRevertedAtRevision`,
+  `accessRevoked` and `rejectionReported`. The informer of the proposal controller reacts to a change of it
+  (status changes do not bump the generation).
+- **Reasons that are open sets are not enums.** `status.mapping.unmapped[].reason` is a CamelCase string (pattern, `maxLength`),
+  because new reasons appear with new mapping rules and an enum would make a status write fail. `untrackedReason` and the
+  `hiddenApplications[].reason` (`ProjectNotAllowed`, `NotVisibleToToken`, `VisibilityUnknown`) are closed enums.
+- **The allowlists** are package-level settings of the controllers (`SetArgoCDAllowedServers`, `SetScmAllowedHosts`), set once at
+  start-up from the flags. They are checked where a request would be made: the resolution of a policy's Applications and
+  `argoCDConfig` for a server (before any Secret is read), the verification of a `ScmConnection` and `scmAccessByName` for a host.
+- **The drift controller resolves Applications itself** (`appResolver`), the same way the policy controller does, and builds
+  the summaries from the live Application. `status.applications` is capped at 100 and is for people. The ScmConnection
+  of a repository is found from the `ScmConnection` objects, not from the policy status. Two places still read the capped
+  list: the scratch-branch sweeper and the list of other Applications that use a shared Kustomize base in a merge request
+  text; for a policy beyond 100 Applications they cover the first 100 (a follow-up).
+- **The start-up check** (`internal/crdcheck`) needs `get` on the three CRDs (a rule with `resourceNames` in the ClusterRole).
+  It fails when a CRD does not serve and store `v1beta1`, and when `status.storedVersions` has anything else.
+- **Retention** is a decision of the proposal controller (`retain`), counted from `status.finishedAt`, which `patchStatus` sets
+  when the phase becomes a final one; a proposal that finished before the field existed is counted from its last condition
+  change, the first time it is looked at.
+- **Kubernetes 1.30** is the chart's `kubeVersion`. The CEL used needs only `size`, `has`, `matches` and `duration`.

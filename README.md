@@ -71,31 +71,36 @@ in the same namespace.
 kubectl -n backflow-system create secret generic gitlab-token --from-literal=token="$GITLAB_TOKEN"
 
 kubectl -n backflow-system apply -f - <<'YAML'
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: ScmConnection
 metadata:
   name: gitlab
 spec:
-  provider: gitlab                  # or github
+  provider: GitLab                  # or GitHub
   url: https://gitlab.com           # your server for a self-hosted one
   tokenSecretRef: {name: gitlab-token, key: token}
 ---
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: my-apps
 spec:
-  argoCDNamespace: argocd
+  argoCD:
+    namespace: argocd
+    server:                         # leave it out to use the operator's own connection
+      url: https://argocd-server.argocd.svc
+      tokenSecretRef: {name: argocd-token, key: token}
   applications:
     names: [my-app]                 # or selector: {matchLabels: {env: test}}
   mode: ReportOnly                  # MergeRequest and DirectCommit write to Git
-  argoCD:
-    url: https://argocd-server.argocd.svc
-    tokenSecretRef: {name: argocd-token, key: token}
 YAML
 
 kubectl -n backflow-system get scm,bfp,dp
 ```
+
+A policy that names its own Argo CD server needs that server in `argocd.allowedServers` (or to be `argocd.server`), and the host
+of a `ScmConnection` has to be in `scm.allowedHosts` (`gitlab.com` and `github.com` are by default); see
+[Allowed servers and hosts](#allowed-servers-and-hosts).
 
 With `ReportOnly` Backflow finds the file that defines each drifted resource and
 shows the verified edit in the `DriftProposal` (`kubectl get dp -o yaml`), but
@@ -177,13 +182,14 @@ as here; in any other namespace the administrator allows it with `argocd.default
 [Multi-tenancy and access](#multi-tenancy-and-access).)
 
 ```yaml
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   name: my-apps
   namespace: backflow-system
 spec:
-  argoCDNamespace: openshift-gitops
+  argoCD:
+    namespace: openshift-gitops
   applications:
     names: [my-app]
   mode: ReportOnly
@@ -191,7 +197,7 @@ spec:
 
 `kubectl -n backflow-system get bfp my-apps -o jsonpath='{.status.argoCD}'` says where
 the connection comes from (`source: OperatorDefault`, and the URL, never a token), and the
-`Ready` message says it too. A policy with its own `spec.argoCD` keeps using that, as
+`Ready` message says it too. A policy with its own `spec.argoCD.server` keeps using that, as
 described under [Install](#install); a policy that has none and an operator without
 `argocd.server` detects no drift. The `ScmConnection` for GitLab or GitHub is made as
 in step 2 of Install.
@@ -217,6 +223,8 @@ The most used values of the chart; all of them are in
 | `mergeRequestPollInterval` | `2m` | how often an open merge request is polled |
 | `resources` | 50m/128Mi requests, 500m/512Mi limits | tune to the number of Applications |
 | `argocd.defaultAccess` | `[]` | which Applications (Argo CD projects) the policies of which namespaces may match through the default connection; empty: only the operator's namespace (see Multi-tenancy and access) |
+| `argocd.allowedServers` | `[]` | the Argo CD servers a policy may name in `spec.argoCD.server.url`, besides `argocd.server`, which is always allowed; another server makes the policy not `Ready` (`ServerNotAllowed`) and nothing is requested from it (see [Allowed servers and hosts](#allowed-servers-and-hosts)) |
+| `scm.allowedHosts` | `[gitlab.com, github.com]` | the Git hosts a `ScmConnection` may name in `spec.url`; another host makes it not `Ready` (`HostNotAllowed`); set your self-hosted GitLab or GitHub here |
 | `actorWebhook.enabled` | `false` | the observe-only admission webhook that names the user of a change (see [The actor webhook](#the-actor-webhook-who-it-really-was)); needs Kubernetes 1.28 and, outside OpenShift, `actorWebhook.networkPolicy.apiserverCIDRs` |
 | `actorWebhook.recordUsername`, `.usernameInMergeRequest` | `true`, `false` | store user names and groups (false: only person or controller); put the name into merge requests and commits |
 | `actorWebhook.retention`, `.tolerance` | `2h`, `10s` | how long a ChangeRecord is kept; how far its time may be from the managedFields entry it is checked against |
@@ -229,7 +237,7 @@ The most used values of the chart; all of them are in
 | `nodeSelector`, `tolerations`, `affinity`, `podAnnotations` | empty | |
 | `serviceAccount.create`, `.name`, `.annotations` | `true`, generated, `{}` | |
 | `metrics.enabled`, `metrics.certSecret` | `false`, none | HTTPS on 8443 behind Kubernetes authn/authz |
-| `argocd.server`, `argocd.tokenSecret.{namespace,name,key}` | empty, `apiToken` | the Argo CD connection of every policy without `spec.argoCD` (see [Install on OpenShift GitOps](#install-on-openshift-gitops)) |
+| `argocd.server`, `argocd.tokenSecret.{namespace,name,key}` | empty, `apiToken` | the Argo CD connection of every policy without `spec.argoCD.server` (see [Install on OpenShift GitOps](#install-on-openshift-gitops)) |
 | `unpackFileDependencies` | `true` | upload `file://` chart dependencies unpacked where that renders the same (see [Helm sources](#helm-sources)) |
 | `argocd.serviceCA`, `argocd.caFile` | `false`, empty | OpenShift: verify the Argo CD server with the injected service CA, or with a CA file you mount |
 | `trustedCABundle` | `false` | OpenShift: ConfigMap with the cluster's trusted CA bundle, trusted for ScmConnections without `caSecretRef` |
@@ -249,7 +257,7 @@ writable for any assigned ID. If your cluster policy requires fixed IDs, set
 them in `podSecurityContext` (`runAsUser`, `fsGroup`).
 
 Argo CD on OpenShift (the GitOps operator) usually runs in `openshift-gitops`:
-use `argoCDNamespace: openshift-gitops` in the policy, its server URL
+use `argoCD.namespace: openshift-gitops` in the policy, its server URL
 (`https://openshift-gitops-server.openshift-gitops.svc`) in `argoCD.url`, and
 the `argocd-cm` and `argocd-rbac-cm` of that namespace (or the matching fields
 of the `ArgoCD` resource) for the account above. The server certificate is
@@ -258,7 +266,7 @@ signed by the cluster's service CA: mount it in a Secret and set
 
 With OpenShift GitOps 1.18 or later you can skip the account, the token Secret and the CA
 Secret: see [Install on OpenShift GitOps](#install-on-openshift-gitops). The way above
-(an account made by hand, a policy with `spec.argoCD`) keeps working, and so does any
+(an account made by hand, a policy with `spec.argoCD.server`) keeps working, and so does any
 upstream Argo CD.
 
 ### Permissions
@@ -316,7 +324,7 @@ Argo CD. Who may *see* an Application through a BackflowPolicy is decided in two
 one for each way a policy reaches Argo CD. Anyone who can create a BackflowPolicy in a
 namespace is limited by them; the policy itself cannot widen them.
 
-**A policy with its own `spec.argoCD`** (a token Secret in its namespace). It sees the
+**A policy with its own `spec.argoCD.server`** (a token Secret in its namespace). It sees the
 Applications that token can get from Argo CD, and nothing else: for each selected
 Application the operator asks Argo CD, with that token, whether it may get it (the answer
 is kept for a minute per token and Application). Argo CD answers 403 for an Application
@@ -325,13 +333,13 @@ Applications the token may get is the Argo CD RBAC of that account.
 
 If Argo CD cannot be reached, the policy fails closed: an Application whose visibility was
 confirmed earlier stays visible, however old the answer, and one that was never confirmed
-is not shown (it is counted in `excludedApplications` with the reason `VisibilityUnknown`,
+is not shown (it is counted in `status.argoCD.hiddenApplications` with the reason `VisibilityUnknown`,
 and the `Ready` message says the check is retried, every 30 seconds). Only a definite
 401, 403 or 404 hides an Application or retires its proposals; an outage never does. The
 confirmed answers live in the operator's memory, so after a restart during an outage
 nothing is shown until Argo CD answers.
 
-**A policy without `spec.argoCD`** uses the operator's default connection, whose account
+**A policy without `spec.argoCD.server`** uses the operator's default connection, whose account
 can usually read every Application. Which Applications such a policy may match is
 defined by the administrator who installs the operator, never by a policy:
 
@@ -372,9 +380,17 @@ status:
       status: "True"
       reason: Resolved
       message: "Watching 1 application(s); Argo CD API: operator default (https://argocd-server.argocd.svc); 2 selected application(s) excluded: their Argo CD project is not allowed for this namespace (argocd.defaultAccess)"
-  matchedApplications: [team-a-web]
-  excludedApplications: 2
-  excludedReason: ProjectNotAllowed     # or NotVisibleToToken
+  applicationCount: 1
+  applications:
+    - name: team-a-web
+      managedResources: 3
+      sources: [{position: 1, repoURL: "https://gitlab.com/team-a/web.git", type: Directory}]
+  argoCD:
+    source: OperatorDefault
+    url: https://argocd-server.argocd.svc
+    hiddenApplications:
+      - reason: ProjectNotAllowed       # or NotVisibleToToken, VisibilityUnknown
+        count: 2
 ```
 
 The count does show that a name in `spec.applications.names` or a label selector matched
@@ -405,15 +421,55 @@ Helm installs the files in `crds/` once and never upgrades or removes them, so
 the upgrade step above is yours to run. Deleting a CRD deletes all its objects.
 
 **Upgrading to the version that adds `argocd.defaultAccess` (breaking).** Policies without
-`spec.argoCD` used to see every Application through the operator's default connection. From
+`spec.argoCD.server` used to see every Application through the operator's default connection. From
 this version the default connection needs `argocd.defaultAccess` unless the policies live in
 the operator's own namespace: a policy in any other namespace is not `Ready`
 (`ArgoCDDefaultNotAllowed`) and its open proposals are retired until you allow it. Set the
 rules before you upgrade, for example `--set 'argocd.defaultAccess[0].policyNamespaces={team-a}'
 --set 'argocd.defaultAccess[0].projects={team-a}'`, or `*`/`*` to keep the old behaviour in a
-single-tenant cluster. Policies with their own `spec.argoCD` keep working if their token can
+single-tenant cluster. Policies with their own `spec.argoCD.server` keep working if their token can
 get the Applications they select; the ones it cannot get disappear from their status
-(`excludedApplications` counts them).
+(`status.argoCD.hiddenApplications` counts them).
+
+### Upgrading to `backflow.io/v1beta1` (breaking)
+
+The API is `backflow.io/v1beta1` from this version (`ScmConnection`, `BackflowPolicy`, `DriftProposal`); `v1alpha1` is no
+longer served. Every field name and value that the review in [docs/design/api-v1beta1.md](docs/design/api-v1beta1.md) changed
+is listed there, old to new. Things you will notice:
+
+- `spec.argoCDNamespace` and `spec.argoCD` are `spec.argoCD.namespace` and `spec.argoCD.server`; `spec.mergeRequest` is
+  `spec.git` (and `spec.git.mergeRequest`); `provider` is `GitLab` or `GitHub`.
+- A `DriftProposal` has `spec.policyRef`, `applicationRef`, `resourceRef`, one list `spec.sources` (a single-source
+  Application has one entry), `spec.actor` for the user and `spec.managers` for the field managers; its status groups
+  what it did in Git under `status.git`.
+- Finished proposals (merged, rejected, reverted, superseded, failed) are **deleted after 14 days**
+  (`spec.retention.finishedProposals`, `0s` keeps them); open and `Unmapped` proposals never are. Deleting a policy deletes its
+  proposals; a merge request that is open on the Git host stays open and is no longer tracked.
+- A drift with more than 256 field changes becomes an `Unmapped` proposal (`TooManyChanges`) that lists the first 256
+  (`spec.truncated: true`).
+- `ChangeRecord` is `internal.backflow.io/v1alpha1`, not part of the API.
+- Kubernetes **1.30** (OpenShift 4.17) is the minimum: the CRDs use CEL validation and rely on ratcheting of existing objects.
+
+**The operator does not start** while a Backflow CRD still has objects stored as `v1alpha1`, or does not serve
+`v1beta1`; it says so and which command to run. `backflow migrate` (backup, rewriting the objects and the open
+proposals, finishing the CRDs) is not part of this change yet. On a cluster with no Backflow objects, delete the three CRDs
+(and `changerecords.backflow.io`) and apply the new ones.
+
+### Allowed servers and hosts
+
+A `BackflowPolicy` names an Argo CD server (`spec.argoCD.server.url`) and a `ScmConnection` a Git host (`spec.url`),
+and the operator then sends requests there, one of them with the token the tenant supplied. A tenant who may create these
+objects must not be able to point the operator at any address in its network, so the **installer** decides which ones are
+allowed, in the chart values and not in the objects:
+
+- `argocd.allowedServers` (`--argocd-allowed-servers`): URLs such as `https://argocd.team-a.example.com` or
+  `https://*.argo.corp:8443`. Scheme, host and port must match; the path does not count. The server of
+  `argocd.server`, the operator's own connection, is always allowed.
+- `scm.allowedHosts` (`--scm-allowed-hosts`): host names, or `*.example.com` for any subdomain. The default is
+  `gitlab.com` and `github.com`. An empty list allows no host.
+
+An object that names something else is not `Ready` (`ServerNotAllowed` for a policy, `HostNotAllowed` for a connection), the
+message names the flag, **no request is made** and the token Secret is not read. A proposal of such a connection is held.
 
 ### Upgrading: apply the CRDs first
 
@@ -450,12 +506,12 @@ fields, and the operator then runs with a CRD that cannot hold them:
   off and a proposal with a field that cannot be mapped stays `Unmapped`, as
   before; nothing breaks, the feature is just unavailable.
 
-- 0.5.0 adds `spec.helm.addOverrides` to the `BackflowPolicy`. With the old CRD
+- 0.5.0 adds `spec.helm.allowValueOverrides` to the `BackflowPolicy`. With the old CRD
   the field is dropped and the default (on) applies, so you cannot turn
   overrides off until the CRDs are applied. **This changes what proposals
   become:** a Helm change whose old value only the chart's defaults hold used to
   be `Unmapped` and now becomes a merge request that adds a key to your last
-  value file. Set `spec.helm.addOverrides: false` on the policy to keep the old
+  value file. Set `spec.helm.allowValueOverrides: false` on the policy to keep the old
   behaviour.
 
 Applying the CRDs afterwards fixes new proposals; a proposal that failed is not
@@ -558,7 +614,7 @@ The policy detects nothing meanwhile. `kubectl -n <ns> describe bfp <name>`.
 #### BackflowArgoCDUnreachable
 
 More than half of the requests to the Argo CD API got no answer for 10 minutes.
-Check the URL in `spec.argoCD`, the CA, a NetworkPolicy and the Argo CD server.
+Check the URL in `spec.argoCD.server`, the CA, a NetworkPolicy and the Argo CD server.
 Wrong credentials are a `4xx`, not an `error`: look at
 `sum by (endpoint, code_class) (rate(backflow_argocd_requests_total[5m]))`.
 
@@ -582,7 +638,7 @@ look at why the sync does not finish. The Events of the policy say it too.
 A Git host declined a push of Backflow in the last 15 minutes: a protected branch
 the token may not push to, a push hook, or the host having trouble. Backflow
 retries, then marks the proposal `Failed` with `PushRejected`. Allow the token to
-push the proposal branches (`mergeRequest.branchPrefix`).
+push the proposal branches (`git.branchPrefix`).
 
 #### BackflowScratchBranchesSwept
 
@@ -737,10 +793,10 @@ gh run watch
 ```
 
 `argocd_path` picks how the operator reaches Argo CD in the run: `policy` (every policy has
-`spec.argoCD`), `default` (the connection the installer gave the operator, as with the
+`spec.argoCD.server`), `default` (the connection the installer gave the operator, as with the
 OpenShift GitOps local user: `dev-up.sh` is run with `ARGOCD_LOCAL_USER_SECRET=true`, the
 operator is started with `--argocd-server` and `--argocd-token-secret-*`, and the policies
-have no `spec.argoCD`) or `matrix` (the default, and what the nightly run does: GitLab
+have no `spec.argoCD.server`) or `matrix` (the default, and what the nightly run does: GitLab
 keeps `policy`, GitHub uses `default`, so both paths are tested every night). Only
 `merge-request`, `helm`, `kustomize` and `multi-source` can use `default`; the other
 scripts keep the policy path, and the summary of the run says which path each script and
@@ -801,14 +857,15 @@ the chart.
 `kubectl get dp` has a column **Changed by**: the field manager that wrote the drifted
 fields last. Backflow reads it from `metadata.managedFields` of the live object that Argo CD
 returns for the drift (Argo CD v3.5 includes `managedFields` there), so it needs no extra
-permission on the cluster and no webhook. `spec.actor` holds it:
+permission on the cluster and no webhook. `spec.managers` holds it, the latest writer first:
 
 ```yaml
 spec:
-  actor:
-    manager: kubectl-patch
-    operation: Update
-    time: "2026-11-01T13:26:26Z"
+  managers:
+    - manager: kubectl-patch
+      operation: Update
+      time: "2026-11-01T13:26:26Z"
+      fields: [/data/LOG_LEVEL]
 ```
 
 The merge request says it (`Changed with: kubectl-patch (Update) at 2026-11-01 13:26:26 UTC`)
@@ -830,8 +887,8 @@ recognised is not called a person and not called a controller either (see below)
 How it is decided. For every drifted field the entry of `managedFields` that owns it is found
 (list elements are matched by their merge key). Argo CD's managers (`argocd-*`) and Backflow
 are left out, and the most recent remaining entry is the actor. When several managers wrote
-different drifted fields, the latest is the actor, its paths are in `spec.actor.fields` and the
-others (at most four) in `spec.actor.others`. A manager is put in one of three classes, by its name only:
+different drifted fields, the latest is the first of `spec.managers`, with its paths in `fields`, and the
+others (at most four more) follow it. A manager is put in one of three classes, by its name only:
 
 - **interactive**: a tool a person runs: `kubectl*`, `oc` and `oc-*`, browsers (`Mozilla`, `Chrome`, ...),
   `k9s`, `lens`, `helm`, `kustomize`, `curl`, ...
@@ -850,9 +907,9 @@ The metric `backflow_drifts_detected_total` counts the class in `changed_by` (`i
 
 What it cannot tell:
 
-- **No username, without the actor webhook.** `managedFields` do not hold one, so `spec.actor.username`
-  stays empty, "Changed by: unknown" stays in the merge request and nobody is assigned
-  (`mergeRequest.assignActor`). A username needs the identity of the request, which the optional
+- **No username, without the actor webhook.** `managedFields` do not hold one, so `spec.actor`
+  is not set, "Changed by: unknown" stays in the merge request and nobody is assigned
+  (`git.mergeRequest.assignActor`). A username needs the identity of the request, which the optional
   [actor webhook](#the-actor-webhook-who-it-really-was) records.
 - **A removed field has no owner.** When the change is a field that is gone from the live object,
   there is no entry to read, and the proposal has no actor.
@@ -939,7 +996,7 @@ renewed one without a restart.
   no name, no groups, in the records or in the proposal.
 - `actorWebhook.usernameInMergeRequest` (default `false`) keeps the name out of the text of the merge
   request and the commit trailer, because Git keeps it for ever. The proposal still has it. A policy that
-  sets `mergeRequest.assignActor` assigns the merge request to that user regardless, since that is what
+  sets `git.mergeRequest.assignActor` assigns the merge request to that user regardless, since that is what
   the option asks for.
 - Names are never labels of a metric and are not logged at the default level. The records live two hours.
 
@@ -968,7 +1025,7 @@ details follow the documentation and were not run on a cluster; the kind spike a
 **What stays a limitation.**
 
 - An admission request carries **no user agent** (the API server's own is all there is), so
-  `spec.actor.userAgent` is never filled and is deprecated; the field manager is the hint for the tool.
+  there is no user agent in the API (a field that was never filled was removed in v1beta1); the field manager is the hint for the tool.
 - `kubectl scale` and `oc scale` go through the `scale` subresource. The request carries **no field
   manager**, and the managedFields entry the API server writes for it (manager from the user agent,
   `subresource: scale`) has **no time**, so a scale cannot be checked like other changes. A record without a
@@ -1103,11 +1160,11 @@ key, with the live value, is appended to the Application's last value file (the
 one with the highest precedence), where it wins over the defaults.
 
 ```yaml
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 spec:
   helm:
-    addOverrides: true        # the default; false leaves such drift Unmapped
+    allowValueOverrides: true        # the default; false leaves such drift Unmapped
 ```
 
 - The key goes to the last value file of the Application, or to the file named in
@@ -1163,7 +1220,7 @@ What is found:
 Where the key goes follows the scalar rules: edits of keys a value file already
 defines come first; a key that only the chart's defaults hold is an override in
 the Application's last value file (or `spec.helm.targetValuesFile`), which
-needs `spec.helm.addOverrides`. Maps and lists are written in block style, the
+needs `spec.helm.allowValueOverrides`. Maps and lists are written in block style, the
 rest of the file (comments, order, siblings, quoting) stays, and the result is
 checked to parse back to exactly the intended value. Strings that YAML 1.1
 reads as other types (`yes`, `no`, `on`, `y`, `0777`, `1:30`) are quoted,
@@ -1213,7 +1270,7 @@ edit and the other fields it would change. A policy can accept this for labels
 and annotations:
 
 ```yaml
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 spec:
   helm:
@@ -1252,7 +1309,7 @@ Limits of Helm mapping:
   that a value may come from one.
 - **The chart's own `values.yaml` is never edited.** A value that exists only
   there is overridden in the Application's last value file (see above); with
-  `spec.helm.addOverrides: false` it is `Unmapped` (`NoVerifiedCandidate`,
+  `spec.helm.allowValueOverrides: false` it is `Unmapped` (`NoVerifiedCandidate`,
   "chart's own defaults"), as are keys under a list in the defaults.
 - **Inline settings win and are not edited.** A key set by `helm.values`,
   `helm.valuesObject`, `helm.parameters` or `helm.fileParameters` on the
@@ -1320,8 +1377,8 @@ How a proposal is made:
    | 1 | A setting of the Application's own `kustomization.yaml`: `images` (`newName`, `newTag`, `digest`, also when the drift is only a part of the image string), `replicas`, `labels` / `commonLabels` / `commonAnnotations`, and the literals and env-file lines of a generator **without** a name hash | `KustomizePatch` |
    | 2 | A value inside a patch the overlay already has: a strategic merge patch file or inline patch (list items are matched by their merge key: containers and env vars by name, ports by `containerPort`, ...), or a JSON 6902 operation, as a file or as a string (kept in block style, or re-written as compact JSON when it was JSON) | `KustomizePatch` |
    | 3 | The resource file inside the Application's path | `Direct` |
-   | 4 | A file outside the path (a shared base or component), **only with `spec.kustomize.editBases`** | `Direct` |
-   | 5 | A **new patch**: `<overlay>/backflow-patches/<kind>-<name>.yaml` with only the drifted fields (a removed list item as `$patch: delete`, a removed key as `null`), listed under `patches:` in the overlay's `kustomization.yaml`; an existing file of that name is extended and keeps its comments. Only with `spec.kustomize.addPatches` | `KustomizePatch` |
+   | 4 | A file outside the path (a shared base or component), **only with `spec.kustomize.allowBaseEdits`** | `Direct` |
+   | 5 | A **new patch**: `<overlay>/backflow-patches/<kind>-<name>.yaml` with only the drifted fields (a removed list item as `$patch: delete`, a removed key as `null`), listed under `patches:` in the overlay's `kustomization.yaml`; an existing file of that name is extended and keeps its comments. Only with `spec.kustomize.allowNewPatches` | `KustomizePatch` |
 
    Comments, key order and quoting of the edited files are kept.
 4. The merge request and the commit say what kind of edit each one is, that it was
@@ -1329,12 +1386,12 @@ How a proposal is made:
    new file and the edited `kustomization.yaml` are in the same commit.
 
 ```yaml
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 spec:
   kustomize:
-    editBases: false     # default; true allows edits of files outside the Application's path
-    addPatches: true     # default; false leaves what no setting, patch or file holds Unmapped
+    allowBaseEdits: false     # default; true allows edits of files outside the Application's path
+    allowNewPatches: true     # default; false leaves what no setting, patch or file holds Unmapped
 ```
 
 `spec.mapping.allowPartial` and `spec.helm.allowCollateralChanges` apply to
@@ -1348,7 +1405,7 @@ path (the files each Application of **any** BackflowPolicy reads):
 
 - If **no other Application** builds the file, tier 4 comes before tier 5.
 - If **others do**, a new patch (tier 5) is tried first; the shared file is edited
-  only when that cannot be verified or `addPatches` is false. The merge request and
+  only when that cannot be verified or `allowNewPatches` is false. The merge request and
   the status list the others ("Merging this also changes: X, Y at their next sync").
 - Applications that no policy covers cannot be known, so every merge request that
   edits a file outside the path says that other Applications outside Backflow's
@@ -1369,11 +1426,11 @@ path (the files each Application of **any** BackflowPolicy reads):
 - **Remote bases, `helmCharts`, plugins and KRM functions:** the output is not a
   function of the files Backflow can edit and render.
 - **Secrets**, as for Helm (`SecretNotVerifiable`).
-- A value no setting, patch or file holds, with `addPatches: false`
+- A value no setting, patch or file holds, with `allowNewPatches: false`
   (`NoVerifiedCandidate`); the message names a file that holds the value but is
-  outside the path while `editBases` is off.
+  outside the path while `allowBaseEdits` is off.
 - Changing the **merge key** of a list item (a Service's `port`, a container's `name`)
-  cannot be expressed as a patch; it needs `editBases` to edit the file itself.
+  cannot be expressed as a patch; it needs `allowBaseEdits` to edit the file itself.
 
 Git-ahead works as for Helm: a commit to any file the kustomization builds from, in
 or outside the path, pauses detection for the Application until it is synced; a
@@ -1593,7 +1650,7 @@ back to Git, the whole proposal is `Unmapped`, even though the other fields
 could be proposed. A policy can opt in to proposing what can be proven:
 
 ```yaml
-apiVersion: backflow.io/v1alpha1
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 spec:
   mapping:
