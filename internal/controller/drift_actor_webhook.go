@@ -24,6 +24,29 @@ type ActorRecords struct {
 	// Tolerance is how far a record's time may be from the managedFields entry's.
 	// Zero means actorwebhook.DefaultTolerance.
 	Tolerance time.Duration
+	// FlushInterval is how often the webhook writes its records. Zero means actorwebhook.DefaultFlushInterval.
+	FlushInterval time.Duration
+}
+
+// MaxHold is the longest a proposal is held for the records to be written.
+const MaxHold = 5 * time.Second
+
+// Hold is how long a drift must have been seen before the actor is resolved: a change is in a
+// ChangeRecord at most one flush interval after it was made, and the tolerance covers the delay of the
+// cache and the clocks. Until then a record of an earlier user can be all there is, and would be named
+// for a change somebody else made. The hold is never longer than MaxHold. Nil (no webhook): no hold.
+func (a *ActorRecords) Hold() time.Duration {
+	if a == nil || a.Reader == nil {
+		return 0
+	}
+	flush, tolerance := a.FlushInterval, a.Tolerance
+	if flush <= 0 {
+		flush = actorwebhook.DefaultFlushInterval
+	}
+	if tolerance <= 0 {
+		tolerance = actorwebhook.DefaultTolerance
+	}
+	return min(flush+tolerance, MaxHold)
 }
 
 // Refine adds the user name and kind of a verified record to the actor. It never fails and

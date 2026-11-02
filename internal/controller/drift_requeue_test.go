@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"testing"
 	"time"
 
@@ -85,3 +86,79 @@ func TestNextStableCheck(t *testing.T) {
 		})
 	}
 }
+
+// With the actor webhook a drift is held for the time its records need to be written, even with
+// batchWindow 0s: until then the newest change can still be in the buffer of the webhook, and the
+// record of an earlier user would be named for it.
+func TestStableHoldsForTheActorRecords(t *testing.T) {
+	start := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	now := start
+	policy := &backflowv1alpha1.BackflowPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"},
+		Spec:       backflowv1alpha1.BackflowPolicySpec{BatchWindow: &metav1.Duration{}},
+	}
+	changes := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "2"}}
+	run := func(actors *ActorRecords) (*DriftReconciler, func(at time.Duration) bool) {
+		r := &DriftReconciler{Now: func() time.Time { return now }, Actors: actors}
+		return r, func(at time.Duration) bool {
+			now = start.Add(at)
+			ready, _ := r.stable(policy, "app", "res", "Deployment demo", changes, aheadState{})
+			return ready
+		}
+	}
+
+	t.Run("without the webhook two observations are enough", func(t *testing.T) {
+		_, seen := run(nil)
+		if seen(0) || !seen(time.Second) {
+			t.Error("a drift must be ready at its second observation when batchWindow is 0s")
+		}
+	})
+
+	t.Run("with the webhook it waits for the flush and the tolerance, but never long", func(t *testing.T) {
+		actors := &ActorRecords{Reader: fakeReader{}, FlushInterval: 2 * time.Second}
+		if got := actors.Hold(); got != MaxHold {
+			t.Fatalf("Hold = %v, want the cap %v (flush 2s + tolerance 10s is more)", got, MaxHold)
+		}
+		r, seen := run(actors)
+		if seen(0) || seen(time.Second) || seen(MaxHold-time.Millisecond) {
+			t.Error("a drift seen for less than the hold must not be ready")
+		}
+		if !seen(MaxHold) {
+			t.Error("a drift seen for the hold must be ready")
+		}
+		if got := r.nextStableCheck(policy); got != retryStableAfter {
+			t.Errorf("nextStableCheck = %v", got)
+		}
+	})
+
+	t.Run("a smaller tolerance gives a shorter hold", func(t *testing.T) {
+		actors := &ActorRecords{Reader: fakeReader{}, FlushInterval: time.Second, Tolerance: 500 * time.Millisecond}
+		if got := actors.Hold(); got != 1500*time.Millisecond {
+			t.Errorf("Hold = %v", got)
+		}
+	})
+
+	t.Run("a change that comes in the hold starts it again", func(t *testing.T) {
+		actors := &ActorRecords{Reader: fakeReader{}}
+		r, seen := run(actors)
+		seen(0)
+		now = start.Add(4 * time.Second)
+		other := []backflowv1alpha1.FieldChange{{Path: "/spec/replicas", Op: backflowv1alpha1.OpReplace, Desired: "1", Live: "3"}}
+		if ready, _ := r.stable(policy, "app", "res", "Deployment demo", other, aheadState{}); ready {
+			t.Error("Bob's change (another value) must not be ready on Alice's clock")
+		}
+		now = start.Add(4*time.Second + MaxHold)
+		if ready, _ := r.stable(policy, "app", "res", "Deployment demo", other, aheadState{}); !ready {
+			t.Error("it is ready once the hold has passed since Bob's change")
+		}
+	})
+
+	t.Run("no actors is no hold", func(t *testing.T) {
+		var none *ActorRecords
+		if none.Hold() != 0 || (&ActorRecords{}).Hold() != 0 {
+			t.Error("without a reader there is no webhook")
+		}
+	})
+}
+
+type fakeReader struct{ client.Reader }

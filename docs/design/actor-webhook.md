@@ -36,6 +36,12 @@ The design below was implemented with these decisions, which override the recomm
 | Source of truth for the CEL | `internal/actorwebhook.Conditions` generates the chart's `_actor_conditions.tpl` (`hack/genactorconditions`, run by `make helm-sync`) and a chart test compares the rendered conditions to it; the unit tests evaluate them with cel-go against sample requests, including an absent `subResource`. |
 | e2e | `ACTOR_WEBHOOK=true` adds section i to `hack/test-merge-request.sh`: the local operator serves the webhook, registered with `clientConfig.url` to the host. |
 
+**Hold before the actor is resolved.** The actor is set when the proposal is made and never again (`spec` is
+immutable), and one record holds all changes of a user to an object. A proposal made before the newest change
+is flushed could see only an earlier user's record and name them. With the webhook on, a drift therefore has to
+be seen unchanged for `flushInterval + tolerance`, at most 5 s, in addition to `batchWindow` (the larger of the
+two counts). A drift with other changes starts again. Without the webhook there is no hold.
+
 Not decided here, left open: whether a record should survive an operator restart *before* its flush (it
 does not), and the metric for fail-open counts (the apiserver has it; Backflow cannot scrape it).
 

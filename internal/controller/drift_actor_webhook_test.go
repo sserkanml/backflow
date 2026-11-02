@@ -368,6 +368,15 @@ var _ = Describe("Actor webhook, from the review to the proposal", func() {
 			Expect(a.Refine(ctx, scaled("uid-scale-7", "scale"), replicas, actor("kubectl"), after).Username).To(BeEmpty())
 		})
 
+		It("names nobody, not the earlier user, when the newest change was not flushed at the first look", func() {
+			// Alice's record is written; Bob's change is still in the buffer of the webhook. The proposal waits for
+			// the hold (batchWindow 0s), by when Bob's record is written too: two users fit, so nobody is named.
+			alice := flow(true, scaleReview("alice", "uid-scale-8"))
+			Expect(alice.Hold()).To(BeNumerically(">", 0))
+			bob := flow(true, scaleReview("bob", "uid-scale-8"))
+			Expect(bob.Refine(ctx, scaled("uid-scale-8", "scale"), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
+		})
+
 		It("names nobody when the records of two users fit", func() {
 			a := flow(true, scaleReview("alice", "uid-scale-3"), scaleReview("mallory", "uid-scale-3"))
 			Expect(a.Refine(ctx, scaled("uid-scale-3", "scale"), replicas, actor("kubectl"), sinceSync).Username).To(BeEmpty())
