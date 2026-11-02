@@ -696,6 +696,12 @@ by default). Finished proposals are deleted after 14 days by default. Tokens are
 Git cache is an `emptyDir`. The metrics endpoint is served over TLS and protected by token review. A reported vulnerability goes through
 [SECURITY.md](SECURITY.md); what the version number promises is in [docs/compatibility.md](docs/compatibility.md).
 
+**Compatibility and support.** Semantic versioning from 1.0: `backflow.io/v1` gets no breaking change in 1.x, `v1beta1` is served but deprecated
+until 2.0, and a deprecation is announced one minor release ahead. Backflow has a single maintainer: **only the latest minor release of 1.x gets fixes**
+(no backports; upgrading within 1.x is safe by the rule above). A security report is acknowledged within five business days, fixed as soon as
+reasonably possible, and disclosed in coordination within 90 days at most. The details, and the support matrix (Kubernetes, OpenShift, Argo CD, GitLab and GitHub,
+with what CI tests), are in [docs/compatibility.md](docs/compatibility.md) and [SECURITY.md](SECURITY.md).
+
 ## Metrics and alerts
 
 The operator serves Prometheus metrics next to those of controller-runtime
