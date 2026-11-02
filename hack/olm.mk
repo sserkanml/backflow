@@ -78,3 +78,15 @@ bundle-validate: operator-sdk ## Validate bundle/ with the operatorframework and
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.
 	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
+
+.PHONY: catalog
+catalog: opm ## Generate the file-based catalog in catalog/out from catalog/bundles.txt and bundle/ (run make bundle first).
+	OPM="$(OPM)" BUNDLE_IMG="$(BUNDLE_IMG)" BUNDLE_VERSION="$(BUNDLE_VERSION)" IMAGE_REPO="$(IMAGE_REPO)" CHANNEL="$(OLM_CHANNEL)" ./hack/olm-catalog.sh
+
+.PHONY: catalog-build
+catalog-build: ## Build the catalog image from catalog/out.
+	$(CONTAINER_TOOL) build -f catalog/catalog.Dockerfile -t $(CATALOG_IMG) catalog
+
+.PHONY: olm-actor-webhook
+olm-actor-webhook: ## Generate docs/olm/actor-webhook.yaml (the optional actor webhook for OLM) from the chart.
+	./hack/olm-actor-webhook.sh
