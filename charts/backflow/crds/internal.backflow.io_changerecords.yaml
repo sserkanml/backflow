@@ -4,12 +4,10 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.22.0
-  name: changerecords.backflow.io
+  name: changerecords.internal.backflow.io
 spec:
-  group: backflow.io
+  group: internal.backflow.io
   names:
-    categories:
-    - backflow
     kind: ChangeRecord
     listKind: ChangeRecordList
     plural: changerecords
@@ -25,7 +23,7 @@ spec:
     - jsonPath: .spec.name
       name: Name
       type: string
-    - jsonPath: .spec.kind
+    - jsonPath: .spec.actorKind
       name: Kind
       type: string
     - jsonPath: .spec.fieldManager
@@ -40,7 +38,7 @@ spec:
         description: |-
           ChangeRecord is written by the actor webhook of the operator, in the operator's
           namespace, and deleted after actorWebhook.retention. It holds user names: it is for
-          the operator and its administrators, not for tenants.
+          the operator and its administrators, not for tenants. It is not part of the public API.
         properties:
           apiVersion:
             description: |-
@@ -65,12 +63,20 @@ spec:
               admission webhook of the operator saw it. It holds the paths of the changed
               fields and never a value.
             properties:
+              actorKind:
+                description: 'Person or controller (a service account): the only identity
+                  stored when names are not.'
+                enum:
+                - Person
+                - Controller
+                type: string
               count:
                 description: How many changes were merged.
                 format: int32
                 type: integer
               fieldManager:
                 description: The field manager of the request.
+                maxLength: 253
                 type: string
               firstSeen:
                 description: When the first change merged into this record was made,
@@ -78,64 +84,66 @@ spec:
                 format: date-time
                 type: string
               group:
+                maxLength: 253
                 type: string
               groups:
                 description: The groups of the user. Empty when the operator is told
                   not to record names.
                 items:
+                  maxLength: 253
                   type: string
                 maxItems: 16
                 type: array
                 x-kubernetes-list-type: atomic
-              kind:
-                description: 'Person or controller (a service account): the only identity
-                  stored when names are not.'
-                enum:
-                - person
-                - controller
-                type: string
               lastSeen:
                 format: date-time
                 type: string
               name:
+                maxLength: 253
+                minLength: 1
                 type: string
               namespace:
-                type: string
-              operation:
-                enum:
-                - UPDATE
+                maxLength: 63
                 type: string
               paths:
                 description: The JSON pointers of the changed fields. Never values.
                 items:
+                  maxLength: 1024
                   type: string
                 maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
               resource:
+                description: The plural resource name, as in the admission request.
+                maxLength: 253
+                minLength: 1
                 type: string
               resourceVersion:
                 description: The resourceVersion of the object after the last change
                   merged into this record.
+                maxLength: 64
                 type: string
-              subResource:
+              subresource:
                 description: The subresource of the request (for example scale). Empty
                   for the resource itself.
+                maxLength: 63
                 type: string
               uid:
                 description: UID of the changed object.
+                maxLength: 64
+                minLength: 1
                 type: string
               username:
                 description: The Kubernetes user name. Empty when the operator is
                   told not to record names.
+                maxLength: 253
                 type: string
             required:
+            - actorKind
             - count
             - firstSeen
-            - kind
             - lastSeen
             - name
-            - operation
             - paths
             - resource
             - uid

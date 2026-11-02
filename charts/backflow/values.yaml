@@ -74,6 +74,25 @@ argocd:
   # see everything sets [{policyNamespaces: ["*"], projects: ["*"]}].
   # A policy with its own spec.argoCD is not affected: Argo CD decides what its token sees.
   defaultAccess: []
+  # The Argo CD servers a BackflowPolicy may name in spec.argoCD.server.url, besides the
+  # server above, which is always allowed. Without an entry here a policy that names another
+  # server is not Ready (ServerNotAllowed) and the operator makes no request to it: a tenant
+  # who may create a policy cannot make the operator call any URL. An entry is a scheme, a
+  # host and optionally a port, and the host may be a wildcard:
+  #
+  #   allowedServers:
+  #     - https://argocd.team-a.example.com
+  #     - https://*.argo.corp:8443
+  allowedServers: []
+
+# The Git hosts a ScmConnection may name in spec.url. A connection to another host is not
+# Ready (HostNotAllowed) and the operator makes no request to it, and never sends it its
+# token. An entry is a host name, or a wildcard that matches any subdomain (*.example.com).
+# An empty list allows no host: set the hosts of your self-hosted GitLab or GitHub here.
+scm:
+  allowedHosts:
+    - gitlab.com
+    - github.com
 
 # OpenShift: a ConfigMap labelled config.openshift.io/inject-trusted-cabundle that
 # OpenShift fills in with the cluster's trusted CA bundle (the proxy's trustedCA),

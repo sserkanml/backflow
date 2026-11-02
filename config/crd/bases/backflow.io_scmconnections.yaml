@@ -8,8 +8,6 @@ metadata:
 spec:
   group: backflow.io
   names:
-    categories:
-    - backflow
     kind: ScmConnection
     listKind: ScmConnectionList
     plural: scmconnections

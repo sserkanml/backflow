@@ -2,7 +2,8 @@
 # back to Git as merge requests. Needs an ScmConnection for the repository host
 # and a Secret with an Argo CD API token (read access to applications):
 #   kubectl -n backflow-system create secret generic argocd-token --from-literal=token="$ARGOCD_TOKEN"
-apiVersion: backflow.io/v1alpha1
+# The Argo CD server must be the operator's own (chart value argocd.server) or in argocd.allowedServers.
+apiVersion: backflow.io/v1beta1
 kind: BackflowPolicy
 metadata:
   labels:
@@ -11,7 +12,6 @@ metadata:
   name: test-apps
   namespace: backflow-system
 spec:
-  argoCDNamespace: argocd
   applications:
     selector:
       matchLabels:
@@ -19,14 +19,16 @@ spec:
   # MergeRequest, DirectCommit or ReportOnly. Start with ReportOnly to see what would be proposed.
   mode: MergeRequest
   argoCD:
-    url: https://argocd-server.argocd.svc
-    tokenSecretRef:
-      name: argocd-token
-      key: token
-    # For an Argo CD with a private CA, point to a Secret holding the PEM bundle:
-    # caSecretRef:
-    #   name: argocd-ca
-    #   key: ca.crt
+    namespace: argocd
+    server:
+      url: https://argocd-server.argocd.svc
+      tokenSecretRef:
+        name: argocd-token
+        key: token
+      # For an Argo CD with a private CA, point to a Secret holding the PEM bundle:
+      # caSecretRef:
+      #   name: argocd-ca
+      #   key: ca.crt
   exclude:
   - kind: Secret
   ignoreFields:
@@ -34,9 +36,14 @@ spec:
     group: apps
     jsonPointers:
     - /spec/replicas   # owned by an autoscaler
-  mergeRequest:
+  git:
     branchPrefix: backflow/
-    labels:
-    - backflow
-    assignActor: true
+    mergeRequest:
+      labels:
+      - backflow
+      assignActor: true
   batchWindow: 30s
+  # Finished proposals (merged, rejected, reverted, superseded, failed) are deleted after this long;
+  # open and Unmapped ones never. 0s keeps them for ever.
+  retention:
+    finishedProposals: 336h

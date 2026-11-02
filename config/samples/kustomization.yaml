@@ -1,6 +1,6 @@
 ## Append samples of your project ##
 resources:
-- backflow_v1alpha1_scmconnection.yaml
-- backflow_v1alpha1_backflowpolicy.yaml
+- backflow_v1beta1_scmconnection.yaml
+- backflow_v1beta1_backflowpolicy.yaml
 # DriftProposals are created by the operator; there is no sample for them.
 # +kubebuilder:scaffold:manifestskustomizesamples

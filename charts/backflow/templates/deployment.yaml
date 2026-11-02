@@ -68,6 +68,12 @@ spec:
             {{- end }}
             {{- end }}
             - --operator-namespace={{ .Release.Namespace }}
+            {{- range .Values.argocd.allowedServers }}
+            - --argocd-allowed-servers={{ . }}
+            {{- end }}
+            {{- range .Values.scm.allowedHosts }}
+            - --scm-allowed-hosts={{ . }}
+            {{- end }}
             {{- range .Values.argocd.defaultAccess }}
             - --argocd-default-access={{ join "," (required "argocd.defaultAccess[].policyNamespaces needs at least one namespace" .policyNamespaces) }}:{{ join "," (required "argocd.defaultAccess[].projects needs at least one project" .projects) }}
             {{- end }}
