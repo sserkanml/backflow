@@ -46,8 +46,9 @@ func crdFiles(t *testing.T, dir string) map[string]crdFile {
 	return out
 }
 
-// Helm applies charts/backflow/crds on install and the API server rejects a CRD that has no group, so a chart with one cannot be
-// installed from scratch (the released 0.18.0 had three, made by controller-gen from a package that is not an API).
+// Helm applies charts/backflow/crds on install and the API server rejects a CRD that has no group, so a chart with one
+// cannot be installed from scratch (the released 0.18.0 had three, made by controller-gen from a package that is not an
+// API).
 func TestEveryCRDHasAGroupAndAMatchingName(t *testing.T) {
 	for _, dir := range []string{"../../config/crd/bases", "../../charts/backflow/crds"} {
 		for name, crd := range crdFiles(t, dir) {
@@ -55,7 +56,8 @@ func TestEveryCRDHasAGroupAndAMatchingName(t *testing.T) {
 			case crd.Spec.Group == "":
 				t.Errorf("%s/%s: the CRD has no spec.group (metadata.name %q)", dir, name, crd.Metadata.Name)
 			case crd.Spec.Names.Plural == "" || crd.Metadata.Name != crd.Spec.Names.Plural+"."+crd.Spec.Group:
-				t.Errorf("%s/%s: metadata.name is %q, want %s.%s", dir, name, crd.Metadata.Name, crd.Spec.Names.Plural, crd.Spec.Group)
+				t.Errorf("%s/%s: metadata.name is %q, want %s.%s", dir, name, crd.Metadata.Name,
+					crd.Spec.Names.Plural, crd.Spec.Group)
 			case len(crd.Spec.Versions) == 0:
 				t.Errorf("%s/%s: no versions", dir, name)
 			case !strings.HasPrefix(name, crd.Spec.Group+"_"):
@@ -72,7 +74,7 @@ func TestTheChartHasTheCRDsOfTheKustomization(t *testing.T) {
 		t.Fatal(err)
 	}
 	var listed []string
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "- bases/"); ok {
 			listed = append(listed, rest)
 		}
