@@ -146,6 +146,14 @@ Upgrades follow the channel: a new catalog image (`:stable`) with a newer bundle
 subscription; `installPlanApproval: Automatic` applies it, `Manual` waits for `oc patch installplan ... approved=true`. Each version
 in the channel `replaces` the one before it, so a subscription goes through them in order.
 
+## Uninstall
+
+Delete the `Subscription` and the `ClusterServiceVersion` (`oc -n openshift-operators delete subscription backflow` and
+`oc -n openshift-operators delete csv backflow.v<version>`). The operator and the permissions OLM made for it are removed. The CRDs
+and your objects stay (OLM does not delete CRDs, and deleting a CRD deletes its objects). The end-user roles of the bundle
+(`backflow-*-admin-role`, `-editor-role`, `-viewer-role`, `backflow-metrics-reader`) also stay, unbound; remove them with
+`oc delete clusterrole -l olm.owner=backflow.v<version>`.
+
 ## Coming from the Helm chart
 
 The first version in the catalog is on the final API, and OLM does not migrate objects. From **a Helm release of 0.18 or later**

@@ -264,9 +264,11 @@ kubectl -n "$NS" delete csv "$CSV" >/dev/null
 wait_for "the operator Deployment is gone" 120 bash -c "! kubectl -n $NS get deploy $DEPLOY"
 expect "the CRDs are kept" "$(kubectl get crd scmconnections.backflow.io backflowpolicies.backflow.io driftproposals.backflow.io -o name | wc -l | tr -d ' ')" "3"
 expect "and so are the objects" "$(kubectl -n "$APP_NS" get scmconnections.backflow.io -o name | wc -l | tr -d ' ')" "2"
-# The garbage collector removes what the CSV owned.
+# The permissions of the operator (the ClusterRoles and bindings OLM made for its service account) are removed by OLM. The
+# end-user ClusterRoles that the bundle ships (admin, editor, viewer, metrics-reader) are not: OLM keeps them, and they grant
+# nothing to anyone until they are bound.
 wait_for "the permissions of the operator are gone" 180 \
-  bash -c "[ \"\$(kubectl get clusterrole -o json | jq '[.items[] | select(.metadata.labels[\"olm.owner\"] == \"$CSV\")] | length')\" = 0 ]"
+  bash -c "[ \"\$(kubectl get clusterrolebinding -o json | jq '[.items[] | select(.subjects[]? | .kind == \"ServiceAccount\" and .name == \"backflow-controller-manager\")] | length')\" = 0 ] && [ \"\$(kubectl get clusterrole -o name | grep -c \"clusterrole.rbac.authorization.k8s.io/$CSV-\" || true)\" = 0 ]"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]]
