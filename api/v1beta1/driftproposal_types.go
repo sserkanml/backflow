@@ -43,12 +43,15 @@ const ReasonTooManyChanges = "TooManyChanges"
 // creates a new proposal and supersedes this one.
 type DriftProposalSpec struct {
 	// Policy, in this namespace, that captured this drift.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Policy"
 	PolicyRef LocalObjectRef `json:"policyRef"`
 
 	// Argo CD Application that owns the resource.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Application"
 	ApplicationRef ObjectRef `json:"applicationRef"`
 
 	// The drifted resource.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Resource"
 	ResourceRef ResourceRef `json:"resourceRef"`
 
 	// Every source of the Application, in order, each at the revision Argo CD compared against
@@ -63,6 +66,7 @@ type DriftProposalSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=256
 	// +listType=atomic
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Changes"
 	Changes []FieldChange `json:"changes"`
 
 	// True when the drift had more than 256 changes and only the first 256 are listed. Such a
@@ -72,6 +76,7 @@ type DriftProposalSpec struct {
 
 	// Who made the change in the cluster, when known: from the actor webhook.
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Actor"
 	Actor *Actor `json:"actor,omitempty"`
 
 	// The managedFields writers of the drifted fields, most recent first. The first is the
@@ -82,6 +87,7 @@ type DriftProposalSpec struct {
 	Managers []ManagerWrite `json:"managers,omitempty"`
 
 	// When the drift was first observed.
+	// +operator-sdk:csv:customresourcedefinitions:type=spec,displayName="Detected at"
 	DetectedAt metav1.Time `json:"detectedAt"`
 }
 
@@ -533,10 +539,12 @@ type Signals struct {
 // DriftProposalStatus tracks the proposal through mapping and review.
 type DriftProposalStatus struct {
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Phase",xDescriptors="urn:alm:descriptor:io.kubernetes.phase"
 	Phase ProposalPhase `json:"phase,omitempty"`
 	// +optional
 	Mapping *Mapping `json:"mapping,omitempty"`
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Git"
 	Git *GitStatus `json:"git,omitempty"`
 	// Proposal that replaced this one.
 	// +kubebuilder:validation:MaxLength=253
@@ -545,10 +553,12 @@ type DriftProposalStatus struct {
 	// Human-readable explanation of the current phase: the message of the condition that caused it.
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Message"
 	Message string `json:"message,omitempty"`
 	// When the proposal reached a final phase (Merged, Rejected, Reverted, Superseded, Failed).
 	// spec.retention.finishedProposals of the policy counts from here.
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Finished at"
 	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 	// Facts left by the policy and drift controllers; see Signals.
 	// +optional
@@ -556,6 +566,7 @@ type DriftProposalStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	// +optional
+	// +operator-sdk:csv:customresourcedefinitions:type=status,displayName="Conditions",xDescriptors="urn:alm:descriptor:io.kubernetes.conditions"
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 

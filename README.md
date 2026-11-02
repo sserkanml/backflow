@@ -10,8 +10,10 @@ manifests. Backflow reads the cluster and writes to Git.
 
 ## Install
 
-Backflow runs in the cluster as one Deployment and is installed with a Helm
-chart (Helm 3.8 or later):
+Backflow runs in the cluster as one Deployment. Install it with a Helm chart (Helm 3.8 or later), or, on OpenShift, from
+OperatorHub through the catalog of the project ([Install from OperatorHub (OpenShift)](#install-from-operatorhub-openshift)).
+
+With Helm:
 
 ```bash
 helm install backflow oci://ghcr.io/sserkanml/charts/backflow \
@@ -22,6 +24,41 @@ The chart installs the CRDs (`ScmConnection`, `BackflowPolicy`,
 `DriftProposal`), a ClusterRole, the Deployment and, with
 `leaderElection: true` (the default), a leader election Role. The image is
 `ghcr.io/sserkanml/backflow`, for linux/amd64 and linux/arm64.
+
+### Install from OperatorHub (OpenShift)
+
+Backflow is also an OLM operator, from a catalog of its own (it is not listed on OperatorHub.io): add a `CatalogSource`, and
+subscribe to the package `backflow`, channel `stable`, install mode AllNamespaces. The settings that are Helm values in the chart are
+`BACKFLOW_*` environment variables in `Subscription.spec.config.env` (the
+[table](#configuration-without-helm-environment-variables) has both). **Add your self-hosted GitLab or GitHub to
+`BACKFLOW_SCM_ALLOWED_HOSTS`**; the default is `gitlab.com,github.com`.
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata: {name: backflow-catalog, namespace: openshift-marketplace}
+spec:
+  sourceType: grpc
+  image: ghcr.io/sserkanml/backflow-catalog:stable
+  displayName: Backflow
+  publisher: sserkanml
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata: {name: backflow, namespace: openshift-operators}
+spec:
+  channel: stable
+  name: backflow
+  source: backflow-catalog
+  sourceNamespace: openshift-marketplace
+  config:
+    env:
+      - {name: BACKFLOW_SCM_ALLOWED_HOSTS, value: "gitlab.example.com,gitlab.com"}
+```
+
+The full guide ([docs/olm.md](docs/olm.md)): the Argo CD connection of OpenShift GitOps, upgrades along the channel, why the actor
+webhook is a separate opt-in there, and how to come from the Helm chart (uninstall the release, run `manager migrate` once for a
+`v1alpha1` installation, then subscribe).
 
 ### 1. A read-only Argo CD account
 
@@ -462,6 +499,55 @@ it adds `v1beta1` to the installed CRDs, rewrites the objects (a `DriftProposal`
 Never edit a Backflow object through `v1alpha1` after the CRD stores `v1beta1`: the write is pruned to the `v1beta1` schema and loses
 fields. On a cluster with no Backflow objects, delete the three CRDs (and `changerecords.backflow.io`) and apply the new ones.
 
+### Configuration without Helm: environment variables
+
+Every setting of the operator is a flag of `/manager`, and every flag can also be set by an environment variable: `BACKFLOW_`
+and the name of the flag in capitals with `_` for `-` (`--argocd-server` is `BACKFLOW_ARGOCD_SERVER`). This is how an installation
+without Helm (OLM, see below: `Subscription.spec.config.env`) is configured. A flag given on the command line wins over the
+variable; an empty variable is the same as none. A flag that can be repeated (`--argocd-default-access`,
+`--argocd-allowed-servers`, `--scm-allowed-hosts`) takes several values in its variable, separated by `;` or new lines (the
+comma-separated ones also by commas): `BACKFLOW_ARGOCD_DEFAULT_ACCESS="team-a,team-b:team-a;platform:*"`. A value that does not
+parse stops the operator at start-up and names the variable.
+
+| Flag | Environment variable | Helm value | |
+|---|---|---|---|
+| `--argocd-server` | `BACKFLOW_ARGOCD_SERVER` | `argocd.server` | the default Argo CD connection |
+| `--argocd-token-secret-namespace` | `BACKFLOW_ARGOCD_TOKEN_SECRET_NAMESPACE` | `argocd.tokenSecret.namespace` | |
+| `--argocd-token-secret-name` | `BACKFLOW_ARGOCD_TOKEN_SECRET_NAME` | `argocd.tokenSecret.name` | |
+| `--argocd-token-secret-key` | `BACKFLOW_ARGOCD_TOKEN_SECRET_KEY` | `argocd.tokenSecret.key` | default `apiToken` |
+| `--argocd-ca-file` | `BACKFLOW_ARGOCD_CA_FILE` | `argocd.caFile` (`argocd.serviceCA`) | a file in the pod; under OLM mount it yourself |
+| `--argocd-insecure-skip-tls-verify` | `BACKFLOW_ARGOCD_INSECURE_SKIP_TLS_VERIFY` | | development only |
+| `--argocd-allowed-servers` | `BACKFLOW_ARGOCD_ALLOWED_SERVERS` | `argocd.allowedServers` | URLs a policy may name |
+| `--argocd-default-access` | `BACKFLOW_ARGOCD_DEFAULT_ACCESS` | `argocd.defaultAccess` | `ns[,ns]:project[,project]`, `*` matches any |
+| `--scm-allowed-hosts` | `BACKFLOW_SCM_ALLOWED_HOSTS` | `scm.allowedHosts` | **must name a self-hosted GitLab/GitHub** |
+| `--secret-namespaces` | `BACKFLOW_SECRET_NAMESPACES` | `secretNamespaces` | the operator reads Secrets only there (its own namespace and the Argo CD token's are always included); the chart enforces it with RBAC, OLM grants `get` everywhere and the operator enforces it |
+| `--operator-namespace` | `BACKFLOW_OPERATOR_NAMESPACE` | (the release namespace) | default: the namespace of the service account |
+| `--trusted-ca-file` | `BACKFLOW_TRUSTED_CA_FILE` | `trustedCABundle` | |
+| `--merge-request-poll-interval` | `BACKFLOW_MERGE_REQUEST_POLL_INTERVAL` | `mergeRequestPollInterval` | default `2m` |
+| `--scm-recheck-interval` | `BACKFLOW_SCM_RECHECK_INTERVAL` | `scmRecheckInterval` | default `5m` |
+| `--secret-cache-ttl` | `BACKFLOW_SECRET_CACHE_TTL` | `secretCacheTTL` | default `30s` |
+| `--render-budget` | `BACKFLOW_RENDER_BUDGET` | `renderBudget` | default `2m` |
+| `--unpack-file-dependencies` | `BACKFLOW_UNPACK_FILE_DEPENDENCIES` | `unpackFileDependencies` | default `true` |
+| `--repo-cache-dir` | `BACKFLOW_REPO_CACHE_DIR` | `repoCache.*` | |
+| `--leader-elect` | `BACKFLOW_LEADER_ELECT` | `leaderElection` | |
+| `--metrics-bind-address` | `BACKFLOW_METRICS_BIND_ADDRESS` | `metrics.enabled` (`:8443`) | |
+| `--metrics-secure` | `BACKFLOW_METRICS_SECURE` | | default `true` |
+| `--metrics-cert-path`, `--metrics-cert-name`, `--metrics-cert-key` | `BACKFLOW_METRICS_CERT_PATH`, `BACKFLOW_METRICS_CERT_NAME`, `BACKFLOW_METRICS_CERT_KEY` | `metrics.certSecret` | |
+| `--health-probe-bind-address` | `BACKFLOW_HEALTH_PROBE_BIND_ADDRESS` | | default `:8081` |
+| `--actor-webhook` | `BACKFLOW_ACTOR_WEBHOOK` | `actorWebhook.enabled` | see the actor webhook under OLM |
+| `--actor-webhook-path` | `BACKFLOW_ACTOR_WEBHOOK_PATH` | (generated by the chart) | |
+| `--actor-retention` | `BACKFLOW_ACTOR_RETENTION` | `actorWebhook.retention` | |
+| `--actor-flush-interval` | `BACKFLOW_ACTOR_FLUSH_INTERVAL` | `actorWebhook.flushInterval` | |
+| `--actor-max-records` | `BACKFLOW_ACTOR_MAX_RECORDS` | `actorWebhook.maxRecords` | |
+| `--actor-tolerance` | `BACKFLOW_ACTOR_TOLERANCE` | `actorWebhook.tolerance` | |
+| `--actor-record-username` | `BACKFLOW_ACTOR_RECORD_USERNAME` | `actorWebhook.recordUsername` | |
+| `--username-in-merge-request` | `BACKFLOW_USERNAME_IN_MERGE_REQUEST` | `actorWebhook.usernameInMergeRequest` | |
+| `--webhook-port` | `BACKFLOW_WEBHOOK_PORT` | (the webhook port) | default `9443`, `-1` off |
+| `--webhook-cert-path`, `--webhook-cert-name`, `--webhook-cert-key` | `BACKFLOW_WEBHOOK_CERT_PATH`, `BACKFLOW_WEBHOOK_CERT_NAME`, `BACKFLOW_WEBHOOK_CERT_KEY` | (the webhook certificate) | |
+| `--enable-http2` | `BACKFLOW_ENABLE_HTTP2` | | default `false` |
+| `--zap-devel`, `--zap-log-level`, `--zap-encoder`, `--zap-stacktrace-level`, `--zap-time-encoding` | `BACKFLOW_ZAP_*` | `extraArgs` | logging |
+| `--kubeconfig` | `BACKFLOW_KUBECONFIG` | | outside a cluster only |
+
 ### Allowed servers and hosts
 
 A `BackflowPolicy` names an Argo CD server (`spec.argoCD.server.url`) and a `ScmConnection` a Git host (`spec.url`),
@@ -478,20 +564,41 @@ allowed, in the chart values and not in the objects:
 An object that names something else is not `Ready` (`ServerNotAllowed` for a policy, `HostNotAllowed` for a connection), the
 message names the flag, **no request is made** and the token Secret is not read. A proposal of such a connection is held.
 
-**With kustomize** (`config/default`, `make deploy`) there is no chart value: the lists are arguments of the manager. The manifests
-set none, so **no Git host and no extra Argo CD server is allowed** until you add them; a `ScmConnection` is `HostNotAllowed`
-and a policy that names a server is `ServerNotAllowed` (the policy's own `spec.argoCD.server` needs the server in
-`--argocd-allowed-servers`, the operator's default connection `--argocd-server` is always allowed). Add them with a patch in your
-overlay, once for each entry, as `config/e2e` does for the server of the samples:
+**Without Helm** (kustomize: `config/default`, `make deploy`; OLM: the bundle made from it) there is no chart value: the lists are
+flags of the manager, or the `BACKFLOW_*` environment variables
+([the table](#configuration-without-helm-environment-variables)). **The defaults are the chart's**: the manifests set
+`BACKFLOW_SCM_ALLOWED_HOSTS=gitlab.com,github.com` (the Deployment in `config/manager`, so the OLM bundle has it too), and no extra
+Argo CD server is allowed (the operator's own `--argocd-server` always is). A self-hosted GitLab or GitHub, or a server a policy
+names in `spec.argoCD.server.url`, has to be added, or the `ScmConnection` is `HostNotAllowed` and the policy `ServerNotAllowed`.
+
+* With **OLM**, set the variables in `Subscription.spec.config.env` ([docs/olm.md](docs/olm.md)); a variable of the Subscription
+  replaces the default of the Deployment.
+* With **kustomize**, patch the Deployment of your overlay, either with environment variables or with arguments, as `config/e2e`
+  does for the server of the samples. **A flag wins over the variable and replaces it**: `--scm-allowed-hosts=gitlab.example.com`
+  as an argument means that `gitlab.com` is no longer allowed, which the default variable would have allowed. So list every host you want:
 
 ```yaml
 # kustomization.yaml of your overlay
 resources:
-- github.com/sserkanml/backflow/config/default?ref=v0.18.0
+- github.com/sserkanml/backflow/config/default?ref=v0.18.1
 patches:
+# an environment variable: merged by name, so it replaces the default value
 - target: {kind: Deployment}
   patch: |-
-    - {op: add, path: /spec/template/spec/containers/0/args/-, value: "--scm-allowed-hosts=gitlab.example.com,gitlab.com"}
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: backflow-controller-manager}
+    spec:
+      template:
+        spec:
+          containers:
+          - name: manager
+            env:
+            - {name: BACKFLOW_SCM_ALLOWED_HOSTS, value: "gitlab.example.com,gitlab.com"}
+            - {name: BACKFLOW_ARGOCD_ALLOWED_SERVERS, value: "https://argocd.example.com"}
+# or an argument, once for each entry (config/e2e does this)
+- target: {kind: Deployment}
+  patch: |-
     - {op: add, path: /spec/template/spec/containers/0/args/-, value: "--argocd-allowed-servers=https://argocd.example.com"}
 ```
 

@@ -1,0 +1,8 @@
+# The ClusterServiceVersion of the OLM bundle is made from this: the base CSV (the description, the icon, the owned CRDs with
+# their descriptors), the manifests of the operator (config/default), the samples (alm-examples) and the scorecard tests.
+# `make bundle` builds it.
+resources:
+- bases/backflow.clusterserviceversion.yaml
+- ../default
+- ../samples
+- ../scorecard

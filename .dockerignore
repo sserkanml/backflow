@@ -15,3 +15,7 @@
 
 # The CRDs of this release, which config/crd embeds for `manager migrate`
 !config/crd/bases/*.yaml
+
+# The OLM bundle, which make bundle-build puts in an image of its own
+!bundle
+!bundle/**

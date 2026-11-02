@@ -1,0 +1,75 @@
+name: OLM
+
+# The bundle and the catalog for OperatorHub (OpenShift): the bundle is generated from config/ and validated, the actor
+# webhook file is checked against the chart, and a kind cluster with OLM installs the operator from a catalog of this
+# checkout (hack/test-olm.sh): subscribe, the ClusterServiceVersion succeeds, the operator is Ready, an ScmConnection and a
+# BackflowPolicy are reconciled, the scorecard passes, uninstall. No secret and no Git host.
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  bundle:
+    permissions:
+      contents: read
+    name: Bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.0
+
+      # operator-sdk and opm are pinned and checked against their published SHA-256 (hack/olm.mk).
+      - name: Generate the bundle
+        run: make bundle
+
+      - name: Validate it (operatorframework, OperatorHub good practices)
+        run: make bundle-validate
+
+      - name: The generated config/manifests did not change
+        run: git diff --exit-code -- config/manifests
+
+      - name: The actor webhook file is what the chart makes
+        run: ./hack/olm-actor-webhook.sh --check
+
+  kind:
+    permissions:
+      contents: read
+    name: Install from a catalog on kind with OLM
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # The Kubernetes version of the kind cluster (kind v0.33.0 has it pre-built).
+      KIND_NODE_IMAGE: kindest/node:v1.35.8@sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      # kind and kubectl are pinned and checked against their published SHA-256.
+      - name: Install kind and kubectl
+        run: ./hack/ci-install-tools.sh
+
+      - name: Install from a catalog, with OLM
+        run: ./hack/test-olm.sh

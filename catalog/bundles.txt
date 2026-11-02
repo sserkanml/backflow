@@ -1,0 +1,4 @@
+# The versions of the bundles that were published before the one being built, oldest first, one per line (for example 0.19.0).
+# `make catalog` puts them in the file-based catalog from the bundle images ghcr.io/sserkanml/backflow-bundle:<version>, and the
+# channel replaces them in this order, so that Subscriptions upgrade along the channel. After a release is published, add its
+# version here in the next change. Empty: the first OLM release.

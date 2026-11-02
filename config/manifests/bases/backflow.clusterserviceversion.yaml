@@ -1,0 +1,267 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    categories: Integration & Delivery, Developer Tools
+    containerImage: ghcr.io/sserkanml/backflow:0.18.0
+    description: Proposes the changes made directly in the cluster to Argo CD managed
+      resources back to Git, as merge requests.
+    features.operators.openshift.io/cnf: "false"
+    features.operators.openshift.io/cni: "false"
+    features.operators.openshift.io/csi: "false"
+    features.operators.openshift.io/disconnected: "false"
+    features.operators.openshift.io/fips-compliant: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    features.operators.openshift.io/token-auth-aws: "false"
+    features.operators.openshift.io/token-auth-azure: "false"
+    features.operators.openshift.io/token-auth-gcp: "false"
+    operators.operatorframework.io/internal-objects: '["changerecords.internal.backflow.io"]'
+    repository: https://github.com/sserkanml/backflow
+    support: https://github.com/sserkanml/backflow/issues
+  name: backflow.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: What the optional actor webhook saw, kept for two hours. Internal
+        to the operator; not an API.
+      displayName: Change Record (internal)
+      kind: ChangeRecord
+      name: changerecords.internal.backflow.io
+      version: v1alpha1
+    - description: |-
+        BackflowPolicy decides which Argo CD Applications are watched for drift
+        and how that drift is proposed back to Git. Deleting a policy deletes its DriftProposals (they
+        are owned by it); a merge request that is open on the Git host stays open and is no longer
+        tracked.
+      displayName: Backflow Policy
+      kind: BackflowPolicy
+      name: backflowpolicies.backflow.io
+      specDescriptors:
+      - description: Applications this policy applies to.
+        displayName: Applications
+        path: applications
+      - description: Where the Argo CD Applications are and how to reach the Argo
+          CD API.
+        displayName: Argo CD
+        path: argoCD
+      - description: |-
+          A drift becomes a proposal only after it has stayed the same, at the
+          same synced revision, for this long and across at least two
+          observations. A drift that disappears within the window is never
+          proposed, and several quick edits to the same resource give one
+          proposal for the final state. An explicit 0s waits for the second
+          observation only. With the actor webhook on, a drift is also held for the time the
+          webhook needs to write its records (at most 5s); the larger counts.
+        displayName: Batch window
+        path: batchWindow
+      - description: |-
+          Resource kinds never captured. Evaluated after Include.
+          Secrets are excluded unless Include names the Secret kind literally.
+        displayName: Exclude
+        path: exclude
+      - description: |-
+          Where and how Backflow writes to Git: the branches, and for a merge request its labels
+          and reviewers.
+        displayName: Git
+        path: git
+      - description: Resource kinds to capture. Empty means every kind the Application
+          manages.
+        displayName: Include
+        path: include
+      - description: What to do with detected drift.
+        displayName: Mode
+        path: mode
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:select:MergeRequest,urn:alm:descriptor:com.tectonic.ui:select:DirectCommit,urn:alm:descriptor:com.tectonic.ui:select:ReportOnly
+      - description: How long Backflow keeps what is finished.
+        displayName: Retention
+        path: retention
+      statusDescriptors:
+      - description: How many Applications the policy covers.
+        displayName: Applications
+        path: applicationCount
+      - displayName: Conditions
+        path: conditions
+        x-descriptors:
+        - urn:alm:descriptor:io.kubernetes.conditions
+      - description: DriftProposals not yet merged, rejected or reverted.
+        displayName: Open proposals
+        path: openProposals
+      version: v1beta1
+    - description: |-
+        DriftProposal is a captured difference between Git and the cluster,
+        and its journey back to Git. Its spec is an immutable observation, not a desired state.
+      displayName: Drift Proposal
+      kind: DriftProposal
+      name: driftproposals.backflow.io
+      specDescriptors:
+      - description: 'Who made the change in the cluster, when known: from the actor
+          webhook.'
+        displayName: Actor
+        path: actor
+      - description: Argo CD Application that owns the resource.
+        displayName: Application
+        path: applicationRef
+      - description: Field-level changes between Git (desired) and the cluster (live),
+          at most 256.
+        displayName: Changes
+        path: changes
+      - description: When the drift was first observed.
+        displayName: Detected at
+        path: detectedAt
+      - description: Policy, in this namespace, that captured this drift.
+        displayName: Policy
+        path: policyRef
+      - description: The drifted resource.
+        displayName: Resource
+        path: resourceRef
+      statusDescriptors:
+      - displayName: Conditions
+        path: conditions
+        x-descriptors:
+        - urn:alm:descriptor:io.kubernetes.conditions
+      - description: |-
+          When the proposal reached a final phase (Merged, Rejected, Reverted, Superseded, Failed).
+          spec.retention.finishedProposals of the policy counts from here.
+        displayName: Finished at
+        path: finishedAt
+      - displayName: Git
+        path: git
+      - description: 'Human-readable explanation of the current phase: the message
+          of the condition that caused it.'
+        displayName: Message
+        path: message
+      - displayName: Phase
+        path: phase
+        x-descriptors:
+        - urn:alm:descriptor:io.kubernetes.phase
+      version: v1beta1
+    - description: ScmConnection is a connection to a Git hosting service.
+      displayName: Scm Connection
+      kind: ScmConnection
+      name: scmconnections.backflow.io
+      specDescriptors:
+      - description: Optional Secret key, in this namespace, holding a PEM CA bundle
+          for self-hosted providers.
+        displayName: CA Secret
+        path: caSecretRef
+      - description: |-
+          Repository hosts this connection is used for. A repository URL from an
+          Argo CD Application is matched against these hosts. Defaults to the host of URL
+          (status.hosts shows what is used).
+        displayName: Hosts
+        path: hosts
+      - description: Provider type.
+        displayName: Provider
+        path: provider
+        x-descriptors:
+        - urn:alm:descriptor:com.tectonic.ui:select:GitLab
+      - description: |-
+          Secret key, in this namespace, holding an API token with permission to push branches and
+          open merge requests (GitLab: api + write_repository; GitHub: contents + pull_requests).
+        displayName: Token Secret
+        path: tokenSecretRef
+      - description: |-
+          Base URL of the provider, e.g. https://gitlab.example.com or https://github.com. Its host
+          must be in the allowlist the installer set for the operator (scm.allowedHosts); otherwise
+          the connection is not Ready (HostNotAllowed) and no request is made.
+        displayName: URL
+        path: url
+      statusDescriptors:
+      - description: Account the token authenticated as.
+        displayName: Authenticated as
+        path: authenticatedAs
+      - displayName: Conditions
+        path: conditions
+        x-descriptors:
+        - urn:alm:descriptor:io.kubernetes.conditions
+      - description: 'The hosts the connection is used for: spec.hosts, or the host
+          of spec.url.'
+        displayName: Hosts
+        path: hosts
+      version: v1beta1
+  description: |
+    Backflow is reverse GitOps for Kubernetes and OpenShift. It detects changes made directly in a cluster to resources that
+    Argo CD manages, and proposes them back to the Git source of truth as merge requests against the file that owns the resource.
+
+    ## How it works
+
+    * **Backflow never writes to the cluster.** Argo CD is the only thing that applies manifests. Backflow reads the cluster and
+      the Argo CD Applications, and writes to Git.
+    * **Git always wins.** A change is proposed as a merge request (or a direct commit, if you ask for it) and a person decides.
+    * **It never guesses.** A change is traced to a file in Git only when a re-render by Argo CD of the edited source reproduces
+      the live state exactly. Otherwise the proposal is `Unmapped` and left for a person.
+    * Plain manifests, Kustomize and Helm sources, including Applications with several sources.
+
+    ## Custom resources
+
+    * **ScmConnection** — a GitLab or GitHub URL and the Secret with the token.
+    * **BackflowPolicy** — which Argo CD Applications to watch, how to propose (`MergeRequest`, `DirectCommit`, `ReportOnly`),
+      which kinds to include or ignore, and the options for Helm and Kustomize.
+    * **DriftProposal** — one captured drift and its journey: `Detected`, `Mapping`, `Proposed`, `Merged` or `Unmapped`,
+      `Rejected`, `Reverted`, `Superseded`, `Failed`. Made by the operator.
+
+    ## Configuration
+
+    The operator is configured by environment variables, set in `Subscription.spec.config.env`:
+
+    * `BACKFLOW_SCM_ALLOWED_HOSTS` — the Git hosts a ScmConnection may name. The default is `gitlab.com,github.com`: **a
+      self-hosted GitLab or GitHub must be listed.**
+    * `BACKFLOW_ARGOCD_SERVER`, `BACKFLOW_ARGOCD_TOKEN_SECRET_NAMESPACE`, `BACKFLOW_ARGOCD_TOKEN_SECRET_NAME` — the default
+      Argo CD connection of the policies that name none (OpenShift GitOps: `https://openshift-gitops-server.openshift-gitops.svc`).
+    * `BACKFLOW_ARGOCD_DEFAULT_ACCESS`, `BACKFLOW_ARGOCD_ALLOWED_SERVERS`, `BACKFLOW_SECRET_NAMESPACES` — who may use it, which
+      servers a policy may name, and where Secrets are read.
+
+    Every flag of the operator has such a variable; the table is in the documentation. The optional actor webhook (who made a
+    change) is not part of this installation: it needs a webhook configuration with CEL filters that a ClusterServiceVersion cannot
+    express; see the documentation.
+
+    ## Upgrading from the Helm chart
+
+    This is the API `backflow.io/v1beta1`. An installation of the Helm chart before 0.18 must be migrated once (uninstall the
+    release, run `manager migrate`, then subscribe); see the documentation.
+  displayName: Backflow
+  icon:
+  - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA5NiA5NiIgd2lkdGg9Ijk2IiBoZWlnaHQ9Ijk2Ij4KICA8dGl0bGU+QmFja2Zsb3c8L3RpdGxlPgogIDxyZWN0IHdpZHRoPSI5NiIgaGVpZ2h0PSI5NiIgcng9IjIwIiBmaWxsPSIjMWYzYTVmIi8+CiAgPHBhdGggZD0iTTI4IDM0aDM0YTE0IDE0IDAgMCAxIDAgMjhIMzQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSI3IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KICA8cGF0aCBkPSJNNDIgMjIgMjggMzRsMTQgMTIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzdmZDFmZiIgc3Ryb2tlLXdpZHRoPSI3IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSIzNCIgY3k9IjYyIiByPSI1IiBmaWxsPSIjN2ZkMWZmIi8+Cjwvc3ZnPgo=
+    mediatype: image/svg+xml
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - argocd
+  - gitops
+  - drift
+  - gitlab
+  - github
+  - openshift-gitops
+  links:
+  - name: Documentation
+    url: https://github.com/sserkanml/backflow#readme
+  - name: Source
+    url: https://github.com/sserkanml/backflow
+  - name: Upgrading
+    url: https://github.com/sserkanml/backflow/blob/main/docs/upgrade-v1beta1.md
+  maintainers:
+  - email: snamli828@gmail.com
+    name: sserkanml
+  maturity: alpha
+  minKubeVersion: 1.30.0
+  provider:
+    name: sserkanml
+    url: https://github.com/sserkanml
+  version: 0.0.0
