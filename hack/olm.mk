@@ -67,6 +67,13 @@ bundle: manifests kustomize operator-sdk ## Generate bundle/ (the CSV, the CRDs,
 	@# relatedImages: the operator image, which is the only one (RELATED_IMAGE_BACKFLOW of config/manager)
 	sed -i.bak 's#controller:latest#$(OPERATOR_IMAGE)#' bundle/manifests/backflow.clusterserviceversion.yaml && rm -f bundle/manifests/*.bak
 	sed -i.bak 's#containerImage: .*#containerImage: $(OPERATOR_IMAGE)#' bundle/manifests/backflow.clusterserviceversion.yaml && rm -f bundle/manifests/*.bak
+	@# every CRD of the bundle has a group and a name that ends in it (a CRD without one cannot be applied)
+	@for f in bundle/manifests/*.yaml; do \
+		grep -q '^kind: CustomResourceDefinition' "$$f" || continue; \
+		group="$$(sed -n 's/^  group: *//p' "$$f" | head -1)"; name="$$(sed -n 's/^  name: *//p' "$$f" | head -1)"; \
+		case "$$name" in *".$$group") [ -n "$$group" ] || { echo "$$f: no group" >&2; exit 1; } ;; \
+			*) echo "$$f: the CRD $$name has the group '$$group'" >&2; exit 1 ;; esac; \
+	done
 	"$(OPERATOR_SDK)" bundle validate ./bundle
 
 .PHONY: bundle-validate

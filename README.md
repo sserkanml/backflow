@@ -564,20 +564,41 @@ allowed, in the chart values and not in the objects:
 An object that names something else is not `Ready` (`ServerNotAllowed` for a policy, `HostNotAllowed` for a connection), the
 message names the flag, **no request is made** and the token Secret is not read. A proposal of such a connection is held.
 
-**With kustomize** (`config/default`, `make deploy`) there is no chart value: the lists are arguments of the manager. The manifests
-set none, so **no Git host and no extra Argo CD server is allowed** until you add them; a `ScmConnection` is `HostNotAllowed`
-and a policy that names a server is `ServerNotAllowed` (the policy's own `spec.argoCD.server` needs the server in
-`--argocd-allowed-servers`, the operator's default connection `--argocd-server` is always allowed). Add them with a patch in your
-overlay, once for each entry, as `config/e2e` does for the server of the samples:
+**Without Helm** (kustomize: `config/default`, `make deploy`; OLM: the bundle made from it) there is no chart value: the lists are
+flags of the manager, or the `BACKFLOW_*` environment variables
+([the table](#configuration-without-helm-environment-variables)). **The defaults are the chart's**: the manifests set
+`BACKFLOW_SCM_ALLOWED_HOSTS=gitlab.com,github.com` (the Deployment in `config/manager`, so the OLM bundle has it too), and no extra
+Argo CD server is allowed (the operator's own `--argocd-server` always is). A self-hosted GitLab or GitHub, or a server a policy
+names in `spec.argoCD.server.url`, has to be added, or the `ScmConnection` is `HostNotAllowed` and the policy `ServerNotAllowed`.
+
+* With **OLM**, set the variables in `Subscription.spec.config.env` ([docs/olm.md](docs/olm.md)); a variable of the Subscription
+  replaces the default of the Deployment.
+* With **kustomize**, patch the Deployment of your overlay, either with environment variables or with arguments, as `config/e2e`
+  does for the server of the samples. **A flag wins over the variable and replaces it**: `--scm-allowed-hosts=gitlab.example.com`
+  as an argument means that `gitlab.com` is no longer allowed, which the default variable would have allowed. So list every host you want:
 
 ```yaml
 # kustomization.yaml of your overlay
 resources:
-- github.com/sserkanml/backflow/config/default?ref=v0.18.0
+- github.com/sserkanml/backflow/config/default?ref=v0.18.1
 patches:
+# an environment variable: merged by name, so it replaces the default value
 - target: {kind: Deployment}
   patch: |-
-    - {op: add, path: /spec/template/spec/containers/0/args/-, value: "--scm-allowed-hosts=gitlab.example.com,gitlab.com"}
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: backflow-controller-manager}
+    spec:
+      template:
+        spec:
+          containers:
+          - name: manager
+            env:
+            - {name: BACKFLOW_SCM_ALLOWED_HOSTS, value: "gitlab.example.com,gitlab.com"}
+            - {name: BACKFLOW_ARGOCD_ALLOWED_SERVERS, value: "https://argocd.example.com"}
+# or an argument, once for each entry (config/e2e does this)
+- target: {kind: Deployment}
+  patch: |-
     - {op: add, path: /spec/template/spec/containers/0/args/-, value: "--argocd-allowed-servers=https://argocd.example.com"}
 ```
 
