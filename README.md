@@ -8,6 +8,8 @@ resource.
 Backflow never writes to the cluster: Argo CD is the only thing that applies
 manifests. Backflow reads the cluster and writes to Git.
 
+Backflow 1.0 is the first stable release: `backflow.io/v1` gets no breaking changes in 1.x.
+
 ## Install
 
 Backflow runs in the cluster as one Deployment. Install it with a Helm chart (Helm 3.8 or later), or, on OpenShift, from
