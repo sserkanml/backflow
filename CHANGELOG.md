@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.0](https://github.com/sserkanml/backflow/compare/v0.18.1...v1.0.0) (2026-11-04)
+
+
+### Features
+
+* **api:** backflow.io/v1, with the schema of v1beta1; v1beta1 stays served, deprecated ([ab626c4](https://github.com/sserkanml/backflow/commit/ab626c4bec587ae43e5912b9360255694f207084))
+* **api:** the operator, the samples, the scripts and the bundle use backflow.io/v1 ([8c7aefb](https://github.com/sserkanml/backflow/commit/8c7aefbbca9c33fbd26b72137179973792727a1e))
+* **config:** --secret-namespaces limits which namespaces' Secrets the operator reads ([b9d5efe](https://github.com/sserkanml/backflow/commit/b9d5efeea71906b6c19f7276030c078960acf6c8))
+* **config:** every manager flag can be set as a BACKFLOW_* environment variable ([b9d5efe](https://github.com/sserkanml/backflow/commit/b9d5efeea71906b6c19f7276030c078960acf6c8))
+* **crdcheck:** refuse v1alpha1, start with a warning and a metric while v1beta1 is stored ([cc1d396](https://github.com/sserkanml/backflow/commit/cc1d396a2e0d83a7ab79754c9b8f1b6c6d543e52))
+* **migrate:** migrate to backflow.io/v1 from v1alpha1 and from v1beta1 ([da13b5b](https://github.com/sserkanml/backflow/commit/da13b5b4b246996b03487ef9fc970f8b1d987590))
+* **olm:** install Backflow from OperatorHub through a Backflow catalog ([b9d5efe](https://github.com/sserkanml/backflow/commit/b9d5efeea71906b6c19f7276030c078960acf6c8))
+
+
+### Documentation
+
+* Backflow 1.0 is the first stable release ([dfbc03d](https://github.com/sserkanml/backflow/commit/dfbc03dfc133041f57c03f38ff775b3d3c9a48c5))
+* **olm:** installing from OperatorHub ([b9d5efe](https://github.com/sserkanml/backflow/commit/b9d5efeea71906b6c19f7276030c078960acf6c8))
+* support policy for a single maintainer ([80ab67f](https://github.com/sserkanml/backflow/commit/80ab67ff3d3b0e9ab750064429685f78fd1d45ed))
+* the 1.0 upgrade guide, compatibility policy and support matrix, SECURITY.md, architecture and security model ([a2bc804](https://github.com/sserkanml/backflow/commit/a2bc804c81797edff3f5fe038e019fe57758cb0b))
+
 ## [0.18.1](https://github.com/sserkanml/backflow/compare/v0.18.0...v0.18.1) (2026-11-02)
 
 
