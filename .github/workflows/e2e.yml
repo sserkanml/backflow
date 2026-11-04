@@ -10,8 +10,6 @@ name: E2E scripts
 on:
   pull_request:
     types: [labeled, synchronize, reopened]
-  schedule:
-    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
       scm:
