@@ -32,7 +32,7 @@ contract), the Git branch names and the text of the merge requests, and the imag
    in an advisory (see [SECURITY.md](../SECURITY.md)).
 5. **Patch releases** (1.x.y) fix bugs, and add no feature and no migration step.
 6. **Upgrades** go one minor release at a time or straight to the latest of 1.x; `manager migrate` is the only step between majors and between
-   the API versions. From 0.17 and 0.18 see [upgrade-1.0.md](upgrade-1.0.md).
+   the API versions. From 0.17 and 0.18 see [Upgrading to 1.0](operations/upgrade-1.0.md).
 
 ### Releases that are supported
 
@@ -48,7 +48,7 @@ possible, and disclosed in coordination with the reporter within 90 days at most
 | Kubernetes | **1.30** or later (the CRDs use CEL validation and rely on ratcheting) | the API tests and the end-to-end tests run on kind with **1.35** |
 | OpenShift | **4.17** or later (Kubernetes 1.30) | not run on OpenShift in CI; the OpenShift settings (service CA, trusted CA bundle, OperatorHub install) are covered by chart tests and an OLM test on kind |
 | Argo CD | **3.x**: the Application resource and the REST API (manifests of an Application). 2.x has the same API and is not tested | **3.5.3** (pinned in `hack/dev-up.sh`) |
-| OpenShift GitOps | **1.18** or later, whose `ArgoCD` resource has `spec.localUsers` (the read-only account the operator uses, see the README) | not run in CI |
+| OpenShift GitOps | **1.18** or later, whose `ArgoCD` resource has `spec.localUsers` (the read-only account the operator uses, see [Install on OpenShift](install/openshift.md#install-on-openshift-gitops)) | not run in CI |
 | GitLab | gitlab.com (SaaS) and self-managed (API v4) | the merge-request tests run against gitlab.com; self-managed is the same API and is not run in CI |
 | GitHub | github.com (SaaS) and GitHub Enterprise Server (REST API) | the merge-request tests run against github.com; Enterprise Server is not run in CI |
 | Helm | 3.8 or later (OCI charts) | Helm 4.2 |
