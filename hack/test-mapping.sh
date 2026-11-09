@@ -22,7 +22,7 @@
 # The demo resources are always restored to their Git state on exit.
 #
 # With IN_CLUSTER=true the operator is the one deployed by 'make deploy'
-# (see "In-cluster" in the README); the script then starts no local operator
+# (see the end-to-end scenarios in docs/development.md); the script then starts no local operator
 # and no port-forward, and reaches Argo CD at its in-cluster service URL.
 #
 # Usage (from the repository root):

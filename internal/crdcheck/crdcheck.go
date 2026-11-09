@@ -79,11 +79,11 @@ func problem(crd *apiextensionsv1.CustomResourceDefinition) string {
 	switch {
 	case !served && slices.Contains(crd.Status.StoredVersions, "v1alpha1"):
 		return fmt.Sprintf("%s is the CRD of an earlier release (objects are stored as v1alpha1): run `backflow migrate` with the "+
-			"operator stopped before starting this version, and do not apply the new CRDs first (docs/upgrade-1.0.md)", crd.Name)
+			"operator stopped before starting this version, and do not apply the new CRDs first (docs/operations/upgrade-1.0.md)", crd.Name)
 	case !served && has[Deprecated]:
 		return fmt.Sprintf("%s is the CRD of release 0.18 (it has v1beta1 but not v1): apply the CRDs of this release "+
 			"(helm show crds ... | kubectl apply --server-side --force-conflicts -f -), or run `backflow migrate`, which does "+
-			"(docs/upgrade-1.0.md)", crd.Name)
+			"(docs/operations/upgrade-1.0.md)", crd.Name)
 	case !served:
 		return fmt.Sprintf("%s does not serve and store %s: apply the CRDs of this release first "+
 			"(helm show crds ... | kubectl apply --server-side --force-conflicts -f -)", crd.Name, Version)

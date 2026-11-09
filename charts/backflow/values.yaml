@@ -110,7 +110,7 @@ unpackFileDependencies: true
 extraVolumes: []
 extraVolumeMounts: []
 
-# The actor webhook (README, "Who changed it"): an observe-only admission webhook that tells the
+# The actor webhook (docs/who-changed-it.md): an observe-only admission webhook that tells the
 # operator who changed a resource, so that a proposal can name the user. OFF by default. It always
 # answers "allowed" (failurePolicy Ignore, timeoutSeconds 1), keeps only the paths of the changed
 # fields (never a value) and sees only resources Argo CD tracks. Needs Kubernetes 1.28 or later.
@@ -234,7 +234,7 @@ serviceMonitor:
 prometheusRule:
   # Alerts on the metrics of the operator, for the Prometheus Operator (needs its
   # CRDs, and Prometheus must scrape the operator: see serviceMonitor). The
-  # alerts are explained in the README, "Metrics and alerts".
+  # alerts are explained in docs/operations/metrics.md.
   enabled: false
   # Labels the Prometheus of your installation selects rules by, for example
   # release: kube-prometheus-stack.
@@ -264,7 +264,7 @@ networkPolicy:
     matchLabels:
       metrics: enabled
 
-# The migration of the objects to backflow.io/v1 (docs/upgrade-1.0.md). With migration.enabled, `helm upgrade` runs
+# The migration of the objects to backflow.io/v1 (docs/operations/upgrade-1.0.md). With migration.enabled, `helm upgrade` runs
 # `manager migrate` as a pre-upgrade hook Job, with the new image, and a post-upgrade hook scales the operator back up. It does
 # nothing when no object is stored as v1alpha1 or v1beta1, so it is safe to leave on for the one upgrade that needs it.
 #   * From 0.18 (objects stored as v1beta1): the Job stores each object again as v1 with an update that changes nothing. The

@@ -60,7 +60,7 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-merge-request.sh
-#   SCM=github GITHUB_TOKEN=... ./hack/test-merge-request.sh   # against the GitHub demo repository (see the README)
+#   SCM=github GITHUB_TOKEN=... ./hack/test-merge-request.sh   # against the GitHub demo repository (see docs/development.md)
 #   SECTIONS=c,e,f ./hack/test-merge-request.sh   # only those sections (default: all);
 #       b needs a; d and e need c; f needs c and e (the script refuses otherwise);
 #       g and h need nothing (SECTIONS=h is the JSON manifest alone)

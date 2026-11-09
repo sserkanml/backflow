@@ -65,8 +65,9 @@ func TestPrometheusRule(t *testing.T) {
 				t.Errorf("%s uses %q: policies carry policy_namespace and policy, connections scm_namespace and scm", name, old)
 			}
 		}
-		if v, _ := annotations["runbook"].(string); !strings.Contains(v, name) || !strings.Contains(v, "Metrics and alerts") {
-			t.Errorf("%s: the runbook hint %q does not point to the README section", name, v)
+		// The runbook is the section of docs/operations/metrics.md that has the name of the alert.
+		if v, _ := annotations["runbook"].(string); !strings.HasPrefix(v, "https://") || !strings.Contains(v, "/docs/operations/metrics.md#"+strings.ToLower(name)) {
+			t.Errorf("%s: the runbook %q does not point to its section of docs/operations/metrics.md", name, v)
 		}
 	}
 	found := map[string]bool{}

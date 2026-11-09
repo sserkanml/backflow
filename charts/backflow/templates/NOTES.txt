@@ -11,7 +11,7 @@ namespace is not Ready (SecretForbidden); add that namespace to secretNamespaces
 {{- else }}
 
 It may get any Secret by name in every namespace. To narrow that to the
-namespaces you use, set secretNamespaces=\{a,b\} (see the README, "Permissions").
+namespaces you use, set secretNamespaces=\{a,b\} (see https://github.com/sserkanml/backflow/blob/main/docs/security.md#permissions).
 {{- end }}
 
 {{- if .Values.argocd.server }}
@@ -126,5 +126,5 @@ The actor webhook is on: it tells the operator who changed a resource that Argo 
 It only observes (failurePolicy Ignore, timeout {{ .Values.actorWebhook.timeoutSeconds }}s, always "allowed") and keeps the paths of the
 changed fields, never a value. TLS: {{ include "backflow.actorTLSMode" . }}. User names {{ if .Values.actorWebhook.recordUsername }}are recorded{{ else }}are NOT recorded (only person or controller){{ end }} and {{ if .Values.actorWebhook.usernameInMergeRequest }}appear{{ else }}stay out of{{ end }} merge requests.
 Watch apiserver_admission_webhook_fail_open_count and
-apiserver_admission_match_condition_evaluation_errors_total (see the README, "Who changed it").
+apiserver_admission_match_condition_evaluation_errors_total (see https://github.com/sserkanml/backflow/blob/main/docs/who-changed-it.md).
 {{- end }}
