@@ -176,23 +176,22 @@ func TestSecretReadNamespaces(t *testing.T) {
 	}
 }
 
-// TestReadmeListsEveryFlag keeps the table of the README (flag, environment variable, Helm value) complete: a flag
-// that the
-// operator has and the table does not name fails here.
-func TestReadmeListsEveryFlag(t *testing.T) {
-	data, err := os.ReadFile("../README.md")
+// TestConfigurationListsEveryFlag keeps the table of docs/configuration.md (flag, environment variable, Helm value)
+// complete: a flag that the operator has and the table does not name fails here.
+func TestConfigurationListsEveryFlag(t *testing.T) {
+	data, err := os.ReadFile("../docs/configuration.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	readme := string(data)
+	table := string(data)
 	// The flags of the operator are read out of the source files that register them.
 	for _, name := range operatorFlagNames(t) {
 		if strings.HasPrefix(name, "zap-") || strings.HasPrefix(name, "test.") {
 			continue
 		}
 		env := envName(name)
-		if !strings.Contains(readme, "`--"+name) && !strings.Contains(readme, "`"+env) {
-			t.Errorf("--%s (%s) is not in the table of the README", name, env)
+		if !strings.Contains(table, "`--"+name) && !strings.Contains(table, "`"+env) {
+			t.Errorf("--%s (%s) is not in the table of docs/configuration.md", name, env)
 		}
 	}
 }

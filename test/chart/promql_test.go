@@ -107,9 +107,9 @@ func TestDashboardExpressionsParse(t *testing.T) {
 	}
 }
 
-// TestReadmeExpressionsParse checks the PromQL examples of the README.
-func TestReadmeExpressionsParse(t *testing.T) {
-	raw, err := os.ReadFile("../../README.md")
+// TestDocumentedExpressionsParse checks the PromQL examples of docs/operations/metrics.md.
+func TestDocumentedExpressionsParse(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/operations/metrics.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +124,11 @@ func TestReadmeExpressionsParse(t *testing.T) {
 			}
 		}
 		if expr := strings.TrimSpace(strings.Join(lines, "\n")); expr != "" {
-			checkExpr(t, "README", expr)
+			checkExpr(t, "docs/operations/metrics.md", expr)
 			n++
 		}
 	}
 	if n < 8 {
-		t.Errorf("only %d examples found in the README", n)
+		t.Errorf("only %d examples found in docs/operations/metrics.md", n)
 	}
 }
