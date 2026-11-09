@@ -1,7 +1,8 @@
 # What maps
 
 Mapping is how a drifted field becomes an edit to a file in Git. It runs in every mode, `ReportOnly` included, reads the
-repository at the revision Argo CD synced (never the head of the branch), and **never writes to Git by itself**: the result is
+repository at the revision Argo CD synced (never the head of the branch), and **writes nothing to Git by itself** (the edited files are sent to Argo CD to be rendered; only an Application with several sources
+needs short-lived `backflow/scratch/` branches, deleted right after): the result is
 `status.mapping` of the `DriftProposal` (the strategy, the files, the edits, a unified `diff`, `verified`), and the `Mapped` condition.
 
 Nothing is guessed. Every candidate edit is applied to a copy of the source files and Argo CD renders the copy; the edit is used
