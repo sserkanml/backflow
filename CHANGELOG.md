@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.1](https://github.com/sserkanml/backflow/compare/v1.0.0...v1.0.1) (2026-11-09)
+
+
+### Documentation
+
+* move install and configuration ([9b7d7c2](https://github.com/sserkanml/backflow/commit/9b7d7c212530525e9eb94cf4cfba4a0f418e3c9a))
+* move mapping ([0a7d08f](https://github.com/sserkanml/backflow/commit/0a7d08fa36b85ee5d11fa454844678f5bcbb6614))
+* move operations, security and the remaining pages ([ce98498](https://github.com/sserkanml/backflow/commit/ce98498685e3502713e75bd28d5ae2fced9a872b))
+* new README and docs index, getting started and concepts ([c05e38e](https://github.com/sserkanml/backflow/commit/c05e38eae07dabaf3e302ac0a47368a5633a5718))
+* point the chart, the CSV and the operator's messages to the new pages ([b2c1b2e](https://github.com/sserkanml/backflow/commit/b2c1b2eb4b56384819a1a33ca647e9c5cdd650f9))
+* the quick start says who allows the Argo CD server and the Git host ([7cfb30c](https://github.com/sserkanml/backflow/commit/7cfb30c36a7924eab1811bef8c6a7f6b3b8515a5))
+* troubleshooting reference ([e6868d0](https://github.com/sserkanml/backflow/commit/e6868d01d31f414a98abdb9190c19453ff9691e0))
+* verification writes no branch except for multi-source ([96b3a1a](https://github.com/sserkanml/backflow/commit/96b3a1a5e1030a37bf334d61baed127fdfc20153))
+
 ## [1.0.0](https://github.com/sserkanml/backflow/compare/v0.18.1...v1.0.0) (2026-11-04)
 
 
