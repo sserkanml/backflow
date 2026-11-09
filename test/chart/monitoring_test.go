@@ -66,7 +66,9 @@ func TestPrometheusRule(t *testing.T) {
 			}
 		}
 		// The runbook is the section of docs/operations/metrics.md that has the name of the alert.
-		if v, _ := annotations["runbook"].(string); !strings.HasPrefix(v, "https://") || !strings.Contains(v, "/docs/operations/metrics.md#"+strings.ToLower(name)) {
+		v, _ := annotations["runbook"].(string)
+		want := "/docs/operations/metrics.md#" + strings.ToLower(name)
+		if !strings.HasPrefix(v, "https://") || !strings.Contains(v, want) {
 			t.Errorf("%s: the runbook %q does not point to its section of docs/operations/metrics.md", name, v)
 		}
 		if page, err := os.ReadFile("../../docs/operations/metrics.md"); err != nil {

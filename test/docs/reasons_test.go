@@ -34,76 +34,19 @@ func codeReasons(t *testing.T) map[string][]string {
 	fset := token.NewFileSet()
 	for _, dir := range []string{"internal", "api", "cmd"} {
 		err := filepath.WalkDir(filepath.Join(root, dir), func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
+			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 				return err
-			}
-			if d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
-				return nil
 			}
 			f, err := parser.ParseFile(fset, p, nil, parser.ParseComments)
 			if err != nil {
 				t.Fatalf("%s: %v", p, err)
 			}
 			rel, _ := filepath.Rel(root, p)
-			add := func(v, how string) {
-				if reasonValue.MatchString(v) {
-					found[v] = append(found[v], filepath.ToSlash(rel)+" ("+how+")")
-				}
-			}
-			literal := func(e ast.Expr) (string, bool) {
-				if bl, ok := e.(*ast.BasicLit); ok && bl.Kind == token.STRING {
-					s, err := strconv.Unquote(bl.Value)
-					return s, err == nil
-				}
-				return "", false
-			}
+			rel = filepath.ToSlash(rel)
 			ast.Inspect(f, func(n ast.Node) bool {
-				switch x := n.(type) {
-				case *ast.ValueSpec:
-					for i, name := range x.Names {
-						if (strings.HasPrefix(name.Name, "reason") || strings.HasPrefix(name.Name, "Reason")) && i < len(x.Values) {
-							if s, ok := literal(x.Values[i]); ok {
-								add(s, name.Name)
-							}
-						}
-					}
-				case *ast.KeyValueExpr:
-					if id, ok := x.Key.(*ast.Ident); ok && (id.Name == "Reason" || id.Name == "reason") {
-						if s, ok := literal(x.Value); ok {
-							add(s, "field "+id.Name)
-						}
-					}
-				case *ast.AssignStmt:
-					for i, l := range x.Lhs {
-						if sel, ok := l.(*ast.SelectorExpr); ok && (sel.Sel.Name == "Reason" || sel.Sel.Name == "reason") && i < len(x.Rhs) {
-							if s, ok := literal(x.Rhs[i]); ok {
-								add(s, "assignment")
-							}
-						}
-					}
-				case *ast.GenDecl:
-					if x.Tok != token.TYPE {
-						return true
-					}
-					for _, spec := range x.Specs {
-						ts := spec.(*ast.TypeSpec)
-						if !strings.HasSuffix(ts.Name.Name, "Reason") && !strings.HasSuffix(ts.Name.Name, "State") {
-							continue
-						}
-						doc := x.Doc
-						if ts.Doc != nil {
-							doc = ts.Doc
-						}
-						if doc == nil || !strings.HasPrefix(filepath.ToSlash(rel), "api/v1/") {
-							continue
-						}
-						for _, c := range doc.List {
-							if _, list, ok := strings.Cut(c.Text, "+kubebuilder:validation:Enum="); ok {
-								for _, v := range strings.Split(list, ";") {
-									add(strings.TrimSpace(v), "enum "+ts.Name.Name)
-								}
-							}
-						}
+				for _, r := range reasonsOf(n, rel) {
+					if reasonValue.MatchString(r.value) {
+						found[r.value] = append(found[r.value], rel+" ("+r.how+")")
 					}
 				}
 				return true
@@ -117,6 +60,85 @@ func codeReasons(t *testing.T) map[string][]string {
 	return found
 }
 
+type reasonFound struct{ value, how string }
+
+// stringLiteral is the value of a string literal.
+func stringLiteral(e ast.Expr) (string, bool) {
+	if bl, ok := e.(*ast.BasicLit); ok && bl.Kind == token.STRING {
+		s, err := strconv.Unquote(bl.Value)
+		return s, err == nil
+	}
+	return "", false
+}
+
+func isReasonName(name string) bool {
+	return strings.HasPrefix(name, "reason") || strings.HasPrefix(name, "Reason")
+}
+
+// reasonsOf returns the reasons a syntax node sets.
+func reasonsOf(n ast.Node, rel string) []reasonFound {
+	var out []reasonFound
+	switch x := n.(type) {
+	case *ast.ValueSpec:
+		for i, name := range x.Names {
+			if i >= len(x.Values) || !isReasonName(name.Name) {
+				continue
+			}
+			if s, ok := stringLiteral(x.Values[i]); ok {
+				out = append(out, reasonFound{s, name.Name})
+			}
+		}
+	case *ast.KeyValueExpr:
+		if id, ok := x.Key.(*ast.Ident); ok && (id.Name == "Reason" || id.Name == "reason") {
+			if s, ok := stringLiteral(x.Value); ok {
+				out = append(out, reasonFound{s, "field " + id.Name})
+			}
+		}
+	case *ast.AssignStmt:
+		for i, l := range x.Lhs {
+			sel, ok := l.(*ast.SelectorExpr)
+			if !ok || i >= len(x.Rhs) || (sel.Sel.Name != "Reason" && sel.Sel.Name != "reason") {
+				continue
+			}
+			if s, ok := stringLiteral(x.Rhs[i]); ok {
+				out = append(out, reasonFound{s, "assignment"})
+			}
+		}
+	case *ast.GenDecl:
+		if x.Tok == token.TYPE && strings.HasPrefix(rel, "api/v1/") {
+			out = append(out, enumReasons(x)...)
+		}
+	}
+	return out
+}
+
+// enumReasons returns the values of the enumerations (+kubebuilder:validation:Enum) of the types of a declaration that
+// end in Reason or State.
+func enumReasons(x *ast.GenDecl) []reasonFound {
+	var out []reasonFound
+	for _, spec := range x.Specs {
+		ts := spec.(*ast.TypeSpec)
+		if !strings.HasSuffix(ts.Name.Name, "Reason") && !strings.HasSuffix(ts.Name.Name, "State") {
+			continue
+		}
+		doc := x.Doc
+		if ts.Doc != nil {
+			doc = ts.Doc
+		}
+		if doc == nil {
+			continue
+		}
+		for _, c := range doc.List {
+			if _, list, ok := strings.Cut(c.Text, "+kubebuilder:validation:Enum="); ok {
+				for v := range strings.SplitSeq(list, ";") {
+					out = append(out, reasonFound{strings.TrimSpace(v), "enum " + ts.Name.Name})
+				}
+			}
+		}
+	}
+	return out
+}
+
 // tableReasons are the reasons in the first column of the tables of the page: | `Reason` | ...
 func tableReasons(t *testing.T) map[string]bool {
 	t.Helper()
@@ -127,7 +149,7 @@ func tableReasons(t *testing.T) map[string]bool {
 	row := regexp.MustCompile("^\\| `([A-Za-z0-9]+)` \\|")
 	out := map[string]bool{}
 	started := false
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		// The tables before the first resource are about where to look, not about reasons.
 		if strings.HasPrefix(line, "## ScmConnection") {
 			started = true
