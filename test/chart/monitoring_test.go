@@ -69,6 +69,11 @@ func TestPrometheusRule(t *testing.T) {
 		if v, _ := annotations["runbook"].(string); !strings.HasPrefix(v, "https://") || !strings.Contains(v, "/docs/operations/metrics.md#"+strings.ToLower(name)) {
 			t.Errorf("%s: the runbook %q does not point to its section of docs/operations/metrics.md", name, v)
 		}
+		if page, err := os.ReadFile("../../docs/operations/metrics.md"); err != nil {
+			t.Fatal(err)
+		} else if !strings.Contains(string(page), "\n### "+name+"\n") {
+			t.Errorf("%s: docs/operations/metrics.md has no section %q, which its runbook link points to", name, name)
+		}
 	}
 	found := map[string]bool{}
 	for _, rule := range rulesOf(t, got[0]) {
