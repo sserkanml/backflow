@@ -88,6 +88,10 @@ YAML
 kubectl -n backflow-system get scm,bfp,dp
 ```
 
+A policy that names its own Argo CD server needs that server in `argocd.allowedServers` of the chart (the installer decides, not
+the tenant), and the host of a connection has to be in `scm.allowedHosts` (`gitlab.com` and `github.com` are there by default):
+see [Configuration](docs/configuration.md#allowed-servers-and-hosts).
+
 Change something in the cluster (`kubectl scale`, `kubectl patch`), wait for the batch window (30 seconds by default),
 and look at the `DriftProposal`. Then switch the policy to `MergeRequest`. The whole path, with the Argo CD account and
 the token scopes, is in [Getting started](docs/getting-started.md).
