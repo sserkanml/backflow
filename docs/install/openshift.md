@@ -106,7 +106,7 @@ a variable, but a Subscription cannot add arguments: use the variables.
 `argocd.allowedServers` and `argocd.defaultAccess`. An `ArgoCD` CA bundle (`BACKFLOW_ARGOCD_CA_FILE`) and the trusted CA bundle
 (`BACKFLOW_TRUSTED_CA_FILE`) are files in the pod: add them with `Subscription.spec.config.volumes` and `volumeMounts`.
 
-Then make an `ScmConnection` and a `BackflowPolicy` as in [Getting started](../docs/getting-started.md) ([samples](../config/samples)).
+Then make an `ScmConnection` and a `BackflowPolicy` as in [Getting started](../getting-started.md) ([samples](../../config/samples)).
 
 ### Metrics
 
@@ -186,7 +186,7 @@ CRDs and your `ScmConnection`, `BackflowPolicy` and `DriftProposal` objects stay
      ```
      (`--dry-run` first.) It adds `v1` to the CRDs, converts the objects and removes `v1alpha1`. The details, the rollback and what the
      tool does are in [docs/upgrade-1.0.md](../operations/upgrade-1.0.md).
-  3. Subscribe, with the settings you had in the Helm values as `BACKFLOW_*` variables (the table in [Configuration](../docs/configuration.md) has the Helm value of each).
+  3. Subscribe, with the settings you had in the Helm values as `BACKFLOW_*` variables (the table in [Configuration](../configuration.md) has the Helm value of each).
 
 OLM takes over the existing CRDs when the bundle's CRDs are compatible, which the migrated ones are.
 

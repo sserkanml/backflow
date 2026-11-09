@@ -40,4 +40,4 @@ These do not: a user with cluster-admin who changes the operator's flags or RBAC
 
 ## How the operator is built for it
 
-See "Architecture and security model" in the [README](README.md#architecture-and-security-model).
+See "Architecture and security model" in [docs/security.md](docs/security.md#architecture-and-security-model).
