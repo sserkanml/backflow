@@ -35,3 +35,7 @@ jobs:
 
       - name: Lint the shell scripts
         run: make shellcheck
+
+      # Every relative link and anchor of the Markdown files, and the reasons of the troubleshooting page.
+      - name: Check the documentation
+        run: make docs-check

@@ -102,6 +102,10 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 helm-sync: manifests ## Copy the CRDs and regenerate the RBAC rules of the Helm chart from config/.
 	./hack/helm-sync.sh
 
+.PHONY: docs-check
+docs-check: ## Check the documentation: every relative link and anchor of the Markdown files resolves, and the troubleshooting page lists every reason.
+	go test -count=1 ./test/docs
+
 .PHONY: helm-lint
 helm-lint: ## Lint the Helm chart.
 	helm lint charts/backflow
