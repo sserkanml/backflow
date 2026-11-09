@@ -21,7 +21,7 @@ spec:
           $labels.scm }} has not been accepted by the Git host for 15 minutes, so
           Backflow cannot map or propose drift to repositories on that host. Run kubectl
           -n {{ $labels.scm_namespace }} describe scm {{ $labels.scm }} for the reason.
-        runbook: See the README, section "Metrics and alerts", alert BackflowScmConnectionNotReady.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowscmconnectionnotready
         summary: ScmConnection {{ $labels.scm_namespace }}/{{ $labels.scm }} is not
           Ready
       expr: backflow_scm_connection_ready == 0
@@ -35,7 +35,7 @@ spec:
           ScmConnection, an Application conflict or a Secret it may not read), so
           it detects no drift. Run kubectl -n {{ $labels.policy_namespace }} describe
           bfp {{ $labels.policy }} for the reason.
-        runbook: See the README, section "Metrics and alerts", alert BackflowPolicyNotReady.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowpolicynotready
         summary: BackflowPolicy {{ $labels.policy_namespace }}/{{ $labels.policy }}
           is not Ready
       expr: backflow_policy_ready == 0
@@ -47,7 +47,7 @@ spec:
         description: More than half of the requests of Backflow to the Argo CD API
           got no answer for 10 minutes. Without Argo CD it detects no drift and maps
           no proposal. Check the Argo CD server, the URL, the CA and the network policy.
-        runbook: See the README, section "Metrics and alerts", alert BackflowArgoCDUnreachable.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowargocdunreachable
         summary: Backflow cannot reach the Argo CD API
       expr: |
         sum(rate(backflow_argocd_requests_total{code_class="error"}[5m]))
@@ -61,7 +61,7 @@ spec:
           }} renderer in the last 15 minutes. This is not a verdict about a chart
           (that is result="failed"); proposals of Helm and Kustomize sources are retried
           until it is fixed.
-        runbook: See the README, section "Metrics and alerts", alert BackflowRenderErrors.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowrendererrors
         summary: Renders through Argo CD fail ({{ $labels.renderer }})
       expr: sum by (renderer) (increase(backflow_renders_total{result="error"}[15m]))
         > 0
@@ -75,7 +75,7 @@ spec:
           for an hour, reason {{ $labels.reason }}. It resumes after a complete, successful
           sync of the current source; if nothing syncs the Application, drift stays
           unseen.
-        runbook: See the README, section "Metrics and alerts", alert BackflowDetectionPausedLong.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowdetectionpausedlong
         summary: Drift detection for {{ $labels.application }} has been paused for
           an hour
       expr: max by (policy_namespace, policy, application, reason) (backflow_detection_paused)
@@ -88,7 +88,7 @@ spec:
         description: A Git host declined a push of Backflow in the last 15 minutes
           (a protected branch, a hook, or the host having trouble). Backflow retries
           and then marks the proposal Failed.
-        runbook: See the README, section "Metrics and alerts", alert BackflowPushRejected.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowpushrejected
         summary: A Git host refused a push of Backflow
       expr: sum(increase(backflow_merge_requests_total{action="push_rejected"}[15m]))
         > 0
@@ -100,7 +100,7 @@ spec:
           that a verification did not clean up, which means an operator crashed or
           lost the Git host while verifying. One now and then is expected; a stream
           of them is not.
-        runbook: See the README, section "Metrics and alerts", alert BackflowScratchBranchesSwept.
+        runbook: https://github.com/sserkanml/backflow/blob/main/docs/operations/metrics.md#backflowscratchbranchesswept
         summary: Backflow deleted scratch branches a verification left behind
       expr: sum(increase(backflow_scratch_branches_total{action="swept"}[1h])) > 0
       labels:

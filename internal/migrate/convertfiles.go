@@ -472,7 +472,7 @@ kinds and files that do not mention backflow.io/v1alpha1 are not touched, byte f
 comments and the order of its keys.
 
 Use it on the Git repository that Argo CD applies the Backflow objects from, and merge the change before the upgrade
-(docs/upgrade-1.0.md): after it the old manifests either fail to sync or, written through v1alpha1, lose fields.
+(docs/operations/upgrade-1.0.md): after it the old manifests either fail to sync or, written through v1alpha1, lose fields.
 
 --check changes nothing and exits 1 when a file would change or a document needs a person (a template, a YAML anchor), for CI.
 

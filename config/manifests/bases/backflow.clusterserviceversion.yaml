@@ -256,7 +256,7 @@ spec:
   - name: Source
     url: https://github.com/sserkanml/backflow
   - name: Upgrading
-    url: https://github.com/sserkanml/backflow/blob/main/docs/upgrade-1.0.md
+    url: https://github.com/sserkanml/backflow/blob/main/docs/operations/upgrade-1.0.md
   maintainers:
   - email: snamli828@gmail.com
     name: sserkanml

@@ -45,7 +45,7 @@
 #
 # Usage (from the repository root):
 #   GITLAB_TOKEN=... ./hack/test-kustomize.sh
-#   SCM=github GITHUB_TOKEN=... ./hack/test-kustomize.sh   # against the GitHub demo repository (see the README)
+#   SCM=github GITHUB_TOKEN=... ./hack/test-kustomize.sh   # against the GitHub demo repository (see docs/development.md)
 #   SECTIONS=a,c ./hack/test-kustomize.sh   # only those sections (default: all);
 #                                           # every section works on its own
 #   WINDOW=10s POLL=3s QUIET=25              # batchWindow, merge request polling, quiet waits

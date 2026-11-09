@@ -171,7 +171,7 @@ and your objects stay (OLM does not delete CRDs, and deleting a CRD deletes its 
 ### Coming from the Helm chart
 
 The first version in the catalog is 1.0.0, on the final API (`backflow.io/v1`), and OLM does not migrate objects: do it with `manager migrate`
-(the way from either source version is in [docs/upgrade-1.0.md](../operations/upgrade-1.0.md)). Start with `helm uninstall backflow -n <namespace>`: the
+(the way from either source version is in [Upgrading to 1.0](../operations/upgrade-1.0.md)). Start with `helm uninstall backflow -n <namespace>`: the
 CRDs and your `ScmConnection`, `BackflowPolicy` and `DriftProposal` objects stay (Helm never deletes CRDs), and the operator is gone.
 
 * **From a Helm release of 0.18.x** (objects stored as `v1beta1`): subscribe, then run `migrate` (no backup, no stop: it stores each object again as
@@ -185,7 +185,7 @@ CRDs and your `ScmConnection`, `BackflowPolicy` and `DriftProposal` objects stay
      podman run --rm --user "$(id -u)" -v "$HOME/.kube:/kube:ro" -v "$PWD/backflow-backup:/backup:Z" -e KUBECONFIG=/kube/config        ghcr.io/sserkanml/backflow:<version> migrate --backup-dir /backup
      ```
      (`--dry-run` first.) It adds `v1` to the CRDs, converts the objects and removes `v1alpha1`. The details, the rollback and what the
-     tool does are in [docs/upgrade-1.0.md](../operations/upgrade-1.0.md).
+     tool does are in [Upgrading to 1.0](../operations/upgrade-1.0.md).
   3. Subscribe, with the settings you had in the Helm values as `BACKFLOW_*` variables (the table in [Configuration](../configuration.md) has the Helm value of each).
 
 OLM takes over the existing CRDs when the bundle's CRDs are compatible, which the migrated ones are.
