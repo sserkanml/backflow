@@ -2,7 +2,8 @@
 
 How Backflow is built to be run for several teams on one cluster, and what it can and cannot do. A vulnerability is reported through
 [SECURITY.md](../SECURITY.md), which also says what counts as one; this page is the model that report is judged against. The
-allow lists and the rest of the settings are in [Configuration](configuration.md).
+allow lists and the rest of the settings are in [Configuration](configuration.md). How Secrets are read, and which namespaces the
+operator may read them in, is under [Permissions](#permissions).
 
 ## Architecture and security model
 
