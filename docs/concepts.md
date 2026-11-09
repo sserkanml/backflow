@@ -33,7 +33,8 @@ For every Application a `Ready` policy selects, Backflow does the following.
    drift of the same resource supersedes the older proposal.
 4. **Map.** The proposal controller reads the repository at the revision Argo CD synced (never the head of the branch) and
    finds the file that defines each drifted field: [what maps and what does not](mapping/overview.md).
-5. **Verify.** It applies the edit to a copy of the source files and has Argo CD render that copy. The edit is accepted only
+5. **Verify.** It applies the edit to a copy of the source files and has Argo CD render that copy; the files are sent to Argo CD
+   directly, and nothing is written to Git before the proposal (Applications with several sources are the exception: see below). The edit is accepted only
    if the render reproduces the drift exactly ([verification by render](#verification-by-render)).
 6. **Propose.** According to the policy's [mode](#modes) it opens a merge request, commits to the branch, or only reports.
 7. **Follow.** It polls an open merge request and records when it was merged or closed.
@@ -119,7 +120,9 @@ having looked and failed. They recover by themselves when an `ScmConnection` or 
 
 This is the rule that keeps Backflow from guessing. A candidate edit (a key in a value file, a patch, a line of a manifest) is
 never trusted because it looks right. Backflow applies it to a copy of the source files and asks Argo CD to render that copy
-(`GetManifestsWithFiles`, or a render by revision for a chart whose values are in another repository). The edit is accepted only
+(`GetManifestsWithFiles`, the edited files sent to Argo CD directly, with no branch). Only for an Application with several sources, a chart
+from a Helm repository or a registry with its values in Git, does the render have to be of a commit: Backflow then pushes short-lived
+`backflow/scratch/` branches, renders them by revision and deletes them right after ([details](mapping/multi-source.md)). The edit is accepted only
 when the fields it changes, in **all** rendered resources, are the drifted fields and now have their live values. Otherwise the
 proposal is `Unmapped` with a reason such as `NoVerifiedCandidate`, `RenderMismatch` or `AmbiguousCandidates`.
 

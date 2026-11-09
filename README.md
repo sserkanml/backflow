@@ -31,8 +31,9 @@ flowchart LR
    between what Git renders (desired) and what is live. The difference, after the fields you ignore, is a drift.
 2. **Map.** It traces each drifted field back to the file and the line that owns it in Git: a plain manifest, a
    Kustomize patch or setting, a Helm value file (also for charts from a Helm repository or a registry).
-3. **Verify.** It writes the edit to a branch and asks **Argo CD to render the edited source again**. Only an edit that
-   reproduces the live state exactly is used. Anything else is `Unmapped` and left for a person.
+3. **Verify.** It sends the edited files to Argo CD and asks it to **render the edited source again**; nothing is written
+   to Git for this (only a chart from a Helm repository or a registry needs short-lived `backflow/scratch/` branches, deleted
+   right after). Only an edit that reproduces the live state exactly is used. Anything else is `Unmapped` and left for a person.
 4. **Propose.** The edit becomes a merge request (or a direct commit, if the policy says so). A person decides.
 
 ## Principles
